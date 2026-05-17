@@ -103,6 +103,9 @@ public class ProtocolProxy
             string key = kv.Key;
             string value = kv.Value;
 
+            if (string.IsNullOrEmpty(value))  // empty values are ignored, so the settings file can be self-documenting
+                continue;
+
             if (key.StartsWith("header_"))
             {
                 headers[key.Substring("header_".Length)] = value;

@@ -75,89 +75,91 @@ public class SettingsService
 			Providers = new List<ProviderConfig>
 			{
 				new ProviderConfig
+				{
+					BaseUrl = "https://openrouter.ai/api/v1",
+					ApiKey = "YOUR_API_KEY_HERE",
+					Models = new List<ModelConfig>
 					{
-						BaseUrl = "https://openrouter.ai/api/v1",
-						ApiKey = "sk-or-v1-YOUR_API_KEY_HERE",
-						Models = new List<ModelConfig>
+						new ModelConfig
 						{
-							new ModelConfig
+							Id = "openai/gpt-4o-mini",
+							Name = "GPT-4o Mini",
+							Enabled = false,
+							ContextWindow = 128000,
+							Cost = new CostConfig { Input = 0.15m, Output = 0.60m },
+							Extras = new Dictionary<string, string>
 							{
-								Id = "openai/gpt-4o-mini",
-								Name = "GPT-4o Mini",
-								ContextWindow = 128000,
-								Cost = new CostConfig { Input = 0.15m, Output = 0.60m },
-								Extras = new Dictionary<string, string>
-								{
-									{ "temperature", "0.7" },
-									// { "top_p", "1.0" },
-									// { "frequency_penalty", "0.1" },
-								}
-							},
-							new ModelConfig
-							{
-								Id = "anthropic/claude-sonnet-4-5",
-								Name = "Claude Sonnet 4.5",
-								ContextWindow = 200000,
-								Cost = new CostConfig { Input = 3.00m, Output = 15.00m },
-								Extras = new Dictionary<string, string>
-								{
-									{ "temperature", "0.7" },
-									// { "top_p", "1.0" },
-									// { "frequency_penalty", "0.1" },
-								}
+								{ "temperature", "" },
+								{ "top_p", "" },
+								{ "frequency_penalty", "" },
 							}
 						},
-						Extras = new Dictionary<string, string>
+						new ModelConfig
 						{
-							// { "or_provider_order", "Anthropic,OpenAI" },
-							// { "or_provider_only", "Anthropic" },
-							// { "or_provider_ignore", "Together" },
-							// { "or_provider_sort", "price" },
-							// { "or_provider_allow_fallbacks", "true" },
-							// { "or_provider_require_parameters", "true" },
-							// { "or_provider_data_collection", "deny" },
-							// { "or_provider_zdr", "true" },
-							// { "or_user", "user-123" },
-							// { "or_models", "openai/gpt-4o,anthropic/claude-3-5-haiku" },
+							Id = "anthropic/claude-sonnet-4-5",
+							Name = "Claude Sonnet 4.5",
+							Enabled = false,
+							ContextWindow = 200000,
+							Cost = new CostConfig { Input = 3.00m, Output = 15.00m },
+							Extras = new Dictionary<string, string>
+							{
+								{ "temperature", "" },
+								{ "top_p", "" },
+								{ "frequency_penalty", "" },
+							}
 						}
 					},
-					new ProviderConfig
+					Extras = new Dictionary<string, string>
 					{
-						BaseUrl = "https://api.openai.com/v1",
-						ApiKey = "sk-YOUR_OPENAI_KEY_HERE",
-						Models = new List<ModelConfig>
-						{
-							new ModelConfig
-							{
-								Id = "gpt-4o-mini",
-								Name = "GPT-4o Mini",
-								ContextWindow = 128000,
-								Cost = new CostConfig { Input = 0.15m, Output = 0.60m },
-								Extras = new Dictionary<string, string>
-								{
-									{ "temperature", "0.7" },
-									// { "top_p", "1.0" },
-									// { "frequency_penalty", "0.1" },
-								}
-							}
-						},
-						Extras = new Dictionary<string, string>
-						{
-							// Arbitrary HTTP headers — prefix with header_ and the suffix becomes the header name.
-							// { "header_OpenAI-Organization", "org-YOUR_ORG_ID" },
-							// { "header_OpenAI-Project", "proj-YOUR_PROJECT_ID" },
-							// Any other key is injected verbatim as a top-level JSON payload field.
-							// { "store", "true" },
-							// { "metadata", "{\"session\":\"abc\"}" },
-						}
+						{ "or_provider_order", "" },
+						{ "or_provider_only", "" },
+						{ "or_provider_ignore", "" },
+						{ "or_provider_sort", "" },
+						{ "or_provider_allow_fallbacks", "" },
+						{ "or_provider_require_parameters", "" },
+						{ "or_provider_data_collection", "" },
+						{ "or_provider_zdr", "" },
+						{ "or_user", "" },
+						{ "or_models", "" },
 					}
+				},
+				new ProviderConfig
+				{
+					BaseUrl = "https://api.openai.com/v1",
+					ApiKey = "YOUR_OPENAI_KEY_HERE",
+					Models = new List<ModelConfig>
+					{
+						new ModelConfig
+						{
+							Id = "gpt-4o-mini",
+							Name = "GPT-4o Mini",
+							Enabled = false,
+							ContextWindow = 128000,
+							Cost = new CostConfig { Input = 0.15m, Output = 0.60m },
+							Extras = new Dictionary<string, string>
+							{
+								{ "temperature", "" },
+								{ "top_p", "" },
+								{ "frequency_penalty", "" },
+							}
+						}
+					},
+					Extras = new Dictionary<string, string>
+					{
+						{ "header_OpenAI-Organization", "" },
+						{ "header_OpenAI-Project", "" },
+						{ "store", "" },
+						{ "metadata", "" },
+					}
+				}
 			},
 			WebSearch = new WebSearchConfig
 			{
 				Openrouter = new OpenrouterSearchConfig
 				{
 					Endpoint = "https://openrouter.ai/api/v1",
-					ApiKey = "sk-or-v1-YOUR_API_KEY_HERE",
+					ApiKey = "YOUR_API_KEY_HERE",
+					Enabled = false,
 					Model = "openai/gpt-4o-mini"
 				}
 			}

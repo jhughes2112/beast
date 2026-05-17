@@ -46,6 +46,9 @@ public class ModelConfig
     [JsonPropertyName("name")]
     public string Name { get; set; } = string.Empty;
 
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
     [JsonPropertyName("contextWindow")]
     public int ContextWindow { get; set; }
 
@@ -88,6 +91,9 @@ public class OpenrouterSearchConfig
 
     [JsonPropertyName("apiKey")]
     public string ApiKey { get; set; } = "";
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
 
     // Model used to invoke the web search plugin.
     [JsonPropertyName("model")]

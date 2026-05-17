@@ -47,7 +47,7 @@ public class BeastApp : IDisposable
             string containerName = $"beastagent_{Guid.NewGuid():N}";
 
             docker.RemoveContainerByNameAsync(containerName).GetAwaiter().GetResult();
-            containerId = docker.LaunchContainerAsync("beastagent", containerName, new List<string>()).GetAwaiter().GetResult();
+            containerId = docker.LaunchContainerAsync("beastagent", containerName, null).GetAwaiter().GetResult();
 
             transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"));
             transport.Start(docker);
@@ -225,7 +225,7 @@ public class BeastApp : IDisposable
             _containerId = await _docker.LaunchContainerAsync(
                 _image,
                 containerName,
-                new List<string>());
+                null);
 
             _transport = new AgentTransport(_model!, SetStatus);
             _transport.Start(_docker);

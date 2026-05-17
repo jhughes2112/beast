@@ -65,7 +65,7 @@ public static class ToolFactory
                 return Truncate(await webFetch.FetchPageAsync(url, ct));
             });
 
-        if (webSearchConfig?.Openrouter != null)
+        if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
             WebSearchOpenrouter webSearch = new(webSearchConfig.Openrouter);
             Register(tools, "search_web",

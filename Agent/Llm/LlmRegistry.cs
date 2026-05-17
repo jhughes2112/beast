@@ -34,6 +34,9 @@ public class LlmRegistry
 			string endpoint = provider.BaseUrl.TrimEnd('/');
 			foreach (ModelConfig modelConfig in provider.Models)
 			{
+				if (!modelConfig.Enabled)
+					continue;
+
 				Dictionary<string, string> extras = new Dictionary<string, string>(provider.Extras);
 				foreach (KeyValuePair<string, string> kv in modelConfig.Extras)
 				{
