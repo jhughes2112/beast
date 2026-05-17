@@ -1,0 +1,127 @@
+using System;
+using System.Collections.Generic;
+
+
+// Flat registry of LLM models and their live service instances, keyed by config ID.
+// Model metadata and service instances are kept in separate dictionaries so that
+// reloading config never destroys service state (availability, down-timers, etc.).
+// LlmService is downstream of LlmModel; the registry patches the reference on reload.
+public class LlmRegistry
+{
+	private readonly Dictionary<string, LlmModel> _models = new(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, LlmService> _services = new(StringComparer.OrdinalIgnoreCase);
+
+	private Dictionary<string, Tool> _tools = new(StringComparer.OrdinalIgnoreCase);
+	private Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
+	private readonly WebCache _webCache;
+
+	public LlmRegistry()
+	{
+		_webCache = new WebCache();
+	}
+
+	// Rebuilds the model metadata dictionary from fresh configs.
+	// For each config ID, if a live service already exists it is patched with the new model
+	// so availability state is preserved. New services are created for new config IDs.
+	// Services for config IDs no longer present are kept so their availability state survives
+	// transient config edits; they will be patched back in if the config returns.
+	public void LoadFromConfigs(SettingsService settings, RoleService roles)
+	{
+		_tools = ToolFactory.Build(_webCache, settings.Settings.WebSearch);
+		_models.Clear();
+		_toolsByRole.Clear();
+
+		foreach (ProviderConfig provider in settings.Settings.Providers)
+		{
+			string endpoint = provider.BaseUrl.TrimEnd('/');
+			foreach (ModelConfig modelConfig in provider.Models)
+			{
+				Dictionary<string, string> extras = new Dictionary<string, string>(provider.Extras);
+				foreach (KeyValuePair<string, string> kv in modelConfig.Extras)
+				{
+					extras[kv.Key] = kv.Value;
+				}
+				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, extras, modelConfig);
+				_models[modelConfig.Id] = model;
+			}
+		}
+
+		// Add missing services; existing ones are left as-is to preserve availability state.
+		foreach (LlmModel model in _models.Values)
+		{
+			if (!_services.ContainsKey(model.ConfigId))
+			{
+				_services[model.ConfigId] = new LlmService(model);
+			}
+			else
+			{
+				_services[model.ConfigId].UpdateModel(model);
+			}
+		}
+
+		foreach (LLMRole role in roles.Roles.Values)
+		{
+			_toolsByRole[role.Name] = BuildToolsForRole(role);
+		}
+	}
+
+	// Finds the first available service from the role's preferred model list, in order.
+	public LlmService? GetServiceForRole(LLMRole role, string configId)
+	{
+		LlmService? service = null;
+		if (role.ModelNames.Contains(configId))  // if the current model is in the list, continue using it
+		{
+			if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable)
+			{
+				service = svc;
+			}
+		}
+		if (service == null)
+		{
+			foreach (string cid in role.ModelNames)  // nope, try them in order
+			{
+				if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable)
+				{
+					service = svc;
+					break;
+				}
+			}
+		}
+		return service;
+	}
+
+	// Returns the prebuilt Tool array for the given role.
+	public Tool[] GetToolsForRole(LLMRole role)
+	{
+		return _toolsByRole[role.Name];
+	}
+
+	public bool HasModel(string configId)
+	{
+		return _models.ContainsKey(configId);
+	}
+
+	// Returns the live service for a specific model ID, or null if not registered.
+	public LlmService? GetServiceById(string configId)
+	{
+		_services.TryGetValue(configId, out LlmService? svc);
+		return svc;
+	}
+
+	private Tool[] BuildToolsForRole(LLMRole role)
+	{
+		List<Tool> allowed = new();
+
+		foreach (string name in role.ToolNames)
+		{
+			if (_tools.TryGetValue(name, out Tool? tool))
+			{
+				allowed.Add(tool);
+			}
+		}
+
+		return allowed.ToArray();
+	}
+}
+
+

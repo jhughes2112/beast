@@ -1,0 +1,72 @@
+# KanBeast
+.beast
+.github
+package-lock.json
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# User-specific files
+*.rsuser
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# NuGet Packages
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# Docker (ignore only .dockerignore files, keep Dockerfiles and docker-compose)
+**/.dockerignore
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Application specific
+**/appsettings.Development.json
+**/appsettings.Local.json
+*.db
+*.db-shm
+*.db-wal
