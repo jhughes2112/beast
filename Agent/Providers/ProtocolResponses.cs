@@ -292,20 +292,45 @@ public class ProtocolResponses : IProtocol
         return ProviderCallResult.Failed("Stream ended without a response.done event");
     }
 
-    // Sends an empty-body POST to detect whether this endpoint speaks the Responses API.
+    // Probes the endpoint to determine whether it speaks the Responses API.
+    // Makes a minimal valid request and checks whether the response contains
+    // usable output (message or function_call items) versus only reasoning stubs.
     public static async Task<ProbeResult> ProbeAsync(string apiKey, string endpoint)
     {
         try
         {
+            string probeJson = "{\"model\":\"test\",\"input\":\"\",\"max_output_tokens\":1}";
             HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/responses");
             req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
-            req.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+            req.Content = new StringContent(probeJson, Encoding.UTF8, "application/json");
 
             HttpResponseMessage response = await ProtocolHelpers.GetProbeClient().SendAsync(req);
             string body = await response.Content.ReadAsStringAsync();
             int status = (int)response.StatusCode;
 
             if (status == 404) return ProbeResult.NotSupported("404 on /responses");
+
+            // A working Responses API returns either:
+            //   200 with "object":"response" containing message/function_call output items, or
+            //   400 with a model-not-found or auth error (expected for model "test").
+            // Some endpoints (e.g. llama.cpp) return 200 with only "reasoning" output items
+            // which our protocol handler can't use — check for message/function_call.
+            if (body.Contains("\"object\":\"response\""))
+            {
+                if (body.Contains("\"type\":\"message\"") || body.Contains("\"type\":\"function_call\""))
+                    return ProbeResult.Supported();
+                return ProbeResult.NotSupported("/responses: object:response but no message/function_call output");
+            }
+
+            if (status == 400 && body.Contains("\"error\"") && (body.Contains("model") || body.Contains("not found") || body.Contains("api key")))
+            {
+                return ProbeResult.Supported();
+            }
+
+            if (status == 400 && body.Contains("input") && body.Contains("required"))
+            {
+                return ProbeResult.NotSupported("/responses: endpoint stub");
+            }
 
             if (status >= 400 && status < 500 && body.Contains("\"error\""))
             {
@@ -451,6 +476,17 @@ public class ProtocolResponses : IProtocol
                 foreach (ResponsesContentBlock block in item.Content)
                 {
                     if (block.Type == "output_text" && !string.IsNullOrEmpty(block.Text))
+                    {
+                        assistantText = block.Text;
+                        break;
+                    }
+                }
+            }
+            else if (item.Type == "reasoning" && item.Content != null && assistantText == null)
+            {
+                foreach (ResponsesContentBlock block in item.Content)
+                {
+                    if (!string.IsNullOrEmpty(block.Text))
                     {
                         assistantText = block.Text;
                         break;
