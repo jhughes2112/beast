@@ -1,13 +1,1 @@
-{
-  "profiles": {
-    "Beast": {
-      "commandName": "Project",
-      "workingDirectory": "D:\\beast"
-    },
-    "BeastTest": {
-      "commandName": "Project",
-      "commandLineArgs": "--test -p hello world!",
-      "workingDirectory": "D:\\beast"
-    }
-  }
-}
+{}

@@ -77,7 +77,15 @@ public class TransportFramedStdio : IFramedTransport
         int totalRead = 0;
         while (totalRead < length)
         {
-            int read = await stream.ReadAsync(contentBytes.AsMemory(totalRead, length - totalRead), cancellationToken);
+            int read;
+            try
+            {
+                read = await stream.ReadAsync(contentBytes.AsMemory(totalRead, length - totalRead), cancellationToken);
+            }
+            catch (IOException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
             if (read == 0) throw new InvalidDataException($"Unexpected EOF reading frame content ({totalRead}/{length} bytes read).");
             totalRead += read;
         }
@@ -104,7 +112,15 @@ public class TransportFramedStdio : IFramedTransport
     private static async Task<int> ReadByteAsync(Stream stream, CancellationToken cancellationToken)
     {
         byte[] buffer = new byte[1];
-        int read = await stream.ReadAsync(buffer, 0, 1, cancellationToken);
+        int read;
+        try
+        {
+            read = await stream.ReadAsync(buffer, 0, 1, cancellationToken);
+        }
+        catch (IOException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
         return read == 0 ? -1 : buffer[0];
     }
 }

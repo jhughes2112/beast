@@ -3,26 +3,19 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        bool showHelp = false;
-        bool runBeastTests = false;
-        List<string> agentSwitches = new List<string>();
+        List<string> switches = new List<string>();
         string? prompt = null;
 
+        // First pass: normalize all args into slash-prefixed switches and collect prompt.
         for (int i = 0; i < args.Length; i++)
         {
             string arg = args[i];
 
-            if (arg == "--help" || arg == "-h")
+            // Normalize to /name by stripping leading dashes/slashes.
+            string normalized = "/" + arg.TrimStart('/', '-');
+
+            if (normalized == "/p" || normalized == "/prompt")
             {
-                showHelp = true;
-            }
-            else if (arg == "--test")
-            {
-                runBeastTests = true;
-            }
-            else if (arg == "-p" || arg == "--prompt")
-            {
-                // Everything from here to the end is the prompt.
                 List<string> parts = new List<string>();
                 for (int j = i + 1; j < args.Length; j++)
                     parts.Add(args[j]);
@@ -32,18 +25,25 @@ public class Program
             }
             else if (arg.StartsWith("/") || arg.StartsWith("-"))
             {
-                // New switch: forward to the agent container.
-                // Translate leading double-dash to slash so the agent recognizes commands like --test -> /test.
-                string sw = arg;
-                if (sw.StartsWith("--"))
-                    sw = "/" + sw.Substring(2);
-                agentSwitches.Add(sw);
+                switches.Add(normalized);
             }
-            else if (agentSwitches.Count > 0)
+            else if (switches.Count > 0)
             {
-                // Bare word following a switch: append to the previous switch as its value.
-                agentSwitches[agentSwitches.Count - 1] = $"{agentSwitches[agentSwitches.Count - 1]} {arg}";
+                // Bare word following a switch: append as its value.
+                switches[switches.Count - 1] = $"{switches[switches.Count - 1]} {arg}";
             }
+        }
+
+        // Second pass: check for switches that need special Beast-side handling.
+        bool showHelp = switches.Contains("/help") || switches.Contains("/h");
+        bool runBeastTests = switches.Contains("/test");
+
+        // Agent receives all switches except Beast-only ones.
+        List<string> agentSwitches = new List<string>();
+        foreach (string sw in switches)
+        {
+            if (sw != "/help" && sw != "/h")
+                agentSwitches.Add(sw);
         }
 
         if (showHelp)
@@ -58,7 +58,8 @@ public class Program
             TestContext ctx = new TestContext(new ConsoleTransport());
             TransportTests.Test(ctx);
             Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
-            return ctx.Failed > 0 ? 1 : 0;
+            if (ctx.Failed > 0)
+                return 1;
         }
 
         await using BeastApp app = new BeastApp("beastagent", agentSwitches, prompt);
