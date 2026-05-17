@@ -65,11 +65,14 @@ public class DockerContext : IDisposable
         return containerId;
     }
 
-    // Sends a text line to the container's stdin.
+    // Sends a framed message to the container's stdin.
+    // Wire format: [type,length]content---
     public async Task SendAsync(string text)
     {
         if (_stdio == null) return;
-        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text + "\n");
+        byte[] contentBytes = System.Text.Encoding.UTF8.GetBytes(text);
+        string frame = $"[{(byte)FrameType.Output},{contentBytes.Length}]{text}---";
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(frame);
         await _stdio.WriteAsync(bytes, 0, bytes.Length, default);
     }
 

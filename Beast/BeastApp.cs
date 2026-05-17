@@ -2,9 +2,10 @@ using Terminal.Gui;
 
 
 // Owns the full-screen terminal layout and connects DockerContext, AgentTransport, and the UI.
-public class BeastApp : IDisposable
+public class BeastApp : IDisposable, IAsyncDisposable
 {
     private readonly string _image;
+    private readonly List<string> _agentSwitches;
     private readonly string? _initialPrompt;
 
     private ConversationModel? _model;
@@ -15,22 +16,23 @@ public class BeastApp : IDisposable
     private Label? _statusLabel;
     private TextField? _inputField;
 
-    public BeastApp(string image, string? initialPrompt)
+    public BeastApp(string image, List<string> agentSwitches, string? initialPrompt)
     {
         _image = image;
+        _agentSwitches = agentSwitches;
         _initialPrompt = initialPrompt;
     }
 
-    public int Run()
+    public async Task<int> Run()
     {
         if (_initialPrompt != null)
-            return RunConsole();
+            return await RunConsole();
 
         RunTui();
         return 0;
     }
 
-    private int RunConsole()
+    private async Task<int> RunConsole()
     {
         using CancellationTokenSource cts = new CancellationTokenSource();
         ConversationModel model = new ConversationModel();
@@ -46,13 +48,13 @@ public class BeastApp : IDisposable
             docker = new DockerContext();
             string containerName = $"beastagent_{Guid.NewGuid():N}";
 
-            docker.RemoveContainerByNameAsync(containerName).GetAwaiter().GetResult();
-            containerId = docker.LaunchContainerAsync("beastagent", containerName, null).GetAwaiter().GetResult();
+            await docker.RemoveContainerByNameAsync(containerName);
+            containerId = await docker.LaunchContainerAsync("beastagent", containerName, new List<string>());
 
             transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"));
             transport.Start(docker);
 
-            // Wire up model updates to print to stdout
+            // Wire up model updates to print to stdout.
             model.MessageUpdated += msg =>
             {
                 if (msg.Type == FrameType.Output && !string.IsNullOrEmpty(msg.Content))
@@ -69,8 +71,12 @@ public class BeastApp : IDisposable
                 }
             };
 
-            Console.Error.WriteLine("[beast] Connected. Sending prompt...");
-            docker.SendAsync(_initialPrompt!).GetAwaiter().GetResult();
+            Console.Error.WriteLine("[beast] Connected. Sending inputs...");
+            foreach (string sw in _agentSwitches)
+                await docker.SendAsync(sw);
+
+            if (_initialPrompt != null)
+                await docker.SendAsync(_initialPrompt);
 
             // Wait for the conversation to finish (no more new messages for a while)
             // Simple approach: wait for the model to have at least one assistant response,
@@ -79,7 +85,7 @@ public class BeastApp : IDisposable
             int idleTicks = 0;
             while (!cts.IsCancellationRequested)
             {
-                Thread.Sleep(500);
+                await Task.Delay(500);
                 int currentCount = model.Messages.Count;
                 if (currentCount > lastCount)
                 {
@@ -110,7 +116,7 @@ public class BeastApp : IDisposable
             transport?.Dispose();
             if (containerId != null && docker != null)
             {
-                try { docker.StopAndRemoveContainerAsync(containerId).GetAwaiter().GetResult(); } catch { }
+                try { await docker.StopAndRemoveContainerAsync(containerId); } catch { }
             }
             docker?.Dispose();
         }
@@ -168,7 +174,7 @@ public class BeastApp : IDisposable
         Application.Shutdown();
     }
 
-    private void OnInputKeyDown(View.KeyEventEventArgs args)
+    private async void OnInputKeyDown(View.KeyEventEventArgs args)
     {
         if (args.KeyEvent.Key == Key.Enter)
         {
@@ -176,7 +182,7 @@ public class BeastApp : IDisposable
             _inputField.Text = "";
             if (text.Length > 0)
             {
-                SendPrompt(text);
+                await SendPromptAsync(text);
             }
             args.Handled = true;
         }
@@ -192,7 +198,7 @@ public class BeastApp : IDisposable
         }
     }
 
-    private void SendPrompt(string text)
+    private async Task SendPromptAsync(string text)
     {
         // _transport is assigned last in LaunchAgentAsync, after _docker and _stdio are both ready.
         // Checking _transport ensures we don't send before the container is fully initialized.
@@ -204,7 +210,7 @@ public class BeastApp : IDisposable
         {
             try
             {
-                _docker!.SendAsync(text).GetAwaiter().GetResult();
+                await _docker!.SendAsync(text);
             }
             catch (Exception ex)
             {
@@ -225,17 +231,18 @@ public class BeastApp : IDisposable
             _containerId = await _docker.LaunchContainerAsync(
                 _image,
                 containerName,
-                null);
+                new List<string>());
 
             _transport = new AgentTransport(_model!, SetStatus);
             _transport.Start(_docker);
 
             SetStatus("Connected.");
 
+            foreach (string sw in _agentSwitches)
+                await SendPromptAsync(sw);
+
             if (_initialPrompt != null)
-            {
-                SendPrompt(_initialPrompt);
-            }
+                await SendPromptAsync(_initialPrompt);
         }
         catch (Exception ex)
         {
@@ -267,9 +274,15 @@ public class BeastApp : IDisposable
     public void Dispose()
     {
         _transport?.Dispose();
+        _docker?.Dispose();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _transport?.Dispose();
         if (_containerId != null && _docker != null)
         {
-            _docker.StopAndRemoveContainerAsync(_containerId).GetAwaiter().GetResult();
+            try { await _docker.StopAndRemoveContainerAsync(_containerId); } catch { }
         }
         _docker?.Dispose();
     }

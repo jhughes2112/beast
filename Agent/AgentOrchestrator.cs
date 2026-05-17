@@ -39,15 +39,9 @@ public class AgentOrchestrator
 		_registry.LoadFromConfigs(_settings, _roleService);
 	}
 
-	public async Task<int> RunAsync(string? prompt, CancellationToken cancellationToken)
+	public async Task<int> RunAsync(CancellationToken cancellationToken)
 	{
-		bool interactive = string.IsNullOrEmpty(prompt);
 		Queue<string> pendingInput = new();
-
-		if (!string.IsNullOrEmpty(prompt))
-		{
-			pendingInput.Enqueue(prompt);
-		}
 
 		BeastSession conversation = LoadOrCreateConversation();
 		bool wantsExit = false;
@@ -65,14 +59,11 @@ public class AgentOrchestrator
 
 			bool canRunLLM = role != null && service != null;
 
-			// 2. Fetch input from transport if interactive.
-			if (interactive)
+			// 2. Fetch input from transport.
+			string? incoming = await _transport.TryReadAsync(100, cancellationToken);
+			if (incoming != null && incoming.Length > 0)
 			{
-				string? incoming = await _transport.TryReadAsync(100, cancellationToken);
-				if (incoming != null && incoming.Length > 0)
-				{
-					pendingInput.Enqueue(incoming);
-				}
+				pendingInput.Enqueue(incoming);
 			}
 
 			// 3. Process the entire input queue: run commands in order, accumulate text into one user message.
