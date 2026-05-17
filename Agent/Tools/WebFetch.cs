@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Net;
 using System.Net.Http;
@@ -8,16 +9,21 @@ using System.Threading.Tasks;
 
 
 // Fetches web pages and returns their text content with HTML stripped.
+// Caches successful responses for 30 seconds to avoid hammering external sites.
 public class WebFetch
 {
-    private readonly WebCache _webCache;
+    private record CacheEntry(string Content, DateTime ExpiresAt);
+
+    private static readonly Regex ScriptRegex = new Regex(@"<script[^>]*>[\s\S]*?</script>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex StyleRegex = new Regex(@"<style[^>]*>[\s\S]*?</style>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex TagRegex = new Regex(@"<[^>]+>", RegexOptions.Compiled);
+    private static readonly Regex WhitespaceRegex = new Regex(@"\s+", RegexOptions.Compiled);
+    private static readonly Regex BlankLinesRegex = new Regex(@"(\r?\n\s*){3,}", RegexOptions.Compiled);
+
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
     private static readonly HttpClient SharedHttpClient = new();
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
-
-    public WebFetch(WebCache webCache)
-    {
-        _webCache = webCache;
-    }
 
     [Description("Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.")]
     public async Task<ToolResult> FetchPageAsync(
@@ -36,28 +42,26 @@ public class WebFetch
             using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(DefaultTimeout);
 
-            string text = await _webCache.GetOrFetchAsync(url, async () =>
-            {
-                HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, cts.Token);
+            if (_cache.TryGetValue(url, out CacheEntry? entry) && DateTime.UtcNow < entry.ExpiresAt)
+                return new ToolResult(entry.Content, false);
 
-                if (!response.IsSuccessStatusCode)
-                    return "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase;
+            _cache.TryRemove(url, out _);
 
-                string html = await response.Content.ReadAsStringAsync(cts.Token);
-                string stripped = StripHtmlTags(html);
+            HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, cts.Token);
 
-                if (stripped.Length > 50000)
-                    stripped = stripped.Substring(0, 50000) + "\n\n[Content truncated at 50000 characters]";
+            if (!response.IsSuccessStatusCode)
+                return new ToolResult("Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, false);
 
-                return stripped;
-            }, null);
+            string html = await response.Content.ReadAsStringAsync(cts.Token);
+            string text = StripHtmlTags(html);
+
+            if (text.Length > 50000)
+                text = text.Substring(0, 50000) + "\n\n[Content truncated at 50000 characters]";
 
             if (string.IsNullOrWhiteSpace(text))
                 return new ToolResult("Error: No readable text content found at URL: " + url, false);
 
-            if (text.StartsWith("Error:"))
-                return new ToolResult(text, false);
-
+            _cache[url] = new CacheEntry(text, DateTime.UtcNow + CacheTtl);
             return new ToolResult(text, false);
         }
         catch (OperationCanceledException)
@@ -76,12 +80,12 @@ public class WebFetch
 
     private static string StripHtmlTags(string html)
     {
-        html = Regex.Replace(html, "<script[^>]*>[\\s\\S]*?</script>", "", RegexOptions.IgnoreCase);
-        html = Regex.Replace(html, "<style[^>]*>[\\s\\S]*?</style>", "", RegexOptions.IgnoreCase);
-        html = Regex.Replace(html, "<[^>]+>", " ");
+        html = ScriptRegex.Replace(html, "");
+        html = StyleRegex.Replace(html, "");
+        html = TagRegex.Replace(html, " ");
         html = WebUtility.HtmlDecode(html);
-        html = Regex.Replace(html, "\\s+", " ");
-        html = Regex.Replace(html, "(\\r?\\n\\s*){3,}", "\n\n");
+        html = WhitespaceRegex.Replace(html, " ");
+        html = BlankLinesRegex.Replace(html, "\n\n");
         return html.Trim();
     }
 }

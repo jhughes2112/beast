@@ -98,17 +98,17 @@ public static class LlmServiceTests
 
 		// Future epoch should return positive seconds.
 		long futureEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60;
-		int futureResult = (int)Reflect.Static(typeof(LlmService), "EpochToSecondsFromNow", types, [futureEpoch])!;
+		int futureResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [futureEpoch])!;
 		ctx.Assert(futureResult >= 59 && futureResult <= 62, "EpochToSecondsFromNow: future epoch returns ~61");
 
 		// Past epoch should return 0.
 		long pastEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 60;
-		int pastResult = (int)Reflect.Static(typeof(LlmService), "EpochToSecondsFromNow", types, [pastEpoch])!;
+		int pastResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [pastEpoch])!;
 		ctx.AssertEqual(0, pastResult, "EpochToSecondsFromNow: past epoch returns 0");
 
 		// Millisecond epoch should be normalized to seconds.
 		long msEpoch = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 120) * 1000;
-		int msResult = (int)Reflect.Static(typeof(LlmService), "EpochToSecondsFromNow", types, [msEpoch])!;
+		int msResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [msEpoch])!;
 		ctx.Assert(msResult >= 119 && msResult <= 122, "EpochToSecondsFromNow: millisecond epoch normalized");
 	}
 
@@ -119,10 +119,10 @@ public static class LlmServiceTests
 		HttpResponseMessage response = new HttpResponseMessage(HttpStatusCode.OK);
 		response.Headers.TryAddWithoutValidation("X-Custom", "value1");
 
-		string? found = (string?)Reflect.Static(typeof(LlmService), "GetFirstHeaderValue", types, [response.Headers, "X-Custom"]);
+		string? found = (string?)Reflect.Static(typeof(ProtocolHelpers), "GetFirstHeaderValue", types, [response.Headers, "X-Custom"]);
 		ctx.AssertEqual("value1", found, "GetFirstHeaderValue: finds present header");
 
-		string? missing = (string?)Reflect.Static(typeof(LlmService), "GetFirstHeaderValue", types, [response.Headers, "X-Missing"]);
+		string? missing = (string?)Reflect.Static(typeof(ProtocolHelpers), "GetFirstHeaderValue", types, [response.Headers, "X-Missing"]);
 		ctx.AssertNull(missing, "GetFirstHeaderValue: returns null for missing header");
 	}
 
@@ -212,29 +212,29 @@ public static class LlmServiceTests
 
 		// 429 status code.
 		HttpResponseMessage r429 = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-		bool is429 = (bool)Reflect.Instance(service, "IsRateLimited", types, [r429, ""])!;
+		bool is429 = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [r429, ""])!;
 		ctx.Assert(is429, "IsRateLimited: 429 status detected");
 
 		// Retry-After header present.
 		HttpResponseMessage rRetry = new HttpResponseMessage(HttpStatusCode.OK);
 		rRetry.Headers.TryAddWithoutValidation("Retry-After", "30");
-		bool isRetry = (bool)Reflect.Instance(service, "IsRateLimited", types, [rRetry, ""])!;
+		bool isRetry = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rRetry, ""])!;
 		ctx.Assert(isRetry, "IsRateLimited: Retry-After header detected");
 
 		// Normal 200 is not rate limited.
 		HttpResponseMessage rOk = new HttpResponseMessage(HttpStatusCode.OK);
-		bool isOk = (bool)Reflect.Instance(service, "IsRateLimited", types, [rOk, ""])!;
+		bool isOk = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rOk, ""])!;
 		ctx.Assert(!isOk, "IsRateLimited: normal 200 not rate limited");
 
 		// Body containing code 429.
 		HttpResponseMessage rBody = new HttpResponseMessage(HttpStatusCode.OK);
-		bool isBody = (bool)Reflect.Instance(service, "IsRateLimited", types, [rBody, "{\"code\":429}"])!;
+		bool isBody = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rBody, "{\"code\":429}"])!;
 		ctx.Assert(isBody, "IsRateLimited: body code 429 detected");
 
 		// X-RateLimit-Remaining = 0.
 		HttpResponseMessage rRemaining = new HttpResponseMessage(HttpStatusCode.OK);
 		rRemaining.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", "0");
-		bool isRemaining = (bool)Reflect.Instance(service, "IsRateLimited", types, [rRemaining, ""])!;
+		bool isRemaining = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rRemaining, ""])!;
 		ctx.Assert(isRemaining, "IsRateLimited: X-RateLimit-Remaining 0 detected");
 	}
 

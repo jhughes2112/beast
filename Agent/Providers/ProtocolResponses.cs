@@ -153,6 +153,7 @@ public class ProtocolResponses : IProtocol
         body["model"] = model.Config.Name;
         body["input"] = input;
         body["max_output_tokens"] = maxCompletionTokens > 0 ? maxCompletionTokens : 4096;
+        body["seed"] = Random.Shared.Next();
 
         if (!string.IsNullOrEmpty(instructions))
         {

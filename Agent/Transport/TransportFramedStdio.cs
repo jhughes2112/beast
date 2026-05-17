@@ -47,50 +47,58 @@ public class TransportFramedStdio : IFramedTransport
 
     private static async Task<string?> ReadFrameContentAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var header = new List<byte>();
+        // Scan for '[' to find the frame start, discarding any stray bytes (allows resync after a bad frame).
+        int b;
+        do
+        {
+            b = await ReadByteAsync(stream, cancellationToken);
+            if (b == -1) return null; // clean EOF
+        }
+        while ((char)b != '[');
+
+        // Read header bytes up to the closing ']'.
+        List<byte> header = new List<byte>();
         while (true)
         {
-            int b = await ReadByteAsync(stream, cancellationToken);
-            if (b == -1) return null;
+            b = await ReadByteAsync(stream, cancellationToken);
+            if (b == -1) throw new InvalidDataException("Unexpected EOF inside frame header.");
             if ((char)b == ']') break;
             header.Add((byte)b);
         }
 
-        if (header.Count == 0 || header[0] != (byte)'[') return null;
-
-        string headerStr = Encoding.UTF8.GetString(header.ToArray(), 1, header.Count - 1);
+        string headerStr = Encoding.UTF8.GetString(header.ToArray());
         int comma = headerStr.IndexOf(',');
-        if (comma < 0) return null;
+        if (comma < 0) throw new InvalidDataException($"Malformed frame header: '[{headerStr}]'.");
 
-        if (!int.TryParse(headerStr.Substring(comma + 1), out int length) || length < 0) return null;
+        if (!int.TryParse(headerStr.Substring(comma + 1), out int length) || length < 0)
+            throw new InvalidDataException($"Invalid content length in frame header: '[{headerStr}]'.");
 
         byte[] contentBytes = new byte[length];
         int totalRead = 0;
         while (totalRead < length)
         {
             int read = await stream.ReadAsync(contentBytes.AsMemory(totalRead, length - totalRead), cancellationToken);
-            if (read == 0) return null;
+            if (read == 0) throw new InvalidDataException($"Unexpected EOF reading frame content ({totalRead}/{length} bytes read).");
             totalRead += read;
         }
 
         string content = Encoding.UTF8.GetString(contentBytes);
 
-        await ReadUntilAsync(stream, (byte)'-', cancellationToken);
+        if (!await ReadTerminatorAsync(stream, cancellationToken))
+            throw new InvalidDataException("Frame terminator '---' not found or malformed.");
 
         return content;
     }
 
-    private static async Task<string> ReadUntilAsync(Stream stream, byte terminator, CancellationToken cancellationToken)
+    // Reads exactly 3 bytes and validates they are all '-', as required by the wire format.
+    private static async Task<bool> ReadTerminatorAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var buffer = new List<byte>();
-        while (true)
+        for (int i = 0; i < 3; i++)
         {
             int b = await ReadByteAsync(stream, cancellationToken);
-            if (b == -1) return string.Empty;
-            buffer.Add((byte)b);
-            if (b == terminator) break;
+            if (b != (byte)'-') return false;
         }
-        return Encoding.UTF8.GetString(buffer.ToArray());
+        return true;
     }
 
     private static async Task<int> ReadByteAsync(Stream stream, CancellationToken cancellationToken)

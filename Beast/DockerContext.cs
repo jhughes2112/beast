@@ -31,10 +31,10 @@ public class DockerContext : IDisposable
             AttachStdout = true,
             AttachStderr = true,
             OpenStdin = true,
-            StdinOnce = true,
+            StdinOnce = false,
             HostConfig = new HostConfig
             {
-                NetworkMode = "none",
+                NetworkMode = "bridge",
                 AutoRemove = false,
                 Binds = new List<string>
                 {

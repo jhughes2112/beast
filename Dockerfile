@@ -20,8 +20,28 @@ RUN dotnet publish "Agent/Agent.csproj" \
 # -----------------------------
 # Stage 2: Runtime
 # -----------------------------
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS final
+FROM ubuntu:24.04 AS final
 WORKDIR /app
+
+# Install developer tools: runtimes, compilers, interpreters, and common utilities
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Core tools
+    bash curl wget git ca-certificates gnupg lsb-release \
+    # C / C++
+    build-essential gcc g++ gdb cmake ninja-build \
+    # Python
+    python3 python3-pip python3-venv \
+    # Node.js (LTS via NodeSource)
+    nodejs npm \
+    # Ruby
+    ruby ruby-dev \
+    # JVM (Java + Kotlin via sdkman is typical, but openjdk is sufficient here)
+    openjdk-21-jdk-headless \
+    # Shell / scripting utilities
+    jq yq sqlite3 zip unzip bc file tree \
+    # .NET runtime deps (required for self-contained .NET 10 binary)
+    libicu74 libssl3 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the single-file published executable from the build stage
 COPY --from=build /app/publish/Agent .

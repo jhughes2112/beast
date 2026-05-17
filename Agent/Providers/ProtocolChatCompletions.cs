@@ -22,7 +22,6 @@ public class ProtocolChatCompletions : IProtocol
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
 
-    private readonly Random _seedRandom = new();
 
     public async Task<ProviderCallResult> ExecuteAsync(
         LlmModel model,
@@ -130,7 +129,7 @@ public class ProtocolChatCompletions : IProtocol
             Messages = messages,
             Tools = tools.Count > 0 ? tools : null,
             ParallelToolCalls = tools.Count > 0 && _parallelToolCallsSupported ? true : null,
-            Seed = _seedRandom.Next(),
+            Seed = Random.Shared.Next(),
             MaxCompletionTokens = maxCompletionTokens > 0 ? maxCompletionTokens : null
         };
     }

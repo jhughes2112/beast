@@ -298,10 +298,10 @@ public class AgentOrchestrator
 
 		if (result.Success && !string.IsNullOrWhiteSpace(compactedContent))
 		{
-			// Clear everything, add system message and new summary message, then optionally user message if there was one
+			// Clear everything, restore the system prompt slot at index 0, then add the compacted summary and pending user message.
 			conversation.Messages.Clear();
 			conversation.AddSystemMessage(string.Empty);
-			conversation.Messages.Add(new ConversationMessage { Role = "assistant", Content = compactedContent });
+			conversation.AddAssistantMessage(compactedContent);
 			_transport.Status("[Compaction] Complete.");
 
 			if (pendingUserMessage != null)
@@ -312,7 +312,12 @@ public class AgentOrchestrator
 		else
 		{
 			// Truncate back to the exact pre-compaction state, including any LLM responses that were committed.
-			conversation.Messages.RemoveRange(snapshotCount, conversation.Messages.Count - snapshotCount);
+			// snapshotCount must be at least 1 to preserve the system prompt at index 0.
+			int restoreCount = snapshotCount >= 1 ? snapshotCount : 1;
+			if (conversation.Messages.Count > restoreCount)
+			{
+				conversation.Messages.RemoveRange(restoreCount, conversation.Messages.Count - restoreCount);
+			}
 
 			if (pendingUserMessage != null)
 			{

@@ -59,11 +59,15 @@ public static class ShellTools
 			using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 			cts.CancelAfter(TimeSpan.FromSeconds(timeout));
 
-			await process.WaitForExitAsync(cts.Token);
-			bool exited = process.HasExited;
-
-			if (!exited)
+			try
 			{
+				await process.WaitForExitAsync(cts.Token);
+			}
+			catch (OperationCanceledException)
+			{
+				if (cancellationToken.IsCancellationRequested)
+					throw;
+
 				try { process.Kill(true); } catch { }
 				return new ToolResult($"Error: Command timed out after {timeout}s.", false);
 			}

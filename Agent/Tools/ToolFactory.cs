@@ -12,7 +12,7 @@ public static class ToolFactory
     private const int TruncateHeadLength = 80000;
     private const int TruncateTailLength = 80000;
 
-    public static Dictionary<string, Tool> Build(WebCache webCache, WebSearchConfig? webSearchConfig)
+    public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig)
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
@@ -54,7 +54,7 @@ public static class ToolFactory
                 return Truncate(await SearchTools.ListDirectoryAsync(path, pattern));
             });
 
-        WebFetch webFetch = new(webCache);
+        WebFetch webFetch = new();
         Register(tools, "fetch_page",
             "Fetch the text content of a web page.",
             Params(

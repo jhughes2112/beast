@@ -8,11 +8,15 @@ using System.Text;
 public class FrameParser
 {
     private readonly StringBuilder _buf = new StringBuilder();
+    private readonly Decoder _decoder = Encoding.UTF8.GetDecoder();
     private readonly List<(FrameType Type, string Content)> _ready = new List<(FrameType Type, string Content)>();
 
     public void Feed(byte[] data, int count)
     {
-        _buf.Append(Encoding.UTF8.GetString(data, 0, count));
+        int charCount = _decoder.GetCharCount(data, 0, count);
+        char[] chars = new char[charCount];
+        _decoder.GetChars(data, 0, count, chars, 0);
+        _buf.Append(chars);
         Parse();
     }
 

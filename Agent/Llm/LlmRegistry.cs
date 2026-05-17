@@ -13,11 +13,9 @@ public class LlmRegistry
 
 	private Dictionary<string, Tool> _tools = new(StringComparer.OrdinalIgnoreCase);
 	private Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
-	private readonly WebCache _webCache;
 
 	public LlmRegistry()
 	{
-		_webCache = new WebCache();
 	}
 
 	// Rebuilds the model metadata dictionary from fresh configs.
@@ -27,7 +25,7 @@ public class LlmRegistry
 	// transient config edits; they will be patched back in if the config returns.
 	public void LoadFromConfigs(SettingsService settings, RoleService roles)
 	{
-		_tools = ToolFactory.Build(_webCache, settings.Settings.WebSearch);
+		_tools = ToolFactory.Build(settings.Settings.WebSearch);
 		_models.Clear();
 		_toolsByRole.Clear();
 

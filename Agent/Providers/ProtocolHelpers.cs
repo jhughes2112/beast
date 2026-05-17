@@ -8,7 +8,12 @@ static class ProtocolHelpers
 {
     // Single shared client. Authorization is set per-request on HttpRequestMessage so
     // nothing on the client itself varies between models or calls.
-    private static readonly HttpClient SharedClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+    // MaxResponseContentBufferSize caps buffered body size to guard against unbounded malformed responses.
+    private static readonly HttpClient SharedClient = new HttpClient
+    {
+        Timeout = TimeSpan.FromMinutes(5),
+        MaxResponseContentBufferSize = 2 * 1024 * 1024  // 2 MB
+    };
 
     private static readonly HttpClient ProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
 

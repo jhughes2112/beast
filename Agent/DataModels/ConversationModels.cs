@@ -148,9 +148,15 @@ public class BeastSession
         SentMessageCount = 0;
     }
 
+	// This exists because assistant message ALSO include tool calls sometimes.
     public void AddAssistantMessage(ConversationMessage message)
     {
         Messages.Add(message);
+    }
+
+    public void AddAssistantMessage(string content)
+    {
+        Messages.Add(new ConversationMessage { Role = "assistant", Content = content });
     }
 
     public void AddSystemMessage(string content)

@@ -81,11 +81,8 @@ public class LlmService
 
 			// This loop will continue until we hit a break statement.  That happens whenever the model returns a response
 			// that doesn't trigger any tool calls (i.e. it's done), or if we encounter an error or context limit.
-			// It is subtle because ProcessAssistantResponseAsync will return null in two different scenarios:
-			// 1) the model returned an empty response (no content, no tool calls), or
-			// 2) all tool calls were dispatched successfully.
-			// In the former case we want to keep looping but track how many times this happens in a row before we bail;
-			// in the latter case we want to keep looping and reset the empty response count since the model is making progress through tool calls.
+			// ProcessAssistantResponseAsync returns (null, true) when tool calls were dispatched (model made progress),
+			// (null, false) when the turn was empty (no content, no tool calls), and (LlmResult, _) to terminate.
 			for (; ; )
 			{
 				if (model.Config.ContextWindow - conversation.GetUsedTokenCount() <= reserveTokens)
@@ -108,7 +105,6 @@ public class LlmService
 				}
 
 				int maxCompletionTokens = ComputeMaxCompletionTokens(conversation, model.Config.ContextWindow, reserveTokens) ?? 0;
-				int messageCountBeforeCall = conversation.Messages.Count;
 
 				ProviderCallResult callResult = await _handler.ExecuteAsync(requestMessages, toolDefs, maxCompletionTokens, transport, cancellationToken);
 
@@ -118,17 +114,16 @@ public class LlmService
 					conversation.TotalCost += payload.Cost;
 					conversation.LastTokenUsage = payload.Usage;
 
-					LlmResult? responseResult = await ProcessAssistantResponseAsync(payload.Message, tools, conversation, transport, cancellationToken);
-					if (responseResult != null)
+					(LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload.Message, tools, conversation, transport, cancellationToken);
+					if (terminalResult != null)
 					{
-						finalResult = responseResult;
+						finalResult = terminalResult;
 						break;
 					}
 
-					// null return means either tool calls were dispatched (progress) or the turn was completely
-					// empty (no content, no tool calls). Track whether the conversation actually grew; if not,
-					// the model is spinning and we bail after MaxEmptyResponses consecutive idle turns.
-					if (conversation.Messages.Count > messageCountBeforeCall)
+					// toolsDispatched=true means the model made progress via tool calls; reset the idle counter.
+					// toolsDispatched=false means a genuinely empty turn with no content and no tool calls.
+					if (toolsDispatched)
 					{
 						emptyResponseCount = 0;
 					}
@@ -178,7 +173,8 @@ public class LlmService
 		return finalResult;
 	}
 
-	private async Task<LlmResult?> ProcessAssistantResponseAsync(ConversationMessage assistantMessage, Tool[] tools, BeastSession conversation, IFramedTransport transport, CancellationToken ct)
+	// Returns (null, toolsDispatched) to continue looping, or (LlmResult, false) to terminate.
+	private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ConversationMessage assistantMessage, Tool[] tools, BeastSession conversation, IFramedTransport transport, CancellationToken ct)
 	{
 		// Phase 1: Normalize content — treat whitespace-only as absent.
 		if (assistantMessage.Content != null)
@@ -194,7 +190,7 @@ public class LlmService
 		bool hasToolCalls = assistantMessage.ToolCalls != null && assistantMessage.ToolCalls.Count > 0;
 		if (assistantMessage.Content == null && !hasToolCalls)
 		{
-			return null;
+			return (null, false);
 		}
 
 		// Tool calls require a non-null content string (wire format expectation).
@@ -246,7 +242,7 @@ public class LlmService
 			{
 				transport.Output(assistantMessage.Content);
 			}
-			return new LlmResult(LlmExitReason.Completed, "");
+			return (new LlmResult(LlmExitReason.Completed, ""), false);
 		}
 
 		List<ConversationToolCall> toolCalls = assistantMessage.ToolCalls!;
@@ -274,7 +270,7 @@ public class LlmService
 			}
 		}
 
-		return null;
+		return (null, true);
 	}
 
 	private async Task<ToolResult> ExecuteToolAsync(ConversationToolCall toolCall, Tool[] tools, CancellationToken ct)
