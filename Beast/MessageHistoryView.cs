@@ -15,6 +15,7 @@ public class MessageHistoryView : View
 
     // Each rendered row maps back to its source message index for click handling.
     private readonly List<int> _rowToMessageIndex = new List<int>();
+    private List<string> _rows = new List<string>();
 
     private int _scrollOffset = 0;     // first visible row index
     private bool _anchoredAtBottom = true;
@@ -48,8 +49,8 @@ public class MessageHistoryView : View
         string previousAnchor = _anchorText;
 
         _rowToMessageIndex.Clear();
-        List<string> rows = BuildRows(visibleWidth);
-        _totalRows = rows.Count;
+        _rows = BuildRows(visibleWidth);
+        _totalRows = _rows.Count;
 
         if (_anchoredAtBottom)
         {
@@ -59,9 +60,9 @@ public class MessageHistoryView : View
         {
             // Find the first row that still starts with previousAnchor.
             int found = -1;
-            for (int r = 0; r < rows.Count; r++)
+            for (int r = 0; r < _rows.Count; r++)
             {
-                if (rows[r].StartsWith(previousAnchor, StringComparison.Ordinal))
+                if (_rows[r].StartsWith(previousAnchor, StringComparison.Ordinal))
                 {
                     found = r;
                     break;
@@ -78,7 +79,7 @@ public class MessageHistoryView : View
         }
 
         _scrollOffset = Clamp(_scrollOffset, 0, Math.Max(0, _totalRows - visibleHeight));
-        UpdateAnchorText(rows);
+        UpdateAnchorText(_rows);
         SetNeedsDisplay();
     }
 
@@ -88,16 +89,14 @@ public class MessageHistoryView : View
 
         int visibleWidth = bounds.Width;
         int visibleHeight = bounds.Height;
-        List<string> rows = BuildRows(visibleWidth);
-        _totalRows = rows.Count;
 
         for (int row = 0; row < visibleHeight; row++)
         {
             int dataRow = _scrollOffset + row;
             Move(0, row);
-            if (dataRow < rows.Count)
+            if (dataRow < _rows.Count)
             {
-                string line = rows[dataRow];
+                string line = _rows[dataRow];
                 Driver.AddStr(line.PadRight(visibleWidth));
             }
             else

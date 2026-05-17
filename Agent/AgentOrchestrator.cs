@@ -113,6 +113,7 @@ public class AgentOrchestrator
 						case "session":
 							if (args == "new")
 							{
+								SessionService.Save(conversation);
 								conversation = CreateFreshConversation(conversation.Role);
 								_transport.Status("New session started.");
 							}
@@ -121,6 +122,7 @@ public class AgentOrchestrator
 								BeastSession? loaded = SessionService.Load(args);
 								if (loaded != null)
 								{
+									SessionService.Save(conversation);
 									conversation = loaded;
 									_transport.Status("Switched to session: " + loaded.DisplayName);
 								}

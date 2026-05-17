@@ -97,7 +97,9 @@ public class BeastApp : IDisposable
 
     private void SendPrompt(string text)
     {
-        if (_docker == null)
+        // _transport is assigned last in LaunchAgentAsync, after _docker and _stdio are both ready.
+        // Checking _transport ensures we don't send before the container is fully initialized.
+        if (_transport == null)
         {
             SetStatus("[not connected]");
             return;
@@ -105,7 +107,7 @@ public class BeastApp : IDisposable
 
         try
         {
-            _docker.SendAsync(text).GetAwaiter().GetResult();
+            _docker!.SendAsync(text).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {

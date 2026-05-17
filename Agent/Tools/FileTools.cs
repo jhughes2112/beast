@@ -198,7 +198,7 @@ public static class FileTools
 							int currentLine = 0;
 							bool hitMaxLines = false;
 
-							for (;;)
+							for (; ; )
 							{
 								currentLine++;
 
@@ -250,7 +250,7 @@ public static class FileTools
 
 								for (int i = 0; i < readLines.Count; i++)
 								{
-                                    byte hash = ComputeLineHashByte(readLines[i]);
+									byte hash = ComputeLineHashByte(readLines[i]);
 									sb.AppendLine($"{startLine + i,6}:{hash:x2}\t{readLines[i]}");
 								}
 
@@ -411,7 +411,7 @@ public static class FileTools
 
 
 
-    [Description("""
+	[Description("""
 		Apply multiple line-anchored edits to a file. The edits parameter is a JSON string representing an ordered array of operations. Each operation is one of:
 		- { "replace_lines": { "start_anchor": "<line>:<hh>", "end_anchor": "<line>:<hh>", "new_text": "..." } }
 		- { "insert_after": { "anchor": "<line>:<hh>", "new_text": "..." } }
@@ -426,7 +426,7 @@ public static class FileTools
 		""")]
 	public static async Task<ToolResult> EditFileAsync(
 		[Description("Absolute path to the file to modify.")] string filePath,
-		[Description("A JSON string encoding an ordered array of edit operations (see tool description)." )] string edits,
+		[Description("A JSON string encoding an ordered array of edit operations (see tool description).")] string edits,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -462,6 +462,13 @@ public static class FileTools
 					try
 					{
 						string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
+						bool trailingNewline = fileContent.EndsWith("\n");
+						string[] fileLines = SplitLinesPreserveEmpty(fileContent);
+						// SplitLinesPreserveEmpty leaves a trailing "" for files ending with \n; strip it so line
+						// numbers match expectations and we re-add the newline on write via trailingNewline.
+						int lineCount = (trailingNewline && fileLines.Length > 0) ? fileLines.Length - 1 : fileLines.Length;
+						List<string> linesList = new List<string>(lineCount);
+						for (int li = 0; li < lineCount; li++) linesList.Add(fileLines[li]);
 
 						JsonNode? rootNode;
 						try
@@ -486,10 +493,7 @@ public static class FileTools
 							return result;
 						}
 
-						string[] fileLines = await File.ReadAllLinesAsync(fullPath, cts.Token);
-						List<string> linesList = new List<string>(fileLines);
-
-	                    // Build operations list preserving input order. Collect parse errors instead of returning early.
+						// Build operations list preserving input order. Collect parse errors instead of returning early.
 						List<Operation> operations = new List<Operation>();
 						List<string> parseErrors = new List<string>();
 						int idx = 0;
@@ -595,7 +599,7 @@ public static class FileTools
 									result = new ToolResult($"Error: Operation {op.OriginalIndex}: anchor line numbers out of range.", false);
 									return result;
 								}
-                                byte actualStart = ComputeLineHashByte(linesList[op.StartLine - 1]);
+								byte actualStart = ComputeLineHashByte(linesList[op.StartLine - 1]);
 								byte actualEnd = ComputeLineHashByte(linesList[op.EndLine - 1]);
 								if (actualStart != op.StartHash)
 								{
@@ -613,7 +617,7 @@ public static class FileTools
 									result = new ToolResult($"Error: Operation {op.OriginalIndex}: anchor line number out of range.", false);
 									return result;
 								}
-                                byte actual = ComputeLineHashByte(linesList[op.AnchorLine - 1]);
+								byte actual = ComputeLineHashByte(linesList[op.AnchorLine - 1]);
 								if (actual != op.AnchorHash)
 								{
 									mismatchedLines.Add(op.AnchorLine);
@@ -632,7 +636,7 @@ public static class FileTools
 								int idx0 = lineNo - 1;
 								if (idx0 >= 0 && idx0 < linesList.Count)
 								{
-                                    byte h = ComputeLineHashByte(linesList[idx0]);
+									byte h = ComputeLineHashByte(linesList[idx0]);
 									sbErr.AppendLine($"{lineNo,6}:{h:x2}\t{linesList[idx0]}");
 								}
 							}
@@ -673,7 +677,7 @@ public static class FileTools
 
 						// Rebuild and write
 						string newWorking = string.Join(Environment.NewLine, linesList);
-						if (fileContent.EndsWith("\n") && !newWorking.EndsWith("\n")) newWorking += Environment.NewLine;
+						if (trailingNewline && !newWorking.EndsWith("\n")) newWorking += Environment.NewLine;
 						await File.WriteAllTextAsync(fullPath, newWorking, cts.Token);
 						result = new ToolResult($"File edited: {filePath} ({operations.Count} operation(s) applied)", false);
 					}

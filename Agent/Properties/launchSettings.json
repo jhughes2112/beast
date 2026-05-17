@@ -1,13 +1,13 @@
 {
-  "profiles": {
-    "Beast": {
-      "commandName": "Project",
-      "workingDirectory": "D:\\kanbeast"
-    },
-    "BeastTest": {
-      "commandName": "Project",
-      "commandLineArgs": "--test",
-      "workingDirectory": "D:\\kanbeast"
-    }
-  }
+	"profiles": {
+		"Beast": {
+			"commandName": "Project",
+			"workingDirectory": "D:\\beast"
+		},
+		"BeastTest": {
+			"commandName": "Project",
+			"commandLineArgs": "--test",
+			"workingDirectory": "D:\\beast"
+		}
+	}
 }
