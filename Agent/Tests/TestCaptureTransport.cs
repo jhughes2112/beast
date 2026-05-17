@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -30,21 +29,5 @@ public class TestCaptureTransport : IFramedTransport
             return Task.FromResult<string?>(_pendingReads.Dequeue());
         }
         return Task.FromResult<string?>(null);
-    }
-
-    // Collect everything sent so far as a formatted test report header.
-    public string BuildReport(TestContext ctx)
-    {
-        StringBuilder sb = new StringBuilder();
-        sb.AppendLine($"=== Test Report ===");
-        sb.AppendLine($"Passed: {ctx.Passed}   Failed: {ctx.Failed}");
-        sb.AppendLine();
-
-        foreach ((FrameType type, string text) in _sent)
-        {
-            sb.AppendLine($"[{type}] {text}");
-        }
-
-        return sb.ToString();
     }
 }

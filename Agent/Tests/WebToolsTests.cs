@@ -6,13 +6,11 @@ public static class WebToolsTests
 {
     public static void Test(TestContext ctx)
     {
-        Console.WriteLine("  WebToolsTests");
+        ctx.Log("  WebToolsTests");
 
         TestStripHtmlTags(ctx);
 
-        // Web search integration test requires a configured LLM provider with API key.
-        // Skipped in standalone test mode.
-        Console.WriteLine("  WebToolsTests: skipping web search test (no LLM proxy configured)");
+        ctx.Log("  WebToolsTests: skipping web search test (no LLM proxy configured)");
     }
 
     private static void TestStripHtmlTags(TestContext ctx)

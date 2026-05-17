@@ -8,6 +8,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly List<string> _agentSwitches;
     private readonly string? _initialPrompt;
 
+    private CancellationTokenSource? _cts;
     private ConversationModel? _model;
     private AgentTransport? _transport;
     private DockerContext? _docker;
@@ -25,16 +26,22 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
     public async Task<int> Run()
     {
-        if (_initialPrompt != null)
-            return await RunConsole();
+        _cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (sender, e) =>
+        {
+            e.Cancel = true;
+            _cts.Cancel();
+        };
 
-        RunTui();
+        if (_initialPrompt != null || _agentSwitches.Count > 0)
+            return await RunConsole(_cts.Token);
+
+        RunTui(_cts.Token);
         return 0;
     }
 
-    private async Task<int> RunConsole()
+    private async Task<int> RunConsole(CancellationToken cancellationToken)
     {
-        using CancellationTokenSource cts = new CancellationTokenSource();
         ConversationModel model = new ConversationModel();
         int exitCode = 0;
 
@@ -51,7 +58,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
             await docker.RemoveContainerByNameAsync(containerName);
             containerId = await docker.LaunchContainerAsync("beastagent", containerName, new List<string>());
 
-            transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"));
+            transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"), () =>
+            {
+                Console.Error.WriteLine("[beast] Agent disconnected.");
+                _cts?.Cancel();
+            });
             transport.Start(docker);
 
             // Wire up model updates to print to stdout.
@@ -83,7 +94,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             // then wait a bit more for any trailing output.
             int lastCount = 0;
             int idleTicks = 0;
-            while (!cts.IsCancellationRequested)
+            while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(500);
                 int currentCount = model.Messages.Count;
@@ -124,11 +135,14 @@ public class BeastApp : IDisposable, IAsyncDisposable
         return exitCode;
     }
 
-    private void RunTui()
+    private void RunTui(CancellationToken cancellationToken)
     {
         Application.Init();
 
         _model = new ConversationModel();
+
+        // When Ctrl+C fires, stop the TUI event loop cleanly.
+        cancellationToken.Register(() => Application.RequestStop());
 
         Toplevel top = Application.Top;
         top.ColorScheme = Colors.Base;
@@ -233,7 +247,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 containerName,
                 new List<string>());
 
-            _transport = new AgentTransport(_model!, SetStatus);
+            _transport = new AgentTransport(_model!, SetStatus, () =>
+            {
+                SetStatus("Agent disconnected.");
+                _cts?.Cancel();
+            });
             _transport.Start(_docker);
 
             SetStatus("Connected.");
@@ -275,6 +293,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     {
         _transport?.Dispose();
         _docker?.Dispose();
+        _cts?.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -285,5 +304,6 @@ public class BeastApp : IDisposable, IAsyncDisposable
             try { await _docker.StopAndRemoveContainerAsync(_containerId); } catch { }
         }
         _docker?.Dispose();
+        _cts?.Dispose();
     }
 }

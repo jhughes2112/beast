@@ -12,7 +12,7 @@ public static class LlmServiceTests
 {
 	public static void Test(TestContext ctx)
 	{
-		Console.WriteLine("  LlmServiceTests");
+		ctx.Log("  LlmServiceTests");
 
 		LlmService service = BuildTestService();
 		List<Tool> tools = BuildTestTools();

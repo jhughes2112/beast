@@ -7,7 +7,7 @@ public static class SearchToolsTests
 {
 	public static void Test(TestContext ctx)
 	{
-		Console.WriteLine("  SearchToolsTests");
+		ctx.Log("  SearchToolsTests");
 
 		string tempDir = Path.Combine(Path.GetTempPath(), $"kanbeast_search_{Guid.NewGuid():N}");
 		Directory.CreateDirectory(tempDir);

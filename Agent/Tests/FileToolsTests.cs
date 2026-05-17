@@ -6,7 +6,7 @@ public static class FileToolsTests
 {
 	public static void Test(TestContext ctx)
 	{
-		Console.WriteLine("  FileToolsTests");
+		ctx.Log("  FileToolsTests");
 
 		string tempDir = Path.Combine(Path.GetTempPath(), $"kanbeast_test_{Guid.NewGuid():N}");
 		Directory.CreateDirectory(tempDir);

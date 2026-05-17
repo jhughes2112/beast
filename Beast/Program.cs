@@ -4,6 +4,7 @@ public class Program
     public static async Task<int> Main(string[] args)
     {
         bool showHelp = false;
+        bool runBeastTests = false;
         List<string> agentSwitches = new List<string>();
         string? prompt = null;
 
@@ -14,6 +15,10 @@ public class Program
             if (arg == "--help" || arg == "-h")
             {
                 showHelp = true;
+            }
+            else if (arg == "--test")
+            {
+                runBeastTests = true;
             }
             else if (arg == "-p" || arg == "--prompt")
             {
@@ -47,6 +52,15 @@ public class Program
             return 0;
         }
 
+        if (runBeastTests)
+        {
+            Console.WriteLine("=== Running Beast Tests ===");
+            TestContext ctx = new TestContext(new ConsoleTransport());
+            TransportTests.Test(ctx);
+            Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
+            return ctx.Failed > 0 ? 1 : 0;
+        }
+
         await using BeastApp app = new BeastApp("beastagent", agentSwitches, prompt);
         return await app.Run();
     }
@@ -61,6 +75,7 @@ public class Program
         Console.WriteLine("Options:");
         Console.WriteLine("  <switch>          Any command switch forwarded to the agent container");
         Console.WriteLine("  -p <text>         Prompt text; everything after -p is treated as the prompt");
+        Console.WriteLine("  --test            Run Beast transport tests locally");
         Console.WriteLine("  --help            Show this help");
     }
 }

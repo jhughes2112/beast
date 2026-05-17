@@ -384,39 +384,20 @@ public class AgentOrchestrator
 
 	// ---- Tests ----
 
-	private void RunTests(string? reportPath)
+	private void RunTests(string? filter)
 	{
-		string outputPath = string.IsNullOrWhiteSpace(reportPath) ? "/workspace/test.txt" : reportPath.Trim();
-
 		_transport.Status("Running tests...");
 
-		TestContext ctx = new TestContext();
-		TestCaptureTransport capture = new TestCaptureTransport();
+		TestContext ctx = new TestContext(_transport);
 
 		LlmServiceTests.Test(ctx);
 		FileToolsTests.Test(ctx);
 		ShellToolsTests.Test(ctx);
 		WebToolsTests.Test(ctx);
 		SearchToolsTests.Test(ctx);
-		PerModelLlmTests.Test(ctx, _registry, _roleService, _settings, capture);
+		PerModelLlmTests.Test(ctx, _registry, _roleService, _settings);
 
-		string report = capture.BuildReport(ctx);
-
-		try
-		{
-			String dir = System.IO.Path.GetDirectoryName(outputPath) ?? string.Empty;
-			if (!string.IsNullOrEmpty(dir))
-			{
-				System.IO.Directory.CreateDirectory(dir);
-			}
-			System.IO.File.WriteAllText(outputPath, report);
-			_transport.Output($"Test report written to {outputPath}\n\n" + report);
-		}
-		catch (Exception ex)
-		{
-			_transport.Error($"Could not write report to {outputPath}: {ex.Message}");
-			_transport.Output(report);
-		}
+		_transport.Output($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 	}
 
 	// ---- Helpers ----

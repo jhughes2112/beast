@@ -7,7 +7,7 @@ public static class ShellToolsTests
 {
 	public static void Test(TestContext ctx)
 	{
-		Console.WriteLine("  ShellToolsTests");
+		ctx.Log("  ShellToolsTests");
 
 		string tempDir = Path.Combine(Path.GetTempPath(), $"kanbeast_shell_{Guid.NewGuid():N}");
 		Directory.CreateDirectory(tempDir);

@@ -2,14 +2,26 @@ using System.Reflection;
 using System;
 
 
-// Lightweight in-process test harness. Run with --test before any other initialization.
+// Lightweight in-process test harness.
 public class TestContext
 {
+	private readonly IFramedTransport _transport;
 	private int _passed;
 	private int _failed;
 
 	public int Passed => _passed;
 	public int Failed => _failed;
+
+	public TestContext(IFramedTransport transport)
+	{
+		_transport = transport;
+	}
+
+	// Log an informational line (section headers, skip notices, etc.).
+	public void Log(string text)
+	{
+		_transport.Output(text);
+	}
 
 	public void Assert(bool condition, string testName)
 	{
@@ -20,7 +32,7 @@ public class TestContext
 		else
 		{
 			_failed++;
-			Console.WriteLine($"  FAIL: {testName}");
+			_transport.Output($"  FAIL: {testName}");
 		}
 	}
 
@@ -59,30 +71,4 @@ public static class Reflect
 	}
 }
 
-public static class TestRunner
-{
-	public static int RunAll()
-	{
-		// For integration tests, load settings from standard locations.
-		// These are only used for web search API key checks.
-		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
-		RoleService roleService = new RoleService(Environment.CurrentDirectory);
-		LlmRegistry registry = new LlmRegistry();
-		registry.LoadFromConfigs(settingsService, roleService);
 
-		Console.WriteLine("=== Running Tests ===");
-		TestContext ctx = new TestContext();
-		TestCaptureTransport captureTransport = new TestCaptureTransport();
-
-		LlmServiceTests.Test(ctx);
-		FileToolsTests.Test(ctx);
-		ShellToolsTests.Test(ctx);
-		WebToolsTests.Test(ctx);
-		SearchToolsTests.Test(ctx);
-		PerModelLlmTests.Test(ctx, registry, roleService, settingsService, captureTransport);
-
-		Console.WriteLine($"=== Tests Complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
-		int exitCode = ctx.Failed > 0 ? 1 : 0;
-		return exitCode;
-	}
-}

@@ -8,42 +8,42 @@ using System.Threading.Tasks;
 // configured for each role. Tests are skipped gracefully when API keys or models are absent.
 public static class PerModelLlmTests
 {
-    public static void Test(TestContext ctx, LlmRegistry registry, RoleService roleService, SettingsService settings, TestCaptureTransport captureTransport)
+    public static void Test(TestContext ctx, LlmRegistry registry, RoleService roleService, SettingsService settings)
     {
-        Console.WriteLine("  PerModelLlmTests");
+        ctx.Log("  PerModelLlmTests");
 
         List<LLMRole> roles = new List<LLMRole>(roleService.Roles.Values);
         if (roles.Count == 0)
         {
-            Console.WriteLine("    SKIP: no roles configured");
+            ctx.Log("    SKIP: no roles configured");
             return;
         }
 
         foreach (LLMRole role in roles)
         {
-            RunRoleTests(ctx, registry, settings, captureTransport, role);
+            RunRoleTests(ctx, registry, settings, role);
         }
     }
 
-    private static void RunRoleTests(TestContext ctx, LlmRegistry registry, SettingsService settings, TestCaptureTransport captureTransport, LLMRole role)
+    private static void RunRoleTests(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role)
     {
-        Console.WriteLine($"    Role: {role.Name}");
+        ctx.Log($"    Role: {role.Name}");
 
         if (role.Models.Count == 0)
         {
-            Console.WriteLine($"      SKIP: role '{role.Name}' has no model names");
+            ctx.Log($"      SKIP: role '{role.Name}' has no model names");
             return;
         }
 
         foreach (string modelId in role.Models)
         {
-            RunSingleModelTest(ctx, registry, settings, captureTransport, role, modelId);
+            RunSingleModelTest(ctx, registry, settings, role, modelId);
         }
     }
 
-    private static void RunSingleModelTest(TestContext ctx, LlmRegistry registry, SettingsService settings, TestCaptureTransport captureTransport, LLMRole role, string modelId)
+    private static void RunSingleModelTest(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role, string modelId)
     {
-        Console.WriteLine($"      Model: {modelId}");
+        ctx.Log($"      Model: {modelId}");
 
         LlmService? service = null;
         try
@@ -51,32 +51,32 @@ public static class PerModelLlmTests
             // Check if the model is registered and has an API key.
             if (!registry.HasModel(modelId))
             {
-                Console.WriteLine($"        SKIP: model '{modelId}' not in registry (no config or API key?)");
+                ctx.Log($"        SKIP: model '{modelId}' not in registry (no config or API key?)");
                 return;
             }
 
             service = registry.GetServiceById(modelId);
             if (service == null)
             {
-                Console.WriteLine($"        SKIP: model '{modelId}' service not found");
+                ctx.Log($"        SKIP: model '{modelId}' service not found");
                 return;
             }
 
             if (!service.IsAvailable)
             {
-                Console.WriteLine($"        SKIP: model '{modelId}' is currently unavailable");
+                ctx.Log($"        SKIP: model '{modelId}' is currently unavailable");
                 return;
             }
 
             if (string.IsNullOrEmpty(service.Model.ApiKey))
             {
-                Console.WriteLine($"        SKIP: model '{modelId}' has no API key");
+                ctx.Log($"        SKIP: model '{modelId}' has no API key");
                 return;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"        SKIP: pre-check error for '{modelId}': {ex.Message}");
+            ctx.Log($"        SKIP: pre-check error for '{modelId}': {ex.Message}");
             return;
         }
 
@@ -104,18 +104,15 @@ public static class PerModelLlmTests
 
             ctx.Assert(result.Success, $"PerModel [{role.Name}/{modelId}]: LLM call succeeded");
             ctx.Assert(gotResponse, $"PerModel [{role.Name}/{modelId}]: response contains PING");
-
-            captureTransport.Send(FrameType.Status, $"PASS [{role.Name}/{modelId}]");
+            ctx.Log($"        PASS [{role.Name}/{modelId}]");
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine($"        SKIP: model '{modelId}' timed out after 30s");
-            captureTransport.Send(FrameType.Status, $"TIMEOUT [{role.Name}/{modelId}]");
+            ctx.Log($"        TIMEOUT [{role.Name}/{modelId}]: timed out after 30s");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"        SKIP: model '{modelId}' threw: {ex.Message}");
-            captureTransport.Send(FrameType.Status, $"ERROR [{role.Name}/{modelId}]: {ex.Message}");
+            ctx.Log($"        ERROR [{role.Name}/{modelId}]: {ex.Message}");
         }
     }
 }

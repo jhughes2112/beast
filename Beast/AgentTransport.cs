@@ -11,6 +11,7 @@ public class AgentTransport : IDisposable
 {
     private readonly ConversationModel _model;
     private readonly Action<string> _onStatus;
+    private readonly Action _onDisconnected;
     private readonly FrameParser _parser = new FrameParser();
 
     private int _nextIndex = 0;
@@ -21,10 +22,11 @@ public class AgentTransport : IDisposable
     private CancellationTokenSource? _cts;
     private Task? _readTask;
 
-    public AgentTransport(ConversationModel model, Action<string> onStatus)
+    public AgentTransport(ConversationModel model, Action<string> onStatus, Action onDisconnected)
     {
         _model = model;
         _onStatus = onStatus;
+        _onDisconnected = onDisconnected;
     }
 
     public void Start(DockerContext docker)
@@ -66,6 +68,8 @@ public class AgentTransport : IDisposable
                 ProcessFrame(type, content);
             }
         }
+
+        _onDisconnected();
     }
 
     private void ProcessFrame(FrameType type, string content)
