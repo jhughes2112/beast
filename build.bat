@@ -24,17 +24,17 @@ REM Configuration
 set BUILD_CONFIG=Release
 set BEAST_PROJECT=Beast\Beast.csproj
 set AGENT_PROJECT=Agent\Agent.csproj
-set OUTPUT_DIR=bin\release
+set OUTPUT_DIR=build\bin\release
 
 REM Clean previous builds
 echo Cleaning previous builds...
 if exist %OUTPUT_DIR% rmdir /s /q %OUTPUT_DIR%
-dotnet clean KanBeast.slnx -c %BUILD_CONFIG% 2>nul
+dotnet clean Beast.slnx -c %BUILD_CONFIG% 2>nul
 echo.
 
 REM Restore NuGet packages
 echo Restoring NuGet packages...
-dotnet restore KanBeast.slnx
+dotnet restore Beast.slnx
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Failed to restore packages
     exit /b 1
