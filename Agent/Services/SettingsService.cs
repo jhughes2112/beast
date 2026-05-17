@@ -74,33 +74,20 @@ public class SettingsService
 			LastSessionId = null,
 			Providers = new List<ProviderConfig>
 			{
+				// OpenRouter — multi-model gateway
 				new ProviderConfig
 				{
-					BaseUrl = "https://openrouter.ai/api/v1",
-					ApiKey = "YOUR_API_KEY_HERE",
+					BaseUrl = "https://openrouter.ai/api/v1/chat/completions",
+					ApiKey = "YOUR_OPENROUTER_KEY_HERE",
 					Models = new List<ModelConfig>
 					{
 						new ModelConfig
 						{
-							Id = "openai/gpt-4o-mini",
-							Name = "GPT-4o Mini",
+							Id = "baidu/cobuddy:free",
+							Name = "baidu/cobuddy:free",
 							Enabled = false,
-							ContextWindow = 128000,
-							Cost = new CostConfig { Input = 0.15m, Output = 0.60m },
-							Extras = new Dictionary<string, string>
-							{
-								{ "temperature", "" },
-								{ "top_p", "" },
-								{ "frequency_penalty", "" },
-							}
-						},
-						new ModelConfig
-						{
-							Id = "anthropic/claude-sonnet-4-5",
-							Name = "Claude Sonnet 4.5",
-							Enabled = false,
-							ContextWindow = 200000,
-							Cost = new CostConfig { Input = 3.00m, Output = 15.00m },
+							ContextWindow = 131078,
+							Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
 							Extras = new Dictionary<string, string>
 							{
 								{ "temperature", "" },
@@ -123,19 +110,41 @@ public class SettingsService
 						{ "or_models", "" },
 					}
 				},
+				// Anthropic — direct API
 				new ProviderConfig
 				{
-					BaseUrl = "https://api.openai.com/v1",
+					BaseUrl = "https://api.anthropic.com/v1/messages",
+					ApiKey = "YOUR_ANTHROPIC_KEY_HERE",
+					Models = new List<ModelConfig>
+					{
+						new ModelConfig
+						{
+							Id = "claude-sonnet-4-5",
+							Name = "Claude Sonnet 4.5",
+							Enabled = false,
+							ContextWindow = 200000,
+							Cost = new CostConfig { Input = 3.00m, Output = 15.00m, CacheWrite = 0.0m, CacheRead = 0.0m },
+							Extras = new Dictionary<string, string>
+							{
+							}
+						}
+					},
+					Extras = new Dictionary<string, string>()
+				},
+				// OpenAI — direct API (Responses protocol)
+				new ProviderConfig
+				{
+					BaseUrl = "https://api.openai.com/v1/responses",
 					ApiKey = "YOUR_OPENAI_KEY_HERE",
 					Models = new List<ModelConfig>
 					{
 						new ModelConfig
 						{
-							Id = "gpt-4o-mini",
-							Name = "GPT-4o Mini",
+							Id = "gpt-5-nano",
+							Name = "GPT-5 Nano",
 							Enabled = false,
-							ContextWindow = 128000,
-							Cost = new CostConfig { Input = 0.15m, Output = 0.60m },
+							ContextWindow = 400000,
+							Cost = new CostConfig { Input = 0.05m, Output = 0.40m, CacheRead = 0.005m, CacheWrite = 0.0m },
 							Extras = new Dictionary<string, string>
 							{
 								{ "temperature", "" },
@@ -151,19 +160,37 @@ public class SettingsService
 						{ "store", "" },
 						{ "metadata", "" },
 					}
+				},
+				// Ollama — local models
+				new ProviderConfig
+				{
+					BaseUrl = "http://localhost:11434/v1/chat/completions",
+					ApiKey = "ollama",
+					Models = new List<ModelConfig>
+					{
+						new ModelConfig
+						{
+							Id = "qwen3:4b",
+							Name = "Qwen3 4B",
+							Enabled = false,
+							ContextWindow = 32768,
+							Cost = new CostConfig { Input = 0.0m, Output = 0.0m },
+							Extras = new Dictionary<string, string>()
+						}
+					},
+					Extras = new Dictionary<string, string>()
 				}
 			},
 			WebSearch = new WebSearchConfig
 			{
 				Openrouter = new OpenrouterSearchConfig
 				{
-					Endpoint = "https://openrouter.ai/api/v1",
-					ApiKey = "YOUR_API_KEY_HERE",
+					Endpoint = "https://openrouter.ai/api/v1/chat/completions",
+					ApiKey = "YOUR_OPENROUTER_KEY_HERE",
 					Enabled = false,
-					Model = "openai/gpt-4o-mini"
+					Model = "baidu/cobuddy:free"
 				}
 			}
 		};
 	}
 }
-

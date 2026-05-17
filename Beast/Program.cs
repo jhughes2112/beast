@@ -28,7 +28,11 @@ public class Program
             else if (arg.StartsWith("/") || arg.StartsWith("-"))
             {
                 // New switch: forward to the agent container.
-                agentSwitches.Add(arg);
+                // Translate leading double-dash to slash so the agent recognizes commands like --test -> /test.
+                string sw = arg;
+                if (sw.StartsWith("--"))
+                    sw = "/" + sw.Substring(2);
+                agentSwitches.Add(sw);
             }
             else if (agentSwitches.Count > 0)
             {

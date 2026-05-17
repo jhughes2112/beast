@@ -26,7 +26,6 @@ public class DockerContext : IDisposable
         {
             Image = image,
             Name = name,
-            Entrypoint = entrypoint,
             AttachStdin = true,
             AttachStdout = true,
             AttachStderr = true,
@@ -43,6 +42,11 @@ public class DockerContext : IDisposable
                 }
             }
         };
+
+        if (entrypoint.Count > 0)
+        {
+            createParams.Entrypoint = entrypoint;
+        }
 
         Console.Error.WriteLine($"[docker] Creating container {name} from image {image}");
         CreateContainerResponse response = await _dockerClient.Containers.CreateContainerAsync(createParams);
