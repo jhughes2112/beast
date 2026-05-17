@@ -223,7 +223,7 @@ public class AgentOrchestrator
 			}
 		}
 
-		return new BeastSession(Guid.NewGuid().ToString(), roleName, string.Empty);
+		return BeastSession.CreateNew(Guid.NewGuid().ToString(), roleName, string.Empty);
 	}
 
 	// ---- LLM execution ----
@@ -375,7 +375,7 @@ public class AgentOrchestrator
 		LLMRole? activeRole = string.IsNullOrEmpty(conversation.Role) ? null : _roleService.GetRole(conversation.Role);
 		if (activeRole != null)
 		{
-			foreach (string modelId in activeRole.ModelNames)
+			foreach (string modelId in activeRole.Models)
 			{
 				candidates.Add("/model " + modelId);
 			}

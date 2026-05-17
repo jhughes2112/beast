@@ -29,13 +29,13 @@ public static class PerModelLlmTests
     {
         Console.WriteLine($"    Role: {role.Name}");
 
-        if (role.ModelNames.Count == 0)
+        if (role.Models.Count == 0)
         {
             Console.WriteLine($"      SKIP: role '{role.Name}' has no model names");
             return;
         }
 
-        foreach (string modelId in role.ModelNames)
+        foreach (string modelId in role.Models)
         {
             RunSingleModelTest(ctx, registry, settings, captureTransport, role, modelId);
         }
@@ -84,7 +84,7 @@ public static class PerModelLlmTests
         try
         {
             TestCaptureTransport localTransport = new TestCaptureTransport();
-            BeastSession session = new BeastSession(Guid.NewGuid().ToString("N"), role.Name, $"test-{modelId}");
+            BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, $"test-{modelId}");
             session.SetSystemPrompt(role.SystemPrompt);
             session.AddUserMessage("Reply with exactly: PING");
 

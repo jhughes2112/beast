@@ -88,16 +88,23 @@ public class BeastSession
     [JsonPropertyName("totalCost")]
     public decimal TotalCost { get; set; }
 
-    // Constructor used both for new sessions and for JSON deserialization.
-    // When creating a new session, Messages will contain just the system prompt slot.
-    // When deserializing, the Messages property is populated from JSON after construction.
     [JsonConstructor]
-    public BeastSession(string id, string role, string displayName)
+    public BeastSession(string id, string displayName, string workflow, string model, List<ConversationMessage> messages, string role, TokenUsageInfo? lastTokenUsage, decimal totalCost)
     {
         Id = id;
-        Role = role;
         DisplayName = displayName;
-        Messages.Add(new ConversationMessage { Role = "system", Content = string.Empty });
+        Workflow = workflow;
+        Model = model;
+        Messages = messages;
+        Role = role;
+        LastTokenUsage = lastTokenUsage;
+        TotalCost = totalCost;
+    }
+
+    public static BeastSession CreateNew(string id, string role, string displayName)
+    {
+        List<ConversationMessage> messages = new List<ConversationMessage> { new ConversationMessage { Role = "system", Content = string.Empty } };
+        return new BeastSession(id, displayName, string.Empty, string.Empty, messages, role, null, 0m);
     }
 
     public int GetUsedTokenCount()

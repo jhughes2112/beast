@@ -60,16 +60,11 @@ public class ConversationModel
     // if the type changes the mode default is re-applied.
     public void Update(int index, FrameType type, string content)
     {
-        if (index > _messages.Count)
-        {
-            throw new System.ArgumentOutOfRangeException(nameof(index), $"Update called with index {index} but only {_messages.Count} messages exist; indices must be sequential.");
-        }
+        bool isNew = _messages.Count <= index;
 
-        bool isNew = _messages.Count == index;
-
-        if (isNew)
+        while (_messages.Count <= index)
         {
-            _messages.Add(new DisplayMessage(index, type, ""));
+            _messages.Add(new DisplayMessage(_messages.Count, FrameType.Output, ""));
         }
 
         DisplayMessage msg = _messages[index];

@@ -21,7 +21,104 @@ public class BeastApp : IDisposable
         _initialPrompt = initialPrompt;
     }
 
-    public void Run()
+    public int Run()
+    {
+        if (_initialPrompt != null)
+            return RunConsole();
+
+        RunTui();
+        return 0;
+    }
+
+    private int RunConsole()
+    {
+        using CancellationTokenSource cts = new CancellationTokenSource();
+        ConversationModel model = new ConversationModel();
+        int exitCode = 0;
+
+        DockerContext? docker = null;
+        AgentTransport? transport = null;
+        string? containerId = null;
+
+        try
+        {
+            Console.Error.WriteLine("[beast] Connecting to agent...");
+            docker = new DockerContext();
+            string containerName = $"beastagent_{Guid.NewGuid():N}";
+
+            docker.RemoveContainerByNameAsync(containerName).GetAwaiter().GetResult();
+            containerId = docker.LaunchContainerAsync("beastagent", containerName, new List<string>()).GetAwaiter().GetResult();
+
+            transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"));
+            transport.Start(docker);
+
+            // Wire up model updates to print to stdout
+            model.MessageUpdated += msg =>
+            {
+                if (msg.Type == FrameType.Output && !string.IsNullOrEmpty(msg.Content))
+                {
+                    Console.WriteLine(msg.Content);
+                }
+                else if (msg.Type == FrameType.Error)
+                {
+                    Console.Error.WriteLine($"[error] {msg.Content}");
+                }
+                else if (msg.Type == FrameType.Status)
+                {
+                    Console.Error.WriteLine($"[status] {msg.Content}");
+                }
+            };
+
+            Console.Error.WriteLine("[beast] Connected. Sending prompt...");
+            docker.SendAsync(_initialPrompt!).GetAwaiter().GetResult();
+
+            // Wait for the conversation to finish (no more new messages for a while)
+            // Simple approach: wait for the model to have at least one assistant response,
+            // then wait a bit more for any trailing output.
+            int lastCount = 0;
+            int idleTicks = 0;
+            while (!cts.IsCancellationRequested)
+            {
+                Thread.Sleep(500);
+                int currentCount = model.Messages.Count;
+                if (currentCount > lastCount)
+                {
+                    lastCount = currentCount;
+                    idleTicks = 0;
+                }
+                else
+                {
+                    idleTicks++;
+                    // After 10 idle ticks (5 seconds) with no new messages, check if
+                    // the last message is from the assistant (meaning it's done)
+                    if (idleTicks >= 10 && lastCount > 0)
+                    {
+                        DisplayMessage lastMsg = model.Messages[model.Messages.Count - 1];
+                        if (lastMsg.Type == FrameType.StreamEnd || lastMsg.Type == FrameType.Output)
+                            break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[beast] Error: {ex.Message}");
+            exitCode = 1;
+        }
+        finally
+        {
+            transport?.Dispose();
+            if (containerId != null && docker != null)
+            {
+                try { docker.StopAndRemoveContainerAsync(containerId).GetAwaiter().GetResult(); } catch { }
+            }
+            docker?.Dispose();
+        }
+
+        return exitCode;
+    }
+
+    private void RunTui()
     {
         Application.Init();
 
@@ -102,16 +199,17 @@ public class BeastApp : IDisposable
         if (_transport == null)
         {
             SetStatus("[not connected]");
-            return;
         }
-
-        try
+        else
         {
-            _docker!.SendAsync(text).GetAwaiter().GetResult();
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"[send error] {ex.Message}");
+            try
+            {
+                _docker!.SendAsync(text).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"[send error] {ex.Message}");
+            }
         }
     }
 

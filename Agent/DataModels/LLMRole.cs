@@ -8,13 +8,14 @@ using System.Text.Json.Serialization;
 // and persisted back to roles.json.
 public class LLMRole
 {
+	[JsonPropertyName("name")]
 	public string Name { get; }
 
 	[JsonPropertyName("models")]
-	public List<string> ModelNames { get; }
+	public List<string> Models { get; }
 
 	[JsonPropertyName("tools")]
-	public List<string> ToolNames { get; }
+	public List<string> Tools { get; }
 
 	[JsonPropertyName("system_prompt")]
 	public string SystemPrompt { get; }
@@ -23,8 +24,8 @@ public class LLMRole
 	public LLMRole(string name, List<string> models, List<string> tools, string systemPrompt)
 	{
 		Name = name;
-		ModelNames = models;
-		ToolNames = tools;
+		Models = models;
+		Tools = tools;
 		SystemPrompt = systemPrompt;
 	}
 

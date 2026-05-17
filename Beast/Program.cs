@@ -51,8 +51,7 @@ public class Program
         }
 
         using BeastApp app = new BeastApp("beastagent", prompt);
-        app.Run();
-        return 0;
+        return app.Run();
     }
 
     private static void PrintHelp()

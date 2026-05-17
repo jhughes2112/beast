@@ -245,35 +245,35 @@ public static class LlmServiceTests
 		// Valid nested error body with X-RateLimit-Reset.
 		long futureEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60;
 		string validBody = $"{{\"error\":{{\"metadata\":{{\"headers\":{{\"X-RateLimit-Reset\":\"{futureEpoch}\"}}}}}}}}";
-		int validResult = (int)Reflect.Instance(service, "ParseRateLimitSecondsFromErrorBody", types, [validBody])!;
-		ctx.Assert(validResult >= 59 && validResult <= 62, "ParseRateLimitSecondsFromErrorBody: valid body parsed");
+		int validResult = (int)Reflect.Static(typeof(ProtocolHelpers), "ParseRateLimitSecondsFromBody", types, [validBody])!;
+		ctx.Assert(validResult >= 59 && validResult <= 62, "ParseRateLimitSecondsFromBody: valid body parsed");
 
 		// Invalid JSON returns 0.
-		int invalidResult = (int)Reflect.Instance(service, "ParseRateLimitSecondsFromErrorBody", types, ["not json at all"])!;
-		ctx.AssertEqual(0, invalidResult, "ParseRateLimitSecondsFromErrorBody: invalid JSON returns 0");
+		int invalidResult = (int)Reflect.Static(typeof(ProtocolHelpers), "ParseRateLimitSecondsFromBody", types, ["not json at all"])!;
+		ctx.AssertEqual(0, invalidResult, "ParseRateLimitSecondsFromBody: invalid JSON returns 0");
 
 		// Missing nested fields returns 0.
-		int missingResult = (int)Reflect.Instance(service, "ParseRateLimitSecondsFromErrorBody", types, ["{\"error\":{}}"])!;
-		ctx.AssertEqual(0, missingResult, "ParseRateLimitSecondsFromErrorBody: missing fields returns 0");
+		int missingResult = (int)Reflect.Static(typeof(ProtocolHelpers), "ParseRateLimitSecondsFromBody", types, ["{\"error\":{}}"])!;
+		ctx.AssertEqual(0, missingResult, "ParseRateLimitSecondsFromBody: missing fields returns 0");
 	}
 
 	private static void TestTryAdaptToError(TestContext ctx)
 	{
-		LlmService service = BuildTestService();
+		ProtocolChatCompletions protocol = new ProtocolChatCompletions();
 		Type[] types = new Type[] { typeof(HttpResponseMessage), typeof(string) };
 
 		// 400 with parallel_tool_calls triggers adaptation
 		HttpResponseMessage r400 = new HttpResponseMessage(HttpStatusCode.BadRequest);
 		string parallelBody = "{\"error\": \"parallel_tool_calls not supported\"}";
-		bool adapted = (bool)Reflect.Instance(service, "TryAdaptToError", types, new object[] { r400, parallelBody })!;
+		bool adapted = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody })!;
 		ctx.Assert(adapted, "TryAdaptToError: disables parallel_tool_calls on 400");
 
 		// Subsequent call with same error returns false (already disabled)
-		bool second = (bool)Reflect.Instance(service, "TryAdaptToError", types, new object[] { r400, parallelBody })!;
+		bool second = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody })!;
 		ctx.Assert(!second, "TryAdaptToError: already disabled returns false");
 
 		// 400 with upstream_error triggers adaptation
-		LlmService fresh = BuildTestService();
+		ProtocolChatCompletions fresh = new ProtocolChatCompletions();
 		string upstreamBody = "{\"error\": \"upstream_error occurred\"}";
 		bool upstream = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, upstreamBody })!;
 		ctx.Assert(upstream, "TryAdaptToError: disables parallel_tool_calls on upstream_error");

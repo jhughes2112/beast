@@ -44,9 +44,13 @@ public class SettingsService
 		if (bs==null)
 		{
 			bs = CreateDefaultSettings();
+			Settings = bs;
 			SaveSettings();
 		}
-		Settings = bs;
+		else
+		{
+			Settings = bs;
+		}
 		if (string.IsNullOrWhiteSpace(bs.CompactionPrompt))
 			bs.CompactionPrompt = kCompactionPrompt;
 		if (string.IsNullOrWhiteSpace(bs.ContinueMessage))

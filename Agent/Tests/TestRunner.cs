@@ -53,7 +53,7 @@ public static class Reflect
 
 	public static object? Static(Type type, string methodName, Type[] parameterTypes, object[] arguments)
 	{
-		MethodInfo method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Static, null, parameterTypes, null)
+		MethodInfo method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static, null, parameterTypes, null)
 			?? throw new InvalidOperationException($"Static method '{methodName}' not found on {type.Name}");
 		return method.Invoke(null, arguments);
 	}

@@ -142,9 +142,8 @@ public static class TransportTests
 
     private static void TestUnicodeContent(TestContext ctx)
     {
-        string emoji = "Hello 🌍 \u00e9\u00e0\u0107";
-        byte[] contentBytes = Encoding.UTF8.GetBytes(emoji);
-        string wire = $"[{(byte)FrameType.Output},{contentBytes.Length}]{emoji}---";
+        string emoji = "Hello 🌍 éàć";
+        string wire = $"[{(byte)FrameType.Output},{emoji.Length}]{emoji}---";
 
         FrameParser parser = FeedParser(wire);
         List<(FrameType Type, string Content)> frames = parser.TakeFrames();

@@ -67,7 +67,7 @@ public class LlmRegistry
 	public LlmService? GetServiceForRole(LLMRole role, string configId)
 	{
 		LlmService? service = null;
-		if (role.ModelNames.Contains(configId))  // if the current model is in the list, continue using it
+		if (role.Models.Contains(configId))  // if the current model is in the list, continue using it
 		{
 			if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable)
 			{
@@ -76,7 +76,7 @@ public class LlmRegistry
 		}
 		if (service == null)
 		{
-			foreach (string cid in role.ModelNames)  // nope, try them in order
+			foreach (string cid in role.Models)  // nope, try them in order
 			{
 				if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable)
 				{
@@ -110,7 +110,7 @@ public class LlmRegistry
 	{
 		List<Tool> allowed = new();
 
-		foreach (string name in role.ToolNames)
+		foreach (string name in role.Tools)
 		{
 			if (_tools.TryGetValue(name, out Tool? tool))
 			{
