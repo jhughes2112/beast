@@ -57,21 +57,25 @@ public class ProtocolProxy
     {
         if (model.Endpoint.Contains("anthropic.com", StringComparison.OrdinalIgnoreCase))
         {
+            ProtocolChatCompletions.Log($"[probe] anthropic.com endpoint — using Anthropic protocol");
             return new ProtocolAnthropic();
         }
 
         ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(model.ApiKey, model.Endpoint);
+        ProtocolChatCompletions.Log($"[probe] Anthropic: {anthropic.Outcome} — {anthropic.Detail}");
         if (anthropic.Outcome == ProbeOutcome.Supported)
         {
             return new ProtocolAnthropic();
         }
 
         ProbeResult responses = await ProtocolResponses.ProbeAsync(model.ApiKey, model.Endpoint);
+        ProtocolChatCompletions.Log($"[probe] Responses: {responses.Outcome} — {responses.Detail}");
         if (responses.Outcome == ProbeOutcome.Supported)
         {
             return new ProtocolResponses();
         }
 
+        ProtocolChatCompletions.Log($"[probe] Falling back to ChatCompletions");
         return new ProtocolChatCompletions();
     }
 

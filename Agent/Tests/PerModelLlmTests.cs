@@ -90,7 +90,18 @@ public static class PerModelLlmTests
 
             using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             Tool[] tools = registry.GetToolsForRole(role);
-            LlmResult result = service.RunToCompletionAsync(session, tools, 0, localTransport, cts.Token).GetAwaiter().GetResult();
+
+            Action<string> previousLog = ProtocolChatCompletions.Log;
+            ProtocolChatCompletions.Log = line => ctx.Log($"        {line}");
+            LlmResult result;
+            try
+            {
+                result = service.RunToCompletionAsync(session, tools, 0, localTransport, cts.Token).GetAwaiter().GetResult();
+            }
+            finally
+            {
+                ProtocolChatCompletions.Log = previousLog;
+            }
 
             bool gotResponse = false;
             foreach ((FrameType type, string text) in localTransport.Sent)

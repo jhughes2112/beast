@@ -298,7 +298,7 @@ public class ProtocolResponses : IProtocol
         try
         {
             string probeJson = "{\"model\":\"test\",\"input\":\"\",\"max_output_tokens\":1}";
-            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/responses");
+            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpoint);
             req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
             req.Content = new StringContent(probeJson, Encoding.UTF8, "application/json");
 

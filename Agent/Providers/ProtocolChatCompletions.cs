@@ -19,6 +19,9 @@ public class ProtocolChatCompletions : IProtocol
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    // Pluggable logger — tests redirect this to ctx.Log; default writes to stderr.
+    public static Action<string> Log = line => Console.Error.WriteLine(line);
+
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
 
@@ -50,8 +53,8 @@ public class ProtocolChatCompletions : IProtocol
             {
                 httpResponse = await PostAsync(model, request, extraHeaders, extraPayload, cancellationToken);
                     responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-                    Console.WriteLine($"[http] RSP {(int)httpResponse.StatusCode}");
-                    Console.WriteLine(responseBody);
+                    Log($"[http] RSP {(int)httpResponse.StatusCode}");
+                    Log(responseBody);
             }
             catch (OperationCanceledException)
             {
@@ -149,10 +152,10 @@ public class ProtocolChatCompletions : IProtocol
         }
 
         string requestJson = obj.ToJsonString();
-        Console.WriteLine($"[http] POST {url}");
-        Console.WriteLine("[http] >>>");
-        Console.WriteLine(requestJson);
-        Console.WriteLine("[http] <<<");
+        Log($"[http] POST {url}");
+        Log("[http] >>>");
+        Log(requestJson);
+        Log("[http] <<<");
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -187,10 +190,10 @@ public class ProtocolChatCompletions : IProtocol
         }
 
         string requestJson = obj.ToJsonString();
-        Console.WriteLine($"[http] POST {url} (streaming)");
-        Console.WriteLine("[http] >>>");
-        Console.WriteLine(requestJson);
-        Console.WriteLine("[http] <<<");
+        Log($"[http] POST {url} (streaming)");
+        Log("[http] >>>");
+        Log(requestJson);
+        Log("[http] <<<");
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -219,8 +222,8 @@ public class ProtocolChatCompletions : IProtocol
         {
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
-            Console.WriteLine($"[http] RSP {statusCode} (streaming error)");
-            Console.WriteLine(errorBody);
+            Log($"[http] RSP {statusCode} (streaming error)");
+            Log(errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {
