@@ -25,6 +25,7 @@ public class WebSearchOpenrouter
     [Description("Search the web using OpenRouter's web search plugin. The query can be a natural language question or instruction, not just keywords — e.g. 'Show me how to call the Foo API and explain each parameter'.")]
     public async Task<ToolResult> SearchWebAsync(
         [Description("The search query or natural language question to answer using the web.")] string query,
+        ITransportServer transport,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -42,7 +43,7 @@ public class WebSearchOpenrouter
             int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
 
             ProviderCallResult result = await _protocol.ExecuteAsync(
-                _model, messages, new List<ToolDefinition>(), maxTokens, headers, payload, null, cancellationToken);
+                _model, messages, new List<ToolDefinition>(), maxTokens, headers, payload, transport, cancellationToken);
 
             if (result.Outcome == ProviderCallOutcome.Success)
             {

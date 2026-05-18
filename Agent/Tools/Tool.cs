@@ -46,5 +46,5 @@ public class ToolResult
 public class Tool
 {
 	public ToolDefinition Definition { get; set; } = new();
-	public Func<JsonObject, CancellationToken, Task<ToolResult>> Handler { get; set; } = null!;
+	public Func<JsonObject, CancellationToken, ITransportServer, Task<ToolResult>> Handler { get; set; } = null!;
 }

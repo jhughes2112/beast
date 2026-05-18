@@ -40,7 +40,7 @@ public class ProtocolProxy
         _model = model;
     }
 
-    public async Task<ProviderCallResult> ExecuteAsync(List<ConversationMessage> messages, List<ToolDefinition> tools, int maxCompletionTokens, IStreamingMessage? stream, CancellationToken cancellationToken)
+    public async Task<ProviderCallResult> ExecuteAsync(List<ConversationMessage> messages, List<ToolDefinition> tools, int maxCompletionTokens, ITransportServer transport, CancellationToken cancellationToken)
     {
         if (_protocol == null)
         {
@@ -52,7 +52,7 @@ public class ProtocolProxy
         }
 
         (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
-        return await _protocol.ExecuteAsync(_model, messages, tools, maxCompletionTokens, headers, payload, stream, cancellationToken);
+        return await _protocol.ExecuteAsync(_model, messages, tools, maxCompletionTokens, headers, payload, transport, cancellationToken);
     }
 
     // Probes the endpoint in fixed order (Anthropic → Responses → ChatCompletions).

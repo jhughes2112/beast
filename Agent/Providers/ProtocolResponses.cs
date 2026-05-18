@@ -81,7 +81,7 @@ public class ProtocolResponses : IProtocol
         int maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
-        IStreamingMessage? stream,
+        ITransportServer transport,
         CancellationToken cancellationToken)
     {
         (JsonArray input, string? instructions) = BuildInput(messages);
@@ -89,9 +89,9 @@ public class ProtocolResponses : IProtocol
 
         JsonObject body = BuildBody(model, input, instructions, responsesTools, maxCompletionTokens, extraPayload);
 
-        if (stream != null && _streamingSupported)
+        if (_streamingSupported)
         {
-            ProviderCallResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, stream, cancellationToken);
+            ProviderCallResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, transport, cancellationToken);
             if (streamResult != null) return streamResult;
             // null means the provider rejected streaming; fall through to non-streaming
         }
@@ -172,7 +172,7 @@ public class ProtocolResponses : IProtocol
         return body;
     }
 
-    private async Task<ProviderCallResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, IStreamingMessage stream, CancellationToken cancellationToken)
+    private async Task<ProviderCallResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ITransportServer transport, CancellationToken cancellationToken)
     {
         JsonObject streamBody = JsonNode.Parse(body.ToJsonString())!.AsObject();
         streamBody["stream"] = true;
@@ -256,11 +256,11 @@ public class ProtocolResponses : IProtocol
                     {
                         if (contentBuilder.Length == 0)
                         {
-                            stream.StreamStart(StreamTag.Assistant);
+                            transport.StreamStart(StreamTag.Assistant);
                         }
 
                         contentBuilder.Append(delta);
-                        stream.StreamChunk(delta);
+                        transport.StreamChunk(delta);
                     }
                 }
                 else if (eventType == "response.completed" || eventType == "response.done")
@@ -278,7 +278,7 @@ public class ProtocolResponses : IProtocol
 
         if (contentBuilder.Length > 0)
         {
-            stream.StreamEnd(StreamTag.Assistant);
+            transport.StreamEnd(StreamTag.Assistant);
         }
 
         if (finalResponse != null)

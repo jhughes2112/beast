@@ -32,16 +32,16 @@ public class ProtocolAnthropic : IProtocol
         int maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
-        IStreamingMessage? stream,
+        ITransportServer transport,
         CancellationToken cancellationToken)
     {
         (string? system, List<JsonObject> anthropicMessages) = BuildMessages(messages);
 
         JsonObject body = BuildBody(model, system, anthropicMessages, tools, maxCompletionTokens, extraPayload);
 
-        if (stream != null && _streamingSupported)
+        if (_streamingSupported)
         {
-            ProviderCallResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, stream, cancellationToken);
+            ProviderCallResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, transport, cancellationToken);
             if (streamResult != null) return streamResult;
             // null means the provider rejected streaming; fall through to non-streaming
         }
@@ -139,7 +139,7 @@ public class ProtocolAnthropic : IProtocol
         return ProviderCallResult.Failed($"HTTP {statusCode}: {responseBody}");
     }
 
-    private async Task<ProviderCallResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, IStreamingMessage stream, CancellationToken cancellationToken)
+    private async Task<ProviderCallResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ITransportServer transport, CancellationToken cancellationToken)
     {
         JsonObject streamBody = JsonNode.Parse(body.ToJsonString())!.AsObject();
         streamBody["stream"] = true;
@@ -247,11 +247,11 @@ public class ProtocolAnthropic : IProtocol
                         {
                             if (contentBuilder.Length == 0)
                             {
-                                stream.StreamStart(StreamTag.Assistant);
+                                transport.StreamStart(StreamTag.Assistant);
                             }
 
                             contentBuilder.Append(text);
-                            stream.StreamChunk(text);
+                            transport.StreamChunk(text);
                         }
                     }
                     else if (deltaType == "input_json_delta")
@@ -277,7 +277,7 @@ public class ProtocolAnthropic : IProtocol
 
         if (contentBuilder.Length > 0)
         {
-            stream.StreamEnd(StreamTag.Assistant);
+            transport.StreamEnd(StreamTag.Assistant);
         }
 
         ConversationMessage message = new ConversationMessage { Role = "assistant" };
@@ -342,9 +342,10 @@ public class ProtocolAnthropic : IProtocol
 
             if (status == 404) return ProbeResult.NotSupported("404 on /messages");
 
-            // Anthropic errors have a top-level "type":"error" wrapper: {"type":"error","error":{"type":"invalid_request_error",...}}
-            // OpenAI-compatible servers use a flat shape without that wrapper: {"error":{"type":"invalid_request_error",...}}
-            if (status >= 400 && status < 500 && body.Contains("\"type\":\"error\"") && body.Contains("\"invalid_request_error\""))
+            // Anthropic errors always have a top-level "type":"error" wrapper: {"type":"error","error":{...}}
+            // OpenAI-compatible servers use a flat shape without that wrapper: {"error":{...}}
+            // The top-level "type":"error" is Anthropic-specific regardless of the inner error type.
+            if (status >= 400 && status < 500 && body.Contains("\"type\":\"error\""))
             {
                 return ProbeResult.Supported();
             }

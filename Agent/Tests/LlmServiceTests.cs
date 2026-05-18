@@ -63,7 +63,7 @@ public static class LlmServiceTests
 					}
 				}
 			},
-			Handler = (JsonObject args, CancellationToken ct2) => Task.FromResult(new ToolResult("file content", false))
+			Handler = (JsonObject args, CancellationToken ct2, ITransportServer transport) => Task.FromResult(new ToolResult("file content", false))
 		});
 
 		tools.Add(new Tool
@@ -86,7 +86,7 @@ public static class LlmServiceTests
 					}
 				}
 			},
-			Handler = (JsonObject args, CancellationToken ct2) => Task.FromResult(new ToolResult("ok", false))
+			Handler = (JsonObject args, CancellationToken ct2, ITransportServer transport) => Task.FromResult(new ToolResult("ok", false))
 		});
 
 		return tools;

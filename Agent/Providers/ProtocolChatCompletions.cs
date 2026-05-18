@@ -33,16 +33,16 @@ public class ProtocolChatCompletions : IProtocol
         int maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
-        IStreamingMessage? stream,
+        ITransportServer transport,
         CancellationToken cancellationToken)
     {
         for (;;)
         {
             ChatCompletionRequest request = BuildRequest(model, messages, tools, maxCompletionTokens);
 
-            if (stream != null && _streamingSupported)
+            if (_streamingSupported)
             {
-                ProviderCallResult? streamResult = await ExecuteStreamingAsync(model, request, extraHeaders, extraPayload, stream, cancellationToken);
+                ProviderCallResult? streamResult = await ExecuteStreamingAsync(model, request, extraHeaders, extraPayload, transport, cancellationToken);
                 if (streamResult != null) return streamResult;
                 // null means the provider rejected streaming; fall through to non-streaming
             }
@@ -72,6 +72,8 @@ public class ProtocolChatCompletions : IProtocol
                 {
                     return ProviderCallResult.Failed(response?.Error?.Message ?? "Empty response from API");
                 }
+
+                EmitNonStreamingThinking(transport, responseBody);
 
                 return ProviderCallResult.Succeeded(BuildPayload(model, response));
             }
@@ -174,7 +176,7 @@ public class ProtocolChatCompletions : IProtocol
         ChatCompletionRequest request,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
-        IStreamingMessage stream,
+        ITransportServer transport,
         CancellationToken cancellationToken)
     {
         string url = model.Endpoint;
@@ -246,6 +248,7 @@ public class ProtocolChatCompletions : IProtocol
         }
 
         StringBuilder contentBuilder = new StringBuilder();
+        StringBuilder reasoningBuilder = new StringBuilder();
         List<StreamingToolCall> toolCallAccumulators = new List<StreamingToolCall>();
         string finishReason = "";
         ChatCompletionUsage? usage = null;
@@ -280,16 +283,30 @@ public class ProtocolChatCompletions : IProtocol
                 string? fr = choices[0]?["finish_reason"]?.GetValue<string>();
                 if (fr != null) finishReason = fr;
 
+                // reasoning_content (DeepSeek) or reasoning (generic OpenRouter) — emit as thinking stream.
+                string? reasoningDelta = delta["reasoning_content"]?.GetValue<string>()
+                                      ?? delta["reasoning"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(reasoningDelta))
+                {
+                    if (reasoningBuilder.Length == 0)
+                    {
+                        transport.StreamStart(StreamTag.Thinking);
+                    }
+
+                    reasoningBuilder.Append(reasoningDelta);
+                    transport.StreamChunk(reasoningDelta);
+                }
+
                 string? contentDelta = delta["content"]?.GetValue<string>();
                 if (!string.IsNullOrEmpty(contentDelta))
                 {
                     if (contentBuilder.Length == 0)
                     {
-                        stream.StreamStart(StreamTag.Assistant);
+                        transport.StreamStart(StreamTag.Assistant);
                     }
 
                     contentBuilder.Append(contentDelta);
-                    stream.StreamChunk(contentDelta);
+                    transport.StreamChunk(contentDelta);
                 }
 
                 JsonArray? tcDeltas = delta["tool_calls"]?.AsArray();
@@ -315,10 +332,16 @@ public class ProtocolChatCompletions : IProtocol
             }
         }
 
+        if (reasoningBuilder.Length > 0)
+        {
+            transport.StreamEnd(StreamTag.Thinking);
+            transport.Thinking(reasoningBuilder.ToString());
+        }
+
         ConversationMessage message = new ConversationMessage { Role = "assistant" };
         if (contentBuilder.Length > 0)
         {
-            stream.StreamEnd(StreamTag.Assistant);
+            transport.StreamEnd(StreamTag.Assistant);
         }
 
         if (toolCallAccumulators.Count > 0)
@@ -371,6 +394,45 @@ public class ProtocolChatCompletions : IProtocol
         public string Id = "";
         public string Name = "";
         public StringBuilder Arguments = new StringBuilder();
+    }
+
+    // Extracts reasoning text from a non-streaming response body and emits it as a thinking frame.
+    // Handles reasoning_content (string) and reasoning_details (array of {type,text} objects).
+    private static void EmitNonStreamingThinking(ITransportServer transport, string responseBody)
+    {
+        JsonNode? root = JsonNode.Parse(responseBody);
+        if (root == null) return;
+
+        JsonNode? message = root["choices"]?[0]?["message"];
+        if (message == null) return;
+
+        string? thinking = null;
+
+        string? reasoningContent = message["reasoning_content"]?.GetValue<string>();
+        if (!string.IsNullOrEmpty(reasoningContent))
+        {
+            thinking = reasoningContent;
+        }
+        else
+        {
+            JsonArray? details = message["reasoning_details"]?.AsArray();
+            if (details != null)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (JsonNode? item in details)
+                {
+                    string? text = item?["text"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(text)) sb.Append(text);
+                }
+
+                if (sb.Length > 0) thinking = sb.ToString();
+            }
+        }
+
+        if (!string.IsNullOrEmpty(thinking))
+        {
+            transport.Thinking(thinking);
+        }
     }
 
     private static ProviderCallPayload BuildPayload(LlmModel model, ChatCompletionResponse response)

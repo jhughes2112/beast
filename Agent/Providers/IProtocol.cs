@@ -14,10 +14,9 @@ public interface IProtocol
 	// Executes one round-trip using this wire format.
 	// extraHeaders are added to the HTTP request; extraPayload entries are merged into the
 	// top-level JSON body. Values are JsonNode so nested objects (e.g. provider blocks) work.
-	// stream, if non-null, receives each text delta as it arrives for streaming display.
-	// Passing null disables streaming entirely regardless of server support.
+	// transport receives streaming deltas (content and thinking) as they arrive.
 	Task<ProviderCallResult> ExecuteAsync(LlmModel model, List<ConversationMessage> messages, List<ToolDefinition> tools, int maxCompletionTokens,
-										Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, IStreamingMessage? stream, CancellationToken cancellationToken);
+										Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, CancellationToken cancellationToken);
 }
 
 // Result of a protocol probe against a single endpoint.

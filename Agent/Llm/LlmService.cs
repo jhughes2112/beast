@@ -255,7 +255,7 @@ public class LlmService
 			ConversationToolCall toolCall = toolCalls[index];
 			tasks[index] = Task.Run(async () =>
 			{
-				ToolResult toolResult = await ExecuteToolAsync(toolCall, tools, ct);
+				ToolResult toolResult = await ExecuteToolAsync(toolCall, tools, transport, ct);
 				completedTools[index] = (toolCall.Function.Name, toolResult);
 			}, ct);
 		}
@@ -273,7 +273,7 @@ public class LlmService
 		return (null, true);
 	}
 
-	private async Task<ToolResult> ExecuteToolAsync(ConversationToolCall toolCall, Tool[] tools, CancellationToken ct)
+	private async Task<ToolResult> ExecuteToolAsync(ConversationToolCall toolCall, Tool[] tools, ITransportServer transport, CancellationToken ct)
 	{
 		Tool? matchedTool = null;
 		foreach (Tool t in tools)
@@ -305,7 +305,7 @@ public class LlmService
 			return new ToolResult($"Error: Tool '{toolCall.Function.Name}' received malformed arguments: {toolCall.Function.Arguments}", false);
 		}
 
-		return await matchedTool.Handler(argsObj, ct);
+		return await matchedTool.Handler(argsObj, ct, transport);
 	}
 
 	private static void NormalizeToolCalls(List<ConversationToolCall> toolCalls)
@@ -440,6 +440,7 @@ public class LlmService
 		long available = contextLength - usedTokens - reserveTokens;
 		if (available <= 0) return 0;
 
-		return (int)Math.Min(available, DefaultCompletion);
+		int ceiling = _model.Config.MaxOutputTokens > 0 ? _model.Config.MaxOutputTokens : DefaultCompletion;
+		return (int)Math.Min(available, ceiling);
 	}
 }

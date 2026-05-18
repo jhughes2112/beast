@@ -21,7 +21,7 @@ public static class ToolFactory
             Params(
                 Req("pattern", "string", "Glob pattern to match (e.g. **/*.cs)."),
                 Req("path", "string", "Directory to search in.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string pattern = Str(args, "pattern");
                 string path = Str(args, "path");
@@ -34,7 +34,7 @@ public static class ToolFactory
                 Req("path", "string", "Directory or file path to search."),
                 Req("pattern", "string", "Text or regex pattern to search for."),
                 Opt("context_lines", "integer", "Number of context lines to include around each match.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string path = Str(args, "path");
                 string pattern = Str(args, "pattern");
@@ -47,7 +47,7 @@ public static class ToolFactory
             Params(
                 Req("path", "string", "Directory path to list."),
                 Opt("pattern", "string", "Optional glob pattern to filter results.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string path = Str(args, "path");
                 string? pattern = StrOpt(args, "pattern");
@@ -59,7 +59,7 @@ public static class ToolFactory
             "Fetch the text content of a web page.",
             Params(
                 Req("url", "string", "The fully-formed URL to fetch content from.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string url = Str(args, "url");
                 return Truncate(await webFetch.FetchPageAsync(url, ct));
@@ -72,10 +72,10 @@ public static class ToolFactory
                 "Search the web using a natural language question or search query.",
                 Params(
                     Req("query", "string", "The search query or natural language question to answer using the web.")),
-                async (args, ct) =>
+                async (args, ct, transport) =>
                 {
                     string query = Str(args, "query");
-                    return Truncate(await webSearch.SearchWebAsync(query, ct));
+                    return Truncate(await webSearch.SearchWebAsync(query, transport, ct));
                 });
         }
 
@@ -85,7 +85,7 @@ public static class ToolFactory
                 Req("command", "string", "The shell command to execute."),
                 Opt("working_dir", "string", "Optional working directory for the command."),
                 Opt("timeout_seconds", "integer", "Optional timeout in seconds.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string command = Str(args, "command");
                 string? workingDir = StrOpt(args, "working_dir");
@@ -99,7 +99,7 @@ public static class ToolFactory
                 Req("file_path", "string", "Absolute path to the file to read."),
                 Opt("offset", "string", "The line number to start reading from (1 based). Only provide if the file is too large to read at once."),
                 Opt("lines", "string", "The number of lines to read. Only provide if the file is too large to read at once.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string offset = Str(args, "offset");
@@ -112,7 +112,7 @@ public static class ToolFactory
             Params(
                 Req("file_path", "string", "The exact full path to the file to create or overwrite. Absolute paths only."),
                 Req("content", "string", "The complete content to write to the file. This replaces the entire file contents.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string content = Str(args, "content");
@@ -124,7 +124,7 @@ public static class ToolFactory
             Params(
                 Req("file_path", "string", "Absolute path to the file to modify."),
                 Req("edits", "string", "A JSON string encoding an ordered array of edit operations (see tool description).")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string edits = Str(args, "edits");
@@ -138,7 +138,7 @@ public static class ToolFactory
                 Req("start_anchor", "string", "Start anchor in the form '<line>:<hh>'."),
                 Req("end_anchor", "string", "End anchor in the form '<line>:<hh>'."),
                 Req("new_text", "string", "Replacement text to insert between the anchors.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string startAnchor = Str(args, "start_anchor");
@@ -153,7 +153,7 @@ public static class ToolFactory
                 Req("file_path", "string", "Absolute path to the file to modify."),
                 Req("anchor", "string", "Anchor in the form '<line>:<hh>'."),
                 Req("new_text", "string", "Text to insert after the anchor.")),
-            async (args, ct) =>
+            async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string anchor = Str(args, "anchor");
@@ -164,7 +164,7 @@ public static class ToolFactory
         return tools;
     }
 
-    private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, Task<ToolResult>> handler)
+    private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, ITransportServer, Task<ToolResult>> handler)
     {
         tools[name] = new Tool
         {

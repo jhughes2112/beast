@@ -56,6 +56,9 @@ public class ModelConfig
     [JsonPropertyName("contextWindow")]
     public int ContextWindow { get; set; }
 
+    [JsonPropertyName("maxOutputTokens")]
+    public int MaxOutputTokens { get; set; }
+
     [JsonPropertyName("cost")]
     public CostConfig Cost { get; set; } = new();
 
