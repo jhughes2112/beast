@@ -45,38 +45,41 @@ public class ProtocolProxy
         if (_protocol == null)
         {
             _protocol = await DetectProtocolAsync(_model);
+            if (_protocol == null)
+            {
+                return ProviderCallResult.PermanentFailure($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
+            }
         }
 
         (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
         return await _protocol.ExecuteAsync(_model, messages, tools, maxCompletionTokens, headers, payload, stream, cancellationToken);
     }
 
-    // Probes the endpoint to determine which protocol it speaks.
-    // Order: Anthropic (unique error shape) -> Responses (/responses path) -> ChatCompletions (fallback).
-    private static async Task<IProtocol> DetectProtocolAsync(LlmModel model)
+    // Probes the endpoint in fixed order (Anthropic → Responses → ChatCompletions).
+    // Returns null if no protocol responds as supported.
+    private static async Task<IProtocol?> DetectProtocolAsync(LlmModel model)
     {
-        if (model.Endpoint.Contains("anthropic.com", StringComparison.OrdinalIgnoreCase))
+        string endpoint = model.Endpoint;
+
+        (string Name, Func<Task<ProbeResult>> Probe, Func<IProtocol> Factory)[] candidates =
         {
-            ProtocolChatCompletions.Log($"[probe] anthropic.com endpoint — using Anthropic protocol");
-            return new ProtocolAnthropic();
+            ("Anthropic",       () => ProtocolAnthropic.ProbeAsync(model.ApiKey, endpoint),       () => new ProtocolAnthropic()),
+            ("Responses",       () => ProtocolResponses.ProbeAsync(model.ApiKey, endpoint),       () => new ProtocolResponses()),
+            ("ChatCompletions", () => ProtocolChatCompletions.ProbeAsync(model.ApiKey, endpoint), () => new ProtocolChatCompletions()),
+        };
+
+        foreach ((string name, Func<Task<ProbeResult>> probe, Func<IProtocol> factory) in candidates)
+        {
+            ProbeResult result = await probe();
+            ProtocolChatCompletions.Log($"[probe] {name}: {result.Outcome} — {result.Detail}");
+            if (result.Outcome == ProbeOutcome.Supported)
+            {
+                return factory();
+            }
         }
 
-        ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(model.ApiKey, model.Endpoint);
-        ProtocolChatCompletions.Log($"[probe] Anthropic: {anthropic.Outcome} — {anthropic.Detail}");
-        if (anthropic.Outcome == ProbeOutcome.Supported)
-        {
-            return new ProtocolAnthropic();
-        }
-
-        ProbeResult responses = await ProtocolResponses.ProbeAsync(model.ApiKey, model.Endpoint);
-        ProtocolChatCompletions.Log($"[probe] Responses: {responses.Outcome} — {responses.Detail}");
-        if (responses.Outcome == ProbeOutcome.Supported)
-        {
-            return new ProtocolResponses();
-        }
-
-        ProtocolChatCompletions.Log($"[probe] Falling back to ChatCompletions");
-        return new ProtocolChatCompletions();
+        ProtocolChatCompletions.Log($"[probe] No recognized protocol found for: {endpoint}");
+        return null;
     }
 
     // Returns true if a JsonNode represents an "empty" extra value that should be skipped.

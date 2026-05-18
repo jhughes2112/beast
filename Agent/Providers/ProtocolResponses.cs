@@ -149,10 +149,9 @@ public class ProtocolResponses : IProtocol
     private static JsonObject BuildBody(LlmModel model, JsonArray input, string? instructions, List<ResponsesTool>? responsesTools, int maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
         JsonObject body = new JsonObject();
-        body["model"] = model.Config.Name;
+        body["model"] = model.Config.Id;
         body["input"] = input;
         body["max_output_tokens"] = maxCompletionTokens > 0 ? maxCompletionTokens : 4096;
-        body["seed"] = Random.Shared.Next();
 
         if (!string.IsNullOrEmpty(instructions))
         {
@@ -264,7 +263,7 @@ public class ProtocolResponses : IProtocol
                         stream.StreamChunk(delta);
                     }
                 }
-                else if (eventType == "response.done")
+                else if (eventType == "response.completed" || eventType == "response.done")
                 {
                     JsonNode? responseNode = eventNode["response"];
                     if (responseNode != null)
@@ -287,7 +286,7 @@ public class ProtocolResponses : IProtocol
             return ProviderCallResult.Succeeded(BuildPayload(model, finalResponse));
         }
 
-        return ProviderCallResult.Failed("Stream ended without a response.done event");
+        return ProviderCallResult.Failed("Stream ended without a response.completed event");
     }
 
     // Probes the endpoint to determine whether it speaks the Responses API.
@@ -320,17 +319,9 @@ public class ProtocolResponses : IProtocol
                 return ProbeResult.NotSupported("/responses: object:response but no message/function_call output");
             }
 
-            if (status == 400 && body.Contains("\"error\"") && (body.Contains("model") || body.Contains("not found") || body.Contains("api key")))
-            {
-                return ProbeResult.Supported();
-            }
-
-            if (status == 400 && body.Contains("input") && body.Contains("required"))
-            {
-                return ProbeResult.NotSupported("/responses: endpoint stub");
-            }
-
-            if (status >= 400 && status < 500 && body.Contains("\"error\""))
+            // ChatCompletions servers complain "messages is required" when given our Responses-format probe.
+            // Real Responses API servers reject on model name/auth — neither mentions "messages".
+            if (status >= 400 && status < 500 && body.Contains("\"error\"") && !body.Contains("messages"))
             {
                 return ProbeResult.Supported();
             }

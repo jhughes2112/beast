@@ -192,8 +192,9 @@ public class AgentOrchestrator
 				conversation.AddUserMessage(accumulatedText);
 			}
 
-			// 4. Run the LLM only if we can, it needs attention, and /quit hasn't been received.
-			if (!wantsExit && canRunLLM && NeedsLlmAttention(conversation))
+			// 4. Run the LLM if it needs attention. Even when /quit was requested, finish the current turn
+			//    so the user gets a response to their input before the agent exits.
+			if (!cancellationToken.IsCancellationRequested && canRunLLM && NeedsLlmAttention(conversation))
 			{
 				LlmResult result = await RunLlmTurnAsync(conversation, role!, service!, cancellationToken);
 				if (result.ExitReason == LlmExitReason.Failed)
@@ -414,7 +415,7 @@ public class AgentOrchestrator
 		LlmServiceTests.Test(ctx);
 		FileToolsTests.Test(ctx);
 		ShellToolsTests.Test(ctx);
-		WebToolsTests.Test(ctx);
+		WebToolsTests.Test(ctx, _settings.Settings.WebSearch);
 		SearchToolsTests.Test(ctx);
 		PerModelLlmTests.Test(ctx, _registry, _roleService, _settings);
 

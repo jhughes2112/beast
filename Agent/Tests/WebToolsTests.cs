@@ -1,16 +1,56 @@
 using System.Reflection;
 using System;
+using System.Threading;
 
 
 public static class WebToolsTests
 {
-    public static void Test(TestContext ctx)
+    public static void Test(TestContext ctx, WebSearchConfig? webSearchConfig)
     {
         ctx.Log("  WebToolsTests");
 
         TestStripHtmlTags(ctx);
 
-        ctx.Log("  WebToolsTests: skipping web search test (no LLM proxy configured)");
+        if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
+        {
+            TestWebSearch(ctx, webSearchConfig.Openrouter);
+        }
+        else
+        {
+            ctx.Log("  WebToolsTests: skipping web search test (not configured or disabled)");
+        }
+    }
+
+    private static void TestWebSearch(TestContext ctx, OpenrouterSearchConfig config)
+    {
+        ctx.Log("  WebToolsTests: testing web search via OpenRouter");
+
+        Action<string> previousLog = ProtocolChatCompletions.Log;
+        ProtocolChatCompletions.Log = line => ctx.Log($"    {line}");
+
+        try
+        {
+            WebSearchOpenrouter searcher = new WebSearchOpenrouter(config.BuildModel());
+
+            using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            ToolResult result = searcher.SearchWebAsync("What is the capital of France?", cts.Token).GetAwaiter().GetResult();
+
+            ctx.Log($"    response: {result.Response.Substring(0, Math.Min(300, result.Response.Length))}");
+            ctx.Assert(!result.Response.StartsWith("Error:"), "WebSearch: no error returned");
+            ctx.Assert(result.Response.Length > 10, "WebSearch: non-empty response");
+        }
+        catch (OperationCanceledException)
+        {
+            ctx.Log("    TIMEOUT: web search timed out after 30s");
+        }
+        catch (Exception ex)
+        {
+            ctx.Log($"    ERROR: {ex.Message}");
+        }
+        finally
+        {
+            ProtocolChatCompletions.Log = previousLog;
+        }
     }
 
     private static void TestStripHtmlTags(TestContext ctx)

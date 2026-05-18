@@ -52,7 +52,7 @@ public class ProtocolAnthropic : IProtocol
     private static JsonObject BuildBody(LlmModel model, string? system, List<JsonObject> anthropicMessages, List<ToolDefinition> tools, int maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
         JsonObject body = new JsonObject();
-        body["model"] = model.Config.Name;
+        body["model"] = model.Config.Id;
         body["max_tokens"] = maxCompletionTokens > 0 ? maxCompletionTokens : 4096;
 
         if (system != null)
@@ -83,7 +83,7 @@ public class ProtocolAnthropic : IProtocol
 
     private static HttpRequestMessage BuildRequest(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders)
     {
-        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, $"{model.Endpoint}/messages");
+        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("x-api-key", model.ApiKey);
         req.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
@@ -342,8 +342,9 @@ public class ProtocolAnthropic : IProtocol
 
             if (status == 404) return ProbeResult.NotSupported("404 on /messages");
 
-            // Anthropic validation errors have {"type":"error","error":{"type":"invalid_request_error",...}}
-            if (status >= 400 && status < 500 && body.Contains("\"invalid_request_error\""))
+            // Anthropic errors have a top-level "type":"error" wrapper: {"type":"error","error":{"type":"invalid_request_error",...}}
+            // OpenAI-compatible servers use a flat shape without that wrapper: {"error":{"type":"invalid_request_error",...}}
+            if (status >= 400 && status < 500 && body.Contains("\"type\":\"error\"") && body.Contains("\"invalid_request_error\""))
             {
                 return ProbeResult.Supported();
             }

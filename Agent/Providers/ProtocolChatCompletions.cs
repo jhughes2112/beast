@@ -130,7 +130,7 @@ public class ProtocolChatCompletions : IProtocol
     {
         return new ChatCompletionRequest
         {
-            Model = model.Config.Name,
+            Model = model.Config.Id,
             Messages = messages,
             Tools = tools.Count > 0 ? tools : null,
             ParallelToolCalls = tools.Count > 0 && _parallelToolCallsSupported ? true : null,

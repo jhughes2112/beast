@@ -23,8 +23,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private CancellationTokenSource? _readCts;
     private int _nextIndex = 0;
     private int _streamIndex = -1;
+    private int _committedStreamIndex = -1;  // slot to reuse after StreamEnd
     private FrameType _streamType;
     private string _streamContent = "";
+    private string _nonInteractiveLineBuf = "";  // buffered streaming output for non-interactive mode
+    private bool _didStreamToConsole = false;    // true when streaming already printed to stdout
     private string? _pingNonce;
     private bool _readyFired;
 
@@ -121,6 +124,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             case FrameType.StreamStart:
                 _streamType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
                 _streamContent = "";
+                _nonInteractiveLineBuf = "";
                 _streamIndex = _nextIndex++;
                 _model!.Update(_streamIndex, _streamType, _streamContent);
                 break;
@@ -129,11 +133,30 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 if (_streamIndex < 0) break;
                 _streamContent += content;
                 _model!.Update(_streamIndex, _streamType, _streamContent);
+                if (_nonInteractive)
+                {
+                    // Buffer and flush complete lines; partial lines wait for the next chunk or StreamEnd.
+                    _nonInteractiveLineBuf += content;
+                    int nl;
+                    while ((nl = _nonInteractiveLineBuf.IndexOf('\n')) >= 0)
+                    {
+                        Console.WriteLine(_nonInteractiveLineBuf.Substring(0, nl));
+                        _nonInteractiveLineBuf = _nonInteractiveLineBuf.Substring(nl + 1);
+                        _didStreamToConsole = true;
+                    }
+                }
                 break;
 
             case FrameType.StreamEnd:
+                _committedStreamIndex = _streamIndex;
                 _streamIndex = -1;
                 _streamContent = "";
+                if (_nonInteractive && _nonInteractiveLineBuf.Length > 0)
+                {
+                    Console.WriteLine(_nonInteractiveLineBuf);
+                    _nonInteractiveLineBuf = "";
+                    _didStreamToConsole = true;
+                }
                 break;
 
             case FrameType.Status:
@@ -163,7 +186,19 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 break;
 
             default:
-                _model!.Update(_nextIndex++, type, content);
+                // Reuse the stream slot for the committed frame that immediately follows StreamEnd.
+                int slotIndex;
+                if (_committedStreamIndex >= 0 && type == _streamType)
+                {
+                    slotIndex = _committedStreamIndex;
+                    _committedStreamIndex = -1;
+                }
+                else
+                {
+                    _committedStreamIndex = -1;
+                    slotIndex = _nextIndex++;
+                }
+                _model!.Update(slotIndex, type, content);
                 break;
         }
     }
@@ -171,6 +206,12 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private void OnMessageUpdated(DisplayMessage msg)
     {
         if (!_nonInteractive) return;
+        if (msg.Index == _streamIndex) return;  // skip live stream slot updates (handled in ProcessFrame)
+        if (_didStreamToConsole)
+        {
+            _didStreamToConsole = false;
+            return;  // streaming already printed this output line-by-line
+        }
         if (msg.Type == FrameType.Output && !string.IsNullOrEmpty(msg.Content))
             Console.WriteLine(msg.Content);
         else if (msg.Type == FrameType.Error)
