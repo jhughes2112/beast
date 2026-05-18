@@ -99,7 +99,7 @@ public class ProtocolChatCompletions : IProtocol
     {
         try
         {
-            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/chat/completions");
+            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpoint);
             req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
             req.Content = new StringContent("{}", Encoding.UTF8, "application/json");
 
