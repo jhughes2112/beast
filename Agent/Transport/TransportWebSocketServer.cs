@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -15,7 +14,8 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
     private readonly HttpListener _listener = new HttpListener();
     private WebSocket? _ws;
     private readonly Channel<string> _frames = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-    private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
+    private readonly Channel<string> _outbound = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
+    private Task? _writeTask;
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
     public TransportWebSocketServer(int port)
@@ -44,12 +44,12 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         Console.Error.WriteLine($"[ws-server] Client connected from {ctx.Request.RemoteEndPoint}");
 
         _ = Task.Run(() => RecvLoop(_cts.Token), _cts.Token);
+        _writeTask = Task.Run(() => WriteLoop(_cts.Token), _cts.Token);
     }
 
     private async Task RecvLoop(CancellationToken token)
     {
         byte[] buf = new byte[65536];
-        List<byte> msg = new List<byte>(65536);
         Console.Error.WriteLine("[ws-server] RecvLoop started");
         try
         {
@@ -59,24 +59,15 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     Console.Error.WriteLine("[ws-server] Client sent close");
-                    _frames.Writer.Complete();
-                    return;
+                    break;
                 }
 
-                msg.AddRange(new ArraySegment<byte>(buf, 0, result.Count));
-
-                if (result.EndOfMessage)
-                {
-                    string text = Encoding.UTF8.GetString(msg.ToArray());
-                    msg.Clear();
-                    Console.Error.WriteLine($"[ws-server] Received frame: '{text}'");
-                    _frames.Writer.TryWrite(text);
-                }
+                string text = Encoding.UTF8.GetString(buf, 0, result.Count);
+                Console.Error.WriteLine($"[ws-server] Received: '{text}'");
+                _frames.Writer.TryWrite(text);
             }
         }
-        catch (OperationCanceledException)
-        {
-        }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[ws-server] RecvLoop error: {ex.Message}");
@@ -86,20 +77,27 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
 
     public void Send(FrameType type, string text)
     {
-        if (_ws == null || _ws.State != WebSocketState.Open) return;
+        _outbound.Writer.TryWrite($"{(byte)type}|{text}");
+    }
 
-        string frame = $"{(byte)type}|{text}";
-        byte[] bytes = Encoding.UTF8.GetBytes(frame);
-
-        _writeLock.Wait();
+    private async Task WriteLoop(CancellationToken token)
+    {
         try
         {
-            _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
-                .GetAwaiter().GetResult();
+            while (await _outbound.Reader.WaitToReadAsync(token))
+            {
+                while (_outbound.Reader.TryRead(out string? frame))
+                {
+                    if (_ws == null || _ws.State != WebSocketState.Open) continue;
+                    byte[] bytes = Encoding.UTF8.GetBytes(frame);
+                    await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token);
+                }
+            }
         }
-        finally
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
         {
-            _writeLock.Release();
+            Console.Error.WriteLine($"[ws-server] WriteLoop error: {ex.Message}");
         }
     }
 
@@ -120,10 +118,20 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
 
     public void Dispose()
     {
+        if (_ws != null && _ws.State == WebSocketState.Open)
+        {
+            try
+            {
+                _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            catch { }
+        }
         _cts.Cancel();
+        _outbound.Writer.TryComplete();
+        _writeTask?.Wait(2000);
         _listener.Stop();
         _ws?.Dispose();
-        _writeLock.Dispose();
         _cts.Dispose();
     }
 }

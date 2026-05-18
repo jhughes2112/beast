@@ -49,7 +49,9 @@ public class ProtocolChatCompletions : IProtocol
             try
             {
                 httpResponse = await PostAsync(model, request, extraHeaders, extraPayload, cancellationToken);
-                responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+                    responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+                    Console.WriteLine($"[http] RSP {(int)httpResponse.StatusCode}");
+                    Console.WriteLine(responseBody);
             }
             catch (OperationCanceledException)
             {
@@ -146,8 +148,14 @@ public class ProtocolChatCompletions : IProtocol
             obj[kv.Key] = kv.Value?.DeepClone();
         }
 
+        string requestJson = obj.ToJsonString();
+        Console.WriteLine($"[http] POST {url}");
+        Console.WriteLine("[http] >>>");
+        Console.WriteLine(requestJson);
+        Console.WriteLine("[http] <<<");
+
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
-        req.Content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
+        req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
         foreach (KeyValuePair<string, string> kv in extraHeaders)
@@ -166,7 +174,7 @@ public class ProtocolChatCompletions : IProtocol
         IStreamingMessage stream,
         CancellationToken cancellationToken)
     {
-        string url = $"{model.Endpoint}/chat/completions";
+        string url = model.Endpoint;
 
         JsonNode? node = JsonNode.Parse(JsonSerializer.Serialize(request, JsonOptions));
         JsonObject obj = node!.AsObject();
@@ -178,8 +186,14 @@ public class ProtocolChatCompletions : IProtocol
             obj[kv.Key] = kv.Value?.DeepClone();
         }
 
+        string requestJson = obj.ToJsonString();
+        Console.WriteLine($"[http] POST {url} (streaming)");
+        Console.WriteLine("[http] >>>");
+        Console.WriteLine(requestJson);
+        Console.WriteLine("[http] <<<");
+
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
-        req.Content = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
+        req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
         foreach (KeyValuePair<string, string> kv in extraHeaders)
@@ -205,6 +219,8 @@ public class ProtocolChatCompletions : IProtocol
         {
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
+            Console.WriteLine($"[http] RSP {statusCode} (streaming error)");
+            Console.WriteLine(errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {

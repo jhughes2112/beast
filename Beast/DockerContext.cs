@@ -17,7 +17,7 @@ public class DockerContext : IDisposable
         _dockerClient = new DockerClientConfiguration().CreateClient();
     }
 
-    // Launches a container from the given image, maps port 13131, and mounts workspace/config volumes.
+    // Launches a container from the given image, binds port 13131, and mounts workspace/config volumes.
     public async Task<string> LaunchContainerAsync(
         string image, string name, IList<string> entrypoint)
     {
@@ -31,11 +31,12 @@ public class DockerContext : IDisposable
             Image = image,
             Name = name,
             WorkingDir = "/workspace",
+            Env = new List<string> { "BEAST_HOST=host.docker.internal" },
             ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
             HostConfig = new HostConfig
             {
-                NetworkMode = "bridge",
                 AutoRemove = false,
+                ExtraHosts = new List<string> { "host.docker.internal:host-gateway" },  // for linux to pick this up
                 PortBindings = new Dictionary<string, IList<PortBinding>>
                 {
                     ["13131/tcp"] = new List<PortBinding>

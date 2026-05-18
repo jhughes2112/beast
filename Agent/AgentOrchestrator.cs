@@ -62,7 +62,7 @@ public class AgentOrchestrator
 
 			bool canRunLLM = role != null && service != null;
 
-			// 2. Fetch input from transport.
+			// 2. Block until at least one message arrives, then drain everything queued behind it.
 			string? incoming = await _transport.TryReadAsync(100, cancellationToken);
 			if (incoming == null)
 			{
@@ -73,6 +73,15 @@ public class AgentOrchestrator
 			{
 				Console.Error.WriteLine($"[orchestrator] Received: '{incoming}'");
 				pendingInput.Enqueue(incoming);
+			}
+			// Drain any additional messages that arrived without blocking.
+			while (true)
+			{
+				string? extra = await _transport.TryReadAsync(0, cancellationToken);
+				if (extra == null) break;
+				if (extra.Length == 0) break;
+				Console.Error.WriteLine($"[orchestrator] Received: '{extra}'");
+				pendingInput.Enqueue(extra);
 			}
 
 			// 3. Process the entire input queue: run commands in order, accumulate text into one user message.
@@ -183,8 +192,8 @@ public class AgentOrchestrator
 				conversation.AddUserMessage(accumulatedText);
 			}
 
-			// 4. Run the LLM if we can and it needs attention.
-			if (canRunLLM && NeedsLlmAttention(conversation))
+			// 4. Run the LLM only if we can, it needs attention, and /quit hasn't been received.
+			if (!wantsExit && canRunLLM && NeedsLlmAttention(conversation))
 			{
 				LlmResult result = await RunLlmTurnAsync(conversation, role!, service!, cancellationToken);
 				if (result.ExitReason == LlmExitReason.Failed)

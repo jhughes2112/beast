@@ -63,6 +63,10 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
         {
             throw;
         }
+        catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+        {
+            return null;
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[ws-client] ReceiveAsync error: {ex.Message}");

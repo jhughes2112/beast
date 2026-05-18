@@ -22,9 +22,10 @@ public static class ShellTools
 		int timeout = timeoutSeconds ?? 60;
 		if (timeout <= 0) timeout = 60;
 
-		string cwd = string.IsNullOrWhiteSpace(workingDir) || !Directory.Exists(workingDir)
-			? "/workspace"
-			: workingDir;
+		string cwd = string.IsNullOrWhiteSpace(workingDir) ? Directory.GetCurrentDirectory() : workingDir;
+
+		if (!Directory.Exists(cwd))
+			return new ToolResult($"Error: working directory does not exist: {cwd}", false);
 
 		try
 		{
@@ -78,11 +79,12 @@ public static class ShellTools
 			if (process.ExitCode != 0)
 			{
 				return new ToolResult(
-					$"Command exited with code {process.ExitCode}.\n\nStdout:\n{result}\n\nStderr:\n{err}",
+					$"Exit Code: {process.ExitCode}\n\nStdout:\n{result}\n\nStderr:\n{err}",
 					false);
 			}
 
-			return new ToolResult(string.IsNullOrEmpty(result) ? "(no output)" : result, false);
+			string stdout = string.IsNullOrEmpty(result) ? "(no output)" : result;
+			return new ToolResult($"Exit Code: 0\n\n{stdout}", false);
 		}
 		catch (OperationCanceledException)
 		{

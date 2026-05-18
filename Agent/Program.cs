@@ -38,6 +38,20 @@ public class Program
 		RoleService roleService = new RoleService(Environment.CurrentDirectory, settingsService.Settings);
 		Console.Error.WriteLine($"[agent] Roles loaded: {roleService.Roles.Count}");
 
+		string? beastHost = Environment.GetEnvironmentVariable("BEAST_HOST");
+		if (!string.IsNullOrEmpty(beastHost))
+		{
+			foreach (ProviderConfig provider in settingsService.Settings.Providers)
+			{
+				if (provider.BaseUrl.Contains("localhost") || provider.BaseUrl.Contains("127.0.0.1"))
+				{
+					string rewritten = provider.BaseUrl.Replace("localhost", beastHost).Replace("127.0.0.1", beastHost);
+					Console.Error.WriteLine($"[agent] Rewriting provider URL: {provider.BaseUrl} -> {rewritten}");
+					provider.BaseUrl = rewritten;
+				}
+			}
+		}
+
 		LlmRegistry registry = new LlmRegistry();
 		ITransportServer transport;
 		if (debug)
