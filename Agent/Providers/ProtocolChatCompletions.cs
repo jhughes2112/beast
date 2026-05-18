@@ -136,7 +136,7 @@ public class ProtocolChatCompletions : IProtocol
 
     private async Task<HttpResponseMessage> PostAsync(LlmModel model, ChatCompletionRequest request, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, CancellationToken cancellationToken)
     {
-        string url = $"{model.Endpoint}/chat/completions";
+        string url = model.Endpoint;
 
         JsonNode? node = JsonNode.Parse(JsonSerializer.Serialize(request, JsonOptions));
         JsonObject obj = node!.AsObject();

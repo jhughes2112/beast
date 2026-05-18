@@ -47,6 +47,9 @@ public class AgentOrchestrator
 		bool wantsExit = false;
 		int exitCode = 0;
 
+		// Signal to Beast that stdin is open and we are ready to receive input.
+		_transport.Status("ready");
+
 		do
 		{
 			// 1. Determine if we can run the LLM this turn.
@@ -90,6 +93,9 @@ public class AgentOrchestrator
 
 					switch (verb)
 					{
+						case "ping":
+							_transport.Status($"pong {args}");
+							break;
 						case "quit":
 							wantsExit = true;
 							break;

@@ -1,7 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Terminal.Gui;
 
 
-// Owns the full-screen terminal layout and connects DockerContext, AgentTransport, and the UI.
+// Owns the full-screen terminal layout
 public class BeastApp : IDisposable, IAsyncDisposable
 {
     private readonly string _image;
@@ -58,64 +62,39 @@ public class BeastApp : IDisposable, IAsyncDisposable
             await docker.RemoveContainerByNameAsync(containerName);
             containerId = await docker.LaunchContainerAsync("beastagent", containerName, new List<string>());
 
-            transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"), () =>
-            {
-                Console.Error.WriteLine("[beast] Agent disconnected.");
-                _cts?.Cancel();
-            });
-            transport.Start(docker);
-
             // Wire up model updates to print to stdout.
             model.MessageUpdated += msg =>
             {
                 if (msg.Type == FrameType.Output && !string.IsNullOrEmpty(msg.Content))
-                {
                     Console.WriteLine(msg.Content);
-                }
                 else if (msg.Type == FrameType.Error)
-                {
                     Console.Error.WriteLine($"[error] {msg.Content}");
-                }
                 else if (msg.Type == FrameType.Status)
-                {
                     Console.Error.WriteLine($"[status] {msg.Content}");
-                }
             };
 
-            Console.Error.WriteLine("[beast] Connected. Sending inputs...");
-            foreach (string sw in _agentSwitches)
-                await docker.SendAsync(sw);
-
-            if (_initialPrompt != null)
-                await docker.SendAsync(_initialPrompt);
-
-            // Wait for the conversation to finish (no more new messages for a while)
-            // Simple approach: wait for the model to have at least one assistant response,
-            // then wait a bit more for any trailing output.
-            int lastCount = 0;
-            int idleTicks = 0;
-            while (!cancellationToken.IsCancellationRequested)
+            transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"), () =>
             {
-                await Task.Delay(500);
-                int currentCount = model.Messages.Count;
-                if (currentCount > lastCount)
-                {
-                    lastCount = currentCount;
-                    idleTicks = 0;
-                }
-                else
-                {
-                    idleTicks++;
-                    // After 10 idle ticks (5 seconds) with no new messages, check if
-                    // the last message is from the assistant (meaning it's done)
-                    if (idleTicks >= 10 && lastCount > 0)
-                    {
-                        DisplayMessage lastMsg = model.Messages[model.Messages.Count - 1];
-                        if (lastMsg.Type == FrameType.StreamEnd || lastMsg.Type == FrameType.Output)
-                            break;
-                    }
-                }
+                Console.Error.WriteLine("[beast] Agent disconnected.");
+                _cts?.Cancel();
+            }, async () =>
+            {
+                Console.Error.WriteLine("[beast] Agent ready. Sending inputs...");
+                foreach (string sw in _agentSwitches)
+                    await docker.SendAsync(sw);
+
+                if (_initialPrompt != null)
+                    await docker.SendAsync(_initialPrompt);
+
+                await docker.SendAsync("/quit");
+            });
+            transport.Start(docker);
+
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
             }
+            catch (OperationCanceledException) { }
         }
         catch (Exception ex)
         {
@@ -247,20 +226,28 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 containerName,
                 new List<string>());
 
-            _transport = new AgentTransport(_model!, SetStatus, () =>
+            _transport = new AgentTransport(_model!, status =>
+            {
+                SetStatus(status);
+            }, () =>
             {
                 SetStatus("Agent disconnected.");
                 _cts?.Cancel();
+            }, () =>
+            {
+                // Transport confirmed round-trip; send any startup inputs now.
+                Task.Run(async () =>
+                {
+                    foreach (string sw in _agentSwitches)
+                        await SendPromptAsync(sw);
+
+                    if (_initialPrompt != null)
+                        await SendPromptAsync(_initialPrompt);
+                });
             });
             _transport.Start(_docker);
 
-            SetStatus("Connected.");
-
-            foreach (string sw in _agentSwitches)
-                await SendPromptAsync(sw);
-
-            if (_initialPrompt != null)
-                await SendPromptAsync(_initialPrompt);
+            SetStatus("Connecting...");
         }
         catch (Exception ex)
         {

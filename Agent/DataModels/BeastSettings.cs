@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 
@@ -34,8 +36,10 @@ public class ProviderConfig
 
     // Provider-specific key/value pairs. Used to pass vendor-specific options
     // (e.g. routing preferences for OpenRouter) without changing the schema.
+    // Values are JsonNode so structured payloads (arrays, objects) are supported
+    // alongside plain strings. Null values and empty strings are skipped.
     [JsonPropertyName("extras")]
-    public Dictionary<string, string> Extras { get; set; } = new();
+    public Dictionary<string, JsonNode?> Extras { get; set; } = new();
 }
 
 public class ModelConfig
@@ -57,8 +61,10 @@ public class ModelConfig
 
     // Per-model overrides. header_* keys become HTTP headers; everything else is injected
     // as top-level JSON payload fields, overriding the typed fields above when names match.
+    // Values are JsonNode so structured payloads (arrays, objects) are supported
+    // alongside plain strings. Null values and empty strings are skipped.
     [JsonPropertyName("extras")]
-    public Dictionary<string, string> Extras { get; set; } = new();
+    public Dictionary<string, JsonNode?> Extras { get; set; } = new();
 }
 
 public class CostConfig
@@ -84,6 +90,8 @@ public class WebSearchConfig
 }
 
 // Configuration for web search via the OpenRouter plugin API.
+// Extras are injected as top-level JSON payload fields on the chat completion request,
+// so structured values like the plugins array can be declared in settings.
 public class OpenrouterSearchConfig
 {
     [JsonPropertyName("endpoint")]
@@ -98,4 +106,21 @@ public class OpenrouterSearchConfig
     // Model used to invoke the web search plugin.
     [JsonPropertyName("model")]
     public string Model { get; set; } = "openai/gpt-4o-mini";
+
+    // Extra key/value pairs injected into the chat completion payload.
+    // header_* keys become HTTP headers; or_* keys control OpenRouter routing;
+    // everything else is merged verbatim as a top-level JSON field.
+    // Values are JsonNode so structured payloads (arrays, objects) are supported.
+    [JsonPropertyName("extras")]
+    public Dictionary<string, JsonNode?> Extras { get; set; } = new();
+
+    public LlmModel BuildModel()
+    {
+        return new LlmModel(
+            configId: "websearch",
+            endpoint: Endpoint,
+            apiKey: ApiKey,
+            extras: Extras,
+            config: new ModelConfig { Id = Model, Name = Model });
+    }
 }

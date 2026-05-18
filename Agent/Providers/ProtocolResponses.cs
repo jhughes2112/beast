@@ -96,8 +96,7 @@ public class ProtocolResponses : IProtocol
             // null means the provider rejected streaming; fall through to non-streaming
         }
 
-        string url = $"{model.Endpoint}/responses";
-        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
+        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
@@ -179,8 +178,7 @@ public class ProtocolResponses : IProtocol
         JsonObject streamBody = JsonNode.Parse(body.ToJsonString())!.AsObject();
         streamBody["stream"] = true;
 
-        string url = $"{model.Endpoint}/responses";
-        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
+        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(streamBody.ToJsonString(), Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 

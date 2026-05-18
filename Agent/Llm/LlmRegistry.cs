@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Nodes;
 
 
 // Flat registry of LLM models and their live service instances, keyed by config ID.
@@ -37,10 +38,10 @@ public class LlmRegistry
 				if (!modelConfig.Enabled)
 					continue;
 
-				Dictionary<string, string> extras = new Dictionary<string, string>(provider.Extras);
-				foreach (KeyValuePair<string, string> kv in modelConfig.Extras)
+				Dictionary<string, JsonNode?> extras = new(provider.Extras);
+				foreach (KeyValuePair<string, JsonNode?> kv in modelConfig.Extras)
 				{
-					extras[kv.Key] = kv.Value;
+					extras[kv.Key] = kv.Value?.DeepClone();
 				}
 				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, extras, modelConfig);
 				_models[modelConfig.Id] = model;

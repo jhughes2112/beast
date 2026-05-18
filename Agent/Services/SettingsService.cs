@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 
 // Loads and manages beast settings from multiple locations with priority.
@@ -34,18 +35,21 @@ public class SettingsService
 		{
 			string json = File.ReadAllText(_workDirSettingsPath);
 			bs = JsonSerializer.Deserialize<BeastSettings>(json);
+			Console.Error.WriteLine($"[settings] Loaded from workdir: {_workDirSettingsPath}");
 		}
-		if (bs==null && File.Exists(_homeDirSettingsPath))
+		if (bs == null && File.Exists(_homeDirSettingsPath))
 		{
 			string json = File.ReadAllText(_homeDirSettingsPath);
 			bs = JsonSerializer.Deserialize<BeastSettings>(json);
+			Console.Error.WriteLine($"[settings] Loaded from homedir: {_homeDirSettingsPath}");
 		}
 
-		if (bs==null)
+		if (bs == null)
 		{
 			bs = CreateDefaultSettings();
 			Settings = bs;
 			SaveSettings();
+			Console.Error.WriteLine($"[settings] No settings found, wrote defaults to: {_workDirSettingsPath}");
 		}
 		else
 		{
@@ -88,26 +92,26 @@ public class SettingsService
 							Enabled = false,
 							ContextWindow = 131078,
 							Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
-							Extras = new Dictionary<string, string>
+							Extras = new Dictionary<string, JsonNode?>
 							{
-								{ "temperature", "" },
-								{ "top_p", "" },
-								{ "frequency_penalty", "" },
+								{ "temperature", JsonValue.Create("") },
+								{ "top_p", JsonValue.Create("") },
+								{ "frequency_penalty", JsonValue.Create("") },
 							}
 						}
 					},
-					Extras = new Dictionary<string, string>
+					Extras = new Dictionary<string, JsonNode?>
 					{
-						{ "or_provider_order", "" },
-						{ "or_provider_only", "" },
-						{ "or_provider_ignore", "" },
-						{ "or_provider_sort", "" },
-						{ "or_provider_allow_fallbacks", "" },
-						{ "or_provider_require_parameters", "" },
-						{ "or_provider_data_collection", "" },
-						{ "or_provider_zdr", "" },
-						{ "or_user", "" },
-						{ "or_models", "" },
+						{ "or_provider_order", JsonValue.Create("") },
+						{ "or_provider_only", JsonValue.Create("") },
+						{ "or_provider_ignore", JsonValue.Create("") },
+						{ "or_provider_sort", JsonValue.Create("") },
+						{ "or_provider_allow_fallbacks", JsonValue.Create("") },
+						{ "or_provider_require_parameters", JsonValue.Create("") },
+						{ "or_provider_data_collection", JsonValue.Create("") },
+						{ "or_provider_zdr", JsonValue.Create("") },
+						{ "or_user", JsonValue.Create("") },
+						{ "or_models", JsonValue.Create("") },
 					}
 				},
 				// Anthropic — direct API
@@ -124,12 +128,12 @@ public class SettingsService
 							Enabled = false,
 							ContextWindow = 200000,
 							Cost = new CostConfig { Input = 3.00m, Output = 15.00m, CacheWrite = 0.0m, CacheRead = 0.0m },
-							Extras = new Dictionary<string, string>
+							Extras = new Dictionary<string, JsonNode?>
 							{
 							}
 						}
 					},
-					Extras = new Dictionary<string, string>()
+					Extras = new Dictionary<string, JsonNode?>()
 				},
 				// OpenAI — direct API (Responses protocol)
 				new ProviderConfig
@@ -145,20 +149,20 @@ public class SettingsService
 							Enabled = false,
 							ContextWindow = 400000,
 							Cost = new CostConfig { Input = 0.05m, Output = 0.40m, CacheRead = 0.005m, CacheWrite = 0.0m },
-							Extras = new Dictionary<string, string>
+							Extras = new Dictionary<string, JsonNode?>
 							{
-								{ "temperature", "" },
-								{ "top_p", "" },
-								{ "frequency_penalty", "" },
+								{ "temperature", JsonValue.Create("") },
+								{ "top_p", JsonValue.Create("") },
+								{ "frequency_penalty", JsonValue.Create("") },
 							}
 						}
 					},
-					Extras = new Dictionary<string, string>
+					Extras = new Dictionary<string, JsonNode?>
 					{
-						{ "header_OpenAI-Organization", "" },
-						{ "header_OpenAI-Project", "" },
-						{ "store", "" },
-						{ "metadata", "" },
+						{ "header_OpenAI-Organization", JsonValue.Create("") },
+						{ "header_OpenAI-Project", JsonValue.Create("") },
+						{ "store", JsonValue.Create("") },
+						{ "metadata", JsonValue.Create("") },
 					}
 				},
 				// Ollama — local models
@@ -175,10 +179,10 @@ public class SettingsService
 							Enabled = false,
 							ContextWindow = 32768,
 							Cost = new CostConfig { Input = 0.0m, Output = 0.0m },
-							Extras = new Dictionary<string, string>()
+							Extras = new Dictionary<string, JsonNode?>()
 						}
 					},
-					Extras = new Dictionary<string, string>()
+					Extras = new Dictionary<string, JsonNode?>()
 				}
 			},
 			WebSearch = new WebSearchConfig
@@ -188,7 +192,13 @@ public class SettingsService
 					Endpoint = "https://openrouter.ai/api/v1/chat/completions",
 					ApiKey = "YOUR_OPENROUTER_KEY_HERE",
 					Enabled = false,
-					Model = "baidu/cobuddy:free"
+					Model = "baidu/cobuddy:free",
+					Extras = new Dictionary<string, JsonNode?>
+					{
+						{ "plugins", new JsonArray(new JsonObject { ["id"] = "web" }) },
+						{ "temperature", JsonValue.Create(0) },
+						{ "max_tokens", JsonValue.Create(4096) }
+					}
 				}
 			}
 		};

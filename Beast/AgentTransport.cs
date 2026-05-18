@@ -12,6 +12,7 @@ public class AgentTransport : IDisposable
     private readonly ConversationModel _model;
     private readonly Action<string> _onStatus;
     private readonly Action _onDisconnected;
+    private readonly Action _onReady;
     private readonly FrameParser _parser = new FrameParser();
 
     private int _nextIndex = 0;
@@ -21,16 +22,22 @@ public class AgentTransport : IDisposable
 
     private CancellationTokenSource? _cts;
     private Task? _readTask;
+    private DockerContext? _docker;
+    private string? _pingNonce;
+    private bool _readyFired;
 
-    public AgentTransport(ConversationModel model, Action<string> onStatus, Action onDisconnected)
+    public AgentTransport(ConversationModel model, Action<string> onStatus, Action onDisconnected, Action onReady)
     {
         _model = model;
         _onStatus = onStatus;
         _onDisconnected = onDisconnected;
+        _onReady = onReady;
     }
 
     public void Start(DockerContext docker)
     {
+        _docker = docker;
+        _readyFired = false;
         _cts = new CancellationTokenSource();
         CancellationToken token = _cts.Token;
         _readTask = Task.Run(() => ReadLoop(docker, token), token);
@@ -60,6 +67,7 @@ public class AgentTransport : IDisposable
 
             if (eof) break;
 
+            Console.Error.WriteLine($"[transport] Read {count} bytes");
             _parser.Feed(buffer, count);
 
             List<(FrameType Type, string Content)> frames = _parser.TakeFrames();
@@ -104,7 +112,29 @@ public class AgentTransport : IDisposable
 
             case FrameType.Status:
             {
-                _onStatus(content);
+                Console.Error.WriteLine($"[transport] Status frame: '{content}' (nonce={_pingNonce ?? "null"}, readyFired={_readyFired})");
+                if (content == "ready")
+                {
+                    // Agent signals it is up; send a ping with a unique nonce to verify the round-trip.
+                    _pingNonce = Guid.NewGuid().ToString("N");
+                    string nonce = _pingNonce;
+                    Console.Error.WriteLine($"[transport] Sending /ping {nonce}");
+                    Task.Run(async () =>
+                    {
+                        try { await _docker!.SendAsync($"/ping {nonce}"); } catch (Exception ex) { Console.Error.WriteLine($"[transport] ping send failed: {ex.Message}"); }
+                    });
+                }
+                else if (_pingNonce != null && content == $"pong {_pingNonce}" && !_readyFired)
+                {
+                    // Nonce matched — confirmed round-trip to this specific Agent instance.
+                    Console.Error.WriteLine($"[transport] Pong matched, firing onReady");
+                    _readyFired = true;
+                    _onReady();
+                }
+                else
+                {
+                    _onStatus(content);
+                }
                 break;
             }
 

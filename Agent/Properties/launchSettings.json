@@ -1,1 +1,9 @@
-{}
+{
+  "profiles": {
+    "Debug": {
+      "commandName": "Project",
+      "commandLineArgs": "--debug",
+      "workingDirectory": "d:\\beast"
+    }
+  }
+}

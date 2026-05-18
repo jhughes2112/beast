@@ -331,7 +331,7 @@ public class ProtocolAnthropic : IProtocol
     {
         try
         {
-            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, $"{endpoint}/messages");
+            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpoint);
             req.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
             req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
             req.Content = new StringContent("{}", Encoding.UTF8, "application/json");

@@ -67,17 +67,15 @@ public static class ToolFactory
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
-            WebSearchOpenrouter webSearch = new(webSearchConfig.Openrouter);
+            WebSearchOpenrouter webSearch = new(webSearchConfig.Openrouter.BuildModel());
             Register(tools, "search_web",
-                "Search the web and return results.",
+                "Search the web using a natural language question or search query.",
                 Params(
-                    Req("query", "string", "The search query to use."),
-                    Opt("max_results", "string", "Maximum number of results to return (1-20). Pass empty string for default of 5.")),
+                    Req("query", "string", "The search query or natural language question to answer using the web.")),
                 async (args, ct) =>
                 {
                     string query = Str(args, "query");
-                    string maxResults = Str(args, "max_results");
-                    return Truncate(await webSearch.SearchWebAsync(query, maxResults, ct));
+                    return Truncate(await webSearch.SearchWebAsync(query, ct));
                 });
         }
 

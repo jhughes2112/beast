@@ -210,7 +210,7 @@ public static class TransportTests
     {
         ConversationModel model = new ConversationModel();
         List<string> statuses = new List<string>();
-        AgentTransport transport = new AgentTransport(model, (s) => statuses.Add(s), () => { });
+        AgentTransport transport = new AgentTransport(model, (s) => statuses.Add(s), () => { }, () => { });
 
         // Simulate a Status frame arriving.
         string wire = MakeWireFrame(FrameType.Status, "Agent ready");

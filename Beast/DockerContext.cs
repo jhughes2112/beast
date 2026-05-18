@@ -1,3 +1,8 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 
@@ -5,7 +10,8 @@ using Docker.DotNet.Models;
 public class DockerContext : IDisposable
 {
     private readonly DockerClient _dockerClient;
-    private MultiplexedStream? _stdio;
+    private MultiplexedStream? _readStream;   // stdout+stderr only — kept open for ReadOutputAsync
+    private MultiplexedStream? _writeStream;  // stdin only — kept open for WriteAsync
 
     public DockerContext()
     {
@@ -53,15 +59,23 @@ public class DockerContext : IDisposable
         string containerId = response.ID;
         Console.Error.WriteLine($"[docker] Container created: {containerId}");
 
-        // Attach before starting to avoid missing output written at startup
-        ContainerAttachParameters attachParams = new ContainerAttachParameters
+        // Attach before starting to avoid missing output written at startup.
+        // Two separate connections so read and write never share a stream and cannot deadlock.
+        _readStream = await _dockerClient.Containers.AttachContainerAsync(containerId, false, new ContainerAttachParameters
         {
-            Stdin = true,
+            Stdin = false,
             Stdout = true,
             Stderr = true,
             Stream = true
-        };
-        _stdio = await _dockerClient.Containers.AttachContainerAsync(containerId, false, attachParams);
+        });
+
+        _writeStream = await _dockerClient.Containers.AttachContainerAsync(containerId, false, new ContainerAttachParameters
+        {
+            Stdin = true,
+            Stdout = false,
+            Stderr = false,
+            Stream = true
+        });
 
         await _dockerClient.Containers.StartContainerAsync(containerId, new ContainerStartParameters());
         Console.Error.WriteLine($"[docker] Container started: {name}");
@@ -73,18 +87,18 @@ public class DockerContext : IDisposable
     // Wire format: [type,length]content---
     public async Task SendAsync(string text)
     {
-        if (_stdio == null) return;
+        if (_writeStream == null) return;
         byte[] contentBytes = System.Text.Encoding.UTF8.GetBytes(text);
         string frame = $"[{(byte)FrameType.Output},{contentBytes.Length}]{text}---";
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(frame);
-        await _stdio.WriteAsync(bytes, 0, bytes.Length, default);
+        await _writeStream.WriteAsync(bytes, 0, bytes.Length, default);
     }
 
     // Reads raw bytes from the container's stdout/stderr. Returns (count, eof).
     public async Task<(int Count, bool EOF)> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token)
     {
-        if (_stdio == null) return (0, true);
-        MultiplexedStream.ReadResult result = await _stdio.ReadOutputAsync(buffer, offset, count, token);
+        if (_readStream == null) return (0, true);
+        MultiplexedStream.ReadResult result = await _readStream.ReadOutputAsync(buffer, offset, count, token);
         return (result.Count, result.EOF);
     }
 
@@ -139,7 +153,8 @@ public class DockerContext : IDisposable
 
     public void Dispose()
     {
-        _stdio?.Dispose();
+        _readStream?.Dispose();
+        _writeStream?.Dispose();
         _dockerClient.Dispose();
     }
 }

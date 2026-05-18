@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
 // Beast CLI -- launches the Agent docker container and communicates with it over stdio.
 public class Program
 {

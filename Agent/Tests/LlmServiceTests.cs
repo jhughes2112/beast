@@ -34,7 +34,7 @@ public static class LlmServiceTests
 			ContextWindow = 128000,
 			Cost = new CostConfig { Input = 0m, Output = 0m }
 		};
-		LlmModel model = new LlmModel(config.Id, "https://test.example.com/v1", "test-key", new System.Collections.Generic.Dictionary<string, string>(), config);
+		LlmModel model = new LlmModel(config.Id, "https://test.example.com/v1", "test-key", new System.Collections.Generic.Dictionary<string, JsonNode?>(), config);
 		LlmService svc = new LlmService(model);
 		return svc;
 	}

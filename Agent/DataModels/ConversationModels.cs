@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 
@@ -20,6 +21,12 @@ public class ConversationMessage
     [JsonPropertyName("tool_call_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ToolCallId { get; set; }
+
+    // OpenRouter web search plugin populates this with url_citation entries.
+    // Ignored when null so it does not pollute outbound conversation history.
+    [JsonPropertyName("annotations")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<JsonElement>? Annotations { get; set; }
 }
 
 public class ConversationToolCall

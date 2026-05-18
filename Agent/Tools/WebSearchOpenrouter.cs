@@ -4,40 +4,58 @@ using System.ComponentModel;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
 
 // Web search via the OpenRouter plugin API.
-// Requires an OpenrouterSearchConfig from settings.
+// Routes through ProtocolChatCompletions directly — no endpoint probe needed.
+// LlmModel is built once from settings at construction time.
 public class WebSearchOpenrouter
 {
-    private readonly OpenrouterSearchConfig _config;
-    private static readonly HttpClient SharedHttpClient = new();
-    private static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(60);
+    private readonly LlmModel _model;
+    private readonly ProtocolChatCompletions _protocol = new ProtocolChatCompletions();
 
-    public WebSearchOpenrouter(OpenrouterSearchConfig config)
+    public WebSearchOpenrouter(LlmModel model)
     {
-        _config = config;
+        _model = model;
     }
 
-    [Description("Search the web for information via OpenRouter's web search plugin. Returns a list of search results with titles, URLs, and snippets.")]
+    [Description("Search the web using OpenRouter's web search plugin. The query can be a natural language question or instruction, not just keywords — e.g. 'Show me how to call the Foo API and explain each parameter'.")]
     public async Task<ToolResult> SearchWebAsync(
-        [Description("The search query to use.")] string query,
-        [Description("Maximum number of results to return (1-20). Pass empty string for default of 5.")] string maxResults,
+        [Description("The search query or natural language question to answer using the web.")] string query,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
             return new ToolResult("Error: Search query cannot be empty.", false);
 
-        int limit = 5;
-        if (!string.IsNullOrWhiteSpace(maxResults) && int.TryParse(maxResults, out int parsed))
-            limit = Math.Clamp(parsed, 1, 20);
-
         try
         {
-            string result = await SearchAsync(query, limit, cancellationToken);
-            return new ToolResult(result, false);
+            (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = ProtocolProxy.BuildExtras(_model.Extras, _model.Endpoint);
+
+            List<ConversationMessage> messages = new()
+            {
+                new ConversationMessage { Role = "user", Content = query }
+            };
+
+            int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
+
+            ProviderCallResult result = await _protocol.ExecuteAsync(
+                _model, messages, new List<ToolDefinition>(), maxTokens, headers, payload, null, cancellationToken);
+
+            if (result.Outcome == ProviderCallOutcome.Success)
+            {
+                return new ToolResult(ParseResponse(result.Payload!.Message), false);
+            }
+            else if (result.Outcome == ProviderCallOutcome.RateLimited)
+            {
+                return new ToolResult("Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, false);
+            }
+            else
+            {
+                return new ToolResult("Error: OpenRouter search failed: " + result.ErrorMessage, false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -53,94 +71,48 @@ public class WebSearchOpenrouter
         }
     }
 
-    private async Task<string> SearchAsync(string query, int maxResults, CancellationToken cancellationToken)
+    // Reads an integer value from the model extras, falling back to the given default.
+    private int GetIntExtra(string key, int defaultValue)
     {
-        string pluginJson = "{\"id\":\"web\",\"max_results\":" + maxResults + "}";
-        string requestJson = "{\"model\":\"" + _config.Model + "\",\"messages\":[{\"role\":\"user\",\"content\":" + JsonSerializer.Serialize(query) + "}],\"plugins\":[" + pluginJson + "],\"temperature\":0,\"max_tokens\":1024}";
-
-        HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, _config.Endpoint.TrimEnd('/') + "/chat/completions");
-        request.Headers.Add("Authorization", "Bearer " + _config.ApiKey);
-        request.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-
-        using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(SearchTimeout);
-        HttpResponseMessage response = await SharedHttpClient.SendAsync(request, cts.Token);
-        string responseBody = await response.Content.ReadAsStringAsync(cts.Token);
-
-        if (!response.IsSuccessStatusCode)
-            return "Error: OpenRouter returned HTTP " + (int)response.StatusCode + ": " + responseBody;
-
-        return ParseResponse(responseBody);
+        if (_model.Extras.TryGetValue(key, out JsonNode? node) &&
+            node is JsonValue jv &&
+            jv.TryGetValue<int>(out int v))
+        {
+            return v;
+        }
+        return defaultValue;
     }
 
-    private static string ParseResponse(string json)
+    private static string ParseResponse(ConversationMessage message)
     {
-        using JsonDocument doc = JsonDocument.Parse(json);
-        JsonElement root = doc.RootElement;
+        string content = message.Content ?? "";
 
-        if (root.TryGetProperty("error", out JsonElement errorEl))
-        {
-            string errorMsg = errorEl.TryGetProperty("message", out JsonElement msgEl) ? msgEl.GetString() ?? "Unknown error" : "Unknown error";
-            return "Error: OpenRouter search failed: " + errorMsg;
-        }
+        if (message.Annotations == null || message.Annotations.Count == 0)
+            return string.IsNullOrWhiteSpace(content) ? "No search results found." : content;
 
-        string content = "";
+        // Collect citation references to append after the answer.
         List<string> citations = new();
-
-        if (root.TryGetProperty("choices", out JsonElement choices))
+        int index = 1;
+        foreach (JsonElement annotation in message.Annotations)
         {
-            foreach (JsonElement choice in choices.EnumerateArray())
-            {
-                if (choice.TryGetProperty("message", out JsonElement message))
-                {
-                    if (message.TryGetProperty("content", out JsonElement contentEl))
-                        content = contentEl.GetString() ?? "";
+            if (!annotation.TryGetProperty("url_citation", out JsonElement citation)) continue;
 
-                    if (message.TryGetProperty("annotations", out JsonElement annotations))
-                    {
-                        int index = 1;
-                        foreach (JsonElement annotation in annotations.EnumerateArray())
-                        {
-                            if (annotation.TryGetProperty("url_citation", out JsonElement citation))
-                            {
-                                string title = citation.TryGetProperty("title", out JsonElement t) ? t.GetString() ?? "" : "";
-                                string url = citation.TryGetProperty("url", out JsonElement u) ? u.GetString() ?? "" : "";
-                                string snippet = citation.TryGetProperty("content", out JsonElement s) ? s.GetString() ?? "" : "";
+            string title = citation.TryGetProperty("title", out JsonElement t) ? t.GetString() ?? "" : "";
+            string url = citation.TryGetProperty("url", out JsonElement u) ? u.GetString() ?? "" : "";
 
-                                StringBuilder entry = new StringBuilder();
-                                entry.AppendLine(index + ". " + title);
-                                entry.AppendLine("   URL: " + url);
-                                if (!string.IsNullOrEmpty(snippet))
-                                {
-                                    if (snippet.Length > 300) snippet = snippet.Substring(0, 300) + "...";
-                                    entry.AppendLine("   " + snippet);
-                                }
-                                citations.Add(entry.ToString().TrimEnd());
-                                index++;
-                            }
-                        }
-                    }
-                }
-                break;
-            }
+            citations.Add($"[{index}] {title} — {url}");
+            index++;
         }
 
-        if (citations.Count > 0)
-        {
-            StringBuilder sb = new StringBuilder();
-            foreach (string c in citations)
-            {
-                sb.AppendLine(c);
-                sb.AppendLine();
-            }
-            if (!string.IsNullOrWhiteSpace(content))
-            {
-                sb.AppendLine("---");
-                sb.AppendLine(content);
-            }
-            return sb.ToString().TrimEnd();
-        }
+        if (citations.Count == 0 || string.IsNullOrWhiteSpace(content))
+            return string.IsNullOrWhiteSpace(content) ? "No search results found." : content;
 
-        return string.IsNullOrWhiteSpace(content) ? "No search results found." : content;
+        StringBuilder sb = new();
+        sb.AppendLine(content);
+        sb.AppendLine();
+        sb.AppendLine("Sources:");
+        foreach (string c in citations)
+            sb.AppendLine(c);
+        return sb.ToString().TrimEnd();
     }
 }

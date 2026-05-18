@@ -7,6 +7,13 @@ public class Program
 {
 	public static async Task<int> Main(string[] args)
 	{
+		bool debug = false;
+		foreach (string arg in args)
+		{
+			if (arg == "--debug" || arg == "/debug")
+				debug = true;
+		}
+
 		using CancellationTokenSource cts = new CancellationTokenSource();
 		Console.CancelKeyPress += (sender, e) =>
 		{
@@ -14,10 +21,13 @@ public class Program
 			cts.Cancel();
 		};
 
+		Console.Error.WriteLine($"[agent] Starting (debug={debug}, cwd={Environment.CurrentDirectory})");
+
 		SettingsService settingsService;
 		try
 		{
 			settingsService = new SettingsService(Environment.CurrentDirectory);
+			Console.Error.WriteLine($"[agent] Settings loaded.");
 		}
 		catch (InvalidOperationException ex)
 		{
@@ -26,9 +36,12 @@ public class Program
 		}
 
 		RoleService roleService = new RoleService(Environment.CurrentDirectory);
+		Console.Error.WriteLine($"[agent] Roles loaded: {roleService.Roles.Count}");
+
 		LlmRegistry registry = new LlmRegistry();
-		TransportFramedStdio transport = new TransportFramedStdio();
+		IFramedTransport transport = debug ? new TransportConsoleDebug() : new TransportFramedStdio();
 		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport);
+		Console.Error.WriteLine("[agent] Orchestrator ready, entering loop.");
 
 		int exitCode;
 		try
@@ -48,6 +61,7 @@ public class Program
 		{
 		}
 
+		Console.Error.WriteLine($"[agent] Exiting with code {exitCode}.");
 		return exitCode;
 	}
 }

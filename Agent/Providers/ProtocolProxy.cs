@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,7 +13,7 @@ using System.Threading.Tasks;
 // Extras key conventions:
 //   header_<name>  — added verbatim as an HTTP request header
 //   or_*           — OpenRouter-specific (see below); injected as structured fields
-//   Anything else  — added verbatim as a top-level JSON payload field (string value)
+//   Anything else  — added verbatim as a top-level JSON payload field (string, array, object, etc.)
 //
 // OpenRouter extras (or_*):
 //   or_provider_order              — comma-separated provider names, e.g. "Anthropic,OpenAI"
@@ -24,7 +25,7 @@ using System.Threading.Tasks;
 //   or_provider_only               — comma-separated provider names; restricts routing strictly
 //   or_provider_zdr                — "true" to restrict to zero-data-retention endpoints
 //   or_user                        — stable identifier for your end-user (abuse detection)
-//   or_models                      — comma-separated fallback model names
+//   or_models                      — comma-separated fallback model names (string) or JSON array of model names
 public class ProtocolProxy
 {
     private const string OpenRouterReferer = "https://mooncast.productions";
@@ -46,7 +47,7 @@ public class ProtocolProxy
             _protocol = await DetectProtocolAsync(_model);
         }
 
-        (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model);
+        (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
         return await _protocol.ExecuteAsync(_model, messages, tools, maxCompletionTokens, headers, payload, stream, cancellationToken);
     }
 
@@ -74,10 +75,20 @@ public class ProtocolProxy
         return new ProtocolChatCompletions();
     }
 
+    // Returns true if a JsonNode represents an "empty" extra value that should be skipped.
+    // Null nodes and empty-string JsonValues are skipped so settings files can contain
+    // self-documenting placeholder keys. Non-string nodes (arrays, objects, numbers) are
+    // never skipped — they are always intentional.
+    private static bool IsEmptyExtra(JsonNode? node) =>
+        node is null ||
+        (node is JsonValue jv && jv.TryGetValue<string>(out var s) && string.IsNullOrEmpty(s));
+
     // Builds the extra-headers and extra-payload dictionaries from Extras.
     // OpenRouter headers are always injected; or_* extras populate the provider routing block.
-    // header_* keys become HTTP headers; everything else goes directly into the payload.
-    private static (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) BuildExtras(LlmModel model)
+    // header_* keys become HTTP headers; everything else goes directly into the payload
+    // as a JsonNode, preserving structured values (arrays, objects) verbatim.
+    public static (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) BuildExtras(
+        Dictionary<string, JsonNode?> extras, string endpoint)
     {
         Dictionary<string, string> headers = new();
         Dictionary<string, JsonNode?> payload = new();
@@ -92,70 +103,84 @@ public class ProtocolProxy
         bool hasOrProvider = false;
 
         // Default allow_fallbacks to true when talking to OpenRouter.
-        if (model.Endpoint.Contains("openrouter.ai", System.StringComparison.OrdinalIgnoreCase))
+        if (endpoint.Contains("openrouter.ai", System.StringComparison.OrdinalIgnoreCase))
         {
             orProvider["allow_fallbacks"] = JsonValue.Create(true);
             hasOrProvider = true;
         }
 
-        foreach (KeyValuePair<string, string> kv in model.Extras)
+        foreach (KeyValuePair<string, JsonNode?> kv in extras)
         {
             string key = kv.Key;
-            string value = kv.Value;
+            JsonNode? value = kv.Value;
 
-            if (string.IsNullOrEmpty(value))  // empty values are ignored, so the settings file can be self-documenting
+            if (IsEmptyExtra(value))  // empty/null values are ignored, so the settings file can be self-documenting
                 continue;
 
             if (key.StartsWith("header_"))
             {
-                headers[key.Substring("header_".Length)] = value;
+                headers[key.Substring("header_".Length)] = value!.ToString();
             }
             else if (key == "or_user")
             {
-                payload["user"] = JsonValue.Create(value);
+                payload["user"] = value!.DeepClone();
             }
             else if (key == "or_models")
             {
-                JsonArray arr = BuildCsvArray(value);
-                if (arr.Count > 0) payload["models"] = arr;
+                if (value!.GetValueKind() == JsonValueKind.String)
+                {
+                    string str = value.ToString();
+                    if (!string.IsNullOrEmpty(str))
+                    {
+                        JsonArray arr = BuildCsvArray(str);
+                        if (arr.Count > 0) payload["models"] = arr;
+                    }
+                }
+                else if (value.GetValueKind() == JsonValueKind.Array)
+                {
+                    payload["models"] = (JsonArray)value;
+                }
             }
             else if (key.StartsWith("or_provider_"))
             {
                 string field = key.Substring("or_provider_".Length);
+                string str = value!.ToString();
                 switch (field)
                 {
                     case "order":
-                        JsonArray order = BuildCsvArray(value);
+                        JsonArray order = BuildCsvArray(str);
                         if (order.Count > 0) { orProvider["order"] = order; hasOrProvider = true; }
                         break;
                     case "only":
-                        JsonArray only = BuildCsvArray(value);
+                        JsonArray only = BuildCsvArray(str);
                         if (only.Count > 0) { orProvider["only"] = only; hasOrProvider = true; }
                         break;
                     case "ignore":
-                        JsonArray ignore = BuildCsvArray(value);
+                        JsonArray ignore = BuildCsvArray(str);
                         if (ignore.Count > 0) { orProvider["ignore"] = ignore; hasOrProvider = true; }
                         break;
                     case "sort":
-                        orProvider["sort"] = JsonValue.Create(value); hasOrProvider = true;
+                        orProvider["sort"] = JsonValue.Create(str); hasOrProvider = true;
                         break;
                     case "allow_fallbacks":
-                        orProvider["allow_fallbacks"] = JsonValue.Create(value != "false"); hasOrProvider = true;
+                        orProvider["allow_fallbacks"] = JsonValue.Create(str != "false"); hasOrProvider = true;
                         break;
                     case "require_parameters":
-                        if (value == "true") { orProvider["require_parameters"] = JsonValue.Create(true); hasOrProvider = true; }
+                        if (str == "true") { orProvider["require_parameters"] = JsonValue.Create(true); hasOrProvider = true; }
                         break;
                     case "data_collection":
-                        orProvider["data_collection"] = JsonValue.Create(value); hasOrProvider = true;
+                        orProvider["data_collection"] = JsonValue.Create(str); hasOrProvider = true;
                         break;
                     case "zdr":
-                        if (value == "true") { orProvider["zdr"] = JsonValue.Create(true); hasOrProvider = true; }
+                        if (str == "true") { orProvider["zdr"] = JsonValue.Create(true); hasOrProvider = true; }
                         break;
                 }
             }
             else
             {
-                payload[key] = JsonValue.Create(value);
+                // Generic extra — pass the JsonNode verbatim into the payload.
+                // This supports strings, arrays, objects, numbers, booleans, etc.
+                payload[key] = value!.DeepClone();
             }
         }
 
