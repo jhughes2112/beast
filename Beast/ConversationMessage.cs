@@ -93,7 +93,7 @@ public class ConversationModel
         if (mode == CollapseMode.Quiet) return true;
         if (mode == CollapseMode.Verbose) return false;
 
-        // Minimized: collapse Tool, Thinking, System; expand everything else.
-        return type == FrameType.Tool || type == FrameType.Thinking || type == FrameType.System;
+        // Minimized: collapse Tool, Thinking, System, Debug; expand everything else.
+        return type == FrameType.Tool || type == FrameType.Thinking || type == FrameType.System || type == FrameType.Debug;
     }
 }

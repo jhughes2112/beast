@@ -152,7 +152,7 @@ public static class TransportTests
     private static void TestAgentTransportProcessing(TestContext ctx)
     {
         ConversationModel model = new ConversationModel();
-        BeastApp transport = new BeastApp("test", new List<string>(), true);
+        BeastApp transport = new BeastApp("test", new List<string>(), new DisplayConsole());
         Reflect.SetField(transport, "_model", model);
 
         // Simulate a Status frame arriving — should not add to the model.

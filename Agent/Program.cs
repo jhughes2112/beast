@@ -21,13 +21,10 @@ public class Program
 			cts.Cancel();
 		};
 
-		Console.Error.WriteLine($"[agent] Starting (debug={debug}, cwd={Environment.CurrentDirectory})");
-
 		SettingsService settingsService;
 		try
 		{
 			settingsService = new SettingsService(Environment.CurrentDirectory);
-			Console.Error.WriteLine($"[agent] Settings loaded.");
 		}
 		catch (InvalidOperationException ex)
 		{
@@ -36,7 +33,6 @@ public class Program
 		}
 
 		RoleService roleService = new RoleService(Environment.CurrentDirectory, settingsService.Settings);
-		Console.Error.WriteLine($"[agent] Roles loaded: {roleService.Roles.Count}");
 
 		string? beastHost = Environment.GetEnvironmentVariable("BEAST_HOST");
 		if (!string.IsNullOrEmpty(beastHost))
@@ -65,7 +61,6 @@ public class Program
 			transport = wsServer;
 		}
 		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport);
-		Console.Error.WriteLine("[agent] Orchestrator ready, entering loop.");
 
 		int exitCode;
 		try
@@ -81,11 +76,7 @@ public class Program
 			Console.Error.WriteLine($"Agent terminated with error: {ex.Message}");
 			exitCode = 1;
 		}
-		finally
-		{
-		}
 
-		Console.Error.WriteLine($"[agent] Exiting with code {exitCode}.");
 		return exitCode;
 	}
 }

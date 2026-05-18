@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
@@ -10,7 +11,8 @@ using System.Threading.Tasks;
 // Architecture:
 //   - Conversation is a LOCAL VARIABLE in RunAsync. No field holds it.
 //   - Startup is silent: no upfront validation. Errors fire at interaction time.
-//   - A single while-loop reads input, then runs any pending LLM attention.
+//   - A cooperative async reader task feeds a ConcurrentQueue; the main loop drains it each iteration.
+//   - The LLM runs whenever the conversation has pending work; it is not gated on input arrival.
 //   - /compact calls CompactAsync directly; no flag needed since role/service are resolved first.
 //   - Auto-compaction on ContextFull is handled inside RunLlmTurnAsync, not the loop.
 //   - Sessions are loaded from disk on start (last session resumed by default)
@@ -41,18 +43,35 @@ public class AgentOrchestrator
 
 	public async Task<int> RunAsync(CancellationToken cancellationToken)
 	{
-		Queue<string> pendingInput = new();
-
 		BeastSession conversation = LoadOrCreateConversation();
 		bool wantsExit = false;
 		int exitCode = 0;
 
+		ConcurrentQueue<string> inputQueue = new();
+
+		// Cooperative async reader: awaits input and feeds the queue; no thread pool thread involved.
+		async Task ReadInputAsync()
+		{
+			while (!cancellationToken.IsCancellationRequested && !wantsExit)
+			{
+				string? line = await _transport.TryReadAsync(100, cancellationToken);
+				if (line == null) break;
+				if (line.Length > 0)
+				{
+					_transport.Debug($"[orchestrator] Received: '{line}'");
+					inputQueue.Enqueue(line);
+				}
+			}
+		}
+
+		Task readerTask = ReadInputAsync();
+
 		// Signal to Beast that stdin is open and we are ready to receive input.
 		_transport.Status("ready");
 
-		do
+		while (!cancellationToken.IsCancellationRequested && !wantsExit)
 		{
-			// 1. Determine if we can run the LLM this turn.
+			// 1. Resolve role and service.
 			LLMRole? role = _roleService.GetRole(conversation.Role);
 			LlmService? service = null;
 			if (role != null)
@@ -62,33 +81,10 @@ public class AgentOrchestrator
 
 			bool canRunLLM = role != null && service != null;
 
-			// 2. Block until at least one message arrives, then drain everything queued behind it.
-			string? incoming = await _transport.TryReadAsync(100, cancellationToken);
-			if (incoming == null)
-			{
-				Console.Error.WriteLine("[orchestrator] TryReadAsync returned null (EOF), exiting loop");
-				break;
-			}
-			if (incoming.Length > 0)
-			{
-				Console.Error.WriteLine($"[orchestrator] Received: '{incoming}'");
-				pendingInput.Enqueue(incoming);
-			}
-			// Drain any additional messages that arrived without blocking.
-			while (true)
-			{
-				string? extra = await _transport.TryReadAsync(0, cancellationToken);
-				if (extra == null) break;
-				if (extra.Length == 0) break;
-				Console.Error.WriteLine($"[orchestrator] Received: '{extra}'");
-				pendingInput.Enqueue(extra);
-			}
-
-			// 3. Process the entire input queue: run commands in order, accumulate text into one user message.
+			// 2. Drain all pending input: run commands in order, accumulate text into one user message.
 			string accumulatedText = string.Empty;
-			while (pendingInput.Count > 0)
+			while (inputQueue.TryDequeue(out string? line))
 			{
-				string line = pendingInput.Dequeue();
 				if (line.StartsWith("/"))
 				{
 					string trimmed = line.TrimStart('/').Trim();
@@ -192,8 +188,7 @@ public class AgentOrchestrator
 				conversation.AddUserMessage(accumulatedText);
 			}
 
-			// 4. Run the LLM if it needs attention. Even when /quit was requested, finish the current turn
-			//    so the user gets a response to their input before the agent exits.
+			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
 			if (!cancellationToken.IsCancellationRequested && canRunLLM && NeedsLlmAttention(conversation))
 			{
 				LlmResult result = await RunLlmTurnAsync(conversation, role!, service!, cancellationToken);
@@ -204,9 +199,15 @@ public class AgentOrchestrator
 				}
 				else exitCode = 0;
 			}
-		} while (!cancellationToken.IsCancellationRequested && !wantsExit);
+			else
+			{
+				await Task.Delay(10, cancellationToken);
+			}
+		}
 
 		SessionService.Save(conversation);
+		_settings.Settings.LastSessionId = conversation.Id;
+		_settings.SaveSettings();
 		return exitCode;
 	}
 

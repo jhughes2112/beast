@@ -44,7 +44,7 @@ public class ProtocolProxy
     {
         if (_protocol == null)
         {
-            _protocol = await DetectProtocolAsync(_model);
+            _protocol = await DetectProtocolAsync(_model, transport);
             if (_protocol == null)
             {
                 return ProviderCallResult.PermanentFailure($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
@@ -57,7 +57,7 @@ public class ProtocolProxy
 
     // Probes the endpoint in fixed order (Anthropic → Responses → ChatCompletions).
     // Returns null if no protocol responds as supported.
-    private static async Task<IProtocol?> DetectProtocolAsync(LlmModel model)
+    private static async Task<IProtocol?> DetectProtocolAsync(LlmModel model, ITransportServer transport)
     {
         string endpoint = model.Endpoint;
 
@@ -71,14 +71,18 @@ public class ProtocolProxy
         foreach ((string name, Func<Task<ProbeResult>> probe, Func<IProtocol> factory) in candidates)
         {
             ProbeResult result = await probe();
-            ProtocolChatCompletions.Log($"[probe] {name}: {result.Outcome} — {result.Detail}");
+            string probeLine = $"[probe] {name}: {result.Outcome} — {result.Detail}";
+            ProtocolChatCompletions.Log(probeLine);
+            transport.Debug(probeLine);
             if (result.Outcome == ProbeOutcome.Supported)
             {
                 return factory();
             }
         }
 
-        ProtocolChatCompletions.Log($"[probe] No recognized protocol found for: {endpoint}");
+        string failLine = $"[probe] No recognized protocol found for: {endpoint}";
+        ProtocolChatCompletions.Log(failLine);
+        transport.Debug(failLine);
         return null;
     }
 

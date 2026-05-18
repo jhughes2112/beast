@@ -41,12 +41,13 @@ public class Program
         // Second pass: check for switches that need special Beast-side handling.
         bool showHelp = switches.Contains("/help") || switches.Contains("/h");
         bool runBeastTests = switches.Contains("/test");
+        bool verbose = switches.Contains("/verbose");
 
         // Agent receives all switches except Beast-only ones.
         List<string> agentSwitches = new List<string>();
         foreach (string sw in switches)
         {
-            if (sw != "/help" && sw != "/h")
+            if (sw != "/help" && sw != "/h" && sw != "/verbose")
                 agentSwitches.Add(sw);
         }
 
@@ -74,7 +75,7 @@ public class Program
         if (nonInteractive)
             messages.Add("/quit");
 
-        await using BeastApp app = new BeastApp("beastagent", messages, nonInteractive);
+        await using BeastApp app = new BeastApp("beastagent", messages, nonInteractive ? new DisplayConsole() : new DisplayTui(verbose));
         return await app.Run();
     }
 
@@ -89,6 +90,7 @@ public class Program
         Console.WriteLine("  <switch>          Any command switch forwarded to the agent container");
         Console.WriteLine("  -p <text>         Prompt text; everything after -p is treated as the prompt");
         Console.WriteLine("  --test            Run Beast transport tests locally");
+        Console.WriteLine("  --verbose         Show diagnostic debug output from the Agent");
         Console.WriteLine("  --help            Show this help");
     }
 }

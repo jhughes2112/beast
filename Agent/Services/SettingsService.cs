@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -35,13 +36,11 @@ public class SettingsService
 		{
 			string json = File.ReadAllText(_workDirSettingsPath);
 			bs = JsonSerializer.Deserialize<BeastSettings>(json);
-			Console.Error.WriteLine($"[settings] Loaded from workdir: {_workDirSettingsPath}");
 		}
 		if (bs == null && File.Exists(_homeDirSettingsPath))
 		{
 			string json = File.ReadAllText(_homeDirSettingsPath);
 			bs = JsonSerializer.Deserialize<BeastSettings>(json);
-			Console.Error.WriteLine($"[settings] Loaded from homedir: {_homeDirSettingsPath}");
 		}
 
 		if (bs == null)
@@ -49,7 +48,6 @@ public class SettingsService
 			bs = CreateDefaultSettings();
 			Settings = bs;
 			SaveSettings();
-			Console.Error.WriteLine($"[settings] No settings found, wrote defaults to: {_workDirSettingsPath}");
 		}
 		else
 		{
@@ -64,7 +62,7 @@ public class SettingsService
 	public void SaveSettings()
 	{
 		Directory.CreateDirectory(Path.GetDirectoryName(_workDirSettingsPath)!);
-		JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+		JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 		string json = JsonSerializer.Serialize(Settings, options);
 		File.WriteAllText(_workDirSettingsPath, json);
 	}
@@ -94,9 +92,9 @@ public class SettingsService
 							Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
 							Extras = new Dictionary<string, JsonNode?>
 							{
-								{ "temperature", JsonValue.Create("") },
-								{ "top_p", JsonValue.Create("") },
-								{ "frequency_penalty", JsonValue.Create("") },
+								{ "temperature", null },
+								{ "top_p", null },
+								{ "frequency_penalty", null },
 							}
 						}
 					},
@@ -151,9 +149,9 @@ public class SettingsService
 							Cost = new CostConfig { Input = 0.05m, Output = 0.40m, CacheRead = 0.005m, CacheWrite = 0.0m },
 							Extras = new Dictionary<string, JsonNode?>
 							{
-								{ "temperature", JsonValue.Create("") },
-								{ "top_p", JsonValue.Create("") },
-								{ "frequency_penalty", JsonValue.Create("") },
+								{ "temperature", null },
+								{ "top_p", null },
+								{ "frequency_penalty", null },
 							}
 						}
 					},

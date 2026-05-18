@@ -15,7 +15,8 @@ public enum FrameType : byte
     System = 6,       // system prompt message
     StreamStart = 7,  // begins a streaming response block; content is a type tag (see StreamTag)
     StreamChunk = 8,  // one text delta belonging to the current open stream
-    StreamEnd = 9     // closes the current stream block; content is the same type tag as StreamStart
+    StreamEnd = 9,    // closes the current stream block; content is the same type tag as StreamStart
+    Debug = 10        // diagnostic output; suppressed unless Beast is running in verbose mode
 }
 
 // Single-character tags that identify the type of a streaming block.
@@ -54,6 +55,7 @@ public interface ITransportServer : IStreamingMessage
     void Thinking(string text) => Send(FrameType.Thinking, text);
     void Completions(string json) => Send(FrameType.Completions, json);
     void System(string text) => Send(FrameType.System, text);
+    void Debug(string text) => Send(FrameType.Debug, text);
 
     // Streaming: bracket a sequence of incremental chunks with start/end frames.
     // The client accumulates chunks for live display. After StreamEnd, the caller

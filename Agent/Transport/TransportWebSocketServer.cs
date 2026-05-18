@@ -43,27 +43,21 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         _ws = wsCtx.WebSocket;
         Console.Error.WriteLine($"[ws-server] Client connected from {ctx.Request.RemoteEndPoint}");
 
-        _ = Task.Run(() => RecvLoop(_cts.Token), _cts.Token);
-        _writeTask = Task.Run(() => WriteLoop(_cts.Token), _cts.Token);
+        _ = RecvLoop(_cts.Token);
+        _writeTask = WriteLoop(_cts.Token);
     }
 
     private async Task RecvLoop(CancellationToken token)
     {
         byte[] buf = new byte[65536];
-        Console.Error.WriteLine("[ws-server] RecvLoop started");
         try
         {
             while (!token.IsCancellationRequested && _ws != null && _ws.State == WebSocketState.Open)
             {
                 WebSocketReceiveResult result = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), token);
-                if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    Console.Error.WriteLine("[ws-server] Client sent close");
-                    break;
-                }
+                if (result.MessageType == WebSocketMessageType.Close) break;
 
                 string text = Encoding.UTF8.GetString(buf, 0, result.Count);
-                Console.Error.WriteLine($"[ws-server] Received: '{text}'");
                 _frames.Writer.TryWrite(text);
             }
         }

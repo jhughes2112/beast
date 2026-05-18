@@ -1,23 +1,22 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 
-// Persists conversation sessions as JSON files under ~/.beast/sessions/.
+// Persists conversation sessions as JSON files under <workdir>/.beast/sessions/.
 // Each session is one file: {sessionId}.json
 // No "last" marker file — the last session ID is tracked in BeastSettings.
 public static class SessionService
 {
-	private static string SessionsDir => Path.Combine(
-		Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-		".beast", "sessions");
+	private static string SessionsDir => Path.Combine(Environment.CurrentDirectory, ".beast", "sessions");
 
 	public static void Save(BeastSession data)
 	{
 		Directory.CreateDirectory(SessionsDir);
 		string path = Path.Combine(SessionsDir, data.Id + ".json");
-		string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+		string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 		File.WriteAllText(path, json);
 	}
 

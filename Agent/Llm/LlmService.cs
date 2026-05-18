@@ -253,11 +253,8 @@ public class LlmService
 		{
 			int index = i;
 			ConversationToolCall toolCall = toolCalls[index];
-			tasks[index] = Task.Run(async () =>
-			{
-				ToolResult toolResult = await ExecuteToolAsync(toolCall, tools, transport, ct);
-				completedTools[index] = (toolCall.Function.Name, toolResult);
-			}, ct);
+			tasks[index] = ExecuteToolAsync(toolCall, tools, transport, ct)
+				.ContinueWith(t => completedTools[index] = (toolCall.Function.Name, t.Result), ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
 		}
 
 		await Task.WhenAll(tasks);

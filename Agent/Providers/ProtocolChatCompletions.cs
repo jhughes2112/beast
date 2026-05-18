@@ -19,8 +19,8 @@ public class ProtocolChatCompletions : IProtocol
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    // Pluggable logger — tests redirect this to ctx.Log; default writes to stderr.
-    public static Action<string> Log = line => Console.Error.WriteLine(line);
+    // Pluggable logger — tests redirect this to ctx.Log; default is silent.
+    public static Action<string> Log = _ => { };
 
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
@@ -51,10 +51,11 @@ public class ProtocolChatCompletions : IProtocol
             string responseBody;
             try
             {
-                httpResponse = await PostAsync(model, request, extraHeaders, extraPayload, cancellationToken);
-                    responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-                    Log($"[http] RSP {(int)httpResponse.StatusCode}");
-                    Log(responseBody);
+                httpResponse = await PostAsync(model, request, extraHeaders, extraPayload, transport, cancellationToken);
+                responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+                string rspLine = $"[http] RSP {(int)httpResponse.StatusCode}";
+                Log(rspLine); transport.Debug(rspLine);
+                Log(responseBody); transport.Debug(responseBody);
             }
             catch (OperationCanceledException)
             {
@@ -141,7 +142,7 @@ public class ProtocolChatCompletions : IProtocol
         };
     }
 
-    private async Task<HttpResponseMessage> PostAsync(LlmModel model, ChatCompletionRequest request, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> PostAsync(LlmModel model, ChatCompletionRequest request, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, CancellationToken cancellationToken)
     {
         string url = model.Endpoint;
 
@@ -154,10 +155,9 @@ public class ProtocolChatCompletions : IProtocol
         }
 
         string requestJson = obj.ToJsonString();
-        Log($"[http] POST {url}");
-        Log("[http] >>>");
-        Log(requestJson);
-        Log("[http] <<<");
+        string postLine = $"[http] POST {url}";
+        Log(postLine); transport.Debug(postLine);
+        Log(requestJson); transport.Debug(requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -192,10 +192,9 @@ public class ProtocolChatCompletions : IProtocol
         }
 
         string requestJson = obj.ToJsonString();
-        Log($"[http] POST {url} (streaming)");
-        Log("[http] >>>");
-        Log(requestJson);
-        Log("[http] <<<");
+        string postLine = $"[http] POST {url} (streaming)";
+        Log(postLine); transport.Debug(postLine);
+        Log(requestJson); transport.Debug(requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -224,8 +223,9 @@ public class ProtocolChatCompletions : IProtocol
         {
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
-            Log($"[http] RSP {statusCode} (streaming error)");
-            Log(errorBody);
+            string errLine = $"[http] RSP {statusCode} (streaming error)";
+            Log(errLine); transport.Debug(errLine);
+            Log(errorBody); transport.Debug(errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {

@@ -153,6 +153,7 @@ public class MessageHistoryView : View
             FrameType.System    => "⚙ ",
             FrameType.Thinking  => msg.Collapsed ? "▶ [thinking] " : "▼ [thinking] ",
             FrameType.Tool      => msg.Collapsed ? "▶ [tool] " : "▼ [tool] ",
+            FrameType.Debug     => msg.Collapsed ? "▶ [debug] " : "▼ [debug] ",
             FrameType.Error     => "✗ ",
             _                   => "  "
         };

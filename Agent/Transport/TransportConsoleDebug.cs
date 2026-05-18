@@ -11,13 +11,14 @@ public class TransportConsoleDebug : ITransportServer
     {
         string prefix = type switch
         {
-            FrameType.Output     => "",
-            FrameType.Error      => "[error] ",
-            FrameType.Status     => "[status] ",
-            FrameType.Tool       => "[tool] ",
-            FrameType.Thinking   => "[thinking] ",
+            FrameType.Output      => "",
+            FrameType.Error       => "[error] ",
+            FrameType.Status      => "[status] ",
+            FrameType.Tool        => "[tool] ",
+            FrameType.Thinking    => "[thinking] ",
             FrameType.Completions => "[completions] ",
-            _                    => $"[{type}] "
+            FrameType.Debug       => "[debug] ",
+            _                     => $"[{type}] "
         };
         Console.WriteLine($"{prefix}{text}");
     }
@@ -40,6 +41,8 @@ public class TransportConsoleDebug : ITransportServer
     public async Task<string?> ReadAsync(CancellationToken cancellationToken = default)
     {
         Console.Write("> ");
+        // Console.ReadLine() has no async API; Task.Run offloads the synchronous block
+        // to a pool thread so the caller's async context is not frozen.
         string? line = await Task.Run(() =>
         {
             try
