@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 // Debug transport: reads plain text lines from stdin, writes typed output to stdout.
 // Use with --debug to run the Agent directly in an IDE or terminal without Beast.
-public class TransportConsoleDebug : IFramedTransport
+public class TransportConsoleDebug : ITransportServer
 {
     public void Send(FrameType type, string text)
     {

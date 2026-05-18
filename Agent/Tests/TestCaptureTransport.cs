@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 
 // In-memory IFramedTransport for test scenarios. Captures all sent output.
-public class TestCaptureTransport : IFramedTransport
+public class TestCaptureTransport : ITransportServer
 {
     private readonly List<(FrameType Type, string Text)> _sent = new List<(FrameType Type, string Text)>();
     private readonly Queue<string> _pendingReads = new Queue<string>();

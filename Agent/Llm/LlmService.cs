@@ -48,7 +48,7 @@ public class LlmService
 	}
 
 	// Runs the conversation in a loop until idle, tool-exit, or fatal error.
-	public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, Tool[] tools, int reserveTokens, IFramedTransport transport, CancellationToken cancellationToken)
+	public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
 	{
 		if (!IsAvailable)
 		{
@@ -63,7 +63,7 @@ public class LlmService
 		return await ExecuteConversationAsync(conversation, tools, reserveTokens, transport, cancellationToken);
 	}
 
-	private async Task<LlmResult> ExecuteConversationAsync(BeastSession conversation, Tool[] tools, int reserveTokens, IFramedTransport transport, CancellationToken cancellationToken)
+	private async Task<LlmResult> ExecuteConversationAsync(BeastSession conversation, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
 	{
 		LlmModel model = _model;
 		LlmResult finalResult = new LlmResult(LlmExitReason.Completed, "");
@@ -174,7 +174,7 @@ public class LlmService
 	}
 
 	// Returns (null, toolsDispatched) to continue looping, or (LlmResult, false) to terminate.
-	private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ConversationMessage assistantMessage, Tool[] tools, BeastSession conversation, IFramedTransport transport, CancellationToken ct)
+	private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ConversationMessage assistantMessage, Tool[] tools, BeastSession conversation, ITransportServer transport, CancellationToken ct)
 	{
 		// Phase 1: Normalize content — treat whitespace-only as absent.
 		if (assistantMessage.Content != null)

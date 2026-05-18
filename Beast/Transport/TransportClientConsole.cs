@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 
 // IFramedTransport implementation that writes directly to the console.
 // Used for running Beast-side tests locally before the agent container is involved.
-public class ConsoleTransport : IFramedTransport
+public class TransportClientConsole : ITransportServer
 {
     public void Send(FrameType type, string text)
     {

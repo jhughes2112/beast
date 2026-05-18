@@ -39,7 +39,17 @@ public class Program
 		Console.Error.WriteLine($"[agent] Roles loaded: {roleService.Roles.Count}");
 
 		LlmRegistry registry = new LlmRegistry();
-		IFramedTransport transport = debug ? new TransportConsoleDebug() : new TransportFramedStdio();
+		ITransportServer transport;
+		if (debug)
+		{
+			transport = new TransportConsoleDebug();
+		}
+		else
+		{
+			TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
+			await wsServer.AcceptAsync(cts.Token);
+			transport = wsServer;
+		}
 		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport);
 		Console.Error.WriteLine("[agent] Orchestrator ready, entering loop.");
 

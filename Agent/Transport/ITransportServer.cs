@@ -42,7 +42,7 @@ public interface IStreamingMessage
 // Outbound: typed frames so the client can render with appropriate styling.
 // Inbound: plain text strings (framing is only an envelope; content is what matters).
 // Single-threaded: the caller reads in its own loop — no background threads or events.
-public interface IFramedTransport : IStreamingMessage
+public interface ITransportServer : IStreamingMessage
 {
     // Outbound: send a typed frame to the client.
     void Send(FrameType type, string text);

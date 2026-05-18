@@ -49,4 +49,6 @@ COPY --from=build /app/publish/Agent .
 # Make executable
 RUN chmod +x /app/Agent
 
+EXPOSE 13131
+
 ENTRYPOINT ["/app/Agent"]

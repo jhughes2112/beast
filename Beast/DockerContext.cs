@@ -6,20 +6,18 @@ using System.Threading.Tasks;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 
-// Launches and manages Docker containers on the host, communicating via stdio.
+// Launches and manages Docker containers on the host.
+// Transport is now WebSocket; this class only handles container lifecycle.
 public class DockerContext : IDisposable
 {
     private readonly DockerClient _dockerClient;
-    private MultiplexedStream? _readStream;   // stdout+stderr only — kept open for ReadOutputAsync
-    private MultiplexedStream? _writeStream;  // stdin only — kept open for WriteAsync
 
     public DockerContext()
     {
         _dockerClient = new DockerClientConfiguration().CreateClient();
     }
 
-    // Launches a container from the given image with the given entrypoint, communicating via stdio.
-    // Attaches before starting so no early output is lost. Returns the container ID.
+    // Launches a container from the given image, maps port 13131, and mounts workspace/config volumes.
     public async Task<string> LaunchContainerAsync(
         string image, string name, IList<string> entrypoint)
     {
@@ -33,15 +31,18 @@ public class DockerContext : IDisposable
             Image = image,
             Name = name,
             WorkingDir = "/workspace",
-            AttachStdin = true,
-            AttachStdout = true,
-            AttachStderr = true,
-            OpenStdin = true,
-            StdinOnce = false,
+            ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
             HostConfig = new HostConfig
             {
                 NetworkMode = "bridge",
                 AutoRemove = false,
+                PortBindings = new Dictionary<string, IList<PortBinding>>
+                {
+                    ["13131/tcp"] = new List<PortBinding>
+                    {
+                        new PortBinding { HostIP = "127.0.0.1", HostPort = "13131" }
+                    }
+                },
                 Binds = new List<string>
                 {
                     $"{cwd}:/workspace",
@@ -60,47 +61,10 @@ public class DockerContext : IDisposable
         string containerId = response.ID;
         Console.Error.WriteLine($"[docker] Container created: {containerId}");
 
-        // Attach before starting to avoid missing output written at startup.
-        // Two separate connections so read and write never share a stream and cannot deadlock.
-        _readStream = await _dockerClient.Containers.AttachContainerAsync(containerId, false, new ContainerAttachParameters
-        {
-            Stdin = false,
-            Stdout = true,
-            Stderr = true,
-            Stream = true
-        });
-
-        _writeStream = await _dockerClient.Containers.AttachContainerAsync(containerId, false, new ContainerAttachParameters
-        {
-            Stdin = true,
-            Stdout = false,
-            Stderr = false,
-            Stream = true
-        });
-
         await _dockerClient.Containers.StartContainerAsync(containerId, new ContainerStartParameters());
         Console.Error.WriteLine($"[docker] Container started: {name}");
 
         return containerId;
-    }
-
-    // Sends a framed message to the container's stdin.
-    // Wire format: [type,length]content---
-    public async Task SendAsync(string text)
-    {
-        if (_writeStream == null) return;
-        byte[] contentBytes = System.Text.Encoding.UTF8.GetBytes(text);
-        string frame = $"[{(byte)FrameType.Output},{contentBytes.Length}]{text}---";
-        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(frame);
-        await _writeStream.WriteAsync(bytes, 0, bytes.Length, default);
-    }
-
-    // Reads raw bytes from the container's stdout/stderr. Returns (count, eof).
-    public async Task<(int Count, bool EOF)> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token)
-    {
-        if (_readStream == null) return (0, true);
-        MultiplexedStream.ReadResult result = await _readStream.ReadOutputAsync(buffer, offset, count, token);
-        return (result.Count, result.EOF);
     }
 
     // Stops a container gracefully then removes it. Tolerates containers that are already gone.
@@ -154,8 +118,6 @@ public class DockerContext : IDisposable
 
     public void Dispose()
     {
-        _readStream?.Dispose();
-        _writeStream?.Dispose();
         _dockerClient.Dispose();
     }
 }

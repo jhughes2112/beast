@@ -5,14 +5,14 @@ using System;
 // Lightweight in-process test harness.
 public class TestContext
 {
-	private readonly IFramedTransport _transport;
+	private readonly ITransportServer _transport;
 	private int _passed;
 	private int _failed;
 
 	public int Passed => _passed;
 	public int Failed => _failed;
 
-	public TestContext(IFramedTransport transport)
+	public TestContext(ITransportServer transport)
 	{
 		_transport = transport;
 	}
@@ -68,6 +68,13 @@ public static class Reflect
 		MethodInfo method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static, null, parameterTypes, null)
 			?? throw new InvalidOperationException($"Static method '{methodName}' not found on {type.Name}");
 		return method.Invoke(null, arguments);
+	}
+
+	public static void SetField(object target, string fieldName, object? value)
+	{
+		FieldInfo field = target.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}");
+		field.SetValue(target, value);
 	}
 }
 

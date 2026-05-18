@@ -24,13 +24,13 @@ public class AgentOrchestrator
 	private readonly LlmRegistry _registry;
 	private readonly RoleService _roleService;
 	private readonly SettingsService _settings;
-	private readonly IFramedTransport _transport;
+	private readonly ITransportServer _transport;
 
 	public AgentOrchestrator(
 		LlmRegistry registry,
 		RoleService roleService,
 		SettingsService settings,
-		IFramedTransport transport)
+		ITransportServer transport)
 	{
 		_registry = registry;
 		_roleService = roleService;
@@ -64,8 +64,14 @@ public class AgentOrchestrator
 
 			// 2. Fetch input from transport.
 			string? incoming = await _transport.TryReadAsync(100, cancellationToken);
-			if (incoming != null && incoming.Length > 0)
+			if (incoming == null)
 			{
+				Console.Error.WriteLine("[orchestrator] TryReadAsync returned null (EOF), exiting loop");
+				break;
+			}
+			if (incoming.Length > 0)
+			{
+				Console.Error.WriteLine($"[orchestrator] Received: '{incoming}'");
 				pendingInput.Enqueue(incoming);
 			}
 

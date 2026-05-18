@@ -59,14 +59,22 @@ public class Program
         if (runBeastTests)
         {
             Console.WriteLine("=== Running Beast Tests ===");
-            TestContext ctx = new TestContext(new ConsoleTransport());
+            TestContext ctx = new TestContext(new TransportClientConsole());
             TransportTests.Test(ctx);
             Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
             if (ctx.Failed > 0)
                 return 1;
         }
 
-        await using BeastApp app = new BeastApp("beastagent", agentSwitches, prompt);
+        // Build the ordered message list: switches, then prompt, then /quit if non-interactive.
+        bool nonInteractive = prompt != null || agentSwitches.Count > 0;
+        List<string> messages = new List<string>(agentSwitches);
+        if (prompt != null)
+            messages.Add(prompt);
+        if (nonInteractive)
+            messages.Add("/quit");
+
+        await using BeastApp app = new BeastApp("beastagent", messages, nonInteractive);
         return await app.Run();
     }
 

@@ -5,27 +5,37 @@ using System.Threading.Tasks;
 using Terminal.Gui;
 
 
-// Owns the full-screen terminal layout
+// Beast app: launches the Agent container and drives either a TUI or headless console session.
 public class BeastApp : IDisposable, IAsyncDisposable
 {
     private readonly string _image;
-    private readonly List<string> _agentSwitches;
-    private readonly string? _initialPrompt;
+    private readonly List<string> _messages;
+    private readonly bool _nonInteractive;
 
     private CancellationTokenSource? _cts;
     private ConversationModel? _model;
-    private AgentTransport? _transport;
+    private ITransportClient? _wsClient;
     private DockerContext? _docker;
     private string? _containerId;
+
+    // Read loop state
+    private Task? _readTask;
+    private CancellationTokenSource? _readCts;
+    private int _nextIndex = 0;
+    private int _streamIndex = -1;
+    private FrameType _streamType;
+    private string _streamContent = "";
+    private string? _pingNonce;
+    private bool _readyFired;
 
     private Label? _statusLabel;
     private TextField? _inputField;
 
-    public BeastApp(string image, List<string> agentSwitches, string? initialPrompt)
+    public BeastApp(string image, List<string> messages, bool nonInteractive)
     {
         _image = image;
-        _agentSwitches = agentSwitches;
-        _initialPrompt = initialPrompt;
+        _messages = messages;
+        _nonInteractive = nonInteractive;
     }
 
     public async Task<int> Run()
@@ -37,88 +47,139 @@ public class BeastApp : IDisposable, IAsyncDisposable
             _cts.Cancel();
         };
 
-        if (_initialPrompt != null || _agentSwitches.Count > 0)
-            return await RunConsole(_cts.Token);
+        _model = new ConversationModel();
+        _model.MessageUpdated += OnMessageUpdated;
 
-        RunTui(_cts.Token);
-        return 0;
-    }
-
-    private async Task<int> RunConsole(CancellationToken cancellationToken)
-    {
-        ConversationModel model = new ConversationModel();
         int exitCode = 0;
-
-        DockerContext? docker = null;
-        AgentTransport? transport = null;
-        string? containerId = null;
-
         try
         {
-            Console.Error.WriteLine("[beast] Connecting to agent...");
-            docker = new DockerContext();
+            _docker = new DockerContext();
             string containerName = $"beastagent_{Guid.NewGuid():N}";
+            await _docker.RemoveContainerByNameAsync(containerName);
+            _containerId = await _docker.LaunchContainerAsync(_image, containerName, new List<string>());
 
-            await docker.RemoveContainerByNameAsync(containerName);
-            containerId = await docker.LaunchContainerAsync("beastagent", containerName, new List<string>());
+            _wsClient = await RetryConnectAsync("ws://localhost:13131/", _cts.Token);
 
-            // Wire up model updates to print to stdout.
-            model.MessageUpdated += msg =>
+            _readCts = new CancellationTokenSource();
+            _readTask = Task.Run(() => ReadLoop(_wsClient, _readCts.Token), _readCts.Token);
+
+            if (_nonInteractive)
             {
-                if (msg.Type == FrameType.Output && !string.IsNullOrEmpty(msg.Content))
-                    Console.WriteLine(msg.Content);
-                else if (msg.Type == FrameType.Error)
-                    Console.Error.WriteLine($"[error] {msg.Content}");
-                else if (msg.Type == FrameType.Status)
-                    Console.Error.WriteLine($"[status] {msg.Content}");
-            };
-
-            transport = new AgentTransport(model, status => Console.Error.WriteLine($"[agent] {status}"), () =>
-            {
-                Console.Error.WriteLine("[beast] Agent disconnected.");
-                _cts?.Cancel();
-            }, async () =>
-            {
-                Console.Error.WriteLine("[beast] Agent ready. Sending inputs...");
-                foreach (string sw in _agentSwitches)
-                    await docker.SendAsync(sw);
-
-                if (_initialPrompt != null)
-                    await docker.SendAsync(_initialPrompt);
-
-                await docker.SendAsync("/quit");
-            });
-            transport.Start(docker);
-
-            try
-            {
-                await Task.Delay(Timeout.Infinite, cancellationToken);
+                try { await Task.Delay(Timeout.Infinite, _cts.Token); }
+                catch (OperationCanceledException) { }
             }
-            catch (OperationCanceledException) { }
+            else
+            {
+                RunTui(_cts.Token);
+            }
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[beast] Error: {ex.Message}");
             exitCode = 1;
         }
-        finally
-        {
-            transport?.Dispose();
-            if (containerId != null && docker != null)
-            {
-                try { await docker.StopAndRemoveContainerAsync(containerId); } catch { }
-            }
-            docker?.Dispose();
-        }
 
         return exitCode;
+    }
+
+    private async Task ReadLoop(ITransportClient wsClient, CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                string? message = await wsClient.ReceiveAsync(token);
+                if (message == null) break;
+
+                (FrameType type, string content) = ParseFrame(message);
+                ProcessFrame(type, content);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            SetStatus($"[read error] {ex.Message}");
+        }
+
+        SetStatus("Agent disconnected.");
+        _cts?.Cancel();
+    }
+
+    private static (FrameType Type, string Content) ParseFrame(string message)
+    {
+        int pipe = message.IndexOf('|');
+        if (pipe < 0 || !byte.TryParse(message.Substring(0, pipe), out byte typeByte))
+            return (FrameType.Output, message);
+
+        return ((FrameType)typeByte, message.Substring(pipe + 1));
+    }
+
+    private void ProcessFrame(FrameType type, string content)
+    {
+        switch (type)
+        {
+            case FrameType.StreamStart:
+                _streamType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
+                _streamContent = "";
+                _streamIndex = _nextIndex++;
+                _model!.Update(_streamIndex, _streamType, _streamContent);
+                break;
+
+            case FrameType.StreamChunk:
+                if (_streamIndex < 0) break;
+                _streamContent += content;
+                _model!.Update(_streamIndex, _streamType, _streamContent);
+                break;
+
+            case FrameType.StreamEnd:
+                _streamIndex = -1;
+                _streamContent = "";
+                break;
+
+            case FrameType.Status:
+                if (content == "ready")
+                {
+                    _pingNonce = Guid.NewGuid().ToString("N");
+                    string nonce = _pingNonce;
+                    Task.Run(async () =>
+                    {
+                        try { await _wsClient!.SendAsync($"/ping {nonce}"); }
+                        catch (Exception ex) { SetStatus($"[ping error] {ex.Message}"); }
+                    });
+                }
+                else if (_pingNonce != null && content == $"pong {_pingNonce}" && !_readyFired)
+                {
+                    _readyFired = true;
+                    Task.Run(async () =>
+                    {
+                        foreach (string msg in _messages)
+                            await _wsClient!.SendAsync(msg);
+                    });
+                }
+                else
+                {
+                    SetStatus(content);
+                }
+                break;
+
+            default:
+                _model!.Update(_nextIndex++, type, content);
+                break;
+        }
+    }
+
+    private void OnMessageUpdated(DisplayMessage msg)
+    {
+        if (!_nonInteractive) return;
+        if (msg.Type == FrameType.Output && !string.IsNullOrEmpty(msg.Content))
+            Console.WriteLine(msg.Content);
+        else if (msg.Type == FrameType.Error)
+            Console.Error.WriteLine($"[error] {msg.Content}");
     }
 
     private void RunTui(CancellationToken cancellationToken)
     {
         Application.Init();
-
-        _model = new ConversationModel();
 
         // When Ctrl+C fires, stop the TUI event loop cleanly.
         cancellationToken.Register(() => Application.RequestStop());
@@ -126,7 +187,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         Toplevel top = Application.Top;
         top.ColorScheme = Colors.Base;
 
-        MessageHistoryView historyView = new MessageHistoryView(_model)
+        MessageHistoryView historyView = new MessageHistoryView(_model!)
         {
             X = 0,
             Y = 0,
@@ -156,9 +217,6 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _inputField.KeyDown += OnInputKeyDown;
 
         top.Add(historyView, _statusLabel, _inputField);
-
-        // Launch the Agent container asynchronously so the UI is already running when it connects.
-        Task.Run(LaunchAgentAsync);
 
         // Focus the input immediately.
         _inputField.SetFocus();
@@ -193,9 +251,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
     private async Task SendPromptAsync(string text)
     {
-        // _transport is assigned last in LaunchAgentAsync, after _docker and _stdio are both ready.
-        // Checking _transport ensures we don't send before the container is fully initialized.
-        if (_transport == null)
+        if (_wsClient == null)
         {
             SetStatus("[not connected]");
         }
@@ -203,55 +259,12 @@ public class BeastApp : IDisposable, IAsyncDisposable
         {
             try
             {
-                await _docker!.SendAsync(text);
+                await _wsClient.SendAsync(text);
             }
             catch (Exception ex)
             {
                 SetStatus($"[send error] {ex.Message}");
             }
-        }
-    }
-
-    private async Task LaunchAgentAsync()
-    {
-        SetStatus("Connecting to agent...");
-        try
-        {
-            _docker = new DockerContext();
-            string containerName = $"beastagent_{Guid.NewGuid():N}";
-
-            await _docker.RemoveContainerByNameAsync(containerName);
-            _containerId = await _docker.LaunchContainerAsync(
-                _image,
-                containerName,
-                new List<string>());
-
-            _transport = new AgentTransport(_model!, status =>
-            {
-                SetStatus(status);
-            }, () =>
-            {
-                SetStatus("Agent disconnected.");
-                _cts?.Cancel();
-            }, () =>
-            {
-                // Transport confirmed round-trip; send any startup inputs now.
-                Task.Run(async () =>
-                {
-                    foreach (string sw in _agentSwitches)
-                        await SendPromptAsync(sw);
-
-                    if (_initialPrompt != null)
-                        await SendPromptAsync(_initialPrompt);
-                });
-            });
-            _transport.Start(_docker);
-
-            SetStatus("Connecting...");
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"[launch error] {ex.Message}");
         }
     }
 
@@ -267,9 +280,39 @@ public class BeastApp : IDisposable, IAsyncDisposable
         SetStatus($"View mode: {next}");
     }
 
+    // Retries WebSocket connection until success or cancellation, with 200ms delays.
+    private static async Task<ITransportClient> RetryConnectAsync(string url, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            TransportClientWebsocket wsClient = new TransportClientWebsocket(url);
+            try
+            {
+                await wsClient.ConnectAsync(cancellationToken);
+                return wsClient;
+            }
+            catch (OperationCanceledException)
+            {
+                wsClient.Dispose();
+                throw;
+            }
+            catch (Exception)
+            {
+                wsClient.Dispose();
+                await Task.Delay(200, cancellationToken);
+            }
+        }
+        throw new OperationCanceledException(cancellationToken);
+    }
+
     private void SetStatus(string text)
     {
-        Application.MainLoop.Invoke(() =>
+        if (_nonInteractive)
+        {
+            Console.Error.WriteLine($"[status] {text}");
+            return;
+        }
+        Application.MainLoop?.Invoke(() =>
         {
             if (_statusLabel != null)
                 _statusLabel.Text = text;
@@ -278,14 +321,20 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
     public void Dispose()
     {
-        _transport?.Dispose();
+        _readCts?.Cancel();
+        _readTask?.Wait(2000);
+        _readCts?.Dispose();
+        _wsClient?.Dispose();
         _docker?.Dispose();
         _cts?.Dispose();
     }
 
     public async ValueTask DisposeAsync()
     {
-        _transport?.Dispose();
+        _readCts?.Cancel();
+        _readTask?.Wait(2000);
+        _readCts?.Dispose();
+        _wsClient?.Dispose();
         if (_containerId != null && _docker != null)
         {
             try { await _docker.StopAndRemoveContainerAsync(_containerId); } catch { }

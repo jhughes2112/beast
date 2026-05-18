@@ -13,13 +13,11 @@ public static class TransportTests
         ctx.Log("  TransportTests");
 
         TestFrameToWire(ctx);
-        TestFrameParserSingleFrame(ctx);
-        TestFrameParserMultipleFrames(ctx);
-        TestFrameParserPartialFeed(ctx);
-        TestFrameParserCorruptHeader(ctx);
-        TestAllFrameTypes(ctx);
-        TestUnicodeContent(ctx);
-        TestEmptyContent(ctx);
+        TestParseFrameSingle(ctx);
+        TestParseFrameAllTypes(ctx);
+        TestParseFrameUnicode(ctx);
+        TestParseFrameEmpty(ctx);
+        TestParseFramePipeInContent(ctx);
         TestConversationModelUpdate(ctx);
         TestConversationModelCollapseMode(ctx);
         TestAgentTransportProcessing(ctx);
@@ -29,92 +27,36 @@ public static class TransportTests
 
     private static string MakeWireFrame(FrameType type, string content)
     {
-        return $"[{(byte)type},{content.Length}]{content}---";
+        return $"{(byte)type}|{content}";
     }
 
     private static void TestFrameToWire(TestContext ctx)
     {
         // Verify the expected wire format for a known frame.
         string wire = MakeWireFrame(FrameType.Output, "hello");
-        ctx.AssertEqual("[0,5]hello---", wire, "FrameToWire: Output frame wire format");
+        ctx.AssertEqual("0|hello", wire, "FrameToWire: Output frame wire format");
 
         string statusWire = MakeWireFrame(FrameType.Status, "ok");
-        ctx.AssertEqual("[2,2]ok---", statusWire, "FrameToWire: Status frame wire format");
+        ctx.AssertEqual("2|ok", statusWire, "FrameToWire: Status frame wire format");
     }
 
-    // ---- FrameParser (Beast-side) ----
+    // ---- ParseFrame (Beast-side, via BeastApp reflection) ----
 
-    private static FrameParser FeedParser(string wire)
+    private static (FrameType Type, string Content) ParseFrame(string wire)
     {
-        FrameParser parser = new FrameParser();
-        byte[] bytes = Encoding.UTF8.GetBytes(wire);
-        parser.Feed(bytes, bytes.Length);
-        return parser;
+        return (ValueTuple<FrameType, string>)Reflect.Static(typeof(BeastApp), "ParseFrame",
+            new System.Type[] { typeof(string) },
+            new object[] { wire });
     }
 
-    private static void TestFrameParserSingleFrame(TestContext ctx)
+    private static void TestParseFrameSingle(TestContext ctx)
     {
-        string wire = MakeWireFrame(FrameType.Output, "hello");
-        FrameParser parser = FeedParser(wire);
-        List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-
-        ctx.AssertEqual(1, frames.Count, "FrameParser: single frame count");
-        ctx.AssertEqual(FrameType.Output, frames[0].Type, "FrameParser: single frame type");
-        ctx.AssertEqual("hello", frames[0].Content, "FrameParser: single frame content");
+        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "hello"));
+        ctx.AssertEqual(FrameType.Output, type, "ParseFrame: output type");
+        ctx.AssertEqual("hello", content, "ParseFrame: output content");
     }
 
-    private static void TestFrameParserMultipleFrames(TestContext ctx)
-    {
-        string wire = MakeWireFrame(FrameType.Output, "first")
-                    + MakeWireFrame(FrameType.Status, "second")
-                    + MakeWireFrame(FrameType.Error, "third");
-
-        FrameParser parser = FeedParser(wire);
-        List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-
-        ctx.AssertEqual(3, frames.Count, "FrameParser: multiple frames count");
-        ctx.AssertEqual(FrameType.Output, frames[0].Type, "FrameParser: frame[0] type");
-        ctx.AssertEqual("first", frames[0].Content, "FrameParser: frame[0] content");
-        ctx.AssertEqual(FrameType.Status, frames[1].Type, "FrameParser: frame[1] type");
-        ctx.AssertEqual("second", frames[1].Content, "FrameParser: frame[1] content");
-        ctx.AssertEqual(FrameType.Error, frames[2].Type, "FrameParser: frame[2] type");
-        ctx.AssertEqual("third", frames[2].Content, "FrameParser: frame[2] content");
-    }
-
-    private static void TestFrameParserPartialFeed(TestContext ctx)
-    {
-        // Feed a complete frame in two halves; both halves must arrive before parse.
-        string wire = MakeWireFrame(FrameType.Tool, "tooldata");
-        int mid = wire.Length / 2;
-
-        FrameParser parser = new FrameParser();
-        byte[] first = Encoding.UTF8.GetBytes(wire.Substring(0, mid));
-        byte[] second = Encoding.UTF8.GetBytes(wire.Substring(mid));
-
-        parser.Feed(first, first.Length);
-        List<(FrameType, string)> partial = parser.TakeFrames();
-        ctx.AssertEqual(0, partial.Count, "FrameParser: partial feed yields no frames");
-
-        parser.Feed(second, second.Length);
-        List<(FrameType Type, string Content)> complete = parser.TakeFrames();
-        ctx.AssertEqual(1, complete.Count, "FrameParser: after second half one frame ready");
-        ctx.AssertEqual("tooldata", complete[0].Content, "FrameParser: partial feed content correct");
-    }
-
-    private static void TestFrameParserCorruptHeader(TestContext ctx)
-    {
-        // Inject junk before a valid frame — parser should skip to the '['.
-        string junk = "GARBAGE_DATA";
-        string wire = junk + MakeWireFrame(FrameType.Output, "after junk");
-
-        FrameParser parser = FeedParser(wire);
-        List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-
-        ctx.AssertEqual(1, frames.Count, "FrameParser: recovers after junk prefix");
-        ctx.AssertEqual("after junk", frames[0].Content, "FrameParser: correct content after junk");
-    }
-
-    private static void TestAllFrameTypes(TestContext ctx)
+    private static void TestParseFrameAllTypes(TestContext ctx)
     {
         FrameType[] types = new FrameType[]
         {
@@ -132,32 +74,33 @@ public static class TransportTests
 
         foreach (FrameType t in types)
         {
-            string wire = MakeWireFrame(t, "content");
-            FrameParser parser = FeedParser(wire);
-            List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-            ctx.AssertEqual(1, frames.Count, $"FrameParser: frame type {t} roundtrips");
-            ctx.AssertEqual(t, frames[0].Type, $"FrameParser: frame type {t} preserved");
+            (FrameType parsedType, string parsedContent) = ParseFrame(MakeWireFrame(t, "content"));
+            ctx.AssertEqual(t, parsedType, $"ParseFrame: type {t} roundtrips");
+            ctx.AssertEqual("content", parsedContent, $"ParseFrame: content for type {t}");
         }
     }
 
-    private static void TestUnicodeContent(TestContext ctx)
+    private static void TestParseFrameUnicode(TestContext ctx)
     {
         string emoji = "Hello 🌍 éàć";
-        string wire = $"[{(byte)FrameType.Output},{emoji.Length}]{emoji}---";
-
-        FrameParser parser = FeedParser(wire);
-        List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-        ctx.AssertEqual(1, frames.Count, "FrameParser: unicode frame count");
-        ctx.AssertEqual(emoji, frames[0].Content, "FrameParser: unicode content preserved");
+        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, emoji));
+        ctx.AssertEqual(FrameType.Output, type, "ParseFrame: unicode type");
+        ctx.AssertEqual(emoji, content, "ParseFrame: unicode content preserved");
     }
 
-    private static void TestEmptyContent(TestContext ctx)
+    private static void TestParseFrameEmpty(TestContext ctx)
     {
-        string wire = MakeWireFrame(FrameType.Output, "");
-        FrameParser parser = FeedParser(wire);
-        List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-        ctx.AssertEqual(1, frames.Count, "FrameParser: empty content frame count");
-        ctx.AssertEqual("", frames[0].Content, "FrameParser: empty content preserved");
+        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, ""));
+        ctx.AssertEqual(FrameType.Output, type, "ParseFrame: empty type");
+        ctx.AssertEqual("", content, "ParseFrame: empty content preserved");
+    }
+
+    private static void TestParseFramePipeInContent(TestContext ctx)
+    {
+        // Content that itself contains a pipe should not be split further.
+        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "a|b|c"));
+        ctx.AssertEqual(FrameType.Output, type, "ParseFrame: pipe-in-content type");
+        ctx.AssertEqual("a|b|c", content, "ParseFrame: pipe-in-content preserved");
     }
 
     // ---- ConversationModel (Beast-side) ----
@@ -204,33 +147,26 @@ public static class TransportTests
         }
     }
 
-    // ---- AgentTransport frame processing ----
+    // ---- BeastApp frame processing ----
 
     private static void TestAgentTransportProcessing(TestContext ctx)
     {
         ConversationModel model = new ConversationModel();
-        List<string> statuses = new List<string>();
-        AgentTransport transport = new AgentTransport(model, (s) => statuses.Add(s), () => { }, () => { });
+        BeastApp transport = new BeastApp("test", new List<string>(), true);
+        Reflect.SetField(transport, "_model", model);
 
-        // Simulate a Status frame arriving.
-        string wire = MakeWireFrame(FrameType.Status, "Agent ready");
-        FrameParser parser = FeedParser(wire);
-        List<(FrameType Type, string Content)> frames = parser.TakeFrames();
-
-        // Manually invoke ProcessFrame via reflection to avoid needing a running DockerContext.
+        // Simulate a Status frame arriving — should not add to the model.
         Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
             new object[] { FrameType.Status, "Agent ready" });
 
-        ctx.Assert(statuses.Count == 1 && statuses[0] == "Agent ready",
-            "AgentTransport: Status frame calls onStatus");
-        ctx.AssertEqual(0, model.Messages.Count, "AgentTransport: Status does not add to model");
+        ctx.AssertEqual(0, model.Messages.Count, "BeastApp: Status does not add to model");
 
         // Output frame adds a message.
         Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
             new object[] { FrameType.Output, "Hello!" });
 
-        ctx.AssertEqual(1, model.Messages.Count, "AgentTransport: Output frame adds message");
-        ctx.AssertEqual("Hello!", model.Messages[0].Content, "AgentTransport: Output content");
+        ctx.AssertEqual(1, model.Messages.Count, "BeastApp: Output frame adds message");
+        ctx.AssertEqual("Hello!", model.Messages[0].Content, "BeastApp: Output content");
 
         // Streaming: start → chunk → chunk → end should accumulate in one slot.
         Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
@@ -243,7 +179,7 @@ public static class TransportTests
             new object[] { FrameType.StreamChunk, " part2" });
 
         ctx.AssertEqual("part1 part2", model.Messages[slotAfterStart].Content,
-            "AgentTransport: stream chunks accumulate");
+            "BeastApp: stream chunks accumulate");
 
         Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
             new object[] { FrameType.StreamEnd, StreamTag.Assistant });
@@ -253,8 +189,6 @@ public static class TransportTests
             new object[] { FrameType.Output, "part1 part2" });
 
         ctx.AssertEqual("part1 part2", model.Messages[slotAfterStart].Content,
-            "AgentTransport: committed frame after StreamEnd updates slot");
-
-        transport.Dispose();
+            "BeastApp: committed frame after StreamEnd updates slot");
     }
 }

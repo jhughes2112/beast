@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <PackageReference Include="Docker.DotNet" Version="3.125.15" />
+    <PackageReference Include="Nito.AsyncEx.Coordination" Version="5.1.2" />
     <PackageReference Include="Spectre.Console" Version="0.48.0" />
     <PackageReference Include="Terminal.Gui" Version="1.17.1" />
   </ItemGroup>
