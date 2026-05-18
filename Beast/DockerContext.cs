@@ -32,6 +32,7 @@ public class DockerContext : IDisposable
         {
             Image = image,
             Name = name,
+            WorkingDir = "/workspace",
             AttachStdin = true,
             AttachStdout = true,
             AttachStderr = true,

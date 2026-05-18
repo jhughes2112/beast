@@ -35,7 +35,7 @@ public class Program
 			return 1;
 		}
 
-		RoleService roleService = new RoleService(Environment.CurrentDirectory);
+		RoleService roleService = new RoleService(Environment.CurrentDirectory, settingsService.Settings);
 		Console.Error.WriteLine($"[agent] Roles loaded: {roleService.Roles.Count}");
 
 		LlmRegistry registry = new LlmRegistry();

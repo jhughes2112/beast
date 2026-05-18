@@ -29,8 +29,9 @@ public class LLMRole
 		SystemPrompt = systemPrompt;
 	}
 
-	public static LLMRole DefaultRole()
+	public static LLMRole DefaultRole(string firstModelId, List<string> toolNames)
 	{
-		return new LLMRole("Default", new List<string>(), new List<string>(), "You are a helpful assistant.");
+		List<string> models = string.IsNullOrEmpty(firstModelId) ? new List<string>() : new List<string> { firstModelId };
+		return new LLMRole("Default", models, toolNames, "You are a helpful assistant.");
 	}
 }

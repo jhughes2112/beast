@@ -12,12 +12,15 @@ public class RoleService
 	private readonly string _projectRolesPath;
 	private readonly string _globalRolesPath;
 
-	public RoleService(string workDir)
+	private BeastSettings _settings;
+
+	public RoleService(string workDir, BeastSettings settings)
 	{
 		_projectRolesPath = Path.Combine(workDir, ".beast", "roles.json");
 		_globalRolesPath = Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
 		".beast", "roles.json");
+		_settings = settings;
 
 		LoadRoles();
 	}
@@ -61,7 +64,23 @@ public class RoleService
 			return;
 		}
 
-		LLMRole defaultRole = LLMRole.DefaultRole();
+		string firstModelId = string.Empty;
+		if (_settings.Providers != null)
+		{
+			foreach (ProviderConfig provider in _settings.Providers)
+			{
+				if (provider.Models != null && provider.Models.Count > 0)
+				{
+					firstModelId = provider.Models[0].Id ?? string.Empty;
+					break;
+				}
+			}
+		}
+
+		Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch);
+		List<string> toolNames = new List<string>(tools.Keys);
+
+		LLMRole defaultRole = LLMRole.DefaultRole(firstModelId, toolNames);
 		Roles[defaultRole.Name] = defaultRole;
 
 		JsonSerializerOptions options = new() { WriteIndented = true };
