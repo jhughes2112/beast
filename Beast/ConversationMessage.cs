@@ -88,6 +88,12 @@ public class ConversationModel
         MessageUpdated?.Invoke(msg);
     }
 
+    public void Clear()
+    {
+        _messages.Clear();
+        MessageUpdated?.Invoke(new DisplayMessage(0, FrameType.Clear, string.Empty));
+    }
+
     private static bool ShouldCollapse(FrameType type, CollapseMode mode)
     {
         if (mode == CollapseMode.Quiet) return true;

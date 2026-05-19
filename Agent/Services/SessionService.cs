@@ -46,7 +46,7 @@ public static class SessionService
 				string json = File.ReadAllText(file);
 				BeastSession? data = JsonSerializer.Deserialize<BeastSession>(json);
 				if (data == null) continue;
-				results.Add((data.Id, data.DisplayName, data.Messages.Count));
+				results.Add((data.Id, data.DisplayName, data.ChatCompletionsState.Count));
 			}
 			catch { }
 		}

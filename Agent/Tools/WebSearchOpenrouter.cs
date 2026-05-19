@@ -10,12 +10,11 @@ using System.Threading.Tasks;
 
 
 // Web search via the OpenRouter plugin API.
-// Routes through ProtocolChatCompletions directly — no endpoint probe needed.
+// Routes through ProtocolProxy directly — no endpoint probe needed.
 // LlmModel is built once from settings at construction time.
 public class WebSearchOpenrouter
 {
     private readonly LlmModel _model;
-    private readonly ProtocolChatCompletions _protocol = new ProtocolChatCompletions();
 
     public WebSearchOpenrouter(LlmModel model)
     {
@@ -33,23 +32,23 @@ public class WebSearchOpenrouter
 
         try
         {
-            (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = ProtocolProxy.BuildExtras(_model.Extras, _model.Endpoint);
+            BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), string.Empty, "websearch");
 
-            List<ConversationMessage> messages = new()
-            {
-                new ConversationMessage { Role = "user", Content = query }
-            };
+            ListenerBundle bundle = new ListenerBundle();
+            bundle.Add(new ListenerChatCompletions(session.ChatCompletionsState));
+            bundle.OnUserMessage(null!, query);
 
             int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
 
-            ProviderCallResult result = await _protocol.ExecuteAsync(
-                _model, messages, new List<ToolDefinition>(), maxTokens, headers, payload, transport, cancellationToken);
+            ProtocolProxy proxy = new ProtocolProxy(_model);
+            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, transport, cancellationToken);
 
-            if (result.Outcome == ProviderCallOutcome.Success)
+            if (result.Outcome == ProtocolCallOutcome.Success)
             {
-                return new ToolResult(ParseResponse(result.Payload!.Message), false);
+                string content = result.Payload!.AssistantText ?? string.Empty;
+                return new ToolResult(string.IsNullOrWhiteSpace(content) ? "No search results found." : content, false);
             }
-            else if (result.Outcome == ProviderCallOutcome.RateLimited)
+            else if (result.Outcome == ProtocolCallOutcome.RateLimited)
             {
                 return new ToolResult("Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, false);
             }
@@ -82,38 +81,5 @@ public class WebSearchOpenrouter
             return v;
         }
         return defaultValue;
-    }
-
-    private static string ParseResponse(ConversationMessage message)
-    {
-        string content = message.Content ?? "";
-
-        if (message.Annotations == null || message.Annotations.Count == 0)
-            return string.IsNullOrWhiteSpace(content) ? "No search results found." : content;
-
-        // Collect citation references to append after the answer.
-        List<string> citations = new();
-        int index = 1;
-        foreach (JsonElement annotation in message.Annotations)
-        {
-            if (!annotation.TryGetProperty("url_citation", out JsonElement citation)) continue;
-
-            string title = citation.TryGetProperty("title", out JsonElement t) ? t.GetString() ?? "" : "";
-            string url = citation.TryGetProperty("url", out JsonElement u) ? u.GetString() ?? "" : "";
-
-            citations.Add($"[{index}] {title} — {url}");
-            index++;
-        }
-
-        if (citations.Count == 0 || string.IsNullOrWhiteSpace(content))
-            return string.IsNullOrWhiteSpace(content) ? "No search results found." : content;
-
-        StringBuilder sb = new();
-        sb.AppendLine(content);
-        sb.AppendLine();
-        sb.AppendLine("Sources:");
-        foreach (string c in citations)
-            sb.AppendLine(c);
-        return sb.ToString().TrimEnd();
     }
 }

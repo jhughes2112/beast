@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 // configured for each role. Tests are skipped gracefully when API keys or models are absent.
 public static class PerModelLlmTests
 {
-    public static void Test(TestContext ctx, LlmRegistry registry, RoleService roleService, SettingsService settings)
+    public static async Task TestAsync(TestContext ctx, LlmRegistry registry, RoleService roleService, SettingsService settings, CancellationToken cancellationToken)
     {
         ctx.Log("  PerModelLlmTests");
 
@@ -21,11 +21,11 @@ public static class PerModelLlmTests
 
         foreach (LLMRole role in roles)
         {
-            RunRoleTests(ctx, registry, settings, role);
+            await RunRoleTestsAsync(ctx, registry, settings, role, cancellationToken);
         }
     }
 
-    private static void RunRoleTests(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role)
+    private static async Task RunRoleTestsAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role, CancellationToken cancellationToken)
     {
         ctx.Log($"    Role: {role.Name}");
 
@@ -37,11 +37,11 @@ public static class PerModelLlmTests
 
         foreach (string modelId in role.Models)
         {
-            RunSingleModelTest(ctx, registry, settings, role, modelId);
+            await RunSingleModelTestAsync(ctx, registry, settings, role, modelId, cancellationToken);
         }
     }
 
-    private static void RunSingleModelTest(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role, string modelId)
+    private static async Task RunSingleModelTestAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role, string modelId, CancellationToken cancellationToken)
     {
         ctx.Log($"      Model: {modelId}");
 
@@ -85,22 +85,38 @@ public static class PerModelLlmTests
         {
             TestCaptureTransport localTransport = new TestCaptureTransport();
             BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, $"test-{modelId}");
-            session.SetSystemPrompt(role.SystemPrompt);
-            session.AddUserMessage("Reply with exactly: PING");
 
-            using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            ListenerBundle bundle = new ListenerBundle();
+            bundle.Add(new ListenerChatCompletions(session.ChatCompletionsState));
+            bundle.Add(new ListenerResponses(session.ResponsesState));
+            bundle.Add(new ListenerAnthropic(session.AnthropicState));
+            bundle.Add(new ListenerTransport(localTransport));
+
+            if (!string.IsNullOrEmpty(role.SystemPrompt))
+                bundle.OnSystemMessage(null!, role.SystemPrompt);
+            bundle.OnUserMessage(null!, "Reply with exactly: PING");
+            session.NeedsLlmAttention = true;
+
+            using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
             Tool[] tools = registry.GetToolsForRole(role);
 
-            Action<string> previousLog = ProtocolChatCompletions.Log;
+            Action<string> previousChatLog = ProtocolChatCompletions.Log;
+            Action<string> previousResponsesLog = ProtocolResponses.Log;
+            Action<string> previousAnthropicLog = ProtocolAnthropic.Log;
             ProtocolChatCompletions.Log = line => ctx.Log($"        {line}");
+            ProtocolResponses.Log = line => ctx.Log($"        {line}");
+            ProtocolAnthropic.Log = line => ctx.Log($"        {line}");
             LlmResult result;
             try
             {
-                result = service.RunToCompletionAsync(session, tools, 0, localTransport, cts.Token).GetAwaiter().GetResult();
+                result = await service.RunToCompletionAsync(session, bundle, tools, 0, localTransport, linkedCts.Token);
             }
             finally
             {
-                ProtocolChatCompletions.Log = previousLog;
+                ProtocolChatCompletions.Log = previousChatLog;
+                ProtocolResponses.Log = previousResponsesLog;
+                ProtocolAnthropic.Log = previousAnthropicLog;
             }
 
             bool gotResponse = false;

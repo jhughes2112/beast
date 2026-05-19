@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -43,9 +44,10 @@ public class AgentOrchestrator
 
 	public async Task<int> RunAsync(CancellationToken cancellationToken)
 	{
-		BeastSession conversation = LoadOrCreateConversation();
+		BeastSession conversation = LoadOrCreateConversation(out ListenerBundle bundle);
 		bool wantsExit = false;
 		int exitCode = 0;
+		string lastRaisedSystemPrompt = string.Empty;
 
 		ConcurrentQueue<string> inputQueue = new();
 
@@ -68,6 +70,7 @@ public class AgentOrchestrator
 
 		// Signal to Beast that stdin is open and we are ready to receive input.
 		_transport.Status("ready");
+		SendCompletionCandidates(conversation);
 
 		while (!cancellationToken.IsCancellationRequested && !wantsExit)
 		{
@@ -114,7 +117,7 @@ public class AgentOrchestrator
 							if (canRunLLM)
 							{
 								_transport.Status("Running compaction...");
-								LlmResult compactResult = await CompactAsync(conversation, service!, cancellationToken);
+								LlmResult compactResult = await CompactAsync(conversation, bundle, service!, role!, lastRaisedSystemPrompt, cancellationToken);
 								canRunLLM = compactResult.Success;
 							}
 							break;
@@ -122,7 +125,9 @@ public class AgentOrchestrator
 							if (args == "new")
 							{
 								SessionService.Save(conversation);
-								conversation = CreateFreshConversation(conversation.Role);
+								conversation = CreateFreshConversation(conversation.Role, out bundle);
+								lastRaisedSystemPrompt = string.Empty;
+                          SendCompletionCandidates(conversation);
 								_transport.Status("New session started.");
 							}
 							else if (args != null)
@@ -132,6 +137,9 @@ public class AgentOrchestrator
 								{
 									SessionService.Save(conversation);
 									conversation = loaded;
+									bundle = BuildBundle(conversation);
+									lastRaisedSystemPrompt = string.Empty;
+                                SendCompletionCandidates(conversation);
 									_transport.Status("Switched to session: " + loaded.DisplayName);
 								}
 								else
@@ -141,13 +149,15 @@ public class AgentOrchestrator
 							}
 							break;
 						case "clear":
-							conversation.Messages.RemoveRange(1, conversation.Messages.Count - 1);
+							bundle.OnClear();
+							conversation.NeedsLlmAttention = false;
 							_transport.Status("Session cleared.");
 							break;
 						case "reload":
 							_roleService.Reload();
 							ReloadRegistry();
 							canRunLLM = false;
+                            SendCompletionCandidates(conversation);
 							_transport.Status("Config files reloaded.");
 							break;
 						case "role":
@@ -155,6 +165,7 @@ public class AgentOrchestrator
 							{
 								conversation.Role = args;
 								canRunLLM = false;
+                               SendCompletionCandidates(conversation);
 								_transport.Status($"Role set to {args}");
 							}
 							break;
@@ -163,17 +174,15 @@ public class AgentOrchestrator
 							{
 								conversation.Model = args;
 								canRunLLM = false;
+                              SendCompletionCandidates(conversation);
 								_transport.Status($"Model set to {args}");
 							}
 							break;
-						case "complete":
-							HandleComplete(args, conversation);
-							break;
 						case "help":
-							_transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /test, /quit");
+                         _transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /test, /quit");
 							break;
 						case "test":
-							RunTests(args);
+							await RunTestsAsync(args, cancellationToken);
 							break;
 					}
 				}
@@ -183,15 +192,36 @@ public class AgentOrchestrator
 				}
 			}
 
-			if (!string.IsNullOrEmpty(accumulatedText))
+         // Re-resolve after commands so queued user text uses the current role/model immediately.
+			role = _roleService.GetRole(conversation.Role);
+			service = null;
+			if (role != null)
 			{
-				conversation.AddUserMessage(accumulatedText);
+				service = _registry.GetServiceForRole(role, conversation.Model);
+			}
+
+			canRunLLM = role != null && service != null;
+			if (canRunLLM)
+			{
+				// Try to dispatch the system prompt if it has changed
+				if (role!=null && role.SystemPrompt != lastRaisedSystemPrompt)
+				{
+					lastRaisedSystemPrompt = role.SystemPrompt;
+					if (!string.IsNullOrEmpty(role.SystemPrompt))
+						bundle.OnSystemMessage(null!, role.SystemPrompt);
+				}
+
+				if (!string.IsNullOrEmpty(accumulatedText))
+				{
+					bundle.OnUserMessage(null!, accumulatedText);
+					conversation.NeedsLlmAttention = true;
+				}
 			}
 
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
-			if (!cancellationToken.IsCancellationRequested && canRunLLM && NeedsLlmAttention(conversation))
+			if (!cancellationToken.IsCancellationRequested && canRunLLM && conversation.NeedsLlmAttention)
 			{
-				LlmResult result = await RunLlmTurnAsync(conversation, role!, service!, cancellationToken);
+				LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, lastRaisedSystemPrompt, cancellationToken);
 				if (result.ExitReason == LlmExitReason.Failed)
 				{
 					_transport.Error(result.ErrorMessage + ": Change to a different /model and manually /compact, or /clear or start a /session new.");
@@ -213,20 +243,21 @@ public class AgentOrchestrator
 
 	// ---- Session management ----
 
-	private BeastSession LoadOrCreateConversation()
+	private BeastSession LoadOrCreateConversation(out ListenerBundle bundle)
 	{
 		string? lastSessionId = _settings.Settings?.LastSessionId;
 		BeastSession? lastData = SessionService.LoadBySessionId(lastSessionId);
 		if (lastData != null)
 		{
+			bundle = BuildBundle(lastData);
 			_transport.Status("Resumed session: " + lastData.DisplayName);
 			return lastData;
 		}
 
-		return CreateFreshConversation(string.Empty);
+		return CreateFreshConversation(string.Empty, out bundle);
 	}
 
-	private BeastSession CreateFreshConversation(string roleName)
+	private BeastSession CreateFreshConversation(string roleName, out ListenerBundle bundle)
 	{
 		if (string.IsNullOrEmpty(roleName))
 		{
@@ -237,41 +268,50 @@ public class AgentOrchestrator
 			}
 		}
 
-		return BeastSession.CreateNew(Guid.NewGuid().ToString(), roleName, string.Empty);
+		BeastSession fresh = BeastSession.CreateNew(Guid.NewGuid().ToString(), roleName, string.Empty);
+		bundle = BuildBundle(fresh);
+		return fresh;
+	}
+
+	// Builds a fresh ListenerBundle wired to the session's native state arrays and the transport.
+	private ListenerBundle BuildBundle(BeastSession session)
+	{
+		ListenerBundle b = new ListenerBundle();
+		b.Add(new ListenerChatCompletions(session.ChatCompletionsState));
+		b.Add(new ListenerResponses(session.ResponsesState));
+		b.Add(new ListenerAnthropic(session.AnthropicState));
+		b.Add(new ListenerTransport(_transport));
+		return b;
 	}
 
 	// ---- LLM execution ----
 
 	// Runs one LLM turn. Applies the role (system prompt) before calling the LLM.
 	// If the context is full, compaction is attempted immediately and the result reflects that outcome.
-	public async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, LLMRole role, LlmService service, CancellationToken cancellationToken)
+	public async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, string lastRaisedSystemPrompt, CancellationToken cancellationToken)
 	{
 		conversation.Model = service!.Model.ConfigId;
-		conversation.SetSystemPrompt(role.SystemPrompt);
 
-		if (string.IsNullOrEmpty(conversation.DisplayName))  // grab a friendly name for the conversation if we do not have one yet
+		if (string.IsNullOrEmpty(conversation.DisplayName))
 		{
-			foreach (ConversationMessage m in conversation.Messages)
+			string? first = conversation.GetFirstUserText();
+			if (!string.IsNullOrWhiteSpace(first))
 			{
-				if (m.Role == "user" && !string.IsNullOrWhiteSpace(m.Content))
-				{
-					string name = m.Content.Trim();
-					conversation.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
-					break;
-				}
+				string name = first.Trim();
+				conversation.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
 			}
 		}
 
 		Tool[] tools = _registry.GetToolsForRole(role);
-		LlmResult result = await service.RunToCompletionAsync(conversation, tools, CompactionReserveTokens, _transport, cancellationToken);
+		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, tools, CompactionReserveTokens, _transport, cancellationToken);
 		if (result.Success)
 		{
-			conversation.MarkMessagesSent();
+			conversation.NeedsLlmAttention = false;
 		}
 		if (result.ExitReason == LlmExitReason.ContextFull)
 		{
 			_transport.Status("Running compaction...");
-			result = await CompactAsync(conversation, service, cancellationToken);
+			result = await CompactAsync(conversation, bundle, service, role, lastRaisedSystemPrompt, cancellationToken);
 		}
 
 		return result;
@@ -279,65 +319,44 @@ public class AgentOrchestrator
 
 	// ---- Compaction ----
 
-	private async Task<LlmResult> CompactAsync(BeastSession conversation, LlmService service, CancellationToken cancellationToken)
+	private async Task<LlmResult> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role, string lastRaisedSystemPrompt, CancellationToken cancellationToken)
 	{
-		// Snapshot the message list before any modification so we can restore it exactly on failure.
-		int snapshotCount = conversation.Messages.Count;
+		// Snapshot all protocol state before any modification so we can restore it exactly on failure.
+		StateSnapshot snapshot = conversation.Snapshot();
 
 		// If there is a pending user message, cache it and replace it with the compaction prompt
 		// so the model sees the prompt at the end. On success it gets appended to the fresh context.
-		// On failure everything is restored and nothing has changed.
-		string? pendingUserMessage = null;
-		int lastIdx = conversation.Messages.Count - 1;
-		if (lastIdx >= 1 && conversation.Messages[lastIdx].Role == "user")
-		{
-			pendingUserMessage = conversation.Messages[lastIdx].Content;
-			conversation.Messages.RemoveAt(conversation.Messages.Count - 1);
-		}
-		conversation.AddUserMessage(_settings.Settings.CompactionPrompt);
+		string? pendingUserMessage = bundle.PopLastUserMessage();
+		bundle.OnUserMessage(null!, _settings.Settings.CompactionPrompt);
 
 		// Single-shot: stop as soon as the model responds once.
 		_transport.Status("[Compaction] Started.");
-		LlmResult result = await service.RunToCompletionAsync(conversation, Array.Empty<Tool>(), 0, _transport, cancellationToken);
+		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, Array.Empty<Tool>(), 0, _transport, cancellationToken);
 
-		// The compaction response is already committed to conversation by LlmService.
-		// Grab it from the last assistant message rather than from LlmResult.Content.
-		string? compactedContent = null;
-		for (int i = conversation.Messages.Count - 1; i >= 0; i--)
-		{
-			if (conversation.Messages[i].Role == "assistant")
-			{
-				compactedContent = conversation.Messages[i].Content;
-				break;
-			}
-		}
+     string? compactedContent = bundle.GetLastAssistantText();
 
 		if (result.Success && !string.IsNullOrWhiteSpace(compactedContent))
 		{
-			// Clear everything, restore the system prompt slot at index 0, then add the compacted summary and pending user message.
-			conversation.Messages.Clear();
-			conversation.AddSystemMessage(string.Empty);
-			conversation.AddAssistantMessage(compactedContent);
+			// Wipe every protocol state and rebuild from the compacted summary as an assistant turn.
+			bundle.OnClear();
+			// Re-raise the system prompt into the fresh state so every protocol listener records it.
+			if (!string.IsNullOrEmpty(lastRaisedSystemPrompt))
+				bundle.OnSystemMessage(null!, lastRaisedSystemPrompt);
+			bundle.OnAssistantTurn(null!, compactedContent, string.Empty, Array.Empty<SemanticToolCall>());
 			_transport.Status("[Compaction] Complete.");
 
 			if (pendingUserMessage != null)
 			{
-				conversation.AddUserMessage(pendingUserMessage);
+				bundle.OnUserMessage(null!, pendingUserMessage);
 			}
 		}
 		else
 		{
-			// Truncate back to the exact pre-compaction state, including any LLM responses that were committed.
-			// snapshotCount must be at least 1 to preserve the system prompt at index 0.
-			int restoreCount = snapshotCount >= 1 ? snapshotCount : 1;
-			if (conversation.Messages.Count > restoreCount)
-			{
-				conversation.Messages.RemoveRange(restoreCount, conversation.Messages.Count - restoreCount);
-			}
+			conversation.RestoreSnapshot(snapshot);
 
 			if (pendingUserMessage != null)
 			{
-				conversation.AddUserMessage(pendingUserMessage);
+				bundle.OnUserMessage(null!, pendingUserMessage);
 			}
 
 			_transport.Status("[Compaction] Failed.");
@@ -346,22 +365,11 @@ public class AgentOrchestrator
 		return result;
 	}
 
-	// Replies to a /complete request
-	// a JSON array of strings that match the given prefix.
-	private void HandleComplete(string? prefix, BeastSession conversation)
+   // Pushes the current completion candidates to Beast as a JSON array.
+	private void SendCompletionCandidates(BeastSession conversation)
 	{
 		List<string> candidates = BuildCompletionCandidates(conversation);
-
-		List<string> matches = new List<string>();
-		foreach (string candidate in candidates)
-		{
-			if (string.IsNullOrEmpty(prefix) || candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-			{
-				matches.Add(candidate);
-			}
-		}
-
-		string json = JsonSerializer.Serialize(matches);
+		string json = JsonSerializer.Serialize(candidates);
 		_transport.Completions(json);
 	}
 
@@ -376,23 +384,24 @@ public class AgentOrchestrator
 				"/role",
 				"/model",
 				"/session",
-				"/complete",
 				"/help",
 				"/test"
 		};
 
-		foreach (string roleName in _roleService.Roles.Keys)
-		{
-			candidates.Add("/role " + roleName);
-		}
-
-		LLMRole? activeRole = string.IsNullOrEmpty(conversation.Role) ? null : _roleService.GetRole(conversation.Role);
+        LLMRole? activeRole = string.IsNullOrEmpty(conversation.Role) ? null : _roleService.GetRole(conversation.Role);
+		LlmService? activeService = null;
 		if (activeRole != null)
 		{
-			foreach (string modelId in activeRole.Models)
-			{
-				candidates.Add("/model " + modelId);
-			}
+			activeService = _registry.GetServiceForRole(activeRole, conversation.Model);
+		}
+
+		string currentRoleName = activeRole != null ? activeRole.Name : conversation.Role;
+		AddCurrentFirst(candidates, "/role ", currentRoleName, _roleService.Roles.Keys);
+
+		if (activeRole != null)
+		{
+            string currentModelId = activeService != null ? activeService.Model.ConfigId : conversation.Model;
+			AddCurrentFirst(candidates, "/model ", currentModelId, activeRole.Models);
 		}
 
 		List<(string id, string displayName, int messageCount)> sessions = SessionService.List();
@@ -405,34 +414,39 @@ public class AgentOrchestrator
 		return candidates;
 	}
 
+	private static void AddCurrentFirst(List<string> candidates, string prefix, string currentValue, ICollection<string> values)
+	{
+		if (!string.IsNullOrEmpty(currentValue) && values.Contains(currentValue))
+		{
+			candidates.Add(prefix + currentValue);
+		}
+
+		foreach (string value in values)
+		{
+			if (value == currentValue) continue;
+			candidates.Add(prefix + value);
+		}
+	}
+
 	// ---- Tests ----
 
-	private void RunTests(string? filter)
+	private async Task RunTestsAsync(string? filter, CancellationToken cancellationToken)
 	{
 		_transport.Status("Running tests...");
 
 		TestContext ctx = new TestContext(_transport);
 
 		LlmServiceTests.Test(ctx);
-		FileToolsTests.Test(ctx);
+		await FileToolsTests.TestAsync(ctx);
 		ShellToolsTests.Test(ctx);
-		WebToolsTests.Test(ctx, _settings.Settings.WebSearch);
-		SearchToolsTests.Test(ctx);
-		PerModelLlmTests.Test(ctx, _registry, _roleService, _settings);
+		await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
+		await SearchToolsTests.TestAsync(ctx);
+		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, cancellationToken);
 
 		_transport.Output($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 	}
 
 	// ---- Helpers ----
-
-	private bool NeedsLlmAttention(BeastSession conversation)
-	{
-		if (conversation.Messages.Count == 0) return false;
-		ConversationMessage last = conversation.Messages[^1];
-		if (last.Role == "user" || last.Role == "tool") return true;
-		if (last.Role == "assistant" && last.ToolCalls != null && last.ToolCalls.Count > 0) return true;
-		return false;
-	}
 
 	private void ReloadRegistry()
 	{

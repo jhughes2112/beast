@@ -1,10 +1,11 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 
 
 public static class FileToolsTests
 {
-	public static void Test(TestContext ctx)
+	public static async Task TestAsync(TestContext ctx)
 	{
 		ctx.Log("  FileToolsTests");
 
@@ -16,9 +17,9 @@ public static class FileToolsTests
 			TestWriteAndRead(ctx, tempDir);
 			TestAppend(ctx, tempDir);
 			TestEdit(ctx, tempDir);
-			TestGlob(ctx, tempDir);
-			TestGrep(ctx, tempDir);
-			TestListDirectory(ctx, tempDir);
+			await TestGlobAsync(ctx, tempDir);
+			await TestGrepAsync(ctx, tempDir);
+			await TestListDirectoryAsync(ctx, tempDir);
 			TestReadBinary(ctx, tempDir);
 			TestWriteBinary(ctx, tempDir);
 		}
@@ -54,30 +55,30 @@ public static class FileToolsTests
 		ctx.Assert(content.Contains("hello"), "Edit: original content present");
 	}
 
-	private static void TestGlob(TestContext ctx, string tempDir)
+	private static async Task TestGlobAsync(TestContext ctx, string tempDir)
 	{
 		File.WriteAllText(Path.Combine(tempDir, "a.cs"), "");
 		File.WriteAllText(Path.Combine(tempDir, "b.txt"), "");
 
-		ToolResult result = SearchTools.GlobAsync("*.cs", tempDir).GetAwaiter().GetResult();
+		ToolResult result = await SearchTools.GlobAsync("*.cs", tempDir);
 		ctx.Assert(result.Response.Contains("a.cs"), "Glob: finds .cs file");
 		ctx.Assert(!result.Response.Contains("b.txt"), "Glob: excludes .txt file");
 	}
 
-	private static void TestGrep(TestContext ctx, string tempDir)
+	private static async Task TestGrepAsync(TestContext ctx, string tempDir)
 	{
 		File.WriteAllText(Path.Combine(tempDir, "test.cs"), "public class Hello { }");
 
-		ToolResult result = SearchTools.GrepAsync(tempDir, "Hello", null).GetAwaiter().GetResult();
+		ToolResult result = await SearchTools.GrepAsync(tempDir, "Hello", null);
 		ctx.Assert(result.Response.Contains("test.cs"), "Grep: finds file with match");
 	}
 
-	private static void TestListDirectory(TestContext ctx, string tempDir)
+	private static async Task TestListDirectoryAsync(TestContext ctx, string tempDir)
 	{
 		Directory.CreateDirectory(Path.Combine(tempDir, "subdir"));
 		File.WriteAllText(Path.Combine(tempDir, "file.txt"), "");
 
-		ToolResult result = SearchTools.ListDirectoryAsync(tempDir, null).GetAwaiter().GetResult();
+		ToolResult result = await SearchTools.ListDirectoryAsync(tempDir, null);
 		ctx.Assert(result.Response.Contains("file.txt"), "ListDirectory: lists file");
 		ctx.Assert(result.Response.Contains("subdir/"), "ListDirectory: lists directory");
 	}

@@ -40,19 +40,19 @@ public class ProtocolProxy
         _model = model;
     }
 
-    public async Task<ProviderCallResult> ExecuteAsync(List<ConversationMessage> messages, List<ToolDefinition> tools, int maxCompletionTokens, ITransportServer transport, CancellationToken cancellationToken)
+    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int maxCompletionTokens, ITransportServer transport, CancellationToken cancellationToken)
     {
         if (_protocol == null)
         {
             _protocol = await DetectProtocolAsync(_model, transport);
             if (_protocol == null)
             {
-                return ProviderCallResult.PermanentFailure($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
+                return ProtocolResult.PermanentFailure($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
             }
         }
 
         (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
-        return await _protocol.ExecuteAsync(_model, messages, tools, maxCompletionTokens, headers, payload, transport, cancellationToken);
+        return await _protocol.ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, transport, cancellationToken);
     }
 
     // Probes the endpoint in fixed order (Anthropic → Responses → ChatCompletions).

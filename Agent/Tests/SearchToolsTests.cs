@@ -1,11 +1,12 @@
 using System;
 using System.IO;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 
 
 public static class SearchToolsTests
 {
-	public static void Test(TestContext ctx)
+	public static async Task TestAsync(TestContext ctx)
 	{
 		ctx.Log("  SearchToolsTests");
 
@@ -17,9 +18,9 @@ public static class SearchToolsTests
 			CreateTestFiles(tempDir);
 
 			TestGlobMatch(ctx);
-			TestGlob(ctx, tempDir);
-			TestListDirectory(ctx, tempDir);
-			TestGrep(ctx, tempDir);
+			await TestGlobAsync(ctx, tempDir);
+			await TestListDirectoryAsync(ctx, tempDir);
+			await TestGrepAsync(ctx, tempDir);
 		}
 		finally
 		{
@@ -67,91 +68,91 @@ public static class SearchToolsTests
 		ctx.Assert(!SearchTools.GlobMatch("ab.cs", "?.cs"), "GlobMatch: ?.cs rejects two chars");
 	}
 
-	private static void TestGlob(TestContext ctx, string tempDir)
+	private static async Task TestGlobAsync(TestContext ctx, string tempDir)
 	{
 		string srcDir = Path.Combine(tempDir, "src");
 
 		// Find all .cs files recursively.
-		ToolResult allCs = SearchTools.GlobAsync("**/*.cs", tempDir).GetAwaiter().GetResult();
+		ToolResult allCs = await SearchTools.GlobAsync("**/*.cs", tempDir);
 		ctx.Assert(allCs.Response.Contains("hello.cs"), "Glob: finds root .cs file");
 		ctx.Assert(allCs.Response.Contains("src/app.cs"), "Glob: finds nested .cs file");
 		ctx.Assert(allCs.Response.Contains("src/utils/helper.cs"), "Glob: finds deeply nested .cs file");
 		ctx.Assert(!allCs.Response.Contains("app.ts"), "Glob: excludes non-.cs files");
 
 		// Find .ts files.
-		ToolResult tsFiles = SearchTools.GlobAsync("**/*.ts", tempDir).GetAwaiter().GetResult();
+		ToolResult tsFiles = await SearchTools.GlobAsync("**/*.ts", tempDir);
 		ctx.Assert(tsFiles.Response.Contains("app.ts"), "Glob: finds .ts file");
 
 		// Non-recursive pattern.
-		ToolResult shallowCs = SearchTools.GlobAsync("*.cs", tempDir).GetAwaiter().GetResult();
+		ToolResult shallowCs = await SearchTools.GlobAsync("*.cs", tempDir);
 		ctx.Assert(shallowCs.Response.Contains("hello.cs"), "Glob: shallow pattern finds root file");
 		ctx.Assert(!shallowCs.Response.Contains("src/app.cs"), "Glob: shallow pattern skips nested files");
 
 		// Scoped to subdirectory.
-		ToolResult srcOnly = SearchTools.GlobAsync("**/*.cs", srcDir).GetAwaiter().GetResult();
+		ToolResult srcOnly = await SearchTools.GlobAsync("**/*.cs", srcDir);
 		ctx.Assert(srcOnly.Response.Contains("app.cs"), "Glob: scoped to subdirectory finds files");
 		ctx.Assert(!srcOnly.Response.Contains("hello.cs"), "Glob: scoped to subdirectory excludes parent files");
 
 		// No matches.
-		ToolResult noMatch = SearchTools.GlobAsync("**/*.xyz", tempDir).GetAwaiter().GetResult();
+		ToolResult noMatch = await SearchTools.GlobAsync("**/*.xyz", tempDir);
 		ctx.Assert(noMatch.Response.Contains("No files found"), "Glob: no matches returns message");
 
 		// Empty pattern.
-		ToolResult emptyPattern = SearchTools.GlobAsync("", tempDir).GetAwaiter().GetResult();
+		ToolResult emptyPattern = await SearchTools.GlobAsync("", tempDir);
 		ctx.Assert(emptyPattern.Response.Contains("Error"), "Glob: empty pattern returns error");
 
 		// Empty path.
-		ToolResult emptyPath = SearchTools.GlobAsync("**/*.cs", "").GetAwaiter().GetResult();
+		ToolResult emptyPath = await SearchTools.GlobAsync("**/*.cs", "");
 		ctx.Assert(emptyPath.Response.Contains("Error"), "Glob: empty path returns error");
 	}
 
-	private static void TestListDirectory(TestContext ctx, string tempDir)
+	private static async Task TestListDirectoryAsync(TestContext ctx, string tempDir)
 	{
 		string srcDir = Path.Combine(tempDir, "src");
 
 		// List root.
-		ToolResult root = SearchTools.ListDirectoryAsync(tempDir, null).GetAwaiter().GetResult();
+		ToolResult root = await SearchTools.ListDirectoryAsync(tempDir, null);
 		ctx.Assert(root.Response.Contains("src/"), "ListDirectory: shows subdirectory with trailing slash");
 		ctx.Assert(root.Response.Contains("hello.cs"), "ListDirectory: shows files");
 		ctx.Assert(root.Response.Contains("readme.md"), "ListDirectory: shows all files");
 
 		// List subdirectory.
-		ToolResult src = SearchTools.ListDirectoryAsync(srcDir, null).GetAwaiter().GetResult();
+		ToolResult src = await SearchTools.ListDirectoryAsync(srcDir, null);
 		ctx.Assert(src.Response.Contains("app.cs"), "ListDirectory: lists subdirectory contents");
 		ctx.Assert(src.Response.Contains("utils/"), "ListDirectory: shows nested subdirectory");
 
 		// Non-existent directory.
 		string missingDir = Path.Combine(tempDir, "nonexistent");
-		ToolResult missing = SearchTools.ListDirectoryAsync(missingDir, null).GetAwaiter().GetResult();
+		ToolResult missing = await SearchTools.ListDirectoryAsync(missingDir, null);
 		ctx.Assert(missing.Response.Contains("Error"), "ListDirectory: non-existent returns error");
 
 		// Empty path.
-		ToolResult emptyPath = SearchTools.ListDirectoryAsync("", null).GetAwaiter().GetResult();
+		ToolResult emptyPath = await SearchTools.ListDirectoryAsync("", null);
 		ctx.Assert(emptyPath.Response.Contains("Error"), "ListDirectory: empty path returns error");
 	}
 
-	private static void TestGrep(TestContext ctx, string tempDir)
+	private static async Task TestGrepAsync(TestContext ctx, string tempDir)
 	{
 		// Basic grep.
-		ToolResult filesMode = SearchTools.GrepAsync(tempDir, "class", null).GetAwaiter().GetResult();
+		ToolResult filesMode = await SearchTools.GrepAsync(tempDir, "class", null);
 		ctx.Assert(filesMode.Response.Contains("hello.cs"), "Grep: finds root match");
 		ctx.Assert(filesMode.Response.Contains("src/app.cs"), "Grep: finds nested match");
 
 		// Content mode shows matching lines.
-		ToolResult contentMode = SearchTools.GrepAsync(tempDir, "class Hello", null).GetAwaiter().GetResult();
+		ToolResult contentMode = await SearchTools.GrepAsync(tempDir, "class Hello", null);
 		ctx.Assert(contentMode.Response.Contains("public class Hello"), "Grep: shows matching line");
 		ctx.Assert(contentMode.Response.Contains("hello.cs"), "Grep: shows filename");
 
 		// No matches.
-		ToolResult noMatch = SearchTools.GrepAsync(tempDir, "zzzzzznonexistent", null).GetAwaiter().GetResult();
+		ToolResult noMatch = await SearchTools.GrepAsync(tempDir, "zzzzzznonexistent", null);
 		ctx.Assert(noMatch.Response.Contains("0 match"), "Grep: no matches returns zero count");
 
 		// Empty pattern.
-		ToolResult emptyPattern = SearchTools.GrepAsync(tempDir, "", null).GetAwaiter().GetResult();
+		ToolResult emptyPattern = await SearchTools.GrepAsync(tempDir, "", null);
 		ctx.Assert(emptyPattern.Response.Contains("Error"), "Grep: empty pattern returns error");
 
 		// Empty path.
-		ToolResult emptyPath = SearchTools.GrepAsync("", "class", null).GetAwaiter().GetResult();
+		ToolResult emptyPath = await SearchTools.GrepAsync("", "class", null);
 		ctx.Assert(emptyPath.Response.Contains("Error"), "Grep: empty path returns error");
 	}
 }

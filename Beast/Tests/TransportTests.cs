@@ -46,7 +46,7 @@ public static class TransportTests
     {
         return (ValueTuple<FrameType, string>)Reflect.Static(typeof(BeastApp), "ParseFrame",
             new System.Type[] { typeof(string) },
-            new object[] { wire });
+            new object[] { wire })!;
     }
 
     private static void TestParseFrameSingle(TestContext ctx)
@@ -69,7 +69,8 @@ public static class TransportTests
             FrameType.System,
             FrameType.StreamStart,
             FrameType.StreamChunk,
-            FrameType.StreamEnd
+            FrameType.StreamEnd,
+            FrameType.Clear
         };
 
         foreach (FrameType t in types)
@@ -160,6 +161,11 @@ public static class TransportTests
             new object[] { FrameType.Status, "Agent ready" });
 
         ctx.AssertEqual(0, model.Messages.Count, "BeastApp: Status does not add to model");
+
+        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
+            new object[] { FrameType.Completions, "[\"/help\",\"/quit\"]" });
+
+        ctx.AssertEqual(0, model.Messages.Count, "BeastApp: Completions do not add to model");
 
         // Output frame adds a message.
         Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },

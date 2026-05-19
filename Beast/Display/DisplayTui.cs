@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Terminal.Gui;
@@ -10,9 +11,13 @@ public class DisplayTui : IDisplay
     private bool _verbose;
     private ConversationModel? _model;
     private Func<string, Task>? _sendAsync;
+    private readonly List<string> _completions = new List<string>();
+    private readonly List<string> _matches = new List<string>();
 
     private Label? _statusLabel;
     private TextField? _inputField;
+    private Label? _completionLabel;
+    private int _matchIndex;
 
     public DisplayTui(bool verbose)
     {
@@ -30,6 +35,20 @@ public class DisplayTui : IDisplay
         {
             if (_statusLabel != null)
                 _statusLabel.Text = text;
+        });
+    }
+
+    public void SetCompletions(IReadOnlyList<string> completions)
+    {
+        Application.MainLoop?.Invoke(() =>
+        {
+            _completions.Clear();
+            foreach (string completion in completions)
+            {
+                _completions.Add(completion);
+            }
+            _matchIndex = 0;
+            UpdateCompletionPreview();
         });
     }
 
@@ -76,9 +95,18 @@ public class DisplayTui : IDisplay
             Height = 1,
         };
 
+        _completionLabel = new Label("")
+        {
+            X = 0,
+            Y = Pos.AnchorEnd(1),
+            Width = Dim.Fill(),
+            Height = 1,
+            Enabled = false
+        };
+
         _inputField.KeyDown += OnInputKeyDown;
 
-        top.Add(historyView, _statusLabel, _inputField);
+        top.Add(historyView, _statusLabel, _completionLabel, _inputField);
         _inputField.SetFocus();
 
         Application.Run();
@@ -93,8 +121,25 @@ public class DisplayTui : IDisplay
         {
             string text = _inputField!.Text?.ToString() ?? "";
             _inputField.Text = "";
+            _matchIndex = 0;
+            UpdateCompletionPreview();
             if (text.Length > 0)
                 await SendAsync(text);
+            args.Handled = true;
+        }
+        else if (args.KeyEvent.Key == Key.Tab)
+        {
+            AcceptCompletion();
+            args.Handled = true;
+        }
+        else if (args.KeyEvent.Key == Key.CursorUp)
+        {
+            CycleCompletion(-1);
+            args.Handled = true;
+        }
+        else if (args.KeyEvent.Key == Key.CursorDown)
+        {
+            CycleCompletion(1);
             args.Handled = true;
         }
         else if (args.KeyEvent.Key == (Key.CtrlMask | Key.O))
@@ -105,7 +150,13 @@ public class DisplayTui : IDisplay
         else if (args.KeyEvent.Key == Key.Esc)
         {
             _inputField!.Text = "";
+            _matchIndex = 0;
+            UpdateCompletionPreview();
             args.Handled = true;
+        }
+        else
+        {
+            Application.MainLoop?.Invoke(UpdateCompletionPreview);
         }
     }
 
@@ -145,5 +196,102 @@ public class DisplayTui : IDisplay
         };
         _model.Mode = next;
         SetStatus($"View mode: {next}");
+    }
+
+    private void CycleCompletion(int delta)
+    {
+        UpdateMatches();
+        if (_matches.Count == 0)
+        {
+            UpdateCompletionPreview();
+            return;
+        }
+
+        _matchIndex += delta;
+        if (_matchIndex < 0)
+        {
+            _matchIndex = _matches.Count - 1;
+        }
+        else if (_matchIndex >= _matches.Count)
+        {
+            _matchIndex = 0;
+        }
+
+        UpdateCompletionPreview();
+    }
+
+    private void AcceptCompletion()
+    {
+        UpdateMatches();
+        if (_matches.Count == 0)
+        {
+            return;
+        }
+
+        string completion = _matches[_matchIndex];
+        _inputField!.Text = completion;
+        UpdateCompletionPreview();
+    }
+
+    private void UpdateCompletionPreview()
+    {
+        if (_inputField == null || _completionLabel == null)
+        {
+            return;
+        }
+
+        UpdateMatches();
+
+        string input = _inputField.Text?.ToString() ?? string.Empty;
+        if (!input.StartsWith("/", StringComparison.Ordinal) || _matches.Count == 0)
+        {
+            _completionLabel.Text = string.Empty;
+            return;
+        }
+
+        if (_matchIndex < 0 || _matchIndex >= _matches.Count)
+        {
+            _matchIndex = 0;
+        }
+
+        string match = _matches[_matchIndex];
+        string remainder = match.StartsWith(input, StringComparison.OrdinalIgnoreCase)
+            ? match.Substring(input.Length)
+            : string.Empty;
+
+        if (string.IsNullOrEmpty(remainder))
+        {
+            _completionLabel.Text = string.Empty;
+            return;
+        }
+
+        int typedLength = input.Length;
+        _completionLabel.X = typedLength;
+        _completionLabel.Text = remainder;
+    }
+
+    private void UpdateMatches()
+    {
+        string input = _inputField?.Text?.ToString() ?? string.Empty;
+
+        _matches.Clear();
+        if (!input.StartsWith("/", StringComparison.Ordinal))
+        {
+            _matchIndex = 0;
+            return;
+        }
+
+        foreach (string completion in _completions)
+        {
+            if (completion.StartsWith(input, StringComparison.OrdinalIgnoreCase))
+            {
+                _matches.Add(completion);
+            }
+        }
+
+        if (_matchIndex >= _matches.Count)
+        {
+            _matchIndex = 0;
+        }
     }
 }

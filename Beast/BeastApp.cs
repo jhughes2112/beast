@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -171,6 +172,28 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
             case FrameType.Debug:
                 _model!.Update(_nextIndex++, FrameType.Debug, content);
+                break;
+
+            case FrameType.Completions:
+                try
+                {
+                    string[]? completions = JsonSerializer.Deserialize<string[]>(content);
+                    _display.SetCompletions(completions ?? Array.Empty<string>());
+                }
+                catch
+                {
+                    _display.SetCompletions(Array.Empty<string>());
+                }
+                break;
+
+            case FrameType.Clear:
+                _model!.Clear();
+                _nextIndex = 0;
+                _streamIndex = -1;
+                _streamContent = "";
+                _streamTagToSlot.Clear();
+                _slotTypes.Clear();
+                _pendingCommit.Clear();
                 break;
 
             default:

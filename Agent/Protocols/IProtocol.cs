@@ -5,17 +5,22 @@ using System.Threading.Tasks;
 
 
 // Encapsulates a single LLM wire format (ChatCompletions, Responses, Anthropic, etc.).
-// A protocol knows how to build a request, send it, and parse the response for one API shape.
-// IProvider holds a protocol and delegates HTTP work to it; extra_headers and extra_payload
-// from LlmModel.Extras are passed through verbatim so no protocol-specific knowledge is needed
-// in providers or in configuration.
+// A protocol knows how to build a request, send it, parse the response, and write the
+// assistant turn into the session's native state for its own protocol while fanning the
+// semantic event out to the other protocol listeners. IProvider holds a protocol and
+// delegates HTTP work to it; extra_headers and extra_payload from LlmModel.Extras are
+// passed through verbatim so no protocol-specific knowledge is needed in providers or
+// in configuration.
 public interface IProtocol
 {
 	// Executes one round-trip using this wire format.
+  // bundle carries the protocol-native listeners; the protocol reads its own listener state
+    // to build the request, then writes the assistant turn (and any tool results from prior
+    // turns) into that same native state and fans out to peers.
 	// extraHeaders are added to the HTTP request; extraPayload entries are merged into the
 	// top-level JSON body. Values are JsonNode so nested objects (e.g. provider blocks) work.
 	// transport receives streaming deltas (content and thinking) as they arrive.
-	Task<ProviderCallResult> ExecuteAsync(LlmModel model, List<ConversationMessage> messages, List<ToolDefinition> tools, int maxCompletionTokens,
+  Task<ProtocolResult> ExecuteAsync(LlmModel model, IProtocolListener bundle, List<ToolDefinition> tools, int maxCompletionTokens,
 										Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, CancellationToken cancellationToken);
 }
 

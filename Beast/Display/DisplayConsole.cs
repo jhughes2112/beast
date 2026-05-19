@@ -33,6 +33,10 @@ public class DisplayConsole : IDisplay
         _log.Verbose($"[status] {text}");
     }
 
+    public void SetCompletions(IReadOnlyList<string> completions)
+    {
+    }
+
     public void OnStreamStart(int streamIndex, FrameType type)
     {
         _streamIndex = streamIndex;

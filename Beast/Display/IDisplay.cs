@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,6 +10,7 @@ public interface IDisplay
 {
     void Attach(ConversationModel model);
     void SetStatus(string text);
+    void SetCompletions(IReadOnlyList<string> completions);
     void OnStreamStart(int streamIndex, FrameType type);
     void OnStreamChunk(string chunk);
     void OnStreamEnd();

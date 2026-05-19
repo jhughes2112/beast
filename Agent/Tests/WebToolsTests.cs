@@ -1,11 +1,12 @@
 using System.Reflection;
 using System;
 using System.Threading;
+using System.Threading.Tasks;
 
 
 public static class WebToolsTests
 {
-    public static void Test(TestContext ctx, WebSearchConfig? webSearchConfig)
+    public static async Task TestAsync(TestContext ctx, WebSearchConfig? webSearchConfig)
     {
         ctx.Log("  WebToolsTests");
 
@@ -13,7 +14,7 @@ public static class WebToolsTests
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
-            TestWebSearch(ctx, webSearchConfig.Openrouter);
+            await TestWebSearchAsync(ctx, webSearchConfig.Openrouter);
         }
         else
         {
@@ -21,21 +22,23 @@ public static class WebToolsTests
         }
     }
 
-    private static void TestWebSearch(TestContext ctx, OpenrouterSearchConfig config)
+    private static async Task TestWebSearchAsync(TestContext ctx, OpenrouterSearchConfig config)
     {
         ctx.Log("  WebToolsTests: testing web search via OpenRouter");
 
         Action<string> previousLog = ProtocolChatCompletions.Log;
         ProtocolChatCompletions.Log = line => ctx.Log($"    {line}");
 
+        TestCaptureTransport captureTransport = new TestCaptureTransport();
+
         try
         {
             WebSearchOpenrouter searcher = new WebSearchOpenrouter(config.BuildModel());
 
             using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            ToolResult result = searcher.SearchWebAsync("What is the capital of France?", new TransportConsoleDebug(), cts.Token).GetAwaiter().GetResult();
+            ToolResult result = await searcher.SearchWebAsync("What is the capital of France?", captureTransport, cts.Token);
 
-            ctx.Log($"    response: {result.Response.Substring(0, Math.Min(300, result.Response.Length))}");
+            ctx.Log($"    response: {result.Response}");
             ctx.Assert(!result.Response.StartsWith("Error:"), "WebSearch: no error returned");
             ctx.Assert(result.Response.Length > 10, "WebSearch: non-empty response");
         }

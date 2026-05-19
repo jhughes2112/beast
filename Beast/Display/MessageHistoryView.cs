@@ -108,6 +108,12 @@ public class MessageHistoryView : View
         }
     }
 
+    public override void LayoutSubviews()
+    {
+        base.LayoutSubviews();
+        Rebuild();
+    }
+
     // Builds the flat list of rendered rows from all messages and fills _rowToMessageIndex.
     private List<string> BuildRows(int width)
     {
@@ -117,7 +123,7 @@ public class MessageHistoryView : View
 
         foreach (DisplayMessage msg in messages)
         {
-            string header = BuildHeader(msg);
+            string header = BuildHeader(msg, width);
             if (msg.Collapsed)
             {
                 rows.Add(header);
@@ -145,7 +151,7 @@ public class MessageHistoryView : View
         return rows;
     }
 
-    private static string BuildHeader(DisplayMessage msg)
+    private static string BuildHeader(DisplayMessage msg, int width)
     {
         string prefix = msg.Type switch
         {
@@ -160,12 +166,27 @@ public class MessageHistoryView : View
 
         if (msg.Collapsed)
         {
-            // Show first 60 chars of content as summary.
-            string summary = msg.Content.Length > 60
-                ? msg.Content.Substring(0, 57) + "..."
-                : msg.Content;
             // Strip newlines from the summary.
-            summary = summary.Replace('\n', ' ').Replace('\r', ' ');
+            string summary = msg.Content.Replace('\n', ' ').Replace('\r', ' ');
+            int maxSummaryLength = width - prefix.Length;
+
+            if (maxSummaryLength <= 0)
+            {
+                return prefix;
+            }
+
+            if (summary.Length > maxSummaryLength)
+            {
+                if (maxSummaryLength <= 3)
+                {
+                    summary = summary.Substring(0, maxSummaryLength);
+                }
+                else
+                {
+                    summary = summary.Substring(0, maxSummaryLength - 3) + "...";
+                }
+            }
+
             return prefix + summary;
         }
 
