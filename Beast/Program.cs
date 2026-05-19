@@ -76,7 +76,8 @@ public class Program
             messages.Add("/quit");
 
         Log log = new Log(verbose);
-        IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayTui(verbose);
+        CollapseMode initialMode = verbose ? CollapseMode.Verbose : CollapseMode.Minimized;
+        IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayTui(initialMode);
         await using BeastApp app = new BeastApp("beastagent", messages, display, log);
         return await app.Run();
     }

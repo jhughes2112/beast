@@ -94,12 +94,30 @@ public class ConversationModel
         MessageUpdated?.Invoke(new DisplayMessage(0, FrameType.Clear, string.Empty));
     }
 
-    private static bool ShouldCollapse(FrameType type, CollapseMode mode)
+    // Returns whether a message of the given type should be hidden entirely in the given mode.
+    public static bool ShouldHide(FrameType type, CollapseMode mode)
     {
-        if (mode == CollapseMode.Quiet) return true;
         if (mode == CollapseMode.Verbose) return false;
 
-        // Minimized: collapse Tool, Thinking, System, Debug; expand everything else.
-        return type == FrameType.Tool || type == FrameType.Thinking || type == FrameType.System || type == FrameType.Debug;
+        // Debug and ToolCall are always hidden in non-verbose modes.
+        if (type == FrameType.Debug || type == FrameType.ToolCall) return true;
+
+        // Quiet: only Output and Error are visible.
+        if (mode == CollapseMode.Quiet)
+            return type != FrameType.Output && type != FrameType.Error;
+
+        return false;
+    }
+
+    private static bool ShouldCollapse(FrameType type, CollapseMode mode)
+    {
+        if (mode == CollapseMode.Verbose) return false;
+
+        // Minimized: Tool/ToolResponse/Thinking/System shown collapsed; Output/Error expanded.
+        if (mode == CollapseMode.Minimized)
+            return type == FrameType.Thinking || type == FrameType.ToolResponse || type == FrameType.System;
+
+        // Quiet: hidden types were already filtered; remaining (Output, Error) are expanded.
+        return false;
     }
 }

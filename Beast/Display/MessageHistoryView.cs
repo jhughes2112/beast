@@ -98,14 +98,38 @@ public class MessageHistoryView : View
             Move(0, row);
             if (dataRow < _rows.Count)
             {
+                int msgIdx = dataRow < _rowToMessageIndex.Count ? _rowToMessageIndex[dataRow] : -1;
+                FrameType rowType = FrameType.Output;
+                if (msgIdx >= 0 && msgIdx < _model.Messages.Count)
+                    rowType = _model.Messages[msgIdx].Type;
+
+                Driver.SetAttribute(AttributeForType(rowType));
                 string line = _rows[dataRow];
                 Driver.AddStr(line.PadRight(visibleWidth));
             }
             else
             {
+                Driver.SetAttribute(Terminal.Gui.Attribute.Make(Color.Black, Color.Black));
                 Driver.AddStr("".PadRight(visibleWidth));
             }
         }
+    }
+
+    private static Terminal.Gui.Attribute AttributeForType(FrameType type)
+    {
+        return type switch
+        {
+            FrameType.Output      => Terminal.Gui.Attribute.Make(Color.White, Color.Black),
+            FrameType.User        => Terminal.Gui.Attribute.Make(Color.Gray, Color.Black),
+            FrameType.Error       => Terminal.Gui.Attribute.Make(Color.BrightRed, Color.Black),
+            FrameType.Thinking    => Terminal.Gui.Attribute.Make(Color.DarkGray, Color.Black),
+            FrameType.ToolResponse => Terminal.Gui.Attribute.Make(Color.White, Color.Blue),
+            FrameType.Tool        => Terminal.Gui.Attribute.Make(Color.Cyan, Color.Black),
+            FrameType.ToolCall    => Terminal.Gui.Attribute.Make(Color.Cyan, Color.Black),
+            FrameType.System      => Terminal.Gui.Attribute.Make(Color.BrightYellow, Color.Red),
+            FrameType.Debug       => Terminal.Gui.Attribute.Make(Color.DarkGray, Color.Black),
+            _                     => Terminal.Gui.Attribute.Make(Color.White, Color.Black)
+        };
     }
 
     public override void LayoutSubviews()
@@ -123,6 +147,8 @@ public class MessageHistoryView : View
 
         foreach (DisplayMessage msg in messages)
         {
+            if (ConversationModel.ShouldHide(msg.Type, _model.Mode)) continue;
+
             string header = BuildHeader(msg, width);
             if (msg.Collapsed)
             {
@@ -131,14 +157,22 @@ public class MessageHistoryView : View
             }
             else
             {
-                rows.Add(header);
-                _rowToMessageIndex.Add(msg.Index);
-
-                // Wrap content lines.
-                List<string> wrapped = WrapText(msg.Content, width - 2);
-                foreach (string line in wrapped)
+                // Wrap content and attach first line to the header prefix.
+                List<string> firstWrapped = WrapText(msg.Content, width - 2);
+                List<string> restWrapped = new List<string>();
+                if (firstWrapped.Count > 0)
                 {
-                    rows.Add("  " + line);
+                    rows.Add(header + firstWrapped[0]);
+                    _rowToMessageIndex.Add(msg.Index);
+                    for (int i = 1; i < firstWrapped.Count; i++)
+                    {
+                        rows.Add("  " + firstWrapped[i]);
+                        _rowToMessageIndex.Add(msg.Index);
+                    }
+                }
+                else
+                {
+                    rows.Add(header);
                     _rowToMessageIndex.Add(msg.Index);
                 }
 
@@ -156,6 +190,7 @@ public class MessageHistoryView : View
         string prefix = msg.Type switch
         {
             FrameType.Output    => "▸ ",
+            FrameType.User      => "▹ ",
             FrameType.System    => "⚙ ",
             FrameType.Thinking  => msg.Collapsed ? "▶ [thinking] " : "▼ [thinking] ",
             FrameType.Tool      => msg.Collapsed ? "▶ [tool] " : "▼ [tool] ",

@@ -19,7 +19,9 @@ public enum FrameType : byte
     StreamChunk = 8,  // one text delta belonging to the current open stream
     StreamEnd = 9,    // closes the current stream block; content is the same type tag as StreamStart
     Debug = 10,       // diagnostic output; suppressed unless Beast is running in verbose mode
-    Clear = 13        // clears the client's mirrored conversation memory/display
+    Clear = 13,       // clears the client's mirrored conversation memory/display
+    User = 14,        // user message; used when replaying history to the client
+    Stats = 15        // JSON stats payload: model, promptTokens, completionTokens, totalCost
 }
 
 // Single-character tags that identify the type of a streaming block.
@@ -61,6 +63,8 @@ public interface ITransportServer : IStreamingMessage
     void Completions(string json) => Send(FrameType.Completions, json);
     void System(string text) => Send(FrameType.System, text);
     void Debug(string text) => Send(FrameType.Debug, text);
+    void User(string text) => Send(FrameType.User, text);
+    void Stats(string json) => Send(FrameType.Stats, json);
     void Clear() => Send(FrameType.Clear, string.Empty);
 
     // Streaming: bracket a sequence of incremental chunks with start/end frames.

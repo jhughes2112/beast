@@ -10,10 +10,12 @@ public interface IDisplay
 {
     void Attach(ConversationModel model);
     void SetStatus(string text);
+    void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens);
     void SetCompletions(IReadOnlyList<string> completions);
     void OnStreamStart(int streamIndex, FrameType type);
     void OnStreamChunk(string chunk);
     void OnStreamEnd();
     void SetSendAsync(Func<string, Task> sendAsync);
+    void SetRequestExit(Action requestExit);
     Task RunAsync(CancellationToken cancellationToken);
 }

@@ -110,6 +110,10 @@ public class AgentOrchestrator
 						case "ping":
 							_transport.Status($"pong {args}");
 							break;
+						case "history":
+							ReplayHistory(conversation);
+							SendStats(conversation, service?.Model.Config.ContextWindow ?? 0);
+							break;
 						case "quit":
 							wantsExit = true;
 							break;
@@ -151,6 +155,7 @@ public class AgentOrchestrator
 						case "clear":
 							bundle.OnClear();
 							conversation.NeedsLlmAttention = false;
+							lastRaisedSystemPrompt = string.Empty;
 							_transport.Status("Session cleared.");
 							break;
 						case "reload":
@@ -179,10 +184,13 @@ public class AgentOrchestrator
 							}
 							break;
 						case "help":
-                         _transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /test, /quit");
+							_transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /test, /quit");
 							break;
 						case "test":
 							await RunTestsAsync(args, cancellationToken);
+							break;
+						default:
+							_transport.Error($"Unknown command reached agent: /{verb}");
 							break;
 					}
 				}
@@ -307,6 +315,7 @@ public class AgentOrchestrator
 		if (result.Success)
 		{
 			conversation.NeedsLlmAttention = false;
+			SendStats(conversation, service.Model.Config.ContextWindow);
 		}
 		if (result.ExitReason == LlmExitReason.ContextFull)
 		{
@@ -452,5 +461,69 @@ public class AgentOrchestrator
 	{
 		_settings.LoadSettings();
 		_registry.LoadFromConfigs(_settings, _roleService);
+	}
+
+	// Sends a Stats frame to Beast with model, token counts, total cost, and context window.
+	private void SendStats(BeastSession conversation, int maxContext)
+	{
+		TokenUsageInfo? usage = conversation.LastTokenUsage;
+		int prompt = usage != null ? usage.PromptTokens : 0;
+		int completion = usage != null ? usage.CompletionTokens : 0;
+		int contextTokens = conversation.GetUsedTokenCount();
+		string json = JsonSerializer.Serialize(new
+		{
+			model = conversation.Model,
+			promptTokens = prompt,
+			completionTokens = completion,
+			totalCost = conversation.TotalCost,
+			maxContext,
+			contextTokens
+		});
+		_transport.Stats(json);
+	}
+
+	// Replays the committed conversation history to the transport so a freshly connected Beast
+	// client can reconstruct its display. Skips streaming scaffolds; sends everything else.
+	private void ReplayHistory(BeastSession conversation)
+	{
+		foreach (JsonNode? node in conversation.ChatCompletionsState)
+		{
+			if (node == null) continue;
+			string role = node["role"]?.GetValue<string>() ?? string.Empty;
+			string content = node["content"]?.GetValue<string>() ?? string.Empty;
+
+			if (role == "system")
+			{
+				if (!string.IsNullOrEmpty(content))
+					_transport.System(content);
+			}
+			else if (role == "user")
+			{
+				if (!string.IsNullOrEmpty(content))
+					_transport.User(content);
+			}
+			else if (role == "assistant")
+			{
+				if (!string.IsNullOrEmpty(content))
+					_transport.Output(content);
+
+				JsonArray? toolCalls = node["tool_calls"]?.AsArray();
+				if (toolCalls != null)
+				{
+					foreach (JsonNode? tc in toolCalls)
+					{
+						if (tc == null) continue;
+						string name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty;
+						string args = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
+						_transport.ToolCall($"{name}({args})");
+					}
+				}
+			}
+			else if (role == "tool")
+			{
+				if (!string.IsNullOrEmpty(content))
+					_transport.ToolResponse(content);
+			}
+		}
 	}
 }

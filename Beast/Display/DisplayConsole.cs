@@ -33,6 +33,10 @@ public class DisplayConsole : IDisplay
         _log.Verbose($"[status] {text}");
     }
 
+    public void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
+    {
+        // No persistent status bar in non-interactive mode.
+    }
     public void SetCompletions(IReadOnlyList<string> completions)
     {
     }
@@ -79,6 +83,11 @@ public class DisplayConsole : IDisplay
     }
 
     public void SetSendAsync(Func<string, Task> sendAsync)
+    {
+        // No interactive input in non-interactive mode.
+    }
+
+    public void SetRequestExit(Action requestExit)
     {
         // No interactive input in non-interactive mode.
     }
