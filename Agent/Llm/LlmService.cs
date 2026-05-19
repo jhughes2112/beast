@@ -302,7 +302,10 @@ public class LlmService
 			return new ToolResult($"Error: Tool '{toolCall.Function.Name}' received malformed arguments: {toolCall.Function.Arguments}", false);
 		}
 
-		return await matchedTool.Handler(argsObj, ct, transport);
+		transport.ToolCall($"{toolCall.Function.Name}({toolCall.Function.Arguments})");
+		ToolResult result = await matchedTool.Handler(argsObj, ct, transport);
+		transport.ToolResponse(result.Response);
+		return result;
 	}
 
 	private static void NormalizeToolCalls(List<ConversationToolCall> toolCalls)

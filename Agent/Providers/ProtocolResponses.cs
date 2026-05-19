@@ -129,6 +129,8 @@ public class ProtocolResponses : IProtocol
                 return ProviderCallResult.Failed("Empty response from Responses API");
             }
 
+            EmitNonStreamingThinkingAndOutput(transport, response);
+
             return ProviderCallResult.Succeeded(BuildPayload(model, response));
         }
 
@@ -226,11 +228,15 @@ public class ProtocolResponses : IProtocol
         }
 
         // Responses API SSE events relevant to streaming:
-        //   response.output_text.delta  — text delta, fields: item_id, output_index, content_index, delta
-        //   response.function_call_arguments.delta — tool arg delta, fields: item_id, call_id, delta
-        //   response.done — final event, field: response (full ResponsesApiResponse object)
+        //   response.output_text.delta              — assistant text delta
+        //   response.reasoning_summary_text.delta   — reasoning/thinking delta
+        //   response.function_call_arguments.delta  — tool argument delta
+        //   response.completed / response.done      — final event with full response object
         StringBuilder contentBuilder = new StringBuilder();
+        StringBuilder reasoningBuilder = new StringBuilder();
+        Dictionary<string, StringBuilder> toolArgBuilders = new Dictionary<string, StringBuilder>();
         ResponsesApiResponse? finalResponse = null;
+        string? openStreamTag = null;
 
         using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
         using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
@@ -254,13 +260,46 @@ public class ProtocolResponses : IProtocol
                     string? delta = eventNode["delta"]?.GetValue<string>();
                     if (!string.IsNullOrEmpty(delta))
                     {
-                        if (contentBuilder.Length == 0)
+                        if (openStreamTag != StreamTag.Assistant)
                         {
+                            if (openStreamTag != null) transport.StreamEnd(openStreamTag);
                             transport.StreamStart(StreamTag.Assistant);
+                            openStreamTag = StreamTag.Assistant;
                         }
 
                         contentBuilder.Append(delta);
                         transport.StreamChunk(delta);
+                    }
+                }
+                else if (eventType == "response.reasoning_summary_text.delta")
+                {
+                    string? delta = eventNode["delta"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(delta))
+                    {
+                        if (openStreamTag != StreamTag.Thinking)
+                        {
+                            if (openStreamTag != null) transport.StreamEnd(openStreamTag);
+                            transport.StreamStart(StreamTag.Thinking);
+                            openStreamTag = StreamTag.Thinking;
+                        }
+
+                        reasoningBuilder.Append(delta);
+                        transport.StreamChunk(delta);
+                    }
+                }
+                else if (eventType == "response.function_call_arguments.delta")
+                {
+                    string? callId = eventNode["call_id"]?.GetValue<string>() ?? eventNode["item_id"]?.GetValue<string>() ?? "";
+                    string? delta = eventNode["delta"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(delta))
+                    {
+                        if (!toolArgBuilders.TryGetValue(callId, out StringBuilder? argBuilder))
+                        {
+                            argBuilder = new StringBuilder();
+                            toolArgBuilders[callId] = argBuilder;
+                        }
+
+                        argBuilder.Append(delta);
                     }
                 }
                 else if (eventType == "response.completed" || eventType == "response.done")
@@ -276,9 +315,14 @@ public class ProtocolResponses : IProtocol
             }
         }
 
-        if (contentBuilder.Length > 0)
+        if (openStreamTag != null)
         {
-            transport.StreamEnd(StreamTag.Assistant);
+            transport.StreamEnd(openStreamTag);
+        }
+
+        if (reasoningBuilder.Length > 0)
+        {
+            transport.Thinking(reasoningBuilder.ToString());
         }
 
         if (finalResponse != null)
@@ -440,6 +484,24 @@ public class ProtocolResponses : IProtocol
         return result;
     }
 
+    // Emits reasoning blocks as Thinking frames for non-streaming responses.
+    private static void EmitNonStreamingThinkingAndOutput(ITransportServer transport, ResponsesApiResponse response)
+    {
+        foreach (ResponsesOutputItem item in response.Output)
+        {
+            if (item.Type == "reasoning" && item.Content != null)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (ResponsesContentBlock block in item.Content)
+                {
+                    if (!string.IsNullOrEmpty(block.Text)) sb.Append(block.Text);
+                }
+
+                if (sb.Length > 0) transport.Thinking(sb.ToString());
+            }
+        }
+    }
+
     private static ProviderCallPayload BuildPayload(LlmModel model, ResponsesApiResponse response)
     {
         List<ConversationToolCall> toolCalls = new List<ConversationToolCall>();
@@ -465,17 +527,6 @@ public class ProtocolResponses : IProtocol
                 foreach (ResponsesContentBlock block in item.Content)
                 {
                     if (block.Type == "output_text" && !string.IsNullOrEmpty(block.Text))
-                    {
-                        assistantText = block.Text;
-                        break;
-                    }
-                }
-            }
-            else if (item.Type == "reasoning" && item.Content != null && assistantText == null)
-            {
-                foreach (ResponsesContentBlock block in item.Content)
-                {
-                    if (!string.IsNullOrEmpty(block.Text))
                     {
                         assistantText = block.Text;
                         break;

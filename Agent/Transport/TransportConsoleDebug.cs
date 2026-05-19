@@ -15,6 +15,8 @@ public class TransportConsoleDebug : ITransportServer
             FrameType.Error       => "[error] ",
             FrameType.Status      => "[status] ",
             FrameType.Tool        => "[tool] ",
+            FrameType.ToolCall    => "[tool-call] ",
+            FrameType.ToolResponse => "[tool-response] ",
             FrameType.Thinking    => "[thinking] ",
             FrameType.Completions => "[completions] ",
             FrameType.Debug       => "[debug] ",

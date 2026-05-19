@@ -10,6 +10,8 @@ public enum FrameType : byte
     Error = 1,
     Status = 2,
     Tool = 3,
+    ToolCall = 11,      // agent is about to call a tool: content is "toolName(args)"
+    ToolResponse = 12,  // tool returned a result: content is the response text
     Thinking = 4,
     Completions = 5,  // JSON array of completion strings in response to /complete
     System = 6,       // system prompt message
@@ -52,6 +54,8 @@ public interface ITransportServer : IStreamingMessage
     void Error(string text) => Send(FrameType.Error, text);
     void Status(string text) => Send(FrameType.Status, text);
     void Tool(string text) => Send(FrameType.Tool, text);
+    void ToolCall(string text) => Send(FrameType.ToolCall, text);
+    void ToolResponse(string text) => Send(FrameType.ToolResponse, text);
     void Thinking(string text) => Send(FrameType.Thinking, text);
     void Completions(string json) => Send(FrameType.Completions, json);
     void System(string text) => Send(FrameType.System, text);

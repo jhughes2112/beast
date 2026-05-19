@@ -252,6 +252,7 @@ public class ProtocolChatCompletions : IProtocol
         List<StreamingToolCall> toolCallAccumulators = new List<StreamingToolCall>();
         string finishReason = "";
         ChatCompletionUsage? usage = null;
+        string? openStreamTag = null;
 
         using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
         using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
@@ -288,9 +289,11 @@ public class ProtocolChatCompletions : IProtocol
                                       ?? delta["reasoning"]?.GetValue<string>();
                 if (!string.IsNullOrEmpty(reasoningDelta))
                 {
-                    if (reasoningBuilder.Length == 0)
+                    if (openStreamTag != StreamTag.Thinking)
                     {
+                        if (openStreamTag != null) transport.StreamEnd(openStreamTag);
                         transport.StreamStart(StreamTag.Thinking);
+                        openStreamTag = StreamTag.Thinking;
                     }
 
                     reasoningBuilder.Append(reasoningDelta);
@@ -300,9 +303,11 @@ public class ProtocolChatCompletions : IProtocol
                 string? contentDelta = delta["content"]?.GetValue<string>();
                 if (!string.IsNullOrEmpty(contentDelta))
                 {
-                    if (contentBuilder.Length == 0)
+                    if (openStreamTag != StreamTag.Assistant)
                     {
+                        if (openStreamTag != null) transport.StreamEnd(openStreamTag);
                         transport.StreamStart(StreamTag.Assistant);
+                        openStreamTag = StreamTag.Assistant;
                     }
 
                     contentBuilder.Append(contentDelta);
@@ -332,9 +337,13 @@ public class ProtocolChatCompletions : IProtocol
             }
         }
 
+        if (openStreamTag != null)
+        {
+            transport.StreamEnd(openStreamTag);
+        }
+
         if (reasoningBuilder.Length > 0)
         {
-            transport.StreamEnd(StreamTag.Thinking);
             transport.Thinking(reasoningBuilder.ToString());
         }
 

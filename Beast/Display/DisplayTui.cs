@@ -33,7 +33,7 @@ public class DisplayTui : IDisplay
         });
     }
 
-    public void OnStreamStart(int streamIndex) { }
+    public void OnStreamStart(int streamIndex, FrameType type) { }
     public void OnStreamChunk(string chunk) { }
     public void OnStreamEnd() { }
 

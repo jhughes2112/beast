@@ -10,6 +10,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly string _image;
     private readonly List<string> _messages;
     private readonly IDisplay _display;
+    private readonly Log _log;
 
     private CancellationTokenSource? _cts;
     private ConversationModel? _model;
@@ -29,11 +30,12 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private string? _pingNonce;
     private bool _readyFired;
 
-    public BeastApp(string image, List<string> messages, IDisplay display)
+    public BeastApp(string image, List<string> messages, IDisplay display, Log log)
     {
         _image = image;
         _messages = messages;
         _display = display;
+        _log = log;
     }
 
     public async Task<int> Run()
@@ -52,12 +54,12 @@ public class BeastApp : IDisposable, IAsyncDisposable
         int exitCode = 0;
         try
         {
-            _docker = new DockerContext();
+            _docker = new DockerContext(_log);
             string containerName = $"beastagent_{Guid.NewGuid():N}";
             await _docker.RemoveContainerByNameAsync(containerName);
             _containerId = await _docker.LaunchContainerAsync(_image, containerName, new List<string>());
 
-            _wsClient = await RetryConnectAsync("ws://localhost:13131/", _cts.Token);
+            _wsClient = await RetryConnectAsync("ws://localhost:13131/", _log, _cts.Token);
 
             _readCts = new CancellationTokenSource();
             _readTask = ReadLoop(_wsClient, _readCts.Token);
@@ -66,7 +68,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[beast] Error: {ex.Message}");
+            _log.Error($"[beast] Error: {ex.Message}");
             exitCode = 1;
         }
 
@@ -116,7 +118,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 _streamTagToSlot[content] = _streamIndex;
                 _slotTypes[_streamIndex] = startType;
                 _model!.Update(_streamIndex, startType, _streamContent);
-                _display.OnStreamStart(_streamIndex);
+                _display.OnStreamStart(_streamIndex, startType);
                 break;
 
             case FrameType.StreamChunk:
@@ -189,11 +191,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
     }
 
     // Retries WebSocket connection until success or cancellation, with 200ms delays.
-    private static async Task<ITransportClient> RetryConnectAsync(string url, CancellationToken cancellationToken)
+    private static async Task<ITransportClient> RetryConnectAsync(string url, Log log, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            TransportClientWebsocket wsClient = new TransportClientWebsocket(url);
+            TransportClientWebsocket wsClient = new TransportClientWebsocket(url, log);
             try
             {
                 await wsClient.ConnectAsync(cancellationToken);

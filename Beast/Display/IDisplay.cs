@@ -9,7 +9,7 @@ public interface IDisplay
 {
     void Attach(ConversationModel model);
     void SetStatus(string text);
-    void OnStreamStart(int streamIndex);
+    void OnStreamStart(int streamIndex, FrameType type);
     void OnStreamChunk(string chunk);
     void OnStreamEnd();
     void SetSendAsync(Func<string, Task> sendAsync);

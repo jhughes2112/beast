@@ -11,9 +11,11 @@ using Docker.DotNet.Models;
 public class DockerContext : IDisposable
 {
     private readonly DockerClient _dockerClient;
+    private readonly Log _log;
 
-    public DockerContext()
+    public DockerContext(Log log)
     {
+        _log = log;
         _dockerClient = new DockerClientConfiguration().CreateClient();
     }
 
@@ -57,13 +59,13 @@ public class DockerContext : IDisposable
             createParams.Entrypoint = entrypoint;
         }
 
-        Console.Error.WriteLine($"[docker] Creating container {name} from image {image}");
+        _log.Verbose($"[docker] Creating container {name} from image {image}");
         CreateContainerResponse response = await _dockerClient.Containers.CreateContainerAsync(createParams);
         string containerId = response.ID;
-        Console.Error.WriteLine($"[docker] Container created: {containerId}");
+        _log.Verbose($"[docker] Container created: {containerId}");
 
         await _dockerClient.Containers.StartContainerAsync(containerId, new ContainerStartParameters());
-        Console.Error.WriteLine($"[docker] Container started: {name}");
+        _log.Verbose($"[docker] Container started: {name}");
 
         return containerId;
     }
@@ -113,7 +115,7 @@ public class DockerContext : IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[docker] Failed to remove container {name}: {ex.Message}");
+            _log.Error($"[docker] Failed to remove container {name}: {ex.Message}");
         }
     }
 

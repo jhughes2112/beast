@@ -9,21 +9,23 @@ using System.Threading.Tasks;
 public class TransportClientWebsocket : ITransportClient, IDisposable
 {
     private readonly string _url;
+    private readonly Log _log;
     private ClientWebSocket? _ws;
     private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
 
-    public TransportClientWebsocket(string url)
+    public TransportClientWebsocket(string url, Log log)
     {
         _url = url;
+        _log = log;
     }
 
     public async Task ConnectAsync(CancellationToken cancellationToken)
     {
         _ws = new ClientWebSocket();
         _ws.Options.KeepAliveInterval = Timeout.InfiniteTimeSpan;
-        Console.Error.WriteLine($"[ws-client] Connecting to {_url}");
+        _log.Verbose($"[ws-client] Connecting to {_url}");
         await _ws.ConnectAsync(new Uri(_url), cancellationToken);
-        Console.Error.WriteLine($"[ws-client] Connected");
+        _log.Verbose($"[ws-client] Connected");
     }
 
     // Sends a plain text message over the websocket.
@@ -69,7 +71,7 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[ws-client] ReceiveAsync error: {ex.Message}");
+            _log.Verbose($"[ws-client] ReceiveAsync error: {ex.Message}");
             return null;
         }
     }

@@ -75,7 +75,9 @@ public class Program
         if (nonInteractive)
             messages.Add("/quit");
 
-        await using BeastApp app = new BeastApp("beastagent", messages, nonInteractive ? new DisplayConsole() : new DisplayTui(verbose));
+        Log log = new Log(verbose);
+        IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayTui(verbose);
+        await using BeastApp app = new BeastApp("beastagent", messages, display, log);
         return await app.Run();
     }
 
