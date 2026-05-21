@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TextCopy;
@@ -18,7 +19,7 @@ using TextCopy;
 public class DisplayAnsi : IDisplay
 {
     private const string HelpText = "Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /verbose, /test, /quit";
-    private const string PromptPrefix = "> ";
+    private const string PromptPrefix = "» ";
     private const int MaxInputRows = 10;
 
     private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -41,14 +42,14 @@ public class DisplayAnsi : IDisplay
     private string _statsText = "";
 
     // _historyScrollOffset > 0 means scrolled back (pinned); 0 means follow-mode (auto-scroll to bottom).
-    private int _historyScrollOffset = 0;
+    private float _historyScrollOffset = 0f;
     private float _scrollTarget = 0f;
     private int _lastWidth = 0;
     private int _lastHeight = 0;
 
     // Scroll animation: exponential decay toward _scrollTarget each tick (~16ms).
-    // Alpha tuned so ~95% of the distance is covered in 0.3s (~19 ticks).
-    private const float ScrollAlpha = 0.18f;
+    // Alpha tuned so ~95% of the distance is covered in ~0.2s (~13 ticks).
+    private const float ScrollAlpha = 0.22f;
 
     // Slot index of the currently active stream, or -1 if none.
     private int _streamingSlot = -1;
@@ -60,28 +61,46 @@ public class DisplayAnsi : IDisplay
     // Maps screen row → message slot index (rebuilt each Redraw for click-to-toggle).
     private readonly Dictionary<int, int> _rowToSlot = new Dictionary<int, int>();
 
-    // Scrollbar geometry from the last Redraw, used to map scrollbar clicks to offsets.
+    // Scrollbar geometry from the last Redraw, used to map scrollbar clicks to scroll position.
     private int _scrollbarTopRow = 0;
     private int _scrollbarHeight = 0;
     private int _scrollbarMaxOffset = 0;
+
+    // Slot index the mouse is currently hovering over, or -1 if none.
+    private int _hoverSlot = -1;
+
+    // TickCount64 deadline until which the scrollbar overlay is visible; 0 = hidden.
+    private long _scrollbarShowUntil = 0;
+    private const int ScrollbarShowMs = 500;
+
+    // Single reusable output buffer: all Redraw writes accumulate here and are flushed once.
+    private readonly StringBuilder _drawBuf = new StringBuilder(65536);
+
+    // Large-buffered stdout writer: batches an entire frame into one WriteFile call to eliminate flicker.
+    private StreamWriter? _bufferedOut;
+
+    // True when the last frame was a different terminal size (triggers EraseScreen before next blit).
+    private bool _needsErase = true;
 
     public bool RequestHistory => true;
 
     private static class Ansi
     {
         public const string Reset             = "\x1b[0m";
+        public const string EraseScreen       = "\x1b[2J";
         public const string HideCursor        = "\x1b[?25l";
         public const string ShowCursor        = "\x1b[?25h";
         public const string EnterAltScreen    = "\x1b[?1049h";
         public const string ExitAltScreen     = "\x1b[?1049l";
-        public const string EnableMouse   = "\x1b[?1000h\x1b[?1006h";
-        public const string DisableMouse  = "\x1b[?1006l\x1b[?1000l";
+        public const string EnableMouse   = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
+        public const string DisableMouse  = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
         public const string DisableWrap   = "\x1b[?7l";
         public const string EnableWrap    = "\x1b[?7h";
 
         public const string InputText      = "\x1b[38;5;255m\x1b[48;5;235m";   // bright white on very dark bg
         public const string Silver         = "\x1b[38;5;250m";
-        public const string Grey           = "\x1b[38;5;248m";                   // user messages, slightly brighter
+        public const string Grey           = "\x1b[38;5;248m";                   // dim labels
+        public const string BrightUser     = "\x1b[38;5;231m";                   // user messages — pure white
         public const string MedGrey        = "\x1b[38;5;245m";                   // status bar, dim labels
         public const string ItalicGrey     = "\x1b[3;38;5;245m";                 // thinking — italic, not dim
         public const string Red            = "\x1b[38;5;196m";
@@ -90,10 +109,15 @@ public class DisplayAnsi : IDisplay
         public const string BrightWhite    = "\x1b[38;5;255m";
         // Tool call: bright cyan text on dark blue-tinted background.
         public const string ToolCallFg     = "\x1b[38;5;51m\x1b[48;5;17m";
+        // Tool call error: yellow-orange on dark red background.
+        public const string ToolCallErrFg  = "\x1b[38;5;214m\x1b[48;5;52m";
         // Tool response: subdued teal on near-black background (box-styled by renderer).
         public const string ToolResponseFg = "\x1b[38;5;73m\x1b[48;5;233m";
-        public const string ScrollThumb    = "\x1b[38;5;244m▌";
-        public const string ScrollTrack    = "\x1b[38;5;236m▌";
+        // Scrollbar thumb and track: shown temporarily during scroll/mouse activity.
+        public const string ScrollThumbBg  = "\x1b[48;5;240m";
+        public const string ScrollTrackBg  = "\x1b[48;5;233m";   // barely non-black track
+        // Hover: single-column left-edge accent on the hovered block.
+        public const string HoverBar        = "\x1b[48;5;244m";   // medium-grey left sliver
     }
 
     public DisplayAnsi(CollapseMode initialMode)
@@ -164,6 +188,15 @@ public class DisplayAnsi : IDisplay
         WindowsConsole.EnableVirtualTerminal();
         WindowsConsole.ReapplyModes();
 
+        // Replace Console.Out with a large-buffered writer so each full frame is one WriteFile call.
+        _bufferedOut = new StreamWriter(
+            Console.OpenStandardOutput(bufferSize: 131072),
+            encoding: new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 131072,
+            leaveOpen: false);
+        _bufferedOut.AutoFlush = false;
+        Console.SetOut(_bufferedOut);
+
         _lastWidth = Console.WindowWidth;
         _lastHeight = Console.WindowHeight;
 
@@ -180,8 +213,20 @@ public class DisplayAnsi : IDisplay
         Console.Write(Ansi.DisableMouse);
         Console.Write(Ansi.EnableWrap);
         Console.Write(Ansi.ExitAltScreen);
+        Console.Out.Flush();
         Console.CursorVisible = true;
         WindowsConsole.Restore();
+        // Restore original stdout so the process exits cleanly.
+        if (_bufferedOut != null)
+        {
+            StreamWriter restore = new StreamWriter(
+                Console.OpenStandardOutput(),
+                encoding: new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            restore.AutoFlush = true;
+            Console.SetOut(restore);
+            _bufferedOut.Dispose();
+            _bufferedOut = null;
+        }
         return Task.CompletedTask;
     }
 
@@ -191,8 +236,9 @@ public class DisplayAnsi : IDisplay
         {
             if (msg.Type == FrameType.Clear)
             {
-                _historyScrollOffset = 0;
+                _historyScrollOffset = 0f;
                 _renderedRows.Clear();
+                _needsErase = true;
             }
             else
             {
@@ -216,6 +262,14 @@ public class DisplayAnsi : IDisplay
             _renderedWidth = w;
         }
 
+        // Trigger a full erase-before-blit when terminal size changes.
+        if (w != _lastWidth || h != _lastHeight)
+        {
+            _lastWidth = w;
+            _lastHeight = h;
+            _needsErase = true;
+        }
+
         int rawInputRows = ComputeInputRows(_currentInputText, w);
         int inputRows = Math.Min(rawInputRows, Math.Min(MaxInputRows, Math.Max(1, h / 3)));
         int skip = rawInputRows - inputRows;
@@ -226,95 +280,106 @@ public class DisplayAnsi : IDisplay
         int separatorRow = inputStart - 1;
         int historyH     = separatorRow;
 
-        Console.Write(Ansi.HideCursor);
+        _drawBuf.Clear();
+        _drawBuf.Append(Ansi.HideCursor);
 
-        (int totalRows, int maxOffset) = DrawHistory(0, historyH, w);
-        DrawScrollbar(0, historyH, totalRows, maxOffset, _historyScrollOffset);
-        WriteRow(separatorRow, w, Ansi.BrightWhite, new string('─', w));
-        DrawInput(inputStart, inputRows, skip, w);
+        // On resize erase once so cells outside the new area are cleared; then home and blit.
+        if (_needsErase)
+        {
+            _drawBuf.Append(Ansi.EraseScreen);
+            _needsErase = false;
+        }
+        // Home cursor — every row is overwritten in order so no erase is needed between frames.
+        _drawBuf.Append("\x1b[H");
 
-        string statusLine = BuildStatusLine(_statusText, _statsText, w);
-        WriteRow(statusRow, w, Ansi.MedGrey, statusLine);
-
-        (int curRow, int curCol) = GetCursorScreenPos(inputStart, skip, w);
-        Console.SetCursorPosition(curCol, Math.Max(0, Math.Min(h - 1, curRow)));
-        Console.Write(Ansi.ShowCursor);
-    }
-
-    private (int TotalRows, int MaxOffset) DrawHistory(int topRow, int height, int w)
-    {
-        if (height <= 0) return (0, 0);
-
-        List<(string AnsiCode, string Text, int SlotIndex)> rows = BuildHistoryRows(w);
-        int total = rows.Count;
-
-        // Clamp scroll offset so it never exceeds available scrollback.
-        int maxOffset = Math.Max(0, total - height);
+        List<(string AnsiCode, string Text, int SlotIndex)> histRows = BuildHistoryRows(w);
+        int totalRows = histRows.Count;
+        int maxOffset = Math.Max(0, totalRows - historyH);
         if (_scrollTarget > maxOffset) _scrollTarget = maxOffset;
-        if (_historyScrollOffset > maxOffset)
-            _historyScrollOffset = maxOffset;
+        if (_scrollTarget < 0f) _scrollTarget = 0f;
+        if (_historyScrollOffset > maxOffset) _historyScrollOffset = maxOffset;
+        if (_historyScrollOffset < 0f) _historyScrollOffset = 0f;
 
-        // startIdx: which row in `rows` maps to topRow on screen.
-        // offset == 0 → follow mode: always show the bottom `height` rows.
-        // offset >  0 → scrolled back: anchor so bottom row = rows[total - 1 - offset].
-        int startIdx = total - height - _historyScrollOffset;
+        // Scrollbar geometry (stored for click mapping).
+        _scrollbarTopRow    = 0;
+        _scrollbarHeight    = historyH;
+        _scrollbarMaxOffset = maxOffset;
+
+        int thumbH   = maxOffset > 0 ? Math.Max(1, (int)Math.Round((double)historyH * historyH / totalRows)) : historyH;
+        int thumbTop = maxOffset > 0
+            ? (int)Math.Round((double)(maxOffset - _historyScrollOffset) / maxOffset * (historyH - thumbH))
+            : 0;
+        thumbTop = Math.Max(0, Math.Min(historyH - thumbH, thumbTop));
+
+        int startIdx = totalRows - historyH - (int)Math.Round(_historyScrollOffset);
 
         _rowToSlot.Clear();
-        for (int r = 0; r < height; r++)
+        for (int r = 0; r < historyH; r++)
         {
             int idx = startIdx + r;
-            if (idx >= 0 && idx < rows.Count)
+            if (idx >= 0 && idx < histRows.Count)
             {
-                WriteRow(topRow + r, w, rows[idx].AnsiCode, rows[idx].Text);
-                if (rows[idx].SlotIndex >= 0)
-                    _rowToSlot[topRow + r] = rows[idx].SlotIndex;
+                AppendRow(_drawBuf, topRow: r, w: w, ansiCode: histRows[idx].AnsiCode, text: histRows[idx].Text);
+                if (histRows[idx].SlotIndex >= 0)
+                    _rowToSlot[r] = histRows[idx].SlotIndex;
             }
             else
             {
-                WriteRow(topRow + r, w, "", "");
+                AppendRow(_drawBuf, topRow: r, w: w, ansiCode: "", text: "");
             }
         }
 
-        return (total, maxOffset);
-    }
-
-    // Draws a minimal scrollbar on the rightmost column of the history area.
-    // The thumb position represents the current view within total content rows.
-    private void DrawScrollbar(int topRow, int height, int totalRows, int maxOffset, int currentOffset)
-    {
-        _scrollbarTopRow = topRow;
-        _scrollbarHeight = height;
-        _scrollbarMaxOffset = maxOffset;
-
-        if (height <= 0 || maxOffset <= 0) return;
-
-        int scrollCol = Console.WindowWidth - 1;
-        if (scrollCol < 0) return;
-
-        // Thumb height proportional to visible fraction, minimum 1.
-        int thumbH = Math.Max(1, (int)Math.Round((double)height * height / totalRows));
-        // Thumb top: offset 0 = bottom, offset maxOffset = top.
-        int thumbTop = (int)Math.Round((double)(maxOffset - currentOffset) / maxOffset * (height - thumbH));
-        thumbTop = Math.Max(0, Math.Min(height - thumbH, thumbTop));
-
-        for (int r = 0; r < height; r++)
+        // Overlay a single-column left-edge accent on every row of the hovered block.
+        if (_hoverSlot >= 0)
         {
-            bool inThumb = r >= thumbTop && r < thumbTop + thumbH;
-            Console.SetCursorPosition(scrollCol, topRow + r);
-            Console.Write(inThumb ? Ansi.ScrollThumb : Ansi.ScrollTrack);
+            for (int r = 0; r < historyH; r++)
+            {
+                if (_rowToSlot.TryGetValue(r, out int rowSlot) && rowSlot == _hoverSlot)
+                {
+                    _drawBuf.Append($"\x1b[{r + 1};1H");
+                    _drawBuf.Append(Ansi.HoverBar);
+                    _drawBuf.Append(' ');
+                    _drawBuf.Append(Ansi.Reset);
+                }
+            }
         }
-        Console.Write(Ansi.Reset);
-    }
 
-    private void DrawInput(int startRow, int inputRows, int skip, int w)
-    {
-        List<string> lines = WrapInput(_currentInputText, w);
+        // Overlay scrollbar on the last two columns only while scroll/mouse activity is recent.
+        if (maxOffset > 0 && Environment.TickCount64 < _scrollbarShowUntil)
+        {
+            for (int r = 0; r < historyH; r++)
+            {
+                bool inThumb = r >= thumbTop && r < thumbTop + thumbH;
+                _drawBuf.Append($"\x1b[{r + 1};{w - 1}H");
+                _drawBuf.Append(inThumb ? Ansi.ScrollThumbBg : Ansi.ScrollTrackBg);
+                _drawBuf.Append("  ");
+                _drawBuf.Append(Ansi.Reset);
+            }
+        }
+
+        // Separator row.
+        AppendRow(_drawBuf, separatorRow, w, Ansi.BrightWhite, new string('─', w));
+
+        // Input rows (use full width).
+        List<string> inputLines = WrapInput(_currentInputText, w);
         for (int r = 0; r < inputRows; r++)
         {
             int lineIdx = skip + r;
-            string line = lineIdx < lines.Count ? lines[lineIdx] : PromptPrefix;
-            WriteRow(startRow + r, w, Ansi.InputText, line);
+            string line = lineIdx < inputLines.Count ? inputLines[lineIdx] : PromptPrefix;
+            AppendRow(_drawBuf, inputStart + r, w, Ansi.InputText, line);
         }
+
+        // Status bar (full width).
+        string statusLine = BuildStatusLine(_statusText, _statsText, w);
+        AppendRow(_drawBuf, statusRow, w, Ansi.MedGrey, statusLine);
+
+        // Reposition cursor and show it.
+        (int curRow, int curCol) = GetCursorScreenPos(inputStart, skip, w);
+        _drawBuf.Append($"\x1b[{Math.Max(1, Math.Min(h, curRow + 1))};{Math.Max(1, curCol + 1)}H");
+        _drawBuf.Append(Ansi.ShowCursor);
+
+        Console.Write(_drawBuf);
+        Console.Out.Flush();
     }
 
     private (int Row, int Col) GetCursorScreenPos(int inputStartRow, int skip, int w)
@@ -334,14 +399,32 @@ public class DisplayAnsi : IDisplay
             if (ConversationModel.ShouldHide(msg.Type, _model.Mode)) continue;
             if (string.IsNullOrEmpty(msg.Content)) continue;
 
-            string ansi = AnsiForType(msg.Type, msg.Collapsed);
+            bool isError = msg.Type == FrameType.ToolCall && msg.PairedResponseIsError;
+            string displayAnsi = isError ? Ansi.ToolCallErrFg : AnsiForType(msg.Type);
             string prefix = PrefixTextForType(msg.Type, msg.Collapsed);
+            // ToolCall and Thinking blocks do not get a trailing blank spacer row (they are compact).
+            bool addSpacer = msg.Type != FrameType.ToolCall && msg.Type != FrameType.Thinking;
 
             if (msg.Collapsed)
             {
-                string summary = msg.Content.Replace('\n', ' ').Replace('\r', ' ');
-                rows.Add((ansi, prefix + AnsiString.TruncateVisible(summary, w - prefix.Length), msg.Index));
-                rows.Add(("", "", -1));
+                string summary = msg.Type == FrameType.ToolCall
+                    ? FormatToolCallSummary(msg.Content)
+                    : msg.Content.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
+
+                // Ellipsis only when content was visually cut or the expanded form has more rows.
+                bool hasMoreContent = msg.Type == FrameType.ToolCall
+                    ? msg.Content.Contains('(') || !string.IsNullOrEmpty(msg.PairedResponseContent)
+                    : msg.Content.Contains('\n') || msg.Content.Contains('\r');
+
+                int availW = w - prefix.Length;
+                bool summaryTruncated = AnsiString.VisibleLength(summary) > availW - 1;
+                bool needsEllipsis = summaryTruncated || hasMoreContent;
+
+                string line = needsEllipsis
+                    ? prefix + AnsiString.TruncateVisible(summary, availW - 1) + "\u2026"
+                    : prefix + AnsiString.TruncateVisible(summary, availW);
+                rows.Add((displayAnsi, line, msg.Index));
+                if (addSpacer) rows.Add(("", "", msg.Index));
                 continue;
             }
 
@@ -349,7 +432,9 @@ public class DisplayAnsi : IDisplay
 
             if (!isStreaming && !_renderedRows.TryGetValue(msg.Index, out List<string>? cached))
             {
-                cached = RenderMessageRows(msg, w);
+                cached = msg.Type == FrameType.ToolCall
+                    ? RenderToolCallRows(msg, w)
+                    : RenderMessageRows(msg, w);
                 _renderedRows[msg.Index] = cached;
             }
 
@@ -359,10 +444,10 @@ public class DisplayAnsi : IDisplay
 
             foreach (string line in rendered)
             {
-                rows.Add((ansi, line, msg.Index));
+                rows.Add((displayAnsi, line, msg.Index));
             }
 
-            rows.Add(("", "", -1));
+            if (addSpacer) rows.Add(("", "", msg.Index));
         }
 
         return rows;
@@ -377,7 +462,7 @@ public class DisplayAnsi : IDisplay
 
         if (useMarkdown)
         {
-            List<string> mdLines = MarkdownAnsi.Render(msg.Content, msg.Type, w);
+            List<string> mdLines = MarkdownAnsi.Render(ExpandTabs(msg.Content), msg.Type, w);
             bool firstLine = true;
             foreach (string mdLine in mdLines)
             {
@@ -396,7 +481,7 @@ public class DisplayAnsi : IDisplay
             bool first = true;
             foreach (string line in logicalLines)
             {
-                string full = first ? prefix + line : line;
+                string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
                 first = false;
                 List<string> wrapped = AnsiString.Wrap(full, w);
                 foreach (string wl in wrapped)
@@ -416,7 +501,7 @@ public class DisplayAnsi : IDisplay
         bool first = true;
         foreach (string line in logicalLines)
         {
-            string full = first ? prefix + line : line;
+            string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
             first = false;
             foreach (string wl in AnsiString.Wrap(full, w))
                 result.Add(wl);
@@ -485,7 +570,7 @@ public class DisplayAnsi : IDisplay
         for (int li = 0; li < logicalLines.Length; li++)
         {
             string prefix = li == 0 ? PromptPrefix : "  ";
-            string full = prefix + logicalLines[li];
+            string full = prefix + ExpandTabs(logicalLines[li]);
             if (full.Length == 0) { result.Add(prefix); continue; }
             foreach (string wl in AnsiString.Wrap(full, w))
                 result.Add(wl);
@@ -501,15 +586,25 @@ public class DisplayAnsi : IDisplay
         return WrapInput(text, w).Count;
     }
 
-    // Writes text at the given row, truncated to w visible characters, then erases to EOL.
-    private static void WriteRow(int row, int w, string ansiCode, string text)
+    private static string ExpandTabs(string text) => text.Replace("\t", "    ");
+
+    // Writes one full row: positions cursor, emits color-coded content padded to exactly w visible chars, resets.
+    private static void AppendRow(StringBuilder buf, int topRow, int w, string ansiCode, string text)
     {
-        Console.SetCursorPosition(0, row);
+        buf.Append($"\x1b[{topRow + 1};1H");
         if (!string.IsNullOrEmpty(ansiCode))
-            Console.Write(ansiCode);
-        Console.Write(AnsiString.TruncateVisible(text, w));
-        Console.Write(Ansi.Reset);
-        Console.Write("\x1b[K");
+            buf.Append(ansiCode);
+        string truncated = AnsiString.TruncateVisible(text, w);
+        buf.Append(truncated);
+        int visible = AnsiString.VisibleLength(truncated);
+        if (visible < w)
+        {
+            // Re-apply the row code so padding inherits the row background even after embedded resets.
+            if (!string.IsNullOrEmpty(ansiCode))
+                buf.Append(ansiCode);
+            buf.Append(new string(' ', w - visible));
+        }
+        buf.Append(Ansi.Reset);
     }
 
     private static string BuildStatusLine(string left, string right, int w)
@@ -521,14 +616,14 @@ public class DisplayAnsi : IDisplay
         return AnsiString.TruncatePad(left + new string(' ', padding) + right, w);
     }
 
-    private static string AnsiForType(FrameType type, bool collapsed)
+    private static string AnsiForType(FrameType type)
     {
         return type switch
         {
             FrameType.Output       => Ansi.Silver,
-            FrameType.User         => Ansi.Grey,
+            FrameType.User         => Ansi.BrightUser,
             FrameType.Error        => Ansi.Red,
-            FrameType.Thinking     => collapsed ? Ansi.MedGrey : Ansi.ItalicGrey,
+            FrameType.Thinking     => Ansi.ItalicGrey,
             FrameType.Tool         => Ansi.Blue,
             FrameType.ToolCall     => Ansi.ToolCallFg,
             FrameType.ToolResponse => Ansi.ToolResponseFg,
@@ -542,16 +637,176 @@ public class DisplayAnsi : IDisplay
     {
         return type switch
         {
-            FrameType.Thinking     => collapsed ? "> [thinking] " : "v [thinking] ",
-            FrameType.Tool         => collapsed ? "> [tool] "     : "v [tool] ",
-            FrameType.ToolCall     => collapsed ? "> [call] "     : "v [call] ",
-            FrameType.ToolResponse => collapsed ? "> [result] "   : "v [result] ",
-            FrameType.Debug        => collapsed ? "> [debug] "    : "v [debug] ",
+            FrameType.Thinking     => "[thinking] ",
+            FrameType.Tool         => "[tool] ",
+            FrameType.ToolCall     => "",           // formatted by FormatToolCallSummary / RenderToolCallRows
+            FrameType.ToolResponse => "",
+            FrameType.Debug        => "[debug] ",
             FrameType.System       => "# ",
             FrameType.Error        => "! ",
-            FrameType.User         => "> ",
+            FrameType.User         => "» ",
             _                      => ""
         };
+    }
+
+    // Extracts a friendly one-line summary from a tool-call string "name({...})"
+    private static string FormatToolCallSummary(string content)
+    {
+        int paren = content.IndexOf('(');
+        if (paren < 0) return content.Replace('\n', ' ');
+
+        string name = content.Substring(0, paren).Trim();
+        string argsJson = content.Substring(paren + 1);
+        if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+            argsJson = argsJson.Substring(0, argsJson.Length - 1);
+
+        JsonElement root = default;
+        bool parsed = false;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(argsJson);
+            root = doc.RootElement.Clone();
+            parsed = true;
+        }
+        catch { }
+
+        string Get(string key)
+        {
+            if (!parsed) return string.Empty;
+            return root.TryGetProperty(key, out JsonElement el) ? el.GetString() ?? string.Empty : string.Empty;
+        }
+
+        string label = name.Replace('_', ' ');
+
+        string summary = name switch
+        {
+            "read_file"                              => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines")),
+            "write_file" or "edit_file"
+                or "edit_file_replace" or "edit_file_insert" => BuildPathSummary(label, Get("file_path")),
+            "list_directory" or "glob" or "grep"    => BuildPathSummary(label, Get("path")),
+            "bash"                                   => BuildRunCommandSummary(label, Get("command")),
+            "search_web"                             => BuildPathSummary(label, Get("query")),
+            "fetch_page"                             => BuildPathSummary(label, Get("url")),
+            _                                        => BuildGenericSummary(label, parsed ? root : default, parsed)
+        };
+
+        return summary;
+    }
+
+    private static string BuildPathSummary(string label, string path)
+        => string.IsNullOrEmpty(path) ? label : $"{label} {path}";
+
+    private static string BuildReadFileSummary(string label, string path, string offset, string lines)
+    {
+        if (string.IsNullOrEmpty(path)) return label;
+        if (!string.IsNullOrEmpty(offset) && !string.IsNullOrEmpty(lines))
+        {
+            int end = 0;
+            int.TryParse(offset, out int start);
+            int.TryParse(lines, out int count);
+            end = start + count - 1;
+            return $"{label} {path}  [{offset}-{end}]";
+        }
+        if (!string.IsNullOrEmpty(offset))
+            return $"{label} {path}  [from {offset}]";
+        return $"{label} {path}";
+    }
+
+    private static string BuildRunCommandSummary(string label, string command)
+    {
+        if (string.IsNullOrEmpty(command)) return label;
+        // Trim to the first line so long pipelines don't dominate the summary.
+        int nl = command.IndexOf('\n');
+        string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
+        return $"{label} {first}";
+    }
+
+    private static string BuildGenericSummary(string label, JsonElement root, bool parsed)
+    {
+        if (!parsed) return label;
+        // Use the first string property value as the identifying token.
+        foreach (JsonProperty prop in root.EnumerateObject())
+        {
+            if (prop.Value.ValueKind == JsonValueKind.String)
+            {
+                string val = prop.Value.GetString() ?? string.Empty;
+                if (!string.IsNullOrEmpty(val))
+                    return $"{label} {val}";
+            }
+        }
+        return label;
+    }
+
+    // Renders an expanded tool-call block: summary line + expanded args + paired response (if any).
+    private static List<string> RenderToolCallRows(DisplayMessage msg, int w)
+    {
+        List<string> result = new List<string>();
+        string content = msg.Content;
+
+        int paren = content.IndexOf('(');
+        string name = paren >= 0 ? content.Substring(0, paren).Trim() : content;
+        string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
+        if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+            argsJson = argsJson.Substring(0, argsJson.Length - 1);
+
+        // Summary line: friendly name + primary key value.
+        string summary = FormatToolCallSummary(content);
+        foreach (string wl in AnsiString.Wrap(summary, w))
+            result.Add(wl);
+
+        // Detail lines: pretty-print the JSON args.
+        if (!string.IsNullOrWhiteSpace(argsJson))
+        {
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(argsJson);
+                foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
+                {
+                    string val = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString() ?? string.Empty
+                        : prop.Value.ToString();
+
+                    val = val.Replace("\\n", "\n").Replace("\\t", "    ").Replace("\t", "    ");
+
+                    bool firstPropLine = true;
+                    foreach (string valLine in val.Split('\n'))
+                    {
+                        string propLine = firstPropLine ? $"  {prop.Name}: {valLine}" : $"    {valLine}";
+                        firstPropLine = false;
+                        foreach (string wl in AnsiString.Wrap(propLine, w))
+                            result.Add(wl);
+                    }
+                }
+            }
+            catch
+            {
+                foreach (string rawLine in argsJson.Split('\n'))
+                {
+                    foreach (string wl in AnsiString.Wrap(rawLine, w))
+                        result.Add(wl);
+                }
+            }
+        }
+
+        // Paired response: show the tool result under a divider with dimmer styling.
+        if (!string.IsNullOrEmpty(msg.PairedResponseContent))
+        {
+            // Divider line inherits the call color (no prefix needed).
+            result.Add(new string('·', Math.Min(w, 40)));
+            // Response lines use a dimmer teal-on-darker-bg to distinguish from the call header.
+            string respAnsi = msg.PairedResponseIsError
+                ? "\x1b[38;5;172m\x1b[48;5;52m"   // dim orange-red on dark red
+                : "\x1b[38;5;66m\x1b[48;5;234m";   // dim teal on darker near-black
+            foreach (string respLine in msg.PairedResponseContent.Split('\n'))
+            {
+                foreach (string wl in AnsiString.Wrap(ExpandTabs(respLine), w))
+                    result.Add(respAnsi + wl);
+            }
+        }
+
+        if (result.Count == 0)
+            result.Add(name);
+        return result;
     }
 
     private void SetInput(string text, int cursor)
@@ -581,10 +836,7 @@ public class DisplayAnsi : IDisplay
         {
             // Animation and resize tick runs before every blocking wait.
             {
-                int tw = Console.WindowWidth;
-                int th = Console.WindowHeight;
-                bool needRedraw = tw != _lastWidth || th != _lastHeight;
-                if (needRedraw) { _lastWidth = tw; _lastHeight = th; }
+                bool needRedraw = false;
 
                 // Animate scroll offset toward target each tick.
                 lock (_consoleLock)
@@ -592,12 +844,18 @@ public class DisplayAnsi : IDisplay
                     float remaining = _scrollTarget - _historyScrollOffset;
                     if (Math.Abs(remaining) >= 0.5f)
                     {
-                        _historyScrollOffset = (int)Math.Round(_historyScrollOffset + remaining * ScrollAlpha);
+                        _historyScrollOffset += remaining * ScrollAlpha;
                         needRedraw = true;
                     }
-                    else if (_historyScrollOffset != (int)Math.Round(_scrollTarget))
+                    else if (_historyScrollOffset != _scrollTarget)
                     {
-                        _historyScrollOffset = Math.Max(0, (int)Math.Round(_scrollTarget));
+                        _historyScrollOffset = Math.Max(0f, _scrollTarget);
+                        needRedraw = true;
+                    }
+                    // Clear scrollbar overlay once its show timer expires.
+                    if (_scrollbarShowUntil > 0 && Environment.TickCount64 >= _scrollbarShowUntil)
+                    {
+                        _scrollbarShowUntil = 0;
                         needRedraw = true;
                     }
                     if (needRedraw) Redraw();
@@ -608,10 +866,23 @@ public class DisplayAnsi : IDisplay
             if (evOpt == null) continue;
             ConsoleInputEvent inputEv = evOpt.Value;
 
+            if (inputEv.Type == InputEventType.MouseMove)
+            {
+                lock (_consoleLock)
+                {
+                    _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                    int newSlot = _rowToSlot.TryGetValue(inputEv.Row, out int s) ? s : -1;
+                    _hoverSlot = newSlot;
+                    Redraw();
+                }
+                continue;
+            }
+
             if (inputEv.Type == InputEventType.MouseWheel)
             {
                 lock (_consoleLock)
                 {
+                    _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
                     _scrollTarget = Math.Max(0, _scrollTarget + (inputEv.WheelDelta > 0 ? 3 : -3));
                 }
                 continue;
@@ -621,9 +892,11 @@ public class DisplayAnsi : IDisplay
             {
                 lock (_consoleLock)
                 {
-                    // Click on scrollbar column (rightmost) within history area → seek to that position.
-                    int scrollColCheck = Console.WindowWidth - 1;
-                    if (inputEv.Col == scrollColCheck && _scrollbarMaxOffset > 0
+                    _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                    _hoverSlot = -1;
+                    // Click on the last two columns (scrollbar width) within the history area when scrollable → seek.
+                    int scrollCol = Console.WindowWidth - 2;
+                    if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
                         && inputEv.Row >= _scrollbarTopRow
                         && inputEv.Row < _scrollbarTopRow + _scrollbarHeight)
                     {
@@ -805,6 +1078,7 @@ public class DisplayAnsi : IDisplay
             {
                 lock (_consoleLock)
                 {
+                    _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
                     int pageH = Math.Max(1, Console.WindowHeight - 3 - ComputeInputRows(_currentInputText, Console.WindowWidth));
                     _scrollTarget += Math.Max(1, pageH - 1);
                 }
@@ -814,6 +1088,7 @@ public class DisplayAnsi : IDisplay
             {
                 lock (_consoleLock)
                 {
+                    _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
                     int pageH = Math.Max(1, Console.WindowHeight - 3 - ComputeInputRows(_currentInputText, Console.WindowWidth));
                     _scrollTarget = Math.Max(0f, _scrollTarget - Math.Max(1, pageH - 1));
                 }
@@ -966,7 +1241,7 @@ public class DisplayAnsi : IDisplay
     }
 }
 
-internal enum InputEventType { Key, MouseClick, MouseWheel }
+internal enum InputEventType { Key, MouseClick, MouseWheel, MouseMove }
 
 internal struct ConsoleInputEvent
 {
@@ -1128,6 +1403,11 @@ internal static class WindowsConsole
             if (m.dwEventFlags == 0 && (m.dwButtonState & LEFT_BUTTON) != 0)
             {
                 return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = m.MouseX, Row = m.MouseY };
+            }
+
+            if ((m.dwEventFlags & 0x0001u) != 0)  // MOUSE_MOVED
+            {
+                return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = m.MouseX, Row = m.MouseY };
             }
         }
 

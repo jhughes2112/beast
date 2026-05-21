@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 
@@ -17,6 +18,10 @@ public class DisplayMessage
     public FrameType Type { get; set; }
     public string Content { get; set; }
     public bool Collapsed { get; set; }
+    // When this is a ToolCall slot, holds the paired ToolResponse text (or null if not yet received).
+    public string? PairedResponseContent { get; set; }
+    // True when the paired response indicates an error.
+    public bool PairedResponseIsError { get; set; }
 
     public DisplayMessage(int index, FrameType type, string content)
     {
@@ -33,6 +38,8 @@ public class ConversationModel
 {
     private readonly List<DisplayMessage> _messages = new List<DisplayMessage>();
     private CollapseMode _mode = CollapseMode.Minimized;
+    // Queue of unpaired ToolCall indices, consumed in FIFO order as ToolResponse slots arrive.
+    private readonly Queue<int> _pendingToolCallIndices = new Queue<int>();
 
     // Fired on every Update() or ToggleCollapsed() call. Argument is the affected message.
     public event System.Action<DisplayMessage>? MessageUpdated;
@@ -77,6 +84,23 @@ public class ConversationModel
             msg.Collapsed = ShouldCollapse(type, _mode);
         }
 
+        // Pair ToolResponse content into the oldest unpaired ToolCall slot and suppress the response slot.
+        if (type == FrameType.ToolCall)
+        {
+            _pendingToolCallIndices.Enqueue(index);
+        }
+        else if (type == FrameType.ToolResponse && _pendingToolCallIndices.Count > 0)
+        {
+            int callIndex = _pendingToolCallIndices.Dequeue();
+            DisplayMessage callMsg = _messages[callIndex];
+            callMsg.PairedResponseContent = content;
+            callMsg.PairedResponseIsError = IsErrorResponse(content);
+            MessageUpdated?.Invoke(callMsg);
+            // Mark this slot as hidden (reuse Debug type which is hidden in all non-verbose modes).
+            msg.Type = FrameType.Debug;
+            msg.Content = string.Empty;
+        }
+
         MessageUpdated?.Invoke(msg);
     }
 
@@ -91,7 +115,17 @@ public class ConversationModel
     public void Clear()
     {
         _messages.Clear();
+        _pendingToolCallIndices.Clear();
         MessageUpdated?.Invoke(new DisplayMessage(0, FrameType.Clear, string.Empty));
+    }
+
+    private static bool IsErrorResponse(string content)
+    {
+        if (string.IsNullOrEmpty(content)) return false;
+        string lower = content.TrimStart();
+        return lower.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
+            || lower.StartsWith("Exception:", StringComparison.OrdinalIgnoreCase)
+            || lower.StartsWith("failed", StringComparison.OrdinalIgnoreCase);
     }
 
     // Returns whether a message of the given type should be hidden entirely in the given mode.
@@ -99,12 +133,12 @@ public class ConversationModel
     {
         if (mode == CollapseMode.Verbose) return false;
 
-        // Debug is always hidden in non-verbose modes; ToolCall is visible (may be collapsed).
+        // Debug is always hidden in non-verbose modes.
         if (type == FrameType.Debug) return true;
 
-        // Quiet: only Output and Error are visible.
+        // Quiet: hide everything except Output and User.
         if (mode == CollapseMode.Quiet)
-            return type != FrameType.Output && type != FrameType.Error;
+            return type != FrameType.Output && type != FrameType.User && type != FrameType.Error;
 
         return false;
     }
@@ -113,11 +147,14 @@ public class ConversationModel
     {
         if (mode == CollapseMode.Verbose) return false;
 
-        // Minimized: Tool/ToolCall/ToolResponse/Thinking/System shown collapsed; Output/Error expanded.
+        // Output and User are never collapsed in any mode.
+        if (type == FrameType.Output || type == FrameType.User) return false;
+
+        // Minimized: Tool/ToolCall/ToolResponse/Thinking/System shown collapsed.
         if (mode == CollapseMode.Minimized)
             return type == FrameType.Thinking || type == FrameType.Tool || type == FrameType.ToolCall || type == FrameType.ToolResponse || type == FrameType.System;
 
-        // Quiet: everything collapsed (hidden types are filtered separately by ShouldHide).
+        // Quiet: collapse everything not already hidden.
         return true;
     }
 }

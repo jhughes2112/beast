@@ -103,6 +103,19 @@ public class BeastSession
         return total;
     }
 
+    // Returns the first system message content from ChatCompletionsState, or empty if none.
+    public string GetSystemPrompt()
+    {
+        foreach (JsonNode? n in ChatCompletionsState)
+        {
+            if (n != null && n["role"]?.GetValue<string>() == "system")
+            {
+                return n["content"]?.GetValue<string>() ?? string.Empty;
+            }
+        }
+        return string.Empty;
+    }
+
     // Returns the first non-empty user message text, used to pick a friendly DisplayName.
     public string? GetFirstUserText()
     {

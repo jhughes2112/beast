@@ -47,8 +47,6 @@ public class AgentOrchestrator
 		BeastSession conversation = LoadOrCreateConversation(out ListenerBundle bundle);
 		bool wantsExit = false;
 		int exitCode = 0;
-		string lastRaisedSystemPrompt = string.Empty;
-		bool historyReplayed = false;
 
 		ConcurrentQueue<string> inputQueue = new();
 
@@ -114,9 +112,6 @@ public class AgentOrchestrator
 						case "history":
 							ReplayHistory(conversation);
 							SendStats(conversation, service?.Model.Config.ContextWindow ?? 0);
-							// Mark the system prompt as already raised so the main loop does not echo it again.
-							if (role != null) lastRaisedSystemPrompt = role.SystemPrompt;
-							historyReplayed = true;
 							break;
 						case "quit":
 							wantsExit = true;
@@ -125,32 +120,28 @@ public class AgentOrchestrator
 							if (canRunLLM)
 							{
 								_transport.Status("Running compaction...");
-								LlmResult compactResult = await CompactAsync(conversation, bundle, service!, role!, lastRaisedSystemPrompt, cancellationToken);
+								LlmResult compactResult = await CompactAsync(conversation, bundle, service!, role!, cancellationToken);
 								canRunLLM = compactResult.Success;
 							}
 							break;
 						case "session":
 							if (args == "new")
-							{
-								SessionService.Save(conversation);
-								conversation = CreateFreshConversation(conversation.Role, out bundle);
-								lastRaisedSystemPrompt = string.Empty;
-								historyReplayed = true;  // new session has no history to replay
-						  SendCompletionCandidates(conversation);
-								_transport.Status("New session started.");
-							}
+									{
+										SessionService.Save(conversation);
+										conversation = CreateFreshConversation(conversation.Role, out bundle);
+								  SendCompletionCandidates(conversation);
+										_transport.Status("New session started.");
+									}
 							else if (args != null)
 							{
 								BeastSession? loaded = SessionService.Load(args);
 								if (loaded != null)
 								{
 									SessionService.Save(conversation);
-									conversation = loaded;
-									bundle = BuildBundle(conversation);
-									lastRaisedSystemPrompt = string.Empty;
-									historyReplayed = false;  // switching sessions requires a fresh /history
-								SendCompletionCandidates(conversation);
-									_transport.Status("Switched to session: " + loaded.DisplayName);
+										conversation = loaded;
+										bundle = BuildBundle(conversation);
+									SendCompletionCandidates(conversation);
+										_transport.Status("Switched to session: " + loaded.DisplayName);
 								}
 								else
 								{
@@ -161,7 +152,6 @@ public class AgentOrchestrator
 						case "clear":
 							bundle.OnClear();
 							conversation.NeedsLlmAttention = false;
-							lastRaisedSystemPrompt = string.Empty;
 							_transport.Status("Session cleared.");
 							break;
 						case "reload":
@@ -215,27 +205,25 @@ public class AgentOrchestrator
 			}
 
 			canRunLLM = role != null && service != null;
-				if (canRunLLM && historyReplayed)
+				if (canRunLLM)
 				{
-					// Try to dispatch the system prompt if it has changed
-					if (role!=null && role.SystemPrompt != lastRaisedSystemPrompt)
+					if (role != null && role.SystemPrompt != conversation.GetSystemPrompt())
 					{
-						lastRaisedSystemPrompt = role.SystemPrompt;
 						if (!string.IsNullOrEmpty(role.SystemPrompt))
 							bundle.OnSystemMessage(null!, role.SystemPrompt);
 					}
 
-				if (!string.IsNullOrEmpty(accumulatedText))
-				{
-					bundle.OnUserMessage(null!, accumulatedText);
-					conversation.NeedsLlmAttention = true;
+					if (!string.IsNullOrEmpty(accumulatedText))
+					{
+						bundle.OnUserMessage(null!, accumulatedText);
+						conversation.NeedsLlmAttention = true;
+					}
 				}
-			}
 
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
 			if (!cancellationToken.IsCancellationRequested && canRunLLM && conversation.NeedsLlmAttention)
 			{
-				LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, lastRaisedSystemPrompt, cancellationToken);
+				LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, cancellationToken);
 				if (result.ExitReason == LlmExitReason.Failed)
 				{
 					_transport.Error(result.ErrorMessage + ": Change to a different /model and manually /compact, or /clear or start a /session new.");
@@ -302,7 +290,7 @@ public class AgentOrchestrator
 
 	// Runs one LLM turn. Applies the role (system prompt) before calling the LLM.
 	// If the context is full, compaction is attempted immediately and the result reflects that outcome.
-	public async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, string lastRaisedSystemPrompt, CancellationToken cancellationToken)
+	public async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, CancellationToken cancellationToken)
 	{
 		conversation.Model = service!.Model.ConfigId;
 
@@ -326,7 +314,7 @@ public class AgentOrchestrator
 		if (result.ExitReason == LlmExitReason.ContextFull)
 		{
 			_transport.Status("Running compaction...");
-			result = await CompactAsync(conversation, bundle, service, role, lastRaisedSystemPrompt, cancellationToken);
+			result = await CompactAsync(conversation, bundle, service, role, cancellationToken);
 		}
 
 		return result;
@@ -334,7 +322,7 @@ public class AgentOrchestrator
 
 	// ---- Compaction ----
 
-	private async Task<LlmResult> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role, string lastRaisedSystemPrompt, CancellationToken cancellationToken)
+	private async Task<LlmResult> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role, CancellationToken cancellationToken)
 	{
 		// Snapshot all protocol state before any modification so we can restore it exactly on failure.
 		StateSnapshot snapshot = conversation.Snapshot();
@@ -348,15 +336,14 @@ public class AgentOrchestrator
 		_transport.Status("[Compaction] Started.");
 		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, Array.Empty<Tool>(), 0, _transport, cancellationToken);
 
-     string? compactedContent = bundle.GetLastAssistantText();
+	 string? compactedContent = bundle.GetLastAssistantText();
 
 		if (result.Success && !string.IsNullOrWhiteSpace(compactedContent))
 		{
 			// Wipe every protocol state and rebuild from the compacted summary as an assistant turn.
 			bundle.OnClear();
-			// Re-raise the system prompt into the fresh state so every protocol listener records it.
-			if (!string.IsNullOrEmpty(lastRaisedSystemPrompt))
-				bundle.OnSystemMessage(null!, lastRaisedSystemPrompt);
+			if (!string.IsNullOrEmpty(role.SystemPrompt))
+				bundle.OnSystemMessage(null!, role.SystemPrompt);
 			bundle.OnAssistantTurn(null!, compactedContent, string.Empty, Array.Empty<SemanticToolCall>());
 			_transport.Status("[Compaction] Complete.");
 
@@ -510,6 +497,10 @@ public class AgentOrchestrator
 			}
 			else if (role == "assistant")
 			{
+				string thinking = node["reasoning_content"]?.GetValue<string>() ?? string.Empty;
+				if (!string.IsNullOrEmpty(thinking))
+					_transport.Thinking(thinking);
+
 				if (!string.IsNullOrEmpty(content))
 					_transport.Output(content);
 
