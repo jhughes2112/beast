@@ -116,15 +116,11 @@ public class ListenerChatCompletions : IProtocolListener
     public void OnStreamChunk(IProtocolListener sender, string tag, string chunk)
     {
         if (_streamingMessage == null) return;
-        if (tag == StreamTag.Thinking)
-        {
-            _streamingThinking!.Append(chunk);
-        }
-        else
+        if (tag != StreamTag.Thinking)
         {
             _streamingContent!.Append(chunk);
+            _streamingMessage["content"] = _streamingContent.ToString();
         }
-        _streamingMessage["content"] = ComposeBody(_streamingContent!.ToString(), _streamingThinking!.ToString());
     }
 
     public void OnStreamEnd(IProtocolListener sender, string tag)
@@ -202,16 +198,6 @@ public class ListenerChatCompletions : IProtocolListener
 
     private static string ComposeBody(string text, string thinking)
     {
-        string body = string.Empty;
-        if (!string.IsNullOrEmpty(thinking))
-        {
-            body = $"<thinking>{thinking}</thinking>";
-        }
-        if (!string.IsNullOrEmpty(text))
-        {
-            if (body.Length > 0) body += "\n";
-            body += text;
-        }
-        return body;
+        return text ?? string.Empty;
     }
 }

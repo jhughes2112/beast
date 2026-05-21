@@ -63,22 +63,11 @@ public class ListenerAnthropic : IProtocolListener
     {
         JsonArray content = new JsonArray();
 
-        string body = string.Empty;
-        if (!string.IsNullOrEmpty(thinking))
-        {
-            body = $"<thinking>{thinking}</thinking>";
-        }
         if (!string.IsNullOrEmpty(text))
-        {
-            if (body.Length > 0) body += "\n";
-            body += text;
-        }
-
-        if (body.Length > 0)
         {
             JsonObject textBlock = new JsonObject();
             textBlock["type"] = "text";
-            textBlock["text"] = body;
+            textBlock["text"] = text;
             content.Add(textBlock);
         }
 

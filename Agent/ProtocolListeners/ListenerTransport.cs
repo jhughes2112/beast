@@ -20,7 +20,7 @@ public class ListenerTransport : IProtocolListener
 
     public void OnUserMessage(IProtocolListener sender, string text)
     {
-        // User messages originate at the transport; nothing to render back.
+        _transport.User(text);
     }
 
     public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)

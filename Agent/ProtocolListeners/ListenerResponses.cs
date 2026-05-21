@@ -57,18 +57,7 @@ public class ListenerResponses : IProtocolListener
 
     public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
     {
-        string body = string.Empty;
-        if (!string.IsNullOrEmpty(thinking))
-        {
-            body = $"<thinking>{thinking}</thinking>";
-        }
         if (!string.IsNullOrEmpty(text))
-        {
-            if (body.Length > 0) body += "\n";
-            body += text;
-        }
-
-        if (body.Length > 0)
         {
             JsonObject item = new JsonObject();
             item["type"] = "message";
@@ -76,7 +65,7 @@ public class ListenerResponses : IProtocolListener
             JsonArray content = new JsonArray();
             JsonObject block = new JsonObject();
             block["type"] = "output_text";
-            block["text"] = body;
+            block["text"] = text;
             content.Add(block);
             item["content"] = content;
             _state.Add(item);

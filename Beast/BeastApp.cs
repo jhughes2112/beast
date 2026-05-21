@@ -39,19 +39,40 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _log = log;
     }
 
+    // Sends /quit to the agent so it saves the session, then waits for it to disconnect.
+    // Falls back to hard cancel after a timeout.
+    private void RequestGracefulExit()
+    {
+        async Task GracefulExitAsync()
+        {
+            try
+            {
+                if (_wsClient != null)
+                    await _wsClient.SendAsync("/quit");
+            }
+            catch { }
+
+            if (_readTask != null)
+                await Task.WhenAny(_readTask, Task.Delay(3000));
+
+            _cts?.Cancel();
+        }
+        _ = GracefulExitAsync();
+    }
+
     public async Task<int> Run()
     {
         _cts = new CancellationTokenSource();
         Console.CancelKeyPress += (sender, e) =>
         {
             e.Cancel = true;
-            _cts.Cancel();
+            RequestGracefulExit();
         };
 
         _model = new ConversationModel();
         _display.Attach(_model);
         _display.SetSendAsync(text => _wsClient!.SendAsync(text));
-        _display.SetRequestExit(() => _cts!.Cancel());
+        _display.SetRequestExit(RequestGracefulExit);
 
         int exitCode = 0;
         try
@@ -160,7 +181,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
                     _readyFired = true;
                     async Task SendMessagesAsync()
                     {
-                        await _wsClient!.SendAsync("/history");
+                        if (_display.RequestHistory)
+                            await _wsClient!.SendAsync("/history");
                         foreach (string msg in _messages)
                             await _wsClient!.SendAsync(msg);
                     }
@@ -173,7 +195,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 break;
 
             case FrameType.Debug:
-                _model!.Update(_nextIndex++, FrameType.Debug, content);
+                // Debug frames are suppressed on the Beast side; they appear in the agent's own console.
                 break;
 
             case FrameType.User:

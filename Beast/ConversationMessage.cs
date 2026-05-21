@@ -115,9 +115,9 @@ public class ConversationModel
 
         // Minimized: Tool/ToolResponse/Thinking/System shown collapsed; Output/Error expanded.
         if (mode == CollapseMode.Minimized)
-            return type == FrameType.Thinking || type == FrameType.ToolResponse || type == FrameType.System;
+            return type == FrameType.Thinking || type == FrameType.Tool || type == FrameType.ToolResponse || type == FrameType.System;
 
-        // Quiet: hidden types were already filtered; remaining (Output, Error) are expanded.
-        return false;
+        // Quiet: everything collapsed (hidden types are filtered separately by ShouldHide).
+        return true;
     }
 }
