@@ -42,13 +42,13 @@ public class DisplayAnsi : IDisplay
 
     // _historyScrollOffset > 0 means scrolled back (pinned); 0 means follow-mode (auto-scroll to bottom).
     private int _historyScrollOffset = 0;
+    private float _scrollTarget = 0f;
     private int _lastWidth = 0;
     private int _lastHeight = 0;
 
-    // Scroll spring: velocity in rows/tick (each tick = ~16ms). Tweakable constants below.
-    private float _scrollVelocity = 0f;
-    private const float ScrollSpringAccel  = 0.35f;  // fraction of remaining distance added to velocity per tick
-    private const float ScrollSpringDampen = 0.72f;  // velocity multiplied by this each tick (< 1 = friction)
+    // Scroll animation: exponential decay toward _scrollTarget each tick (~16ms).
+    // Alpha tuned so ~95% of the distance is covered in 0.3s (~19 ticks).
+    private const float ScrollAlpha = 0.18f;
 
     // Slot index of the currently active stream, or -1 if none.
     private int _streamingSlot = -1;
@@ -59,6 +59,11 @@ public class DisplayAnsi : IDisplay
 
     // Maps screen row → message slot index (rebuilt each Redraw for click-to-toggle).
     private readonly Dictionary<int, int> _rowToSlot = new Dictionary<int, int>();
+
+    // Scrollbar geometry from the last Redraw, used to map scrollbar clicks to offsets.
+    private int _scrollbarTopRow = 0;
+    private int _scrollbarHeight = 0;
+    private int _scrollbarMaxOffset = 0;
 
     public bool RequestHistory => true;
 
@@ -74,14 +79,21 @@ public class DisplayAnsi : IDisplay
         public const string DisableWrap   = "\x1b[?7l";
         public const string EnableWrap    = "\x1b[?7h";
 
-        public const string InputText      = "\x1b[38;5;255m";
+        public const string InputText      = "\x1b[38;5;255m\x1b[48;5;235m";   // bright white on very dark bg
         public const string Silver         = "\x1b[38;5;250m";
-        public const string Grey           = "\x1b[38;5;244m";
-        public const string DimGrey        = "\x1b[2;38;5;244m";
-        public const string DimItalicGrey  = "\x1b[2;3;38;5;59m";
+        public const string Grey           = "\x1b[38;5;248m";                   // user messages, slightly brighter
+        public const string MedGrey        = "\x1b[38;5;245m";                   // status bar, dim labels
+        public const string ItalicGrey     = "\x1b[3;38;5;245m";                 // thinking — italic, not dim
         public const string Red            = "\x1b[38;5;196m";
         public const string Blue           = "\x1b[38;5;33m";
         public const string Orange         = "\x1b[38;5;166m";
+        public const string BrightWhite    = "\x1b[38;5;255m";
+        // Tool call: bright cyan text on dark blue-tinted background.
+        public const string ToolCallFg     = "\x1b[38;5;51m\x1b[48;5;17m";
+        // Tool response: subdued teal on near-black background (box-styled by renderer).
+        public const string ToolResponseFg = "\x1b[38;5;73m\x1b[48;5;233m";
+        public const string ScrollThumb    = "\x1b[38;5;244m▌";
+        public const string ScrollTrack    = "\x1b[38;5;236m▌";
     }
 
     public DisplayAnsi(CollapseMode initialMode)
@@ -216,28 +228,29 @@ public class DisplayAnsi : IDisplay
 
         Console.Write(Ansi.HideCursor);
 
-        DrawHistory(0, historyH, w);
-        WriteRow(separatorRow, w, Ansi.DimGrey, new string('─', w));
+        (int totalRows, int maxOffset) = DrawHistory(0, historyH, w);
+        DrawScrollbar(0, historyH, totalRows, maxOffset, _historyScrollOffset);
+        WriteRow(separatorRow, w, Ansi.BrightWhite, new string('─', w));
         DrawInput(inputStart, inputRows, skip, w);
 
-        string scrollNote = _historyScrollOffset > 0 ? $" [scrolled -{_historyScrollOffset}] PgDn to follow" : "";
-        string statusLine = BuildStatusLine(_statusText + scrollNote, _statsText, w);
-        WriteRow(statusRow, w, Ansi.DimGrey, statusLine);
+        string statusLine = BuildStatusLine(_statusText, _statsText, w);
+        WriteRow(statusRow, w, Ansi.MedGrey, statusLine);
 
         (int curRow, int curCol) = GetCursorScreenPos(inputStart, skip, w);
         Console.SetCursorPosition(curCol, Math.Max(0, Math.Min(h - 1, curRow)));
         Console.Write(Ansi.ShowCursor);
     }
 
-    private void DrawHistory(int topRow, int height, int w)
+    private (int TotalRows, int MaxOffset) DrawHistory(int topRow, int height, int w)
     {
-        if (height <= 0) return;
+        if (height <= 0) return (0, 0);
 
         List<(string AnsiCode, string Text, int SlotIndex)> rows = BuildHistoryRows(w);
         int total = rows.Count;
 
         // Clamp scroll offset so it never exceeds available scrollback.
         int maxOffset = Math.Max(0, total - height);
+        if (_scrollTarget > maxOffset) _scrollTarget = maxOffset;
         if (_historyScrollOffset > maxOffset)
             _historyScrollOffset = maxOffset;
 
@@ -261,6 +274,36 @@ public class DisplayAnsi : IDisplay
                 WriteRow(topRow + r, w, "", "");
             }
         }
+
+        return (total, maxOffset);
+    }
+
+    // Draws a minimal scrollbar on the rightmost column of the history area.
+    // The thumb position represents the current view within total content rows.
+    private void DrawScrollbar(int topRow, int height, int totalRows, int maxOffset, int currentOffset)
+    {
+        _scrollbarTopRow = topRow;
+        _scrollbarHeight = height;
+        _scrollbarMaxOffset = maxOffset;
+
+        if (height <= 0 || maxOffset <= 0) return;
+
+        int scrollCol = Console.WindowWidth - 1;
+        if (scrollCol < 0) return;
+
+        // Thumb height proportional to visible fraction, minimum 1.
+        int thumbH = Math.Max(1, (int)Math.Round((double)height * height / totalRows));
+        // Thumb top: offset 0 = bottom, offset maxOffset = top.
+        int thumbTop = (int)Math.Round((double)(maxOffset - currentOffset) / maxOffset * (height - thumbH));
+        thumbTop = Math.Max(0, Math.Min(height - thumbH, thumbTop));
+
+        for (int r = 0; r < height; r++)
+        {
+            bool inThumb = r >= thumbTop && r < thumbTop + thumbH;
+            Console.SetCursorPosition(scrollCol, topRow + r);
+            Console.Write(inThumb ? Ansi.ScrollThumb : Ansi.ScrollTrack);
+        }
+        Console.Write(Ansi.Reset);
     }
 
     private void DrawInput(int startRow, int inputRows, int skip, int w)
@@ -314,11 +357,9 @@ public class DisplayAnsi : IDisplay
                 ? RenderMessageRowsRaw(msg, w)
                 : _renderedRows[msg.Index];
 
-            bool firstRow = true;
             foreach (string line in rendered)
             {
-                rows.Add((ansi, line, firstRow ? msg.Index : -1));
-                firstRow = false;
+                rows.Add((ansi, line, msg.Index));
             }
 
             rows.Add(("", "", -1));
@@ -332,7 +373,7 @@ public class DisplayAnsi : IDisplay
     {
         List<string> result = new List<string>();
         string prefix = PrefixTextForType(msg.Type, collapsed: false);
-        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User;
+        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User || msg.Type == FrameType.ToolResponse;
 
         if (useMarkdown)
         {
@@ -482,17 +523,18 @@ public class DisplayAnsi : IDisplay
 
     private static string AnsiForType(FrameType type, bool collapsed)
     {
-        if (collapsed) return Ansi.DimGrey;
         return type switch
         {
-            FrameType.Output    => Ansi.Silver,
-            FrameType.User      => Ansi.Grey,
-            FrameType.Error     => Ansi.Red,
-            FrameType.Thinking  => Ansi.DimItalicGrey,
-            FrameType.Tool      => Ansi.Blue,
-            FrameType.System    => Ansi.Orange,
-            FrameType.Debug     => Ansi.DimGrey,
-            _                   => Ansi.Silver
+            FrameType.Output       => Ansi.Silver,
+            FrameType.User         => Ansi.Grey,
+            FrameType.Error        => Ansi.Red,
+            FrameType.Thinking     => collapsed ? Ansi.MedGrey : Ansi.ItalicGrey,
+            FrameType.Tool         => Ansi.Blue,
+            FrameType.ToolCall     => Ansi.ToolCallFg,
+            FrameType.ToolResponse => Ansi.ToolResponseFg,
+            FrameType.System       => Ansi.Orange,
+            FrameType.Debug        => Ansi.MedGrey,
+            _                      => Ansi.Silver
         };
     }
 
@@ -500,13 +542,15 @@ public class DisplayAnsi : IDisplay
     {
         return type switch
         {
-            FrameType.Thinking  => collapsed ? "> [thinking] " : "v [thinking] ",
-            FrameType.Tool      => collapsed ? "> [tool] "     : "v [tool] ",
-            FrameType.Debug     => collapsed ? "> [debug] "    : "v [debug] ",
-            FrameType.System    => "# ",
-            FrameType.Error     => "! ",
-            FrameType.User      => "> ",
-            _                   => ""
+            FrameType.Thinking     => collapsed ? "> [thinking] " : "v [thinking] ",
+            FrameType.Tool         => collapsed ? "> [tool] "     : "v [tool] ",
+            FrameType.ToolCall     => collapsed ? "> [call] "     : "v [call] ",
+            FrameType.ToolResponse => collapsed ? "> [result] "   : "v [result] ",
+            FrameType.Debug        => collapsed ? "> [debug] "    : "v [debug] ",
+            FrameType.System       => "# ",
+            FrameType.Error        => "! ",
+            FrameType.User         => "> ",
+            _                      => ""
         };
     }
 
@@ -542,17 +586,18 @@ public class DisplayAnsi : IDisplay
                 bool needRedraw = tw != _lastWidth || th != _lastHeight;
                 if (needRedraw) { _lastWidth = tw; _lastHeight = th; }
 
-                // Drive scroll spring toward 0 (follow-mode) when velocity is active.
+                // Animate scroll offset toward target each tick.
                 lock (_consoleLock)
                 {
-                    if (_scrollVelocity != 0f)
+                    float remaining = _scrollTarget - _historyScrollOffset;
+                    if (Math.Abs(remaining) >= 0.5f)
                     {
-                        float prev = _historyScrollOffset;
-                        _scrollVelocity += -prev * ScrollSpringAccel;
-                        _scrollVelocity *= ScrollSpringDampen;
-                        _historyScrollOffset = Math.Max(0, (int)Math.Round(prev + _scrollVelocity));
-                        if (_historyScrollOffset == 0 && Math.Abs(_scrollVelocity) < 0.5f)
-                            _scrollVelocity = 0f;
+                        _historyScrollOffset = (int)Math.Round(_historyScrollOffset + remaining * ScrollAlpha);
+                        needRedraw = true;
+                    }
+                    else if (_historyScrollOffset != (int)Math.Round(_scrollTarget))
+                    {
+                        _historyScrollOffset = Math.Max(0, (int)Math.Round(_scrollTarget));
                         needRedraw = true;
                     }
                     if (needRedraw) Redraw();
@@ -567,9 +612,7 @@ public class DisplayAnsi : IDisplay
             {
                 lock (_consoleLock)
                 {
-                    _scrollVelocity = 0f;
-                    _historyScrollOffset = Math.Max(0, _historyScrollOffset + (inputEv.WheelDelta > 0 ? 3 : -3));
-                    Redraw();
+                    _scrollTarget = Math.Max(0, _scrollTarget + (inputEv.WheelDelta > 0 ? 3 : -3));
                 }
                 continue;
             }
@@ -578,8 +621,20 @@ public class DisplayAnsi : IDisplay
             {
                 lock (_consoleLock)
                 {
-                    if (_rowToSlot.TryGetValue(inputEv.Row, out int slotIdx))
+                    // Click on scrollbar column (rightmost) within history area → seek to that position.
+                    int scrollColCheck = Console.WindowWidth - 1;
+                    if (inputEv.Col == scrollColCheck && _scrollbarMaxOffset > 0
+                        && inputEv.Row >= _scrollbarTopRow
+                        && inputEv.Row < _scrollbarTopRow + _scrollbarHeight)
+                    {
+                        float fraction = (float)(inputEv.Row - _scrollbarTopRow) / Math.Max(1, _scrollbarHeight - 1);
+                        _scrollTarget = (1f - fraction) * _scrollbarMaxOffset;
+                        _scrollTarget = Math.Max(0f, Math.Min(_scrollbarMaxOffset, _scrollTarget));
+                    }
+                    else if (_rowToSlot.TryGetValue(inputEv.Row, out int slotIdx))
+                    {
                         _model?.ToggleCollapsed(slotIdx);
+                    }
                 }
                 continue;
             }
@@ -607,9 +662,9 @@ public class DisplayAnsi : IDisplay
                     _ = SendAsync(text);
                 }
 
-                // Spring back to follow-mode when a message is submitted.
+                // Animate back to follow-mode when a message is submitted.
                 lock (_consoleLock)
-                    _scrollVelocity = -_historyScrollOffset * ScrollSpringAccel * 4f;
+                    _scrollTarget = 0f;
 
                 SetInput("", 0);
             }
@@ -750,21 +805,19 @@ public class DisplayAnsi : IDisplay
             {
                 lock (_consoleLock)
                 {
-                    _scrollVelocity = 0f;
                     int pageH = Math.Max(1, Console.WindowHeight - 3 - ComputeInputRows(_currentInputText, Console.WindowWidth));
-                    _historyScrollOffset += Math.Max(1, pageH - 1);
-                    Redraw();
+                    _scrollTarget += Math.Max(1, pageH - 1);
                 }
+                continue;
             }
             else if (key.Key == ConsoleKey.PageDown)
             {
                 lock (_consoleLock)
                 {
-                    _scrollVelocity = 0f;
                     int pageH = Math.Max(1, Console.WindowHeight - 3 - ComputeInputRows(_currentInputText, Console.WindowWidth));
-                    _historyScrollOffset = Math.Max(0, _historyScrollOffset - Math.Max(1, pageH - 1));
-                    Redraw();
+                    _scrollTarget = Math.Max(0f, _scrollTarget - Math.Max(1, pageH - 1));
                 }
+                continue;
             }
             else if (key.Key == ConsoleKey.Escape)
             {

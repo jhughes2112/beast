@@ -99,8 +99,8 @@ public class ConversationModel
     {
         if (mode == CollapseMode.Verbose) return false;
 
-        // Debug and ToolCall are always hidden in non-verbose modes.
-        if (type == FrameType.Debug || type == FrameType.ToolCall) return true;
+        // Debug is always hidden in non-verbose modes; ToolCall is visible (may be collapsed).
+        if (type == FrameType.Debug) return true;
 
         // Quiet: only Output and Error are visible.
         if (mode == CollapseMode.Quiet)
@@ -113,9 +113,9 @@ public class ConversationModel
     {
         if (mode == CollapseMode.Verbose) return false;
 
-        // Minimized: Tool/ToolResponse/Thinking/System shown collapsed; Output/Error expanded.
+        // Minimized: Tool/ToolCall/ToolResponse/Thinking/System shown collapsed; Output/Error expanded.
         if (mode == CollapseMode.Minimized)
-            return type == FrameType.Thinking || type == FrameType.Tool || type == FrameType.ToolResponse || type == FrameType.System;
+            return type == FrameType.Thinking || type == FrameType.Tool || type == FrameType.ToolCall || type == FrameType.ToolResponse || type == FrameType.System;
 
         // Quiet: everything collapsed (hidden types are filtered separately by ShouldHide).
         return true;

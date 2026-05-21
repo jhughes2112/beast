@@ -48,6 +48,7 @@ public class AgentOrchestrator
 		bool wantsExit = false;
 		int exitCode = 0;
 		string lastRaisedSystemPrompt = string.Empty;
+		bool historyReplayed = false;
 
 		ConcurrentQueue<string> inputQueue = new();
 
@@ -113,6 +114,9 @@ public class AgentOrchestrator
 						case "history":
 							ReplayHistory(conversation);
 							SendStats(conversation, service?.Model.Config.ContextWindow ?? 0);
+							// Mark the system prompt as already raised so the main loop does not echo it again.
+							if (role != null) lastRaisedSystemPrompt = role.SystemPrompt;
+							historyReplayed = true;
 							break;
 						case "quit":
 							wantsExit = true;
@@ -131,7 +135,8 @@ public class AgentOrchestrator
 								SessionService.Save(conversation);
 								conversation = CreateFreshConversation(conversation.Role, out bundle);
 								lastRaisedSystemPrompt = string.Empty;
-                          SendCompletionCandidates(conversation);
+								historyReplayed = true;  // new session has no history to replay
+						  SendCompletionCandidates(conversation);
 								_transport.Status("New session started.");
 							}
 							else if (args != null)
@@ -143,7 +148,8 @@ public class AgentOrchestrator
 									conversation = loaded;
 									bundle = BuildBundle(conversation);
 									lastRaisedSystemPrompt = string.Empty;
-                                SendCompletionCandidates(conversation);
+									historyReplayed = false;  // switching sessions requires a fresh /history
+								SendCompletionCandidates(conversation);
 									_transport.Status("Switched to session: " + loaded.DisplayName);
 								}
 								else
@@ -209,15 +215,15 @@ public class AgentOrchestrator
 			}
 
 			canRunLLM = role != null && service != null;
-			if (canRunLLM)
-			{
-				// Try to dispatch the system prompt if it has changed
-				if (role!=null && role.SystemPrompt != lastRaisedSystemPrompt)
+				if (canRunLLM && historyReplayed)
 				{
-					lastRaisedSystemPrompt = role.SystemPrompt;
-					if (!string.IsNullOrEmpty(role.SystemPrompt))
-						bundle.OnSystemMessage(null!, role.SystemPrompt);
-				}
+					// Try to dispatch the system prompt if it has changed
+					if (role!=null && role.SystemPrompt != lastRaisedSystemPrompt)
+					{
+						lastRaisedSystemPrompt = role.SystemPrompt;
+						if (!string.IsNullOrEmpty(role.SystemPrompt))
+							bundle.OnSystemMessage(null!, role.SystemPrompt);
+					}
 
 				if (!string.IsNullOrEmpty(accumulatedText))
 				{
