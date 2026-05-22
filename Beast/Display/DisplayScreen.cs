@@ -35,6 +35,9 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb Silver        = new Rgb(188, 188, 188);  // 250
         public static readonly Rgb BrightUser    = new Rgb(255, 255, 255);  // 231
         public static readonly Rgb MedGrey       = new Rgb(138, 138, 138);  // 245
+        public static readonly Rgb ThinkingFg    = new Rgb(112, 112, 112);  // slightly dimmer than MedGrey
+        public static readonly Rgb GhostFg       = new Rgb(110, 110, 110);  // ghost-text dim version of InputFg
+        public static readonly Rgb PopupSelBg    = new Rgb(70, 70, 70);     // selected row in completion popup
         public static readonly Rgb Red           = new Rgb(255, 0, 0);      // 196
         public static readonly Rgb Blue          = new Rgb(0, 135, 215);    // 33
         public static readonly Rgb Orange        = new Rgb(215, 95, 0);     // 166
@@ -89,6 +92,12 @@ public class DisplayScreen : IDisplay
 
     private int  _hoverSlot         = -1;
     private long _scrollbarShowUntil = 0;
+
+    // Completion popup state. Active whenever the input begins with '/' and at least one completion matches.
+    private readonly List<string> _completionMatches = new List<string>();
+    private int  _completionIndex   = 0;
+    private bool _completionActive  = false;
+    private const int CompletionPopupMaxRows = 5;
     private const int ScrollbarShowMs = 1000;
     private const int ScrollbarFadeMs = 350;
 
@@ -146,6 +155,7 @@ public class DisplayScreen : IDisplay
             _completions.Add("/verbose");
             foreach (string c in completions)
                 _completions.Add(c);
+            Redraw();
         }
     }
 
@@ -256,7 +266,12 @@ public class DisplayScreen : IDisplay
         int inputEndRow  = h - 2;
         int inputStart   = inputEndRow - inputRows + 1;
         int separatorRow = inputStart - 1;
-        int historyH     = separatorRow;
+
+        // Recompute completion matches each frame so the popup stays in sync with the buffer.
+        RecomputeCompletions();
+        int popupRows = _completionActive ? Math.Min(CompletionPopupMaxRows, _completionMatches.Count) : 0;
+        int popupTop  = separatorRow - popupRows;
+        int historyH  = popupTop;
 
         // 1. Build the tall history composite via StackLayout of BlockLayers.
         StackLayout stack = new StackLayout(w, spacerRows: 0);
@@ -321,6 +336,9 @@ public class DisplayScreen : IDisplay
                 {
                     Rect hoverRect = new Rect(0, clipTop, w, clipBottom - clipTop);
                     new ChannelBrightnessEffect(fgFactor: 1.6f, bgFactor: 1.15f).Apply(historyView, hoverRect);
+                    // Small lerp-to-white on the background so the highlight is still visible when
+                    // the underlying cell bg is true black (where multiplicative scaling does nothing).
+                    new BackgroundTintEffect(Rgb.White, 0.06f).Apply(historyView, hoverRect);
                 }
             }
         }
@@ -355,12 +373,28 @@ public class DisplayScreen : IDisplay
         Screen sep = new Screen(w, 1, new Cell('─', Palette.BrightWhite, Palette.Background, CellStyle.None));
         frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
 
-        // Input area.
-        Screen inputScreen = BuildInputScreen(_currentInputText, w, inputRows, skip);
+        // Input area (with optional ghost-text completion preview).
+        string ghostSuffix = ComputeGhostSuffix();
+        Screen inputScreen = BuildInputScreen(_currentInputText, w, inputRows, skip, ghostSuffix);
         frame.Blit(inputScreen, 0, inputStart, BlendMode.Normal, null);
 
-        // Status bar.
-        Screen statusScreen = BuildStatusScreen(_statusText, _statsText, w);
+        // Completion popup, if active.
+        if (popupRows > 0)
+        {
+            Screen popupScreen = BuildCompletionPopup(w, popupRows, _completionMatches, _completionIndex);
+            frame.Blit(popupScreen, 0, popupTop, BlendMode.Normal, null);
+        }
+
+        // Status bar — current mode is always shown on the right alongside any stats text.
+        string modeName = _model != null ? _model.Mode.ToString() : "";
+        string right;
+        if (string.IsNullOrEmpty(_statsText))
+            right = modeName;
+        else if (string.IsNullOrEmpty(modeName))
+            right = _statsText;
+        else
+            right = $"{_statsText}  {modeName}";
+        Screen statusScreen = BuildStatusScreen(_statusText, right, w);
         frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
 
         // 6. Emit.
@@ -496,7 +530,7 @@ public class DisplayScreen : IDisplay
             case FrameType.Output:       return (Palette.Silver,      null);
             case FrameType.User:         return (Palette.BrightUser,  null);
             case FrameType.Error:        return (Palette.Red,         null);
-            case FrameType.Thinking:     return (Palette.MedGrey,     null);
+            case FrameType.Thinking:     return (Palette.ThinkingFg,  null);
             case FrameType.Tool:         return (Palette.Blue,        null);
             case FrameType.ToolCall:     return (Palette.ToolCallFg,  Palette.ToolCallBg);
             case FrameType.ToolResponse: return (Palette.ToolRespFg,  Palette.ToolRespBg);
@@ -544,7 +578,7 @@ public class DisplayScreen : IDisplay
         return s;
     }
 
-    private static Screen BuildInputScreen(string text, int w, int inputRows, int skip)
+    private static Screen BuildInputScreen(string text, int w, int inputRows, int skip, string ghostSuffix)
     {
         Screen s = new Screen(w, inputRows, new Cell(' ', Palette.InputFg, Palette.InputBg, CellStyle.None));
         List<string> inputLines = WrapInput(text, w);
@@ -554,8 +588,80 @@ public class DisplayScreen : IDisplay
             string line = lineIdx < inputLines.Count ? inputLines[lineIdx] : PromptPrefix;
             int endX = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, Palette.InputBg);
             AnsiToScreen.PadRowBackground(s, endX, r, Palette.InputFg, Palette.InputBg);
+
+            // Ghost text is appended to whatever the last visible input row is, just after the current text.
+            if (!string.IsNullOrEmpty(ghostSuffix) && lineIdx == inputLines.Count - 1)
+            {
+                int gx = endX;
+                for (int i = 0; i < ghostSuffix.Length && gx < w; i++, gx++)
+                    s.Set(gx, r, new Cell(ghostSuffix[i], Palette.GhostFg, Palette.InputBg, CellStyle.None));
+            }
         }
         return s;
+    }
+
+    private static Screen BuildCompletionPopup(int w, int rows, List<string> matches, int selected)
+    {
+        // Same colors as the input area; selected row gets a brighter background so it reads as the active pick.
+        Screen s = new Screen(w, rows, new Cell(' ', Palette.InputFg, Palette.InputBg, CellStyle.None));
+
+        int total = matches.Count;
+        int first = 0;
+        if (total > rows)
+        {
+            first = selected - rows / 2;
+            if (first < 0) first = 0;
+            if (first > total - rows) first = total - rows;
+        }
+
+        for (int r = 0; r < rows; r++)
+        {
+            int idx = first + r;
+            if (idx >= total) break;
+            bool isSel = idx == selected;
+            Rgb bg = isSel ? Palette.PopupSelBg : Palette.InputBg;
+            string line = "  " + matches[idx];
+            // Pre-fill row background so selection highlight extends past the text to the right edge.
+            s.Fill(new Rect(0, r, w, 1), new Cell(' ', Palette.InputFg, bg, CellStyle.None));
+            int endX = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, bg);
+            AnsiToScreen.PadRowBackground(s, endX, r, Palette.InputFg, bg);
+        }
+        return s;
+    }
+
+    // Refresh _completionMatches/_completionIndex/_completionActive based on the current input buffer.
+    // Active only when the buffer starts with '/' and at least one completion is a prefix match.
+    private void RecomputeCompletions()
+    {
+        _completionMatches.Clear();
+        if (string.IsNullOrEmpty(_currentInputText) || _currentInputText[0] != '/')
+        {
+            _completionActive = false;
+            _completionIndex  = 0;
+            return;
+        }
+        foreach (string c in _completions)
+        {
+            if (c.StartsWith(_currentInputText, StringComparison.OrdinalIgnoreCase) && c.Length > _currentInputText.Length)
+                _completionMatches.Add(c);
+        }
+        if (_completionMatches.Count == 0)
+        {
+            _completionActive = false;
+            _completionIndex  = 0;
+            return;
+        }
+        _completionActive = true;
+        if (_completionIndex < 0 || _completionIndex >= _completionMatches.Count) _completionIndex = 0;
+    }
+
+    // Returns the substring that would be appended if Tab were pressed right now, or empty if no popup.
+    private string ComputeGhostSuffix()
+    {
+        if (!_completionActive || _completionMatches.Count == 0) return string.Empty;
+        string pick = _completionMatches[_completionIndex];
+        if (pick.Length <= _currentInputText.Length) return string.Empty;
+        return pick.Substring(_currentInputText.Length);
     }
 
     // ------------------------------------------------------------------------------------------------------
@@ -910,6 +1016,18 @@ public class DisplayScreen : IDisplay
                 bool needRedraw = false;
                 lock (_consoleLock)
                 {
+                    int curW = Console.WindowWidth;
+                    int curH = Console.WindowHeight;
+                    if (curW != _lastWidth || curH != _lastHeight)
+                    {
+                        // Reflow immediately on resize instead of waiting for a mouse/key event.
+                        _lastWidth  = curW;
+                        _lastHeight = curH;
+                        _needsErase = true;
+                        _blockCache.Clear();
+                        _renderedWidth = curW;
+                        needRedraw = true;
+                    }
                     float remaining = _scrollTarget - _historyScrollOffset;
                     if (Math.Abs(remaining) >= 0.5f)
                     {
@@ -1031,20 +1149,40 @@ public class DisplayScreen : IDisplay
             }
             else if (key.Key == ConsoleKey.Tab)
             {
-                List<string> completionsCopy;
+                // If the completion popup is up, Tab accepts the highlighted entry; otherwise cycle inline.
+                bool popupActive;
+                string? accept = null;
                 lock (_consoleLock)
-                    completionsCopy = new List<string>(_completions);
-
-                UpdateMatches(inputBuffer.ToString(), matches, completionsCopy);
-                if (matches.Count > 0)
                 {
-                    matchIndex = inCompletion ? (matchIndex + 1) % matches.Count : 0;
-                    inCompletion = true;
-                    string completion = matches[matchIndex];
+                    popupActive = _completionActive && _completionMatches.Count > 0;
+                    if (popupActive) accept = _completionMatches[_completionIndex];
+                }
+
+                if (popupActive && accept != null)
+                {
                     inputBuffer.Clear();
-                    inputBuffer.Append(completion);
-                    cursorPos = completion.Length;
+                    inputBuffer.Append(accept);
+                    cursorPos = inputBuffer.Length;
+                    inCompletion = false;
                     SetInput(inputBuffer.ToString(), cursorPos);
+                }
+                else
+                {
+                    List<string> completionsCopy;
+                    lock (_consoleLock)
+                        completionsCopy = new List<string>(_completions);
+
+                    UpdateMatches(inputBuffer.ToString(), matches, completionsCopy);
+                    if (matches.Count > 0)
+                    {
+                        matchIndex = inCompletion ? (matchIndex + 1) % matches.Count : 0;
+                        inCompletion = true;
+                        string completion = matches[matchIndex];
+                        inputBuffer.Clear();
+                        inputBuffer.Append(completion);
+                        cursorPos = completion.Length;
+                        SetInput(inputBuffer.ToString(), cursorPos);
+                    }
                 }
             }
             else if (key.Key == ConsoleKey.Backspace && ctrl)
@@ -1111,6 +1249,19 @@ public class DisplayScreen : IDisplay
             }
             else if (key.Key == ConsoleKey.UpArrow)
             {
+                bool popupActive;
+                lock (_consoleLock)
+                    popupActive = _completionActive && _completionMatches.Count > 0;
+                if (popupActive)
+                {
+                    lock (_consoleLock)
+                    {
+                        _completionIndex--;
+                        if (_completionIndex < 0) _completionIndex = _completionMatches.Count - 1;
+                        Redraw();
+                    }
+                    continue;
+                }
                 int upW = Console.WindowWidth;
                 if (upW < 1) upW = 80;
                 (int upLine, int upCol) = CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
@@ -1133,6 +1284,19 @@ public class DisplayScreen : IDisplay
             }
             else if (key.Key == ConsoleKey.DownArrow)
             {
+                bool popupActive;
+                lock (_consoleLock)
+                    popupActive = _completionActive && _completionMatches.Count > 0;
+                if (popupActive)
+                {
+                    lock (_consoleLock)
+                    {
+                        _completionIndex++;
+                        if (_completionIndex >= _completionMatches.Count) _completionIndex = 0;
+                        Redraw();
+                    }
+                    continue;
+                }
                 int downW = Console.WindowWidth;
                 if (downW < 1) downW = 80;
                 (int downLine, int downCol) = CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
@@ -1309,7 +1473,6 @@ public class DisplayScreen : IDisplay
         lock (_consoleLock)
             _preserveTopSourceRow = CurrentTopSourceRow();
         _model.Mode = next;
-        SetStatus($"View mode: {next}");
     }
 
     private static void UpdateMatches(string input, List<string> matches, List<string> completions)

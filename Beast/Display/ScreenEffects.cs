@@ -110,6 +110,36 @@ public sealed class InvertEffect : IScreenEffect
     }
 }
 
+// Lerps only the background toward Color by Amount [0..1]. Foreground untouched.
+// Use when a hover/glow needs to be visible even when the underlying bg is near-black
+// (multiplicative brightness cannot brighten a true-black cell).
+public sealed class BackgroundTintEffect : IScreenEffect
+{
+    public Rgb   Color  { get; }
+    public float Amount { get; }
+
+    public BackgroundTintEffect(Rgb color, float amount)
+    {
+        Color  = color;
+        Amount = amount;
+    }
+
+    public void Apply(Screen target, Rect rect)
+    {
+        Rect r = rect.Intersect(target.Bounds);
+        for (int y = r.Y; y < r.Bottom; y++)
+        {
+            for (int x = r.X; x < r.Right; x++)
+            {
+                Cell c = target.Get(x, y);
+                Rgb bgBase = c.Bg.HasValue ? c.Bg.Value : Rgb.Black;
+                Rgb bg = bgBase.Lerp(Color, Amount);
+                target.Set(x, y, new Cell(c.Ch, c.Fg, bg, c.Style));
+            }
+        }
+    }
+}
+
 // Replaces every cell's background with the given color (foreground untouched). Useful for highlight bands.
 public sealed class FillBackgroundEffect : IScreenEffect
 {
