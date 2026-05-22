@@ -140,6 +140,59 @@ public sealed class BackgroundTintEffect : IScreenEffect
     }
 }
 
+// Radial glow centered at (CenterX, CenterY) with a soft falloff out to Radius cells. Brightens both
+// fg and bg by a small, distance-attenuated amount. Cell aspect is roughly 2:1 (tall) so vertical
+// distance is doubled when computing the radial falloff, keeping the glow visually circular.
+// Non-destructive: characters and style are untouched.
+public sealed class CursorGlowEffect : IScreenEffect
+{
+    public int   CenterX  { get; }
+    public int   CenterY  { get; }
+    public float Radius   { get; }
+    public float Strength { get; }
+
+    public CursorGlowEffect(int centerX, int centerY, float radius, float strength)
+    {
+        CenterX  = centerX;
+        CenterY  = centerY;
+        Radius   = radius;
+        Strength = strength;
+    }
+
+    public void Apply(Screen target, Rect rect)
+    {
+        if (Radius <= 0f || Strength <= 0f) return;
+
+        Rect r = rect.Intersect(target.Bounds);
+        float invR = 1f / Radius;
+
+        for (int y = r.Y; y < r.Bottom; y++)
+        {
+            for (int x = r.X; x < r.Right; x++)
+            {
+                float dx = x - CenterX;
+                float dy = (y - CenterY) * 2f;
+                float dist = (float)Math.Sqrt(dx * dx + dy * dy);
+                if (dist >= Radius) continue;
+
+                float t = 1f - dist * invR;
+                // Smooth falloff (cubic) so the glow center is brightest and the edge fades cleanly.
+                float falloff = t * t * (3f - 2f * t);
+                float amount  = Strength * falloff;
+                float factor  = 1f + amount;
+
+                Cell c = target.Get(x, y);
+                Rgb? fg = c.Fg.HasValue ? c.Fg.Value.Scale(factor) : c.Fg;
+                Rgb  bgBase = c.Bg.HasValue ? c.Bg.Value : Rgb.Black;
+                // Lerp bg toward white so the glow is visible even on true-black backgrounds where
+                // multiplicative scaling has no effect.
+                Rgb  bg = bgBase.Scale(factor).Lerp(Rgb.White, amount * 0.25f);
+                target.Set(x, y, new Cell(c.Ch, fg, bg, c.Style));
+            }
+        }
+    }
+}
+
 // Replaces every cell's background with the given color (foreground untouched). Useful for highlight bands.
 public sealed class FillBackgroundEffect : IScreenEffect
 {

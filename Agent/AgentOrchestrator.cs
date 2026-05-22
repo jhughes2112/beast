@@ -175,8 +175,13 @@ public class AgentOrchestrator
 							{
 								conversation.Model = args;
 								canRunLLM = false;
-                              SendCompletionCandidates(conversation);
+							  SendCompletionCandidates(conversation);
 								_transport.Status($"Model set to {args}");
+								// Push a Stats frame immediately so Beast's status bar reflects the new model
+								// without waiting for the next LLM turn.
+								LLMRole? modelRole = _roleService.GetRole(conversation.Role);
+								LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, conversation.Model) : null;
+								SendStats(conversation, modelService?.Model.Config.ContextWindow ?? 0);
 							}
 							break;
 						case "help":

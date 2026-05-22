@@ -12,10 +12,12 @@ public static class AnsiToScreen
 {
     // Writes a single logical line of ANSI text into target at row y, starting at column x0.
     // baseFg/baseBg are the row's default colors used whenever a reset or 39/49 is encountered.
-    // Returns the next column past the last written cell.
-    public static int WriteLine(Screen target, int x0, int y, string ansiText, Rgb? baseFg, Rgb? baseBg)
+    // Returns the next column past the last written cell plus the trailing fg/bg state so callers can
+    // pad the remainder of the row with whatever colors the text actually ended on (important when the
+    // line switches to a different bg mid-row — e.g. a tool response inside a tool-call block).
+    public static (int EndX, Rgb? FinalFg, Rgb? FinalBg) WriteLine(Screen target, int x0, int y, string ansiText, Rgb? baseFg, Rgb? baseBg)
     {
-        if (y < 0 || y >= target.H) return x0;
+        if (y < 0 || y >= target.H) return (x0, baseFg, baseBg);
 
         Rgb?      fg    = baseFg;
         Rgb?      bg    = baseBg;
@@ -51,7 +53,9 @@ public static class AnsiToScreen
             i++;
         }
 
-        return cx;
+        Rgb? finalFg = dim && fg.HasValue ? fg.Value.Scale(0.5f) : fg;
+        Rgb? finalBg = dim && bg.HasValue ? bg.Value.Scale(0.5f) : bg;
+        return (cx, finalFg, finalBg);
     }
 
     // Fills the remainder of the row from (cx..target.W) with blank cells using the trailing fg/bg state.

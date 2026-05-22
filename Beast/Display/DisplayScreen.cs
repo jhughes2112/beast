@@ -66,7 +66,21 @@ public class DisplayScreen : IDisplay
     private string _currentInputText   = "";
     private int    _currentInputCursor = 0;
     private string _statusText         = "";
-    private string _statsText          = "";
+    // Status bar is laid out as three segments: left (path + mode), center (token/cost metrics),
+    // right (model name). They're stored separately so each can be positioned independently.
+    private string _statsMetrics       = "";
+    private string _statsModelName     = "";
+
+    // Bottom-left of the status bar is normally the rooted client path Beast was launched from.
+    // SetStatus messages are transient: they replace the path for TransientStatusMs then revert.
+    private string _baseStatusText        = "";
+    private long   _transientStatusUntil  = 0;
+    private const int TransientStatusMs   = 4000;
+
+    // Optimistic override for the model name shown on the right side of the status bar. When the user
+    // submits /model <id>, we set this immediately so the change is visible before the agent's next Stats
+    // frame arrives. Cleared whenever a real Stats frame is received.
+    private string _modelOverride         = "";
 
     private float _historyScrollOffset = 0f;
     private float _scrollTarget        = 0f;
@@ -93,6 +107,16 @@ public class DisplayScreen : IDisplay
     private int  _hoverSlot         = -1;
     private long _scrollbarShowUntil = 0;
 
+    // Last known mouse position in terminal cell coordinates. -1 means "no mouse event seen yet" and
+    // suppresses the cursor glow until the user actually moves the mouse over the window.
+    private int _mouseRow = -1;
+    private int _mouseCol = -1;
+
+    // Cursor glow: a small radial brightening centered on the mouse position, applied as a final
+    // overlay on the composited frame. Purely cosmetic; never alters cell characters or style.
+    private const float CursorGlowRadius   = 6f;
+    private const float CursorGlowStrength = 0.45f;
+
     // Completion popup state. Active whenever the input begins with '/' and at least one completion matches.
     private readonly List<string> _completionMatches = new List<string>();
     private int  _completionIndex   = 0;
@@ -104,6 +128,16 @@ public class DisplayScreen : IDisplay
     // When set, the next Redraw will adjust scroll so this source-row stays at the top of the viewport.
     // Used to keep the top line stable when a block expands/collapses or the view mode changes.
     private int? _preserveTopSourceRow = null;
+
+    // When set, the next Redraw will re-anchor around a block that just toggled collapse state. We capture
+    // the slot index plus the old (slotTop, slotBottom, topViewRow) so we can pick the correct strategy:
+    //   - view top was above the block: keep view top unchanged
+    //   - view top was inside the block: snap view top to the block's new top (avoids "popping" into deleted rows)
+    //   - view top was below the block: shift view top by the height delta so what was visible stays put
+    private int? _pendingToggleSlot   = null;
+    private int  _pendingToggleSlotTop;
+    private int  _pendingToggleSlotBottom;
+    private int  _pendingToggleViewTop;
 
     private readonly StringBuilder _drawBuf = new StringBuilder(65536);
     private StreamWriter? _bufferedOut;
@@ -128,6 +162,7 @@ public class DisplayScreen : IDisplay
         lock (_consoleLock)
         {
             _statusText = text;
+            _transientStatusUntil = Environment.TickCount64 + TransientStatusMs;
             Redraw();
         }
     }
@@ -135,14 +170,17 @@ public class DisplayScreen : IDisplay
     public void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
     {
         string contextInfo = maxContext > 0 && contextTokens > 0
-            ? $"{(int)((double)contextTokens / maxContext * 100)}%/{maxContext} "
+            ? $"  {(int)((double)contextTokens / maxContext * 100)}%/{maxContext}"
             : "";
-        string stats = promptTokens > 0 || completionTokens > 0
-            ? $"in:{promptTokens} out:{completionTokens} ${totalCost:F4}  {contextInfo}{model}"
-            : model;
+        string metrics = promptTokens > 0 || completionTokens > 0
+            ? $"in:{promptTokens} out:{completionTokens} ${totalCost:F4}{contextInfo}"
+            : "";
         lock (_consoleLock)
         {
-            _statsText = stats;
+            _statsMetrics   = metrics;
+            _statsModelName = model;
+            // A real stats frame supersedes any optimistic /model override.
+            _modelOverride = "";
             Redraw();
         }
     }
@@ -169,7 +207,8 @@ public class DisplayScreen : IDisplay
     public Task RunAsync(CancellationToken cancellationToken)
     {
         _runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _statusText = Directory.GetCurrentDirectory();
+        _baseStatusText = Path.GetFullPath(Directory.GetCurrentDirectory());
+        _statusText     = _baseStatusText;
 
         Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         Console.InputEncoding  = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -293,9 +332,35 @@ public class DisplayScreen : IDisplay
         _scrollbarHeight    = historyH;
         _scrollbarMaxOffset = maxOffset;
 
+        // If a block-toggle anchor is pending, pick the best top-of-view based on where the toggled block
+        // used to be relative to the viewport. This produces stable behavior even when the block is taller
+        // than the screen, where a naive "preserve top source row" can pop into now-deleted rows.
+        if (_pendingToggleSlot.HasValue)
+        {
+            BlockPlacement? newPlace = stack.PlacementOfSlot(_pendingToggleSlot.Value);
+            int viewTop    = _pendingToggleViewTop;
+            int oldTop     = _pendingToggleSlotTop;
+            int oldBottom  = _pendingToggleSlotBottom;
+            // Default: keep the view's top source-row exactly where it was. Toggling a block should not
+            // scroll the rest of the content, even when the block changes height.
+            int desiredTop = viewTop;
+            // Exception: if the toggled block straddled (or started at) the top of the view, anchor the
+            // view to that block's new top so the collapsed/expanded block is what sits at the top.
+            if (newPlace.HasValue && oldTop <= viewTop && oldBottom > viewTop)
+                desiredTop = newPlace.Value.Top;
+
+            if (desiredTop < 0) desiredTop = 0;
+            if (desiredTop > maxOffset) desiredTop = maxOffset;
+            float newOffsetFromBottom = totalRows - historyH - desiredTop;
+            if (newOffsetFromBottom < 0f) newOffsetFromBottom = 0f;
+            if (newOffsetFromBottom > maxOffset) newOffsetFromBottom = maxOffset;
+            _historyScrollOffset = newOffsetFromBottom;
+            _scrollTarget        = newOffsetFromBottom;
+            _pendingToggleSlot   = null;
+        }
         // If a preservation request is pending (toggle/mode change), reproject the scroll offset so the
         // captured source-row stays at the top of the view. totalRows changed since the request was filed.
-        if (_preserveTopSourceRow.HasValue)
+        else if (_preserveTopSourceRow.HasValue)
         {
             int targetTop = _preserveTopSourceRow.Value;
             if (targetTop < 0) targetTop = 0;
@@ -386,16 +451,33 @@ public class DisplayScreen : IDisplay
         }
 
         // Status bar — current mode is always shown on the right alongside any stats text.
+        // If a transient status message has expired, fall back to the base (rooted client path).
+        if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
+        {
+            _transientStatusUntil = 0;
+            _statusText = _baseStatusText;
+        }
+
         string modeName = _model != null ? _model.Mode.ToString() : "";
-        string right;
-        if (string.IsNullOrEmpty(_statsText))
-            right = modeName;
-        else if (string.IsNullOrEmpty(modeName))
-            right = _statsText;
-        else
-            right = $"{_statsText}  {modeName}";
-        Screen statusScreen = BuildStatusScreen(_statusText, right, w);
+        // Left segment: path followed by the current view mode.
+        string left = string.IsNullOrEmpty(modeName) ? _statusText : $"{_statusText}  {modeName}";
+        // Right segment: model name. The optimistic override (filled by /model <id>) wins until the agent
+        // sends a real stats frame back.
+        string rightModel = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
+        // Center segment: token / cost metrics. Empty unless a stats frame has populated them.
+        string center = _statsMetrics;
+        Screen statusScreen = BuildStatusScreen(left, center, rightModel, w);
         frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
+
+        // Cursor glow: small radial brightening over the final frame at the last known mouse position.
+        // Applied last so it lifts every layer (history, separator, input, status) within a few cells of
+        // the cursor. Suppressed until the mouse has actually moved over the window.
+        if (_mouseRow >= 0 && _mouseCol >= 0)
+        {
+            int rad = (int)Math.Ceiling(CursorGlowRadius);
+            Rect glowRect = new Rect(_mouseCol - rad, _mouseRow - rad, rad * 2 + 1, rad * 2 + 1);
+            new CursorGlowEffect(_mouseCol, _mouseRow, CursorGlowRadius, CursorGlowStrength).Apply(frame, glowRect);
+        }
 
         // 6. Emit.
         _drawBuf.Clear();
@@ -480,8 +562,8 @@ public class DisplayScreen : IDisplay
 
         Cell rowBg = new Cell(' ', fg, bg, CellStyle.None);
         Screen collapsed = new Screen(w, 1 + spacer, rowBg);
-        int endX = AnsiToScreen.WriteLine(collapsed, 0, 0, collapsedLine, fg, bg);
-        AnsiToScreen.PadRowBackground(collapsed, endX, 0, fg, bg);
+        (int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, 0, collapsedLine, fg, bg);
+        AnsiToScreen.PadRowBackground(collapsed, endX, 0, cFg, cBg);
         if (spacer > 0)
             collapsed.Fill(new Rect(0, 1, w, spacer), new Cell(' ', null, Palette.Background, CellStyle.None));
 
@@ -494,8 +576,8 @@ public class DisplayScreen : IDisplay
         Screen expanded = new Screen(w, expandedRows + spacer, rowBg);
         for (int r = 0; r < ansiLines.Count; r++)
         {
-            int endCx = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], fg, bg);
-            AnsiToScreen.PadRowBackground(expanded, endCx, r, fg, bg);
+            (int endCx, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], fg, bg);
+            AnsiToScreen.PadRowBackground(expanded, endCx, r, eFg, eBg);
         }
         if (spacer > 0)
             expanded.Fill(new Rect(0, expandedRows, w, spacer), new Cell(' ', null, Palette.Background, CellStyle.None));
@@ -560,21 +642,38 @@ public class DisplayScreen : IDisplay
     // Status / input Screens
     // ------------------------------------------------------------------------------------------------------
 
-    private static Screen BuildStatusScreen(string left, string right, int w)
+    // Status bar layout: left segment flush-left, right segment flush-right, center segment centered
+    // in the full bar width and then clipped/shifted if it would collide with the side segments.
+    // All three segments share the same MedGrey foreground.
+    private static Screen BuildStatusScreen(string left, string center, string right, int w)
     {
         Screen s = new Screen(w, 1, new Cell(' ', Palette.MedGrey, null, CellStyle.None));
-        string line;
-        if (string.IsNullOrEmpty(right))
+
+        int leftLen   = AnsiString.VisibleLength(left);
+        int centerLen = AnsiString.VisibleLength(center);
+        int rightLen  = AnsiString.VisibleLength(right);
+
+        // Place left at column 0.
+        if (leftLen > 0)
+            AnsiToScreen.WriteLine(s, 0, 0, left, Palette.MedGrey, null);
+
+        // Place right flush against the right edge.
+        int rightCol = w - rightLen;
+        if (rightLen > 0 && rightCol >= 0)
+            AnsiToScreen.WriteLine(s, rightCol, 0, right, Palette.MedGrey, null);
+
+        // Place center centered within the full bar, but nudge it so it doesn't overlap left/right.
+        if (centerLen > 0)
         {
-            line = left;
+            int centerCol = (w - centerLen) / 2;
+            int minCol    = leftLen > 0 ? leftLen + 1 : 0;
+            int maxCol    = rightLen > 0 ? rightCol - 1 - centerLen : w - centerLen;
+            if (centerCol < minCol) centerCol = minCol;
+            if (centerCol > maxCol) centerCol = maxCol;
+            if (centerCol >= 0 && centerCol + centerLen <= w)
+                AnsiToScreen.WriteLine(s, centerCol, 0, center, Palette.MedGrey, null);
         }
-        else
-        {
-            int padding = w - AnsiString.VisibleLength(left) - AnsiString.VisibleLength(right);
-            if (padding < 1) padding = 1;
-            line = left + new string(' ', padding) + right;
-        }
-        AnsiToScreen.WriteLine(s, 0, 0, line, Palette.MedGrey, null);
+
         return s;
     }
 
@@ -586,7 +685,7 @@ public class DisplayScreen : IDisplay
         {
             int lineIdx = skip + r;
             string line = lineIdx < inputLines.Count ? inputLines[lineIdx] : PromptPrefix;
-            int endX = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, Palette.InputBg);
+            (int endX, Rgb? _, Rgb? _) = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, Palette.InputBg);
             AnsiToScreen.PadRowBackground(s, endX, r, Palette.InputFg, Palette.InputBg);
 
             // Ghost text is appended to whatever the last visible input row is, just after the current text.
@@ -623,7 +722,7 @@ public class DisplayScreen : IDisplay
             string line = "  " + matches[idx];
             // Pre-fill row background so selection highlight extends past the text to the right edge.
             s.Fill(new Rect(0, r, w, 1), new Cell(' ', Palette.InputFg, bg, CellStyle.None));
-            int endX = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, bg);
+            (int endX, Rgb? _, Rgb? _) = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, bg);
             AnsiToScreen.PadRowBackground(s, endX, r, Palette.InputFg, bg);
         }
         return s;
@@ -673,6 +772,10 @@ public class DisplayScreen : IDisplay
         List<string> result = new List<string>();
         string prefix = PrefixTextForType(msg.Type);
         bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User || msg.Type == FrameType.ToolResponse;
+        // Prose-style messages get true word-boundary wrapping; everything else falls back to hard
+        // character wrap so code-like content isn't broken at arbitrary spaces inside tokens.
+        bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
+                     || msg.Type == FrameType.System || msg.Type == FrameType.Thinking;
 
         if (useMarkdown)
         {
@@ -682,7 +785,8 @@ public class DisplayScreen : IDisplay
             {
                 string full = firstLine ? prefix + mdLine : mdLine;
                 firstLine = false;
-                foreach (string wrapped in AnsiString.Wrap(full, w))
+                List<string> wrappedLines = wordWrap ? AnsiString.WordWrap(full, w) : AnsiString.Wrap(full, w);
+                foreach (string wrapped in wrappedLines)
                     result.Add(wrapped);
             }
             if (result.Count == 0)
@@ -696,7 +800,8 @@ public class DisplayScreen : IDisplay
             {
                 string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
                 first = false;
-                foreach (string wl in AnsiString.Wrap(full, w))
+                List<string> wrappedLines = wordWrap ? AnsiString.WordWrap(full, w) : AnsiString.Wrap(full, w);
+                foreach (string wl in wrappedLines)
                     result.Add(wl);
             }
         }
@@ -724,6 +829,9 @@ public class DisplayScreen : IDisplay
 
     private static List<string> RenderToolCallRows(DisplayMessage msg, int w)
     {
+        // Tool calls and their paired responses do NOT word-wrap; long lines are truncated at the screen
+        // edge by the Screen blitter. This keeps things like code/diffs/log output readable rather than
+        // breaking mid-token.
         List<string> result = new List<string>();
         string content = msg.Content;
 
@@ -734,8 +842,16 @@ public class DisplayScreen : IDisplay
             argsJson = argsJson.Substring(0, argsJson.Length - 1);
 
         string summary = FormatToolCallSummary(content);
-        foreach (string wl in AnsiString.Wrap(summary, w))
-            result.Add(wl);
+        result.Add(summary);
+
+        // Properties whose values are already shown in the summary line — don't repeat them in the body.
+        // "content" is shown as a free-floating block with the response background instead of a labeled value.
+        HashSet<string> summaryProps = SummaryPropertiesFor(name);
+
+        // SGR sequence that switches the row into the "response" background (gray) so large free-form bodies
+        // like write_file's content visually match read_file's response, instead of staying on the bright
+        // tool-call blue background.
+        const string respBodyAnsi = "\x1b[38;5;66m\x1b[48;5;234m";
 
         if (!string.IsNullOrWhiteSpace(argsJson))
         {
@@ -744,49 +860,80 @@ public class DisplayScreen : IDisplay
                 using JsonDocument doc = JsonDocument.Parse(argsJson);
                 foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
                 {
+                    if (summaryProps.Contains(prop.Name)) continue;
+
                     string val = prop.Value.ValueKind == JsonValueKind.String
                         ? prop.Value.GetString() ?? string.Empty
                         : prop.Value.ToString();
 
                     val = val.Replace("\\n", "\n").Replace("\\t", "    ").Replace("\t", "    ");
 
+                    // "content" (write_file etc.) is rendered as a body block with no label, using the same
+                    // background as a tool response so it doesn't sit on the bright tool-call blue.
+                    if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (string valLine in val.Split('\n'))
+                            result.Add(respBodyAnsi + ExpandTabs(valLine));
+                        continue;
+                    }
+
                     bool firstPropLine = true;
                     foreach (string valLine in val.Split('\n'))
                     {
                         string propLine = firstPropLine ? $"  {prop.Name}: {valLine}" : $"    {valLine}";
                         firstPropLine = false;
-                        foreach (string wl in AnsiString.Wrap(propLine, w))
-                            result.Add(wl);
+                        result.Add(propLine);
                     }
                 }
             }
             catch
             {
                 foreach (string rawLine in argsJson.Split('\n'))
-                {
-                    foreach (string wl in AnsiString.Wrap(rawLine, w))
-                        result.Add(wl);
-                }
+                    result.Add(rawLine);
             }
         }
 
         if (!string.IsNullOrEmpty(msg.PairedResponseContent))
         {
-            result.Add(new string('·', Math.Min(w, 40)));
             // Use SGR codes that AnsiToScreen understands; downstream renderer picks them up.
             string respAnsi = msg.PairedResponseIsError
                 ? "\x1b[38;5;172m\x1b[48;5;52m"
-                : "\x1b[38;5;66m\x1b[48;5;234m";
+                : respBodyAnsi;
             foreach (string respLine in msg.PairedResponseContent.Split('\n'))
-            {
-                foreach (string wl in AnsiString.Wrap(ExpandTabs(respLine), w))
-                    result.Add(respAnsi + wl);
-            }
+                result.Add(respAnsi + ExpandTabs(respLine));
         }
 
         if (result.Count == 0)
             result.Add(name);
         return result;
+    }
+
+    // Property names that are already represented in the one-line summary for a given tool, so the
+    // expanded body shouldn't repeat them.
+    private static HashSet<string> SummaryPropertiesFor(string toolName)
+    {
+        HashSet<string> set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        switch (toolName)
+        {
+            case "read_file":
+                set.Add("file_path"); set.Add("offset"); set.Add("lines"); break;
+            case "write_file":
+            case "edit_file":
+            case "edit_file_replace":
+            case "edit_file_insert":
+                set.Add("file_path"); break;
+            case "list_directory":
+            case "glob":
+            case "grep":
+                set.Add("path"); break;
+            case "bash":
+                set.Add("command"); break;
+            case "search_web":
+                set.Add("query"); break;
+            case "fetch_page":
+                set.Add("url"); break;
+        }
+        return set;
     }
 
     private static string FormatToolCallSummary(string content)
@@ -830,8 +977,14 @@ public class DisplayScreen : IDisplay
         return summary;
     }
 
+    // SGR codes used to colorize filenames / paths / commands inside tool summaries. Yellow text on
+    // whatever the surrounding row background is — the trailing reset returns to the default fg/bg so
+    // the rest of the summary stays in the block's normal colors.
+    private const string FileNameAnsi = "\x1b[38;5;226m";
+    private const string ResetAnsi    = "\x1b[39m";
+
     private static string BuildPathSummary(string label, string path)
-        => string.IsNullOrEmpty(path) ? label : $"{label} {path}";
+        => string.IsNullOrEmpty(path) ? label : $"{label} {FileNameAnsi}{path}{ResetAnsi}";
 
     private static string BuildReadFileSummary(string label, string path, string offset, string lines)
     {
@@ -841,11 +994,11 @@ public class DisplayScreen : IDisplay
             int.TryParse(offset, out int start);
             int.TryParse(lines, out int count);
             int end = start + count - 1;
-            return $"{label} {path}  [{offset}-{end}]";
+            return $"{label} {FileNameAnsi}{path}{ResetAnsi}  [{offset}-{end}]";
         }
         if (!string.IsNullOrEmpty(offset))
-            return $"{label} {path}  [from {offset}]";
-        return $"{label} {path}";
+            return $"{label} {FileNameAnsi}{path}{ResetAnsi}  [from {offset}]";
+        return $"{label} {FileNameAnsi}{path}{ResetAnsi}";
     }
 
     private static string BuildRunCommandSummary(string label, string command)
@@ -853,7 +1006,7 @@ public class DisplayScreen : IDisplay
         if (string.IsNullOrEmpty(command)) return label;
         int nl = command.IndexOf('\n');
         string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
-        return $"{label} {first}";
+        return $"{label} {FileNameAnsi}{first}{ResetAnsi}";
     }
 
     private static string BuildGenericSummary(string label, JsonElement root, bool parsed)
@@ -865,7 +1018,7 @@ public class DisplayScreen : IDisplay
             {
                 string val = prop.Value.GetString() ?? string.Empty;
                 if (!string.IsNullOrEmpty(val))
-                    return $"{label} {val}";
+                    return $"{label} {FileNameAnsi}{val}{ResetAnsi}";
             }
         }
         return label;
@@ -988,6 +1141,27 @@ public class DisplayScreen : IDisplay
         return _lastView.ScrollOffset;
     }
 
+    // Records the slot we are about to toggle along with its current placement and the view's top source
+    // row. The next Redraw consumes these in ApplyToggleAnchor() once the layout has been rebuilt.
+    private void CaptureToggleAnchor(int slotIndex)
+    {
+        if (_lastStack == null || _lastView == null)
+        {
+            _pendingToggleSlot = null;
+            return;
+        }
+        BlockPlacement? p = _lastStack.PlacementOfSlot(slotIndex);
+        if (!p.HasValue)
+        {
+            _pendingToggleSlot = null;
+            return;
+        }
+        _pendingToggleSlot       = slotIndex;
+        _pendingToggleSlotTop    = p.Value.Top;
+        _pendingToggleSlotBottom = p.Value.Bottom;
+        _pendingToggleViewTop    = _lastView.ScrollOffset;
+    }
+
     private float ComputeScrollbarOpacity()
     {
         long now = Environment.TickCount64;
@@ -1052,6 +1226,11 @@ public class DisplayScreen : IDisplay
                             needRedraw = true;
                         }
                     }
+                    if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
+                    {
+                        // Transient status expired — Redraw will revert to the base (rooted path).
+                        needRedraw = true;
+                    }
                     if (needRedraw) Redraw();
                 }
             }
@@ -1064,6 +1243,8 @@ public class DisplayScreen : IDisplay
             {
                 lock (_consoleLock)
                 {
+                    _mouseRow = inputEv.Row;
+                    _mouseCol = inputEv.Col;
                     int? slot = SlotAtTerminalRow(inputEv.Row);
                     _hoverSlot = slot ?? -1;
                     Redraw();
@@ -1075,6 +1256,8 @@ public class DisplayScreen : IDisplay
             {
                 lock (_consoleLock)
                 {
+                    _mouseRow = inputEv.Row;
+                    _mouseCol = inputEv.Col;
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
                     _scrollTarget = Math.Max(0, _scrollTarget + (inputEv.WheelDelta > 0 ? 3 : -3));
                 }
@@ -1085,6 +1268,8 @@ public class DisplayScreen : IDisplay
             {
                 lock (_consoleLock)
                 {
+                    _mouseRow = inputEv.Row;
+                    _mouseCol = inputEv.Col;
                     int scrollCol = Console.WindowWidth - 2;
                     if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
                         && inputEv.Row >= _scrollbarTopRow
@@ -1100,9 +1285,11 @@ public class DisplayScreen : IDisplay
                         int? slot = SlotAtTerminalRow(inputEv.Row);
                         if (slot.HasValue)
                         {
-                            // Anchor the top of the view to its current source row so the expansion grows
-                            // downward rather than shifting earlier content out of view at the top.
-                            _preserveTopSourceRow = CurrentTopSourceRow();
+                            // Capture the block's current placement and the view's top source-row so the next
+                            // Redraw can pick the best anchoring strategy depending on where the block lives
+                            // relative to the viewport (above, intersecting, or below). This avoids the popping
+                            // that happens when an expanded block taller than the screen gets collapsed.
+                            CaptureToggleAnchor(slot.Value);
                             _model?.ToggleCollapsed(slot.Value);
                             // Keep hover indicator after the click — mouse is still over the block.
                             _hoverSlot = slot.Value;
@@ -1442,6 +1629,21 @@ public class DisplayScreen : IDisplay
             {
                 SetStatus($"Unknown command: /{verb}  —  {HelpText}");
                 return;
+            }
+
+            // Optimistically reflect a /model <id> change in the status bar immediately rather than
+            // waiting for the agent to round-trip a Stats frame back to us.
+            if (verb.Equals("model", StringComparison.OrdinalIgnoreCase) && spaceIdx >= 0)
+            {
+                string newModel = trimmed.Substring(spaceIdx + 1).Trim();
+                if (newModel.Length > 0)
+                {
+                    lock (_consoleLock)
+                    {
+                        _modelOverride = newModel;
+                        Redraw();
+                    }
+                }
             }
         }
 
