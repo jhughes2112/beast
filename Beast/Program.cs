@@ -77,7 +77,7 @@ public class Program
 
         Log log = new Log(verbose);
         CollapseMode initialMode = verbose ? CollapseMode.Verbose : CollapseMode.Minimized;
-        IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayAnsi(initialMode);
+        IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayScreen(initialMode);
         await using BeastApp app = new BeastApp("beastagent", messages, display, log);
         return await app.Run();
     }
