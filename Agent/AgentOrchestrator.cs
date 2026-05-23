@@ -42,6 +42,10 @@ public class AgentOrchestrator
 		_registry.LoadFromConfigs(_settings, _roleService);
 	}
 
+	// Cancels only the current LLM turn (not the whole process). Signalled by the reader task
+	// when a /cancel frame arrives mid-turn; replaced before each new turn.
+	private CancellationTokenSource? _turnCts;
+
 	public async Task<int> RunAsync(CancellationToken cancellationToken)
 	{
 		BeastSession conversation = LoadOrCreateConversation(out ListenerBundle bundle);
@@ -60,7 +64,12 @@ public class AgentOrchestrator
 				if (line.Length > 0)
 				{
 					_transport.Debug($"[orchestrator] Received: '{line}'");
-					inputQueue.Enqueue(line);
+					// /cancel is intercepted here so it signals the current turn's token immediately,
+					// without waiting for the queue to drain between turns.
+					if (line.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+						_turnCts?.Cancel();
+					else
+						inputQueue.Enqueue(line);
 				}
 			}
 		}
@@ -70,6 +79,9 @@ public class AgentOrchestrator
 		// Signal to Beast that stdin is open and we are ready to receive input.
 		_transport.Status("ready");
 		SendCompletionCandidates(conversation);
+		// Start as busy so the first idle loop iteration sends the Idle frame,
+		// clearing any busy state Beast may have set while replaying history.
+		bool agentBusy = true;
 
 		while (!cancellationToken.IsCancellationRequested && !wantsExit)
 		{
@@ -226,20 +238,44 @@ public class AgentOrchestrator
 				}
 
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
-			if (!cancellationToken.IsCancellationRequested && canRunLLM && conversation.NeedsLlmAttention)
-			{
-				LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, cancellationToken);
-				if (result.ExitReason == LlmExitReason.Failed)
+				if (!cancellationToken.IsCancellationRequested && canRunLLM && conversation.NeedsLlmAttention)
 				{
-					_transport.Error(result.ErrorMessage + ": Change to a different /model and manually /compact, or /clear or start a /session new.");
-					exitCode = 1;
+					if (!agentBusy)
+					{
+						agentBusy = true;
+					}
+					_turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+					try
+					{
+						LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, _turnCts.Token);
+						if (result.ExitReason == LlmExitReason.Failed)
+						{
+							_transport.Error(result.ErrorMessage + ": Change to a different /model and manually /compact, or /clear or start a /session new.");
+							exitCode = 1;
+						}
+						else exitCode = 0;
+					}
+					catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+					{
+						// User pressed Escape (sent /cancel) — abandon this turn and return to idle.
+						conversation.NeedsLlmAttention = false;
+						exitCode = 0;
+					}
+					finally
+					{
+						_turnCts.Dispose();
+						_turnCts = null;
+					}
 				}
-				else exitCode = 0;
-			}
-			else
-			{
-				await Task.Delay(10, cancellationToken);
-			}
+				else
+				{
+					if (agentBusy)
+					{
+						agentBusy = false;
+						_transport.Idle();
+					}
+					await Task.Delay(10, cancellationToken);
+				}
 		}
 
 		SessionService.Save(conversation);

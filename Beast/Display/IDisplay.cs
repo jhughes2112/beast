@@ -16,6 +16,7 @@ public interface IDisplay
     void OnStreamStart(int streamIndex, FrameType type);
     void OnStreamChunk(string chunk);
     void OnStreamEnd();
+    void SetAgentBusy(bool busy);
     void SetSendAsync(Func<string, Task> sendAsync);
     void SetRequestExit(Action requestExit);
     void SetFrameDrain(Action drain);

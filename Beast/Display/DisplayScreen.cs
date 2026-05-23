@@ -24,7 +24,7 @@ public class DisplayScreen : IDisplay
 
     private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "compact", "clear", "reload", "role", "model", "session", "test", "quit", "ping", "history"
+        "compact", "clear", "reload", "role", "model", "session", "test", "quit", "ping", "history", "cancel"
     };
 
     private static class Palette
@@ -59,10 +59,12 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb Background    = new Rgb(0, 0, 0);
 
         // Pre-built SGR strings derived from the palette above.
-        public static readonly string BodyAnsi     = $"\x1b[38;2;{FileBodyFg.R};{FileBodyFg.G};{FileBodyFg.B}m\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
-        public static readonly string ErrBodyAnsi  = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
-        public static readonly string FileNameAnsi = "\x1b[38;5;226m";  // yellow filename highlight
-        public static readonly string ResetAnsi    = "\x1b[39m";         // reset foreground only
+        public static readonly string BodyAnsi      = $"\x1b[38;2;{FileBodyFg.R};{FileBodyFg.G};{FileBodyFg.B}m\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
+        public static readonly string ErrBodyAnsi   = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
+        public static readonly string BodyBgAnsi    = $"\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";    // bg-only: used as syntax-highlight base
+        public static readonly string ErrBodyBgAnsi = $"\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";  // bg-only: error body highlight base
+        public static readonly string FileNameAnsi  = "\x1b[38;5;226m";  // yellow filename highlight
+        public static readonly string ResetAnsi     = "\x1b[39m";         // reset foreground only
     }
 
     private readonly CollapseMode      _initialMode;
@@ -155,6 +157,25 @@ public class DisplayScreen : IDisplay
     private StreamWriter? _bufferedOut;
     private bool _needsErase = true;
 
+    // Agent busy animation: worm + rotating word on the left side of the separator.
+    private bool _agentBusy = false;
+    private long _busyStartTick = 0;
+    // Incremented each time a new block type arrives (StreamStart or ToolCall) so the word changes per activity, not per clock tick.
+    private int _busyWordIndex = 0;
+
+    private static readonly string[] BusyWords = new string[]
+    {
+        "Working", "Thinking", "Reasoning", "Planning", "Analyzing", "Processing",
+        "Calculating", "Pondering", "Considering", "Evaluating", "Deliberating",
+        "Synthesizing", "Inferring", "Deducing", "Formulating", "Composing"
+    };
+
+    // Worm animation frames — a 4-cell wide crawling shape.
+    private static readonly string[] WormFrames = new string[]
+    {
+        "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙"
+    };
+
     public bool RequestHistory => true;
 
     public DisplayScreen(CollapseMode initialMode)
@@ -209,9 +230,32 @@ public class DisplayScreen : IDisplay
         }
     }
 
-    public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) _streamingSlot = streamIndex; }
+    public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _busyWordIndex++; } }
     public void OnStreamChunk(string chunk) { }
     public void OnStreamEnd() { lock (_consoleLock) _streamingSlot = -1; }
+
+    public void SetAgentBusy(bool busy)
+    {
+        lock (_consoleLock)
+        {
+            if (busy && !_agentBusy)
+            {
+                _busyStartTick = Environment.TickCount64;
+                _agentBusy = true;
+            }
+            else if (busy && _agentBusy)
+            {
+                // New activity while already busy — advance the word.
+                _busyWordIndex++;
+            }
+            else if (!busy)
+            {
+                _agentBusy = false;
+                _streamingSlot = -1;
+                Redraw();
+            }
+        }
+    }
 
     public void SetSendAsync(Func<string, Task> sendAsync) { _sendAsync = sendAsync; }
     public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
@@ -451,6 +495,19 @@ public class DisplayScreen : IDisplay
 
         // Separator row.
         Screen sep = new Screen(w, 1, new Cell('─', Palette.BrightWhite, Palette.Background, CellStyle.None));
+        if (_agentBusy)
+        {
+            long elapsed = Environment.TickCount64 - _busyStartTick;
+            // Worm crawls at ~8 fps (125ms per frame).
+            int wormFrame = (int)(elapsed / 125) % WormFrames.Length;
+            // Word changes each time a new activity block arrives, not on a timer.
+            string word   = BusyWords[_busyWordIndex % BusyWords.Length];
+            string worm   = WormFrames[wormFrame];
+            string label  = $" {worm} {word} ";
+            // Write the label in a calm cyan over the background so it reads as "active but not alarming".
+            Rgb busyFg = new Rgb(80, 200, 200);
+            AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, Palette.Background);
+        }
         frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
 
         // Input area (with optional ghost-text completion preview).
@@ -578,7 +635,13 @@ public class DisplayScreen : IDisplay
         // Pick the body SGR for compact previews. read_file/write_file use a dark/dim blue body so file
         // content reads as "this is the file"; errors use the duller red body underneath the bright-red
         // first line; everything else uses the neutral gray body.
-        string respAnsi = isError ? Palette.ErrBodyAnsi : Palette.BodyAnsi;
+        // Bg-only variants are passed to the syntax highlighter to preserve token foreground colors.
+        string respAnsi   = isError ? Palette.ErrBodyAnsi   : Palette.BodyAnsi;
+        string respBgAnsi = isError ? Palette.ErrBodyBgAnsi : Palette.BodyBgAnsi;
+        string fileLang = string.Empty;
+        if (!isError && (toolName == "read_file" || toolName == "write_file" || toolName == "edit_file"
+                      || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
+            fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
         // Build collapsed preview rows (summary + a small body excerpt for select tools).
         List<string> collapsedLines = new List<string>();
@@ -594,13 +657,13 @@ public class DisplayScreen : IDisplay
             {
                 int start = Math.Max(0, respLines.Length - 5);
                 for (int i = start; i < respLines.Length; i++)
-                    collapsedLines.Add(respAnsi + ExpandTabs(respLines[i]));
+                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), "bash", respBgAnsi));
             }
             else if (toolName == "read_file" || toolName == "list_directory")
             {
                 int end = Math.Min(respLines.Length, 5);
                 for (int i = 0; i < end; i++)
-                    collapsedLines.Add(respAnsi + ExpandTabs(respLines[i]));
+                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), fileLang, respBgAnsi));
             }
         }
         if (isToolCall && toolName == "write_file")
@@ -611,7 +674,7 @@ public class DisplayScreen : IDisplay
                 string[] wlines = writeContent.Replace("\r\n", "\n").Split('\n');
                 int end = Math.Min(wlines.Length, 5);
                 for (int i = 0; i < end; i++)
-                    collapsedLines.Add(respAnsi + ExpandTabs(wlines[i]));
+                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(wlines[i]), fileLang, respBgAnsi));
             }
         }
 
@@ -931,13 +994,18 @@ public class DisplayScreen : IDisplay
 
         // SGR sequences for body rows. read_file / write_file get the dim/dark blue file background;
         // everything else uses the neutral gray response background.
-        string respBodyAnsi = msg.PairedResponseIsError ? Palette.ErrBodyAnsi : Palette.BodyAnsi;
+        // Bg-only variants are passed to the syntax highlighter so token foreground colors are preserved.
+        string respBodyAnsi   = msg.PairedResponseIsError ? Palette.ErrBodyAnsi   : Palette.BodyAnsi;
+        string respBodyBgAnsi = msg.PairedResponseIsError ? Palette.ErrBodyBgAnsi : Palette.BodyBgAnsi;
+        string fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
         if (!string.IsNullOrWhiteSpace(argsJson))
         {
             try
             {
                 using JsonDocument doc = JsonDocument.Parse(argsJson);
+                List<string> inlineProps = new List<string>();
+
                 foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
                 {
                     if (summaryProps.Contains(prop.Name)) continue;
@@ -952,19 +1020,33 @@ public class DisplayScreen : IDisplay
                     // background as a tool response so it doesn't sit on the bright tool-call blue.
                     if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
                     {
+                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
                         foreach (string valLine in val.Split('\n'))
-                            result.Add(respBodyAnsi + ExpandTabs(valLine));
+                            result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(valLine), fileLang, respBodyBgAnsi));
                         continue;
                     }
 
-                    bool firstPropLine = true;
-                    foreach (string valLine in val.Split('\n'))
+                    string[] valLines = val.Split('\n');
+                    if (valLines.Length == 1)
                     {
-                        string propLine = firstPropLine ? $"  {prop.Name}: {valLine}" : $"    {valLine}";
-                        firstPropLine = false;
-                        result.Add(propLine);
+                        // Collect short single-line props and join them onto one compact line.
+                        inlineProps.Add($"{prop.Name} {val}");
+                    }
+                    else
+                    {
+                        // Multi-line value: flush pending inline props first, then render as indented block.
+                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
+                        bool firstPropLine = true;
+                        foreach (string valLine in valLines)
+                        {
+                            result.Add(firstPropLine ? $"  {prop.Name}  {valLine}" : $"    {valLine}");
+                            firstPropLine = false;
+                        }
                     }
                 }
+
+                if (inlineProps.Count > 0)
+                    result.Add("  " + string.Join("  ", inlineProps));
             }
             catch
             {
@@ -980,10 +1062,10 @@ public class DisplayScreen : IDisplay
             && (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert");
         if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
-            // Use SGR codes that AnsiToScreen understands; downstream renderer picks them up.
-            string respAnsi = msg.PairedResponseIsError ? Palette.ErrBodyAnsi : respBodyAnsi;
+            // Pass bg-only SGR so token foreground colors are preserved in syntax-highlighted response lines.
+            string respBgAnsi = msg.PairedResponseIsError ? Palette.ErrBodyBgAnsi : respBodyBgAnsi;
             foreach (string respLine in msg.PairedResponseContent.Split('\n'))
-                result.Add(respAnsi + ExpandTabs(respLine));
+                result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLine), fileLang, respBgAnsi));
         }
 
         if (result.Count == 0)
@@ -1008,7 +1090,7 @@ public class DisplayScreen : IDisplay
             case "list_directory":
             case "glob":
             case "grep":
-                set.Add("path"); break;
+                set.Add("path"); set.Add("pattern"); break;
             case "bash":
                 set.Add("command"); break;
             case "search_web":
@@ -1058,7 +1140,8 @@ public class DisplayScreen : IDisplay
             "read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
             "write_file" or "edit_file"
                 or "edit_file_replace" or "edit_file_insert"           => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
-            "list_directory" or "glob" or "grep"                       => BuildPathSummary(label, Get("path"), respLineCount),
+            "list_directory"                                           => BuildPathSummary(label, Get("path"), respLineCount),
+            "glob" or "grep"                                           => BuildPathPatternSummary(label, Get("path"), Get("pattern"), respLineCount),
             "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
             "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
             "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),
@@ -1105,6 +1188,14 @@ public class DisplayScreen : IDisplay
         if (string.IsNullOrEmpty(path)) return label;
         string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
         return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
+    }
+
+    private static string BuildPathPatternSummary(string label, string path, string pattern, int respLineCount)
+    {
+        string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
+        string pathPart = !string.IsNullOrEmpty(path) ? $" {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}" : string.Empty;
+        string patPart  = !string.IsNullOrEmpty(pattern) ? $"  {pattern}" : string.Empty;
+        return $"{label}{pathPart}{patPart}{tail}";
     }
 
     private static string BuildWriteFileSummary(string label, string path, int writeLineCount)
@@ -1362,6 +1453,11 @@ public class DisplayScreen : IDisplay
                         // Transient status expired — Redraw will revert to the base (rooted path).
                         needRedraw = true;
                     }
+                    if (_agentBusy)
+                    {
+                        // Keep animating the separator worm while the agent is busy.
+                        needRedraw = true;
+                    }
                     if (needRedraw) Redraw();
                 }
             }
@@ -1450,6 +1546,12 @@ public class DisplayScreen : IDisplay
                 {
                     if (history.Count == 0 || history[history.Count - 1] != text)
                         history.Add(text);
+                    lock (_consoleLock)
+                    {
+                        _agentBusy = true;
+                        _busyStartTick = Environment.TickCount64;
+                        _busyWordIndex++;
+                    }
                     _ = SendAsync(text);
                 }
 
@@ -1659,13 +1761,21 @@ public class DisplayScreen : IDisplay
             }
             else if (key.Key == ConsoleKey.Escape)
             {
-                inputBuffer.Clear();
-                cursorPos = 0;
-                inCompletion = false;
-                matches.Clear();
-                historyIndex = -1;
-                historySavedDraft = "";
-                SetInput("", 0);
+                if (inputBuffer.Length > 0)
+                {
+                    inputBuffer.Clear();
+                    cursorPos = 0;
+                    inCompletion = false;
+                    matches.Clear();
+                    historyIndex = -1;
+                    historySavedDraft = "";
+                    SetInput("", 0);
+                }
+                else
+                {
+                    // Empty input — interrupt any in-progress agent turn.
+                    _ = SendAsync("/cancel");
+                }
             }
             else if (key.Key == ConsoleKey.A && ctrl)
             {

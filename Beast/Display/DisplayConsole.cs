@@ -85,6 +85,11 @@ public class DisplayConsole : IDisplay
         _didStream = false;
     }
 
+    public void SetAgentBusy(bool busy)
+    {
+        // No busy indicator in non-interactive mode.
+    }
+
     public void SetSendAsync(Func<string, Task> sendAsync)
     {
         // No interactive input in non-interactive mode.

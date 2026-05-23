@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Docker.DotNet" Version="3.125.15" />
     <PackageReference Include="Markdig" Version="1.2.0" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
     <PackageReference Include="Nito.AsyncEx.Coordination" Version="5.1.2" />
     <PackageReference Include="TextCopy" Version="6.2.1" />
   </ItemGroup>

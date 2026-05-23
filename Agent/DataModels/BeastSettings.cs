@@ -21,6 +21,9 @@ public class BeastSettings
 
     [JsonPropertyName("continueMessage")]
     public string ContinueMessage { get; set; } = "Are you done? If finished, respond accordingly.";
+
+    [JsonPropertyName("idleSoundFile")]
+    public string? IdleSoundFile { get; set; }
 }
 
 public class ProviderConfig

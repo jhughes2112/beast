@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Markdig;
+using Markdig.Extensions.Tables;
 using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 
@@ -97,9 +98,91 @@ public static class MarkdownAnsi
         {
             lines.Add(indent + Codes.DimGrey + new string('─', 40) + Codes.Reset);
         }
+        else if (block is Table table)
+        {
+            RenderTable(table, lines, indent, type, w);
+        }
         else if (block is ContainerBlock container)
         {
             RenderBlocks(container, lines, indent, type, w);
+        }
+    }
+
+    // Renders a markdown table with pipe-delimited columns and a header separator row.
+    private static void RenderTable(Table table, List<string> lines, string indent, FrameType type, int w)
+    {
+        // First pass: extract cell text and measure column widths.
+        List<List<string>> rows = new List<List<string>>();
+        List<bool> isHeader = new List<bool>();
+        List<int> colWidths = new List<int>();
+
+        foreach (Block rowBlock in table)
+        {
+            if (rowBlock is not TableRow row) continue;
+            List<string> cells = new List<string>();
+            int ci = 0;
+            foreach (Block cellBlock in row)
+            {
+                if (cellBlock is not TableCell cell) continue;
+                StringBuilder sb = new StringBuilder();
+                foreach (Block child in cell)
+                {
+                    if (child is ParagraphBlock pp)
+                        sb.Append(InlinesToAnsi(pp.Inline, type));
+                }
+                string text = sb.ToString();
+                cells.Add(text);
+                int vis = AnsiString.VisibleLength(text);
+                if (ci >= colWidths.Count) colWidths.Add(vis);
+                else if (vis > colWidths[ci]) colWidths[ci] = vis;
+                ci++;
+            }
+            rows.Add(cells);
+            isHeader.Add(row.IsHeader);
+        }
+
+        if (rows.Count == 0) return;
+
+        // Second pass: emit rows.
+        for (int r = 0; r < rows.Count; r++)
+        {
+            List<string> cells = rows[r];
+            StringBuilder sb = new StringBuilder();
+            sb.Append(indent);
+            sb.Append(Codes.Border);
+            sb.Append('│');
+            sb.Append(Codes.Reset);
+            for (int ci = 0; ci < colWidths.Count; ci++)
+            {
+                string cell = ci < cells.Count ? cells[ci] : string.Empty;
+                int vis = AnsiString.VisibleLength(cell);
+                int pad = colWidths[ci] - vis;
+                sb.Append(' ');
+                sb.Append(isHeader[r] ? Codes.Bold : string.Empty);
+                sb.Append(cell);
+                sb.Append(isHeader[r] ? Codes.Reset : string.Empty);
+                sb.Append(new string(' ', pad + 1));
+                sb.Append(Codes.Border);
+                sb.Append('│');
+                sb.Append(Codes.Reset);
+            }
+            lines.Add(sb.ToString());
+
+            // Separator after header row.
+            if (isHeader[r])
+            {
+                StringBuilder sep = new StringBuilder();
+                sep.Append(indent);
+                sep.Append(Codes.Border);
+                sep.Append('├');
+                for (int ci = 0; ci < colWidths.Count; ci++)
+                {
+                    sep.Append(new string('─', colWidths[ci] + 2));
+                    sep.Append(ci < colWidths.Count - 1 ? '┼' : '┤');
+                }
+                sep.Append(Codes.Reset);
+                lines.Add(sep.ToString());
+            }
         }
     }
 
@@ -245,9 +328,34 @@ public static class MarkdownAnsi
         };
     }
 
-    // Very lightweight token-based syntax colouring for common languages.
-    // Colours keywords, strings, comments, and numbers; everything else stays default.
-    private static string SyntaxHighlight(string line, string lang)
+    // Guesses a syntax-highlight language tag from a file path extension.
+    internal static string GuessLang(string filePath)
+    {
+        if (string.IsNullOrEmpty(filePath)) return string.Empty;
+        int dot = filePath.LastIndexOf('.');
+        if (dot < 0) return string.Empty;
+        string ext = filePath.Substring(dot + 1).ToLowerInvariant();
+        switch (ext)
+        {
+            case "cs":                          return "csharp";
+            case "js":                          return "javascript";
+            case "ts":                          return "typescript";
+            case "py":                          return "python";
+            case "sh": case "bash":             return "bash";
+            case "ps1":                         return "powershell";
+            case "go":                          return "go";
+            case "rs":                          return "rust";
+            case "java":                        return "java";
+            case "cpp": case "cc": case "cxx":  return "cpp";
+            case "c": case "h":                return "c";
+            case "kt":                          return "kotlin";
+            case "swift":                       return "swift";
+            default:                            return string.Empty;
+        }
+    }
+
+    // Highlights a single line using the dark-gray code-block background (for markdown fenced blocks).
+    internal static string SyntaxHighlight(string line, string lang)
     {
         bool isClike = lang is "c" or "c#" or "csharp" or "cs" or "cpp" or "java" or "javascript" or "js" or "ts" or "typescript" or "go" or "rust" or "swift" or "kotlin";
         bool isPython = lang is "python" or "py";
@@ -258,6 +366,14 @@ public static class MarkdownAnsi
 
         HashSet<string> keywords = GetKeywords(lang);
         return TokenizeLine(line, keywords, lang);
+    }
+
+    // Highlights a single line, replacing the code-block dark background with bgOnlyAnsi (background-only SGR).
+    // Token foreground colors (keyword, string, etc.) are preserved; only the background is substituted.
+    internal static string SyntaxHighlight(string line, string lang, string bgOnlyAnsi)
+    {
+        string result = SyntaxHighlight(line, lang);
+        return bgOnlyAnsi + result.Replace(Codes.DarkBg, bgOnlyAnsi) + bgOnlyAnsi;
     }
 
     private static string TokenizeLine(string line, HashSet<string> keywords, string lang)
@@ -272,9 +388,7 @@ public static class MarkdownAnsi
         bool isPython = lang is "python" or "py";
 
         if ((isClike && trimmed.StartsWith("//")) || (isBash && trimmed.StartsWith("#")) || (isPython && trimmed.StartsWith("#")))
-        {
             return Codes.Comment + line + Codes.Reset;
-        }
 
         sb.Append(Codes.CodeText);
 
@@ -366,6 +480,7 @@ public static class MarkdownAnsi
         public const string Error      = "\x1b[38;5;196m";
 
         public const string InlineCode = "\x1b[38;5;221m";
+        public const string DarkBg     = "\x1b[48;5;236m";            // background for markdown code blocks
         public const string CodeBg     = "\x1b[38;5;250m\x1b[48;5;236m";
         public const string CodeText   = "\x1b[38;5;252m\x1b[48;5;236m";
         public const string Keyword    = "\x1b[38;5;75m\x1b[48;5;236m";

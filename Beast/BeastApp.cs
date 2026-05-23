@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using NAudio.Wave;
 
 
 // Beast app: launches the Agent container and drives a session via the provided display.
@@ -12,6 +14,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly List<string> _messages;
     private readonly IDisplay _display;
     private readonly Log _log;
+    private string? _idleSoundFile;
 
     private CancellationTokenSource? _cts;
     private ConversationModel? _model;
@@ -77,6 +80,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetSendAsync(text => _wsClient!.SendAsync(text));
         _display.SetRequestExit(RequestGracefulExit);
         _display.SetFrameDrain(DrainFrameQueue);
+
+        // Load settings to pick up optional idle sound path.
+        SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
+        _idleSoundFile = settings.Settings.IdleSoundFile;
 
         int exitCode = 0;
         try
@@ -209,6 +216,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 // Debug frames are suppressed on the Beast side; they appear in the agent's own console.
                 break;
 
+            case FrameType.Idle:
+                _display.SetAgentBusy(false);
+                PlayIdleSound();
+                break;
+
             case FrameType.User:
                 _model!.Update(_nextIndex++, FrameType.User, content);
                 break;
@@ -251,6 +263,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 _pendingCommit.Clear();
                 break;
 
+            case FrameType.ToolCall:
+                _model!.Update(_nextIndex++, FrameType.ToolCall, content);
+                break;
+
             default:
                 // Reuse the stream slot for the committed frame that immediately follows StreamEnd.
                 int slotIndex;
@@ -266,6 +282,28 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 _model!.Update(slotIndex, type, content);
                 break;
         }
+    }
+
+    // Plays the configured idle sound file via NAudio, which supports WAV, MP3, and most other formats.
+    // Playback is fire-and-forget on a threadpool thread; the player is disposed when playback stops.
+    // Errors are silently swallowed — a missing or unplayable file is not fatal.
+    private void PlayIdleSound()
+    {
+        if (string.IsNullOrEmpty(_idleSoundFile)) return;
+        if (!File.Exists(_idleSoundFile)) return;
+        try
+        {
+            AudioFileReader reader = new AudioFileReader(_idleSoundFile);
+            WaveOutEvent output = new WaveOutEvent();
+            output.Init(reader);
+            output.PlaybackStopped += (s, e) =>
+            {
+                output.Dispose();
+                reader.Dispose();
+            };
+            output.Play();
+        }
+        catch { }
     }
 
     // Retries WebSocket connection until success or cancellation, with 200ms delays.
