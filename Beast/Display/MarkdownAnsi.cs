@@ -158,9 +158,19 @@ public static class MarkdownAnsi
                 int vis = AnsiString.VisibleLength(cell);
                 int pad = colWidths[ci] - vis;
                 sb.Append(' ');
-                sb.Append(isHeader[r] ? Codes.Bold : string.Empty);
-                sb.Append(cell);
-                sb.Append(isHeader[r] ? Codes.Reset : string.Empty);
+                if (isHeader[r])
+                {
+                    sb.Append(Codes.Bold);
+                    sb.Append(cell);
+                    sb.Append(Codes.Reset);
+                    // Re-apply the border color after reset so padding spaces render with the block's
+                    // background rather than the terminal default, keeping the row visually the right width.
+                    sb.Append(Codes.Border);
+                }
+                else
+                {
+                    sb.Append(cell);
+                }
                 sb.Append(new string(' ', pad + 1));
                 sb.Append(Codes.Border);
                 sb.Append('│');

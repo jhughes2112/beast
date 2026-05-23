@@ -42,8 +42,9 @@ public class AgentOrchestrator
 		_registry.LoadFromConfigs(_settings, _roleService);
 	}
 
-	// Cancels only the current LLM turn (not the whole process). Signalled by the reader task
-	// when a /cancel frame arrives mid-turn; replaced before each new turn.
+	// Cancels only the current LLM turn (not the whole process). Not linked to the process token
+	// so there is zero ambiguity about which cancel fired: if _turnCts fires, it was a user /cancel;
+	// if cancellationToken fires, the whole process is shutting down.
 	private CancellationTokenSource? _turnCts;
 
 	public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -244,7 +245,7 @@ public class AgentOrchestrator
 					{
 						agentBusy = true;
 					}
-					_turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+					_turnCts = new CancellationTokenSource();
 					try
 					{
 						LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, _turnCts.Token);
@@ -255,7 +256,7 @@ public class AgentOrchestrator
 						}
 						else exitCode = 0;
 					}
-					catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+					catch (OperationCanceledException) when (_turnCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
 					{
 						// User pressed Escape (sent /cancel) — abandon this turn and return to idle.
 						conversation.NeedsLlmAttention = false;

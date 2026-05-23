@@ -16,9 +16,34 @@ public static class AnsiString
         {
             if (c == '\x1b') { inEsc = true; continue; }
             if (inEsc) { if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) inEsc = false; continue; }
-            len++;
+            len += CharWidth(c);
         }
         return len;
+    }
+
+    // Returns the terminal column width of a single character: 2 for wide (CJK, emoji, etc.), 1 for everything else.
+    public static int CharWidth(char c)
+    {
+        int cp = c;
+        // CJK unified ideographs and common extensions.
+        if (cp >= 0x4E00 && cp <= 0x9FFF) return 2;
+        if (cp >= 0x3400 && cp <= 0x4DBF) return 2;
+        if (cp >= 0xF900 && cp <= 0xFAFF) return 2;
+        // Hangul syllables.
+        if (cp >= 0xAC00 && cp <= 0xD7AF) return 2;
+        // Fullwidth and halfwidth forms (fullwidth half = 2, but halfwidth katakana = 1; we cover the fullwidth block).
+        if (cp >= 0xFF01 && cp <= 0xFF60) return 2;
+        if (cp >= 0xFFE0 && cp <= 0xFFE6) return 2;
+        // Enclosed alphanumerics, box drawing, block elements — these are 1-wide.
+        // Misc symbols and dingbats (includes checkmarks ✅ U+2705, stars, arrows, etc.).
+        if (cp >= 0x2600 && cp <= 0x27BF) return 2;
+        // Supplemental symbols and emoji: U+1F000 and up. Since char is UTF-16, these are
+        // surrogate pairs and won't appear as a single char — handled as 1 each (surrogate half).
+        // The high surrogate range D800-DBFF contributes 2 for the pair when the low follows,
+        // but since we iterate char-by-char we count the high surrogate as 2 and low as 0.
+        if (cp >= 0xD800 && cp <= 0xDBFF) return 2;  // high surrogate: start of wide emoji pair
+        if (cp >= 0xDC00 && cp <= 0xDFFF) return 0;  // low surrogate: already counted by high
+        return 1;
     }
 
     // Wraps a string with ANSI codes into multiple strings each with at most maxWidth visible chars.
@@ -61,7 +86,7 @@ public static class AnsiString
                 continue;
             }
 
-            if (visLen == maxWidth)
+            if (visLen + CharWidth(c) > maxWidth)
             {
                 result.Add(currentLine.ToString());
                 currentLine.Clear();
@@ -70,7 +95,7 @@ public static class AnsiString
             }
 
             currentLine.Append(c);
-            visLen++;
+            visLen += CharWidth(c);
         }
 
         result.Add(currentLine.ToString());
@@ -140,7 +165,7 @@ public static class AnsiString
                         }
                         continue;
                     }
-                    if (visLen == maxWidth)
+                    if (visLen + CharWidth(wc) > maxWidth)
                     {
                         result.Add(currentLine.ToString());
                         currentLine.Clear();
@@ -148,7 +173,7 @@ public static class AnsiString
                         visLen = 0;
                     }
                     currentLine.Append(wc);
-                    visLen++;
+                    visLen += CharWidth(wc);
                 }
                 currentEscState = chunkEscState;
             }
@@ -196,7 +221,7 @@ public static class AnsiString
             {
                 FlushWord(soft: true);
                 // Spaces at end-of-line are dropped to avoid trailing whitespace producing an extra wrap.
-                if (visLen == maxWidth)
+                if (visLen + CharWidth(c) > maxWidth)
                 {
                     result.Add(currentLine.ToString());
                     currentLine.Clear();
@@ -206,14 +231,14 @@ public static class AnsiString
                 else if (visLen > 0)
                 {
                     currentLine.Append(' ');
-                    visLen++;
+                    visLen += CharWidth(c);
                 }
                 // else: leading space on a wrapped line — drop it.
             }
             else
             {
                 wordBuf.Append(c);
-                wordVisLen++;
+                wordVisLen += CharWidth(c);
             }
         }
 
@@ -241,9 +266,10 @@ public static class AnsiString
         {
             if (c == '\x1b') { inEsc = true; sb.Append(c); continue; }
             if (inEsc) { sb.Append(c); if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) inEsc = false; continue; }
-            if (count >= maxVisible) break;
+            int cw = CharWidth(c);
+            if (count + cw > maxVisible) break;
             sb.Append(c);
-            count++;
+            count += cw;
         }
         return sb.ToString();
     }
