@@ -22,6 +22,10 @@ public class DisplayMessage
     public string? PairedResponseContent { get; set; }
     // True when the paired response indicates an error.
     public bool PairedResponseIsError { get; set; }
+    // When this is a ToolCall slot, wall-clock time the call was first observed.
+    public DateTime ToolCallStartedUtc { get; set; }
+    // When this is a ToolCall slot, measured turnaround between call observation and paired response arrival.
+    public TimeSpan? ToolDuration { get; set; }
 
     public DisplayMessage(int index, FrameType type, string content)
     {
@@ -38,8 +42,8 @@ public class ConversationModel
 {
     private readonly List<DisplayMessage> _messages = new List<DisplayMessage>();
     private CollapseMode _mode = CollapseMode.Minimized;
-    // Queue of unpaired ToolCall indices, consumed in FIFO order as ToolResponse slots arrive.
-    private readonly Queue<int> _pendingToolCallIndices = new Queue<int>();
+    // Maps tool call ID → message slot index; populated on ToolCall arrival, consumed on ToolResponse.
+    private readonly Dictionary<string, int> _pendingToolCallById = new Dictionary<string, int>(StringComparer.Ordinal);
 
     // Fired on every Update() or ToggleCollapsed() call. Argument is the affected message.
     public event System.Action<DisplayMessage>? MessageUpdated;
@@ -76,6 +80,19 @@ public class ConversationModel
 
         DisplayMessage msg = _messages[index];
         bool typeChanged = msg.Type != type;
+
+        // Strip the call ID prefix ("callId\x01content") from ToolCall and ToolResponse frames.
+        string callId = string.Empty;
+        if (type == FrameType.ToolCall || type == FrameType.ToolResponse)
+        {
+            int sep = content.IndexOf('\x01');
+            if (sep >= 0)
+            {
+                callId = content.Substring(0, sep);
+                content = content.Substring(sep + 1);
+            }
+        }
+
         msg.Type = type;
         msg.Content = content;
 
@@ -84,18 +101,32 @@ public class ConversationModel
             msg.Collapsed = ShouldCollapse(type, _mode);
         }
 
-        // Pair ToolResponse content into the oldest unpaired ToolCall slot and suppress the response slot.
+        // Pair ToolResponse content into the matching ToolCall slot by call ID.
         if (type == FrameType.ToolCall)
         {
-            _pendingToolCallIndices.Enqueue(index);
+            if (isNew)
+                msg.ToolCallStartedUtc = DateTime.UtcNow;
+            if (!string.IsNullOrEmpty(callId))
+                _pendingToolCallById[callId] = index;
         }
-        else if (type == FrameType.ToolResponse && _pendingToolCallIndices.Count > 0)
+        else if (type == FrameType.ToolResponse && _pendingToolCallById.Count > 0)
         {
-            int callIndex = _pendingToolCallIndices.Dequeue();
-            DisplayMessage callMsg = _messages[callIndex];
-            callMsg.PairedResponseContent = content;
-            callMsg.PairedResponseIsError = IsErrorResponse(content);
-            MessageUpdated?.Invoke(callMsg);
+            int callIndex = -1;
+            if (!string.IsNullOrEmpty(callId) && _pendingToolCallById.TryGetValue(callId, out int byIdIndex))
+            {
+                callIndex = byIdIndex;
+                _pendingToolCallById.Remove(callId);
+            }
+
+            if (callIndex >= 0)
+            {
+                DisplayMessage callMsg = _messages[callIndex];
+                callMsg.PairedResponseContent = content;
+                callMsg.PairedResponseIsError = IsErrorResponse(content);
+                if (callMsg.ToolCallStartedUtc != default)
+                    callMsg.ToolDuration = DateTime.UtcNow - callMsg.ToolCallStartedUtc;
+                MessageUpdated?.Invoke(callMsg);
+            }
             // Mark this slot as hidden (reuse Debug type which is hidden in all non-verbose modes).
             msg.Type = FrameType.Debug;
             msg.Content = string.Empty;
@@ -108,6 +139,9 @@ public class ConversationModel
     {
         if (index < 0 || index >= _messages.Count) return;
         DisplayMessage msg = _messages[index];
+        // Output (assistant) and User blocks are never shown collapsed regardless of mode, so a click
+        // on them is a no-op rather than a state flip the user can't visually unwind.
+        if (msg.Type == FrameType.Output || msg.Type == FrameType.User) return;
         msg.Collapsed = !msg.Collapsed;
         MessageUpdated?.Invoke(msg);
     }
@@ -115,7 +149,7 @@ public class ConversationModel
     public void Clear()
     {
         _messages.Clear();
-        _pendingToolCallIndices.Clear();
+        _pendingToolCallById.Clear();
         MessageUpdated?.Invoke(new DisplayMessage(0, FrameType.Clear, string.Empty));
     }
 

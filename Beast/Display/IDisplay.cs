@@ -18,5 +18,6 @@ public interface IDisplay
     void OnStreamEnd();
     void SetSendAsync(Func<string, Task> sendAsync);
     void SetRequestExit(Action requestExit);
+    void SetFrameDrain(Action drain);
     Task RunAsync(CancellationToken cancellationToken);
 }

@@ -29,13 +29,13 @@ public class ListenerTransport : IProtocolListener
         if (!string.IsNullOrEmpty(text)) _transport.Output(text);
         foreach (SemanticToolCall tc in toolCalls)
         {
-            _transport.ToolCall($"{tc.Name}({tc.ArgumentsJson})");
+            _transport.ToolCallWithId(tc.Id, $"{tc.Name}({tc.ArgumentsJson})");
         }
     }
 
     public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
     {
-        _transport.ToolResponse(content);
+        _transport.ToolResponseWithId(toolCallId, content);
     }
 
     public void OnStreamStart(IProtocolListener sender, string tag)

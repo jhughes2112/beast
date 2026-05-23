@@ -16,6 +16,7 @@ public class DisplayConsole : IDisplay
     private bool _didStream = false;
     private bool _hadPreviousStream = false;
     private readonly HashSet<int> _streamedSlots = new HashSet<int>();
+    private Action? _frameDrain;
 
     public DisplayConsole(Log log, bool verbose)
     {
@@ -94,9 +95,21 @@ public class DisplayConsole : IDisplay
         // No interactive input in non-interactive mode.
     }
 
+    public void SetFrameDrain(Action drain)
+    {
+        _frameDrain = drain;
+    }
+
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        try { await Task.Delay(Timeout.Infinite, cancellationToken); }
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                _frameDrain?.Invoke();
+                await Task.Delay(16, cancellationToken);
+            }
+        }
         catch (OperationCanceledException) { }
     }
 

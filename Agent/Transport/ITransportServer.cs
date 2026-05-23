@@ -56,9 +56,9 @@ public interface ITransportServer : IStreamingMessage
     void Output(string text) => Send(FrameType.Output, text);
     void Error(string text) => Send(FrameType.Error, text);
     void Status(string text) => Send(FrameType.Status, text);
-    void Tool(string text) => Send(FrameType.Tool, text);
-    void ToolCall(string text) => Send(FrameType.ToolCall, text);
-    void ToolResponse(string text) => Send(FrameType.ToolResponse, text);
+    // Frame content is "callId\x01text" so Beast can pair by identity.
+    void ToolCallWithId(string callId, string text) => Send(FrameType.ToolCall, callId + "\x01" + text);
+    void ToolResponseWithId(string callId, string text) => Send(FrameType.ToolResponse, callId + "\x01" + text);
     void Thinking(string text) => Send(FrameType.Thinking, text);
     void Completions(string json) => Send(FrameType.Completions, json);
     void System(string text) => Send(FrameType.System, text);

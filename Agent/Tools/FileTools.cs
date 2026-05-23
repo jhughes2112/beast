@@ -394,7 +394,7 @@ public static class FileTools
 					FileLock.Release();
 				}
 
-				result = new ToolResult($"File written: {filePath}", false);
+				result = new ToolResult("OK", false);
 			}
 			catch (OperationCanceledException)
 			{
@@ -679,7 +679,7 @@ public static class FileTools
 						string newWorking = string.Join(Environment.NewLine, linesList);
 						if (trailingNewline && !newWorking.EndsWith("\n")) newWorking += Environment.NewLine;
 						await File.WriteAllTextAsync(fullPath, newWorking, cts.Token);
-						result = new ToolResult($"File edited: {filePath} ({operations.Count} operation(s) applied)", false);
+						result = new ToolResult("OK", false);
 					}
 					finally
 					{

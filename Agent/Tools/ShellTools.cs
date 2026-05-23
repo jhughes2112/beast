@@ -76,15 +76,15 @@ public static class ShellTools
 			string result = output.ToString().TrimEnd();
 			string err = error.ToString().TrimEnd();
 
+			// Wire format is deliberately minimal so the UI can render it verbatim: stdout immediately
+			// followed by stderr, with no labels or separators. Failure is conveyed by a bare "Error:"
+			// prefix purely so the UI's IsErrorResponse heuristic flips the block to red — the exit
+			// code itself carries no useful information beyond that, so we don't embed it.
+			string combined = result + err;
 			if (process.ExitCode != 0)
-			{
-				return new ToolResult(
-					$"Exit Code: {process.ExitCode}\n\nStdout:\n{result}\n\nStderr:\n{err}",
-					false);
-			}
+				return new ToolResult($"Error: {combined}", false);
 
-			string stdout = string.IsNullOrEmpty(result) ? "(no output)" : result;
-			return new ToolResult($"Exit Code: 0\n\n{stdout}", false);
+			return new ToolResult(combined, false);
 		}
 		catch (OperationCanceledException)
 		{

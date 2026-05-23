@@ -41,11 +41,12 @@ public static class ShellToolsTests
 	{
 		// Simple echo — may or may not work depending on WSL/bash availability.
 		ToolResult echoResult = ShellTools.BashAsync("echo hello", null, null, CancellationToken.None).GetAwaiter().GetResult();
-		bool validResponse = echoResult.Response.Contains("Exit Code:") || echoResult.Response.Contains("Error:");
+		// Output now has no envelope: a successful run is just stdout+stderr; a failure starts with "Error:".
+		bool validResponse = echoResult.Response.Contains("hello") || echoResult.Response.StartsWith("Error:");
 		ctx.Assert(validResponse, "ShellTools: echo returns valid response format");
 
 		// If the command succeeded, verify output was captured.
-		if (echoResult.Response.Contains("Exit Code: 0"))
+		if (!echoResult.Response.StartsWith("Error:"))
 		{
 			ctx.Assert(echoResult.Response.Contains("hello"), "ShellTools: echo output captured");
 		}

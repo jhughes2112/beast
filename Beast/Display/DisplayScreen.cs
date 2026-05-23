@@ -34,6 +34,7 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb InputBg       = new Rgb(38, 38, 38);     // 235
         public static readonly Rgb Silver        = new Rgb(188, 188, 188);  // 250
         public static readonly Rgb BrightUser    = new Rgb(255, 255, 255);  // 231
+        public static readonly Rgb UserBg        = new Rgb(80, 80, 80);     // light gray for user message background
         public static readonly Rgb MedGrey       = new Rgb(138, 138, 138);  // 245
         public static readonly Rgb ThinkingFg    = new Rgb(112, 112, 112);  // slightly dimmer than MedGrey
         public static readonly Rgb GhostFg       = new Rgb(110, 110, 110);  // ghost-text dim version of InputFg
@@ -44,14 +45,24 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb BrightWhite   = new Rgb(238, 238, 238);  // 255
         public static readonly Rgb ToolCallFg    = new Rgb(95, 255, 255);   // 51
         public static readonly Rgb ToolCallBg    = new Rgb(0, 0, 95);       // 17
-        public static readonly Rgb ToolCallErrFg = new Rgb(255, 175, 0);    // 214
-        public static readonly Rgb ToolCallErrBg = new Rgb(95, 0, 0);       // 52
+        public static readonly Rgb ToolCallErrFg = new Rgb(255, 230, 230);  // pale red text on the first line
+        public static readonly Rgb ToolCallErrBg = new Rgb(120, 30, 30);    // muted red background for the error first line
         public static readonly Rgb ToolRespFg    = new Rgb(95, 175, 175);   // 73
-        public static readonly Rgb ToolRespBg    = new Rgb(18, 18, 18);     // 233
+        public static readonly Rgb ToolRespBg    = new Rgb(0, 25, 60);      // same dark blue as FileBodyBg
+        public static readonly Rgb FileBodyBg    = new Rgb(0, 25, 60);      // dark/dim blue used as the body background for read/write file content
+        public static readonly Rgb FileBodyFg    = new Rgb(210, 215, 225);  // soft off-white text on the dark-blue file body
+        public static readonly Rgb FileErrBodyBg = new Rgb(70, 10, 10);     // duller red used for the body of an errored tool call
+        public static readonly Rgb FileErrBodyFg = new Rgb(255, 200, 200);
         public static readonly Rgb ScrollThumb   = new Rgb(88, 88, 88);     // 240
         public static readonly Rgb ScrollTrack   = new Rgb(18, 18, 18);     // 233
         public static readonly Rgb HoverBar      = new Rgb(128, 128, 128);  // 244
         public static readonly Rgb Background    = new Rgb(0, 0, 0);
+
+        // Pre-built SGR strings derived from the palette above.
+        public static readonly string BodyAnsi     = $"\x1b[38;2;{FileBodyFg.R};{FileBodyFg.G};{FileBodyFg.B}m\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
+        public static readonly string ErrBodyAnsi  = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
+        public static readonly string FileNameAnsi = "\x1b[38;5;226m";  // yellow filename highlight
+        public static readonly string ResetAnsi    = "\x1b[39m";         // reset foreground only
     }
 
     private readonly CollapseMode      _initialMode;
@@ -59,6 +70,7 @@ public class DisplayScreen : IDisplay
     private Func<string, Task>?        _sendAsync;
     private Action?                    _requestExit;
     private CancellationTokenSource?   _runCts;
+    private Action?                    _frameDrain;
 
     private readonly List<string> _completions = new List<string> { "/verbose" };
     private readonly object       _consoleLock = new object();
@@ -203,6 +215,7 @@ public class DisplayScreen : IDisplay
 
     public void SetSendAsync(Func<string, Task> sendAsync) { _sendAsync = sendAsync; }
     public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
+    public void SetFrameDrain(Action drain) { _frameDrain = drain; }
 
     public Task RunAsync(CancellationToken cancellationToken)
     {
@@ -313,7 +326,9 @@ public class DisplayScreen : IDisplay
         int historyH  = popupTop;
 
         // 1. Build the tall history composite via StackLayout of BlockLayers.
-        StackLayout stack = new StackLayout(w, spacerRows: 0);
+        // SpacerRows=1 gives every block exactly one row of breathing room beneath it without making
+        // the spacer itself part of the block (so toggle/hover math stays clean).
+        StackLayout stack = new StackLayout(w, spacerRows: 1);
         BuildBlockLayers(stack, w);
 
         Cell bgCell = new Cell(' ', null, Palette.Background, CellStyle.None);
@@ -536,41 +551,88 @@ public class DisplayScreen : IDisplay
 
     private static BlockLayer BuildBlockLayer(DisplayMessage msg, int w, bool plainText)
     {
-        bool isError = msg.Type == FrameType.ToolCall && msg.PairedResponseIsError;
+        bool isToolCall = msg.Type == FrameType.ToolCall;
+        // Only flag as error when the paired response is explicitly an error. A tool that finished
+        // successfully with no output (e.g. a quiet bash command) stays in the normal tool color.
+        bool isError   = isToolCall && msg.PairedResponseIsError;
         (Rgb fg, Rgb? bg) = ColorsForType(msg.Type, isError);
-        // Trailing spacer rows are folded into the expanded Screen so StackLayout stays simple.
-        bool addSpacer = msg.Type != FrameType.ToolCall && msg.Type != FrameType.Thinking;
-        int spacer = addSpacer ? 1 : 0;
+        // Trailing spacer is supplied by StackLayout's SpacerRows; blocks themselves contain no padding.
+        int spacer = 0;
 
-        // Collapsed view: one row containing the summary.
+        // Collapsed view: summary line plus, for select tools, a short preview of the response body.
         string prefix = PrefixTextForType(msg.Type);
-        string summary = msg.Type == FrameType.ToolCall
-            ? FormatToolCallSummary(msg.Content)
+        string summary = isToolCall
+            ? FormatToolCallSummary(msg.Content, msg.PairedResponseContent)
             : msg.Content.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
 
-        bool hasMoreContent = msg.Type == FrameType.ToolCall
-            ? msg.Content.Contains('(') || !string.IsNullOrEmpty(msg.PairedResponseContent)
-            : msg.Content.Contains('\n') || msg.Content.Contains('\r');
+        string toolName = string.Empty;
+        if (isToolCall)
+        {
+            int paren = msg.Content.IndexOf('(');
+            toolName = paren >= 0 ? msg.Content.Substring(0, paren).Trim() : msg.Content;
+        }
 
         int availW = Math.Max(1, w - prefix.Length);
         bool truncated = AnsiString.VisibleLength(summary) > availW - 1;
-        bool needsEllipsis = truncated || hasMoreContent;
 
-        string collapsedLine = needsEllipsis
-            ? prefix + AnsiString.TruncateVisible(summary, availW - 1) + "\u2026"
-            : prefix + AnsiString.TruncateVisible(summary, availW);
+        // Pick the body SGR for compact previews. read_file/write_file use a dark/dim blue body so file
+        // content reads as "this is the file"; errors use the duller red body underneath the bright-red
+        // first line; everything else uses the neutral gray body.
+        string respAnsi = isError ? Palette.ErrBodyAnsi : Palette.BodyAnsi;
 
-        Cell rowBg = new Cell(' ', fg, bg, CellStyle.None);
-        Screen collapsed = new Screen(w, 1 + spacer, rowBg);
-        (int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, 0, collapsedLine, fg, bg);
-        AnsiToScreen.PadRowBackground(collapsed, endX, 0, cFg, cBg);
-        if (spacer > 0)
-            collapsed.Fill(new Rect(0, 1, w, spacer), new Cell(' ', null, Palette.Background, CellStyle.None));
+        // Build collapsed preview rows (summary + a small body excerpt for select tools).
+        List<string> collapsedLines = new List<string>();
+        collapsedLines.Add(prefix + AnsiString.TruncateVisible(summary, availW));
+
+        // Multi-line collapsed previews for tools where a tiny excerpt is far more useful than the
+        // bare summary line alone. Bash shows the tail; read_file / list_directory show the head;
+        // write_file pulls from the call's own content argument (its response is just a status line).
+        if (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseContent))
+        {
+            string[] respLines = msg.PairedResponseContent!.Replace("\r\n", "\n").Split('\n');
+            if (toolName == "bash")
+            {
+                int start = Math.Max(0, respLines.Length - 5);
+                for (int i = start; i < respLines.Length; i++)
+                    collapsedLines.Add(respAnsi + ExpandTabs(respLines[i]));
+            }
+            else if (toolName == "read_file" || toolName == "list_directory")
+            {
+                int end = Math.Min(respLines.Length, 5);
+                for (int i = 0; i < end; i++)
+                    collapsedLines.Add(respAnsi + ExpandTabs(respLines[i]));
+            }
+        }
+        if (isToolCall && toolName == "write_file")
+        {
+            string writeContent = ExtractStringArg(msg.Content, "content");
+            if (!string.IsNullOrEmpty(writeContent))
+            {
+                string[] wlines = writeContent.Replace("\r\n", "\n").Split('\n');
+                int end = Math.Min(wlines.Length, 5);
+                for (int i = 0; i < end; i++)
+                    collapsedLines.Add(respAnsi + ExpandTabs(wlines[i]));
+            }
+        }
 
         // Expanded view: render to ANSI lines then convert to Screen cells row-by-row.
         List<string> ansiLines = plainText
             ? RenderMessageRowsRaw(msg, w)
-            : (msg.Type == FrameType.ToolCall ? RenderToolCallRows(msg, w) : RenderMessageRows(msg, w));
+            : (isToolCall ? RenderToolCallRows(msg, w) : RenderMessageRows(msg, w));
+
+        // Show the ellipsis only when expanding actually reveals more — either because the summary line
+        // was truncated, or because the expanded view has strictly more rows than the collapsed preview.
+        bool needsEllipsis = truncated || ansiLines.Count > collapsedLines.Count;
+        if (needsEllipsis)
+            collapsedLines[0] = prefix + AnsiString.TruncateVisible(summary, availW - 1) + "\u2026";
+
+        Cell rowBg = new Cell(' ', fg, bg, CellStyle.None);
+        Screen collapsed = new Screen(w, collapsedLines.Count + spacer, rowBg);
+        for (int r = 0; r < collapsedLines.Count; r++)
+        {
+            (int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, r, collapsedLines[r], fg, bg);
+            AnsiToScreen.PadRowBackground(collapsed, endX, r, cFg, cBg);
+        }
 
         int expandedRows = Math.Max(1, ansiLines.Count);
         Screen expanded = new Screen(w, expandedRows + spacer, rowBg);
@@ -579,8 +641,15 @@ public class DisplayScreen : IDisplay
             (int endCx, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], fg, bg);
             AnsiToScreen.PadRowBackground(expanded, endCx, r, eFg, eBg);
         }
-        if (spacer > 0)
-            expanded.Fill(new Rect(0, expandedRows, w, spacer), new Cell(' ', null, Palette.Background, CellStyle.None));
+
+        // Right-justified duration tag on the first row of tool blocks. Only shown for tools that
+        // ran successfully (have a non-error, non-empty response) and that took long enough to matter.
+        if (isToolCall && !isError && msg.ToolDuration.HasValue && msg.ToolDuration.Value.TotalSeconds >= 0.1)
+        {
+            string tag = $"Took {msg.ToolDuration.Value.TotalSeconds:F1}s";
+            StampRightOnRow(collapsed, 0, tag, fg, bg);
+            StampRightOnRow(expanded,  0, tag, fg, bg);
+        }
 
         // Thinking blocks render italic — bake the style bit into every cell of both screens.
         if (msg.Type == FrameType.Thinking)
@@ -590,6 +659,18 @@ public class DisplayScreen : IDisplay
         }
 
         return new BlockLayer(msg.Index, collapsed, expanded, isExpanded: !msg.Collapsed);
+    }
+
+    // Writes `text` flush against the right edge of `row` on `s`, leaving at least one blank cell of
+    // separation from any existing content. No-op if `row` is out of range.
+    private static void StampRightOnRow(Screen s, int row, string text, Rgb fg, Rgb? bg)
+    {
+        if (row < 0 || row >= s.H) return;
+        int len = text.Length;
+        if (len + 1 > s.W) return;
+        int startCol = s.W - len;
+        for (int i = 0; i < len; i++)
+            s.Set(startCol + i, row, new Cell(text[i], fg, bg, CellStyle.None));
     }
 
     private static void ApplyStyle(Screen s, CellStyle add)
@@ -610,7 +691,7 @@ public class DisplayScreen : IDisplay
         switch (type)
         {
             case FrameType.Output:       return (Palette.Silver,      null);
-            case FrameType.User:         return (Palette.BrightUser,  null);
+            case FrameType.User:         return (Palette.BrightUser,  Palette.UserBg);
             case FrameType.Error:        return (Palette.Red,         null);
             case FrameType.Thinking:     return (Palette.ThinkingFg,  null);
             case FrameType.Tool:         return (Palette.Blue,        null);
@@ -626,7 +707,7 @@ public class DisplayScreen : IDisplay
     {
         switch (type)
         {
-            case FrameType.Thinking:     return "[thinking] ";
+            case FrameType.Thinking:     return "";
             case FrameType.Tool:         return "[tool] ";
             case FrameType.ToolCall:     return "";
             case FrameType.ToolResponse: return "";
@@ -771,7 +852,7 @@ public class DisplayScreen : IDisplay
     {
         List<string> result = new List<string>();
         string prefix = PrefixTextForType(msg.Type);
-        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User || msg.Type == FrameType.ToolResponse;
+        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User;
         // Prose-style messages get true word-boundary wrapping; everything else falls back to hard
         // character wrap so code-like content isn't broken at arbitrary spaces inside tokens.
         bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
@@ -841,17 +922,16 @@ public class DisplayScreen : IDisplay
         if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
             argsJson = argsJson.Substring(0, argsJson.Length - 1);
 
-        string summary = FormatToolCallSummary(content);
+        string summary = FormatToolCallSummary(content, msg.PairedResponseContent);
         result.Add(summary);
 
         // Properties whose values are already shown in the summary line — don't repeat them in the body.
         // "content" is shown as a free-floating block with the response background instead of a labeled value.
         HashSet<string> summaryProps = SummaryPropertiesFor(name);
 
-        // SGR sequence that switches the row into the "response" background (gray) so large free-form bodies
-        // like write_file's content visually match read_file's response, instead of staying on the bright
-        // tool-call blue background.
-        const string respBodyAnsi = "\x1b[38;5;66m\x1b[48;5;234m";
+        // SGR sequences for body rows. read_file / write_file get the dim/dark blue file background;
+        // everything else uses the neutral gray response background.
+        string respBodyAnsi = msg.PairedResponseIsError ? Palette.ErrBodyAnsi : Palette.BodyAnsi;
 
         if (!string.IsNullOrWhiteSpace(argsJson))
         {
@@ -893,12 +973,15 @@ public class DisplayScreen : IDisplay
             }
         }
 
-        if (!string.IsNullOrEmpty(msg.PairedResponseContent))
+        // The write_file / edit_file* paired responses are just status lines ("File written: ...",
+        // "File edited: ... (N operation(s) applied)") — the filename and line count are already part
+        // of the summary, so suppressing them removes redundant noise. Errors are never suppressed.
+        bool suppressPairedResponse = !msg.PairedResponseIsError
+            && (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert");
+        if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
             // Use SGR codes that AnsiToScreen understands; downstream renderer picks them up.
-            string respAnsi = msg.PairedResponseIsError
-                ? "\x1b[38;5;172m\x1b[48;5;52m"
-                : respBodyAnsi;
+            string respAnsi = msg.PairedResponseIsError ? Palette.ErrBodyAnsi : respBodyAnsi;
             foreach (string respLine in msg.PairedResponseContent.Split('\n'))
                 result.Add(respAnsi + ExpandTabs(respLine));
         }
@@ -936,7 +1019,7 @@ public class DisplayScreen : IDisplay
         return set;
     }
 
-    private static string FormatToolCallSummary(string content)
+    private static string FormatToolCallSummary(string content, string? pairedResponse)
     {
         int paren = content.IndexOf('(');
         if (paren < 0) return content.Replace('\n', ' ');
@@ -963,50 +1046,97 @@ public class DisplayScreen : IDisplay
         }
 
         string label = name.Replace('_', ' ');
+        // Response line count appended as "(N lines)" for tools where it's meaningful: read returns the
+        // file slice, write/edit don't return content but we know how many lines were written from the
+        // call's own "content" arg. Computed once and threaded through the specific summary builders.
+        int respLineCount = CountLines(pairedResponse);
+        int writeLineCount = (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert")
+            ? CountLines(Get("content") + Get("new_text"))
+            : 0;
         string summary = name switch
         {
-            "read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines")),
+            "read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
             "write_file" or "edit_file"
-                or "edit_file_replace" or "edit_file_insert"           => BuildPathSummary(label, Get("file_path")),
-            "list_directory" or "glob" or "grep"                       => BuildPathSummary(label, Get("path")),
+                or "edit_file_replace" or "edit_file_insert"           => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
+            "list_directory" or "glob" or "grep"                       => BuildPathSummary(label, Get("path"), respLineCount),
             "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
-            "search_web"                                               => BuildPathSummary(label, Get("query")),
-            "fetch_page"                                               => BuildPathSummary(label, Get("url")),
+            "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
+            "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),
             _                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)
         };
         return summary;
     }
 
-    // SGR codes used to colorize filenames / paths / commands inside tool summaries. Yellow text on
-    // whatever the surrounding row background is — the trailing reset returns to the default fg/bg so
-    // the rest of the summary stays in the block's normal colors.
-    private const string FileNameAnsi = "\x1b[38;5;226m";
-    private const string ResetAnsi    = "\x1b[39m";
+    // Returns the number of newline-delimited lines in text, treating empty as 0.
+    private static int CountLines(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        int count = 1;
+        for (int i = 0; i < text.Length; i++)
+            if (text[i] == '\n') count++;
+        // A trailing newline shouldn't inflate the line count.
+        if (text[text.Length - 1] == '\n') count--;
+        return Math.Max(1, count);
+    }
 
-    private static string BuildPathSummary(string label, string path)
-        => string.IsNullOrEmpty(path) ? label : $"{label} {FileNameAnsi}{path}{ResetAnsi}";
+    // Extracts a string-valued argument from a ToolCall content string of the form "name({...json...})".
+    // Returns empty when the JSON cannot be parsed or the property is missing/non-string.
+    private static string ExtractStringArg(string content, string argName)
+    {
+        int paren = content.IndexOf('(');
+        if (paren < 0) return string.Empty;
+        string argsJson = content.Substring(paren + 1);
+        if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+            argsJson = argsJson.Substring(0, argsJson.Length - 1);
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(argsJson);
+            if (doc.RootElement.TryGetProperty(argName, out JsonElement el) && el.ValueKind == JsonValueKind.String)
+                return el.GetString() ?? string.Empty;
+        }
+        catch { }
+        return string.Empty;
+    }
 
-    private static string BuildReadFileSummary(string label, string path, string offset, string lines)
+    // SGR codes used to colorize filenames / paths / commands inside tool summaries.
+
+    private static string BuildPathSummary(string label, string path, int respLineCount)
     {
         if (string.IsNullOrEmpty(path)) return label;
+        string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
+        return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
+    }
+
+    private static string BuildWriteFileSummary(string label, string path, int writeLineCount)
+    {
+        if (string.IsNullOrEmpty(path)) return label;
+        string tail = writeLineCount > 0 ? $" ({writeLineCount} lines)" : string.Empty;
+        return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
+    }
+
+    private static string BuildReadFileSummary(string label, string path, string offset, string lines, int respLineCount)
+    {
+        if (string.IsNullOrEmpty(path)) return label;
+        string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
         if (!string.IsNullOrEmpty(offset) && !string.IsNullOrEmpty(lines))
         {
             int.TryParse(offset, out int start);
             int.TryParse(lines, out int count);
             int end = start + count - 1;
-            return $"{label} {FileNameAnsi}{path}{ResetAnsi}  [{offset}-{end}]";
+            return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}  [{offset}-{end}]{tail}";
         }
         if (!string.IsNullOrEmpty(offset))
-            return $"{label} {FileNameAnsi}{path}{ResetAnsi}  [from {offset}]";
-        return $"{label} {FileNameAnsi}{path}{ResetAnsi}";
+            return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}  [from {offset}]{tail}";
+        return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
     }
 
     private static string BuildRunCommandSummary(string label, string command)
     {
-        if (string.IsNullOrEmpty(command)) return label;
+        if (string.IsNullOrEmpty(command)) return "$";
         int nl = command.IndexOf('\n');
         string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
-        return $"{label} {FileNameAnsi}{first}{ResetAnsi}";
+        // Bash command text is left in the row's normal color — no yellow highlight.
+        return $"$ {first}";
     }
 
     private static string BuildGenericSummary(string label, JsonElement root, bool parsed)
@@ -1018,7 +1148,7 @@ public class DisplayScreen : IDisplay
             {
                 string val = prop.Value.GetString() ?? string.Empty;
                 if (!string.IsNullOrEmpty(val))
-                    return $"{label} {FileNameAnsi}{val}{ResetAnsi}";
+                    return $"{label} {Palette.FileNameAnsi}{val}{Palette.ResetAnsi}";
             }
         }
         return label;
@@ -1190,6 +1320,7 @@ public class DisplayScreen : IDisplay
                 bool needRedraw = false;
                 lock (_consoleLock)
                 {
+                    _frameDrain?.Invoke();
                     int curW = Console.WindowWidth;
                     int curH = Console.WindowHeight;
                     if (curW != _lastWidth || curH != _lastHeight)

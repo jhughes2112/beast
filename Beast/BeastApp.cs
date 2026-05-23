@@ -30,6 +30,9 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private string _streamContent = "";
     private string? _pingNonce;
     private bool _readyFired;
+    // Inbound frames queued by ReadLoop and drained under _consoleLock by DrainFrameQueue().
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string Content)> _frameQueue
+        = new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string)>();
 
     public BeastApp(string image, List<string> messages, IDisplay display, Log log)
     {
@@ -73,6 +76,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.Attach(_model);
         _display.SetSendAsync(text => _wsClient!.SendAsync(text));
         _display.SetRequestExit(RequestGracefulExit);
+        _display.SetFrameDrain(DrainFrameQueue);
 
         int exitCode = 0;
         try
@@ -108,7 +112,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 if (message == null) break;
 
                 (FrameType type, string content) = ParseFrame(message);
-                ProcessFrame(type, content);
+                _frameQueue.Enqueue((type, content));
             }
         }
         catch (OperationCanceledException) { }
@@ -119,6 +123,13 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
         _display.SetStatus("Agent disconnected.");
         _cts?.Cancel();
+    }
+
+    // Drains all queued inbound frames. Must be called under the display's lock.
+    public void DrainFrameQueue()
+    {
+        while (_frameQueue.TryDequeue(out (FrameType Type, string Content) frame))
+            ProcessFrame(frame.Type, frame.Content);
     }
 
     private static (FrameType Type, string Content) ParseFrame(string message)

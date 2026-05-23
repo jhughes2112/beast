@@ -517,14 +517,18 @@ public class AgentOrchestrator
 						if (tc == null) continue;
 						string name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty;
 						string args = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
-						_transport.ToolCall($"{name}({args})");
+						string tcId = tc["id"]?.GetValue<string>() ?? string.Empty;
+						_transport.ToolCallWithId(tcId, $"{name}({args})");
 					}
 				}
 			}
 			else if (role == "tool")
 			{
 				if (!string.IsNullOrEmpty(content))
-					_transport.ToolResponse(content);
+				{
+					string toolCallId = node["tool_call_id"]?.GetValue<string>() ?? string.Empty;
+					_transport.ToolResponseWithId(toolCallId, content);
+				}
 			}
 		}
 	}
