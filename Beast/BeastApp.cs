@@ -7,10 +7,10 @@ using System.Threading.Tasks;
 using NAudio.Wave;
 
 
-// Beast app: launches the Agent container and drives a session via the provided display.
+// Beast app: starts the agent backend via IAgentContext and drives a session via the provided display.
 public class BeastApp : IDisposable, IAsyncDisposable
 {
-    private readonly string _image;
+    private readonly ILauncher _agentContext;
     private readonly List<string> _messages;
     private readonly IDisplay _display;
     private readonly Log _log;
@@ -19,8 +19,6 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private CancellationTokenSource? _cts;
     private ConversationModel? _model;
     private ITransportClient? _wsClient;
-    private DockerContext? _docker;
-    private string? _containerId;
 
     // Read loop state
     private Task? _readTask;
@@ -37,9 +35,9 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string Content)> _frameQueue
         = new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string)>();
 
-    public BeastApp(string image, List<string> messages, IDisplay display, Log log)
+    public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, Log log)
     {
-        _image = image;
+        _agentContext = agentContext;
         _messages = messages;
         _display = display;
         _log = log;
@@ -88,10 +86,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
         int exitCode = 0;
         try
         {
-            _docker = new DockerContext(_log);
-            string containerName = $"beastagent_{Guid.NewGuid():N}";
-            await _docker.RemoveContainerByNameAsync(containerName);
-            _containerId = await _docker.LaunchContainerAsync(_image, containerName, new List<string>());
+            string agentName = $"beastagent_{Guid.NewGuid():N}";
+            await _agentContext.StartAsync(agentName, _cts.Token);
 
             _wsClient = await RetryConnectAsync("ws://localhost:13131/", _log, _cts.Token);
 
@@ -128,6 +124,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
             _display.SetStatus($"[read error] {ex.Message}");
         }
 
+        // Agent connection is gone — stop the busy animation and any open stream so the display
+        // stops redrawing at 60fps and the streaming slot is released.
+        _display.OnStreamEnd();
+        _display.SetAgentBusy(false);
         _display.SetStatus("Agent disconnected.");
         _cts?.Cancel();
     }
@@ -337,7 +337,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _readTask?.Wait(2000);
         _readCts?.Dispose();
         _wsClient?.Dispose();
-        _docker?.Dispose();
+        _agentContext.Dispose();
         _cts?.Dispose();
     }
 
@@ -347,11 +347,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _readTask?.Wait(2000);
         _readCts?.Dispose();
         _wsClient?.Dispose();
-        if (_containerId != null && _docker != null)
-        {
-            try { await _docker.StopAndRemoveContainerAsync(_containerId); } catch { }
-        }
-        _docker?.Dispose();
+        try { await _agentContext.StopAsync(); } catch { }
+        _agentContext.Dispose();
         _cts?.Dispose();
     }
 }

@@ -116,6 +116,26 @@ public class BeastSession
         return string.Empty;
     }
 
+    // Produces a display name for a compacted continuation: strips any existing "(N) " prefix,
+    // then prepends "(N+1) " so the chain reads "(1) hello", "(2) hello", etc.
+    public static string IncrementDisplayName(string displayName)
+    {
+        string base_ = displayName;
+        int generation = 1;
+
+        if (displayName.Length > 3 && displayName[0] == '(')
+        {
+            int close = displayName.IndexOf(')');
+            if (close > 1 && int.TryParse(displayName.Substring(1, close - 1), out int n))
+            {
+                generation = n + 1;
+                base_ = displayName.Substring(close + 1).TrimStart();
+            }
+        }
+
+        return $"({generation}) {base_}";
+    }
+
     // Returns the first non-empty user message text, used to pick a friendly DisplayName.
     public string? GetFirstUserText()
     {

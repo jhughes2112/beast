@@ -4,6 +4,9 @@
 package-lock.json
 
 # Build results
+*.exe
+*.dll
+*.obj
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/

@@ -97,27 +97,4 @@ public class ListenerBundle : IProtocolListener
         return text;
     }
 
-    // Removes the most recent assistant turn from every listener and re-raises it with the
-    // supplied tool calls. Used when XML tool calls are extracted after the producing protocol
-    // already committed a tool-less turn. Sender is null so every listener re-records it.
-    public void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
-    {
-        foreach (IProtocolListener l in _listeners)
-        {
-            l.RewriteLastAssistant(text, thinking, toolCalls);
-        }
     }
-
-    // Removes the most recent user message from every listener and returns the text from the
-    // first listener that holds one (ChatCompletions listener is canonical for text).
-    public string? PopLastUserMessage()
-    {
-        string? text = null;
-        foreach (IProtocolListener l in _listeners)
-        {
-            string? popped = l.PopLastUserMessage();
-            if (text == null) text = popped;
-        }
-        return text;
-    }
-}

@@ -27,10 +27,4 @@ public interface IProtocolListener
     // Returns the most recent assistant text held by this listener, or null.
     string? GetLastAssistantText();
 
-    // Removes the most recent assistant turn and re-raises it with the supplied tool calls,
-    // so XML-extracted tool calls can be grafted onto an already-committed assistant message.
-    void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls);
-
-    // Removes the most recent user message and returns its text, or null if not a user message.
-    string? PopLastUserMessage();
-}
+    }

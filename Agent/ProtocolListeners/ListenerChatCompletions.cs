@@ -167,35 +167,6 @@ public class ListenerChatCompletions : IProtocolListener
         return text;
     }
 
-    public void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
-    {
-        for (int i = _state.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = _state[i];
-            if (n != null && n["role"]?.GetValue<string>() == "assistant")
-            {
-                _state.RemoveAt(i);
-                break;
-            }
-        }
-        OnAssistantTurn(null!, text, thinking, toolCalls);
-    }
-
-    public string? PopLastUserMessage()
-    {
-        for (int i = _state.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = _state[i];
-            if (n != null && n["role"]?.GetValue<string>() == "user")
-            {
-                string? text = n["content"]?.GetValue<string>();
-                _state.RemoveAt(i);
-                return text;
-            }
-        }
-        return null;
-    }
-
     private static string ComposeBody(string text, string thinking)
     {
         return text ?? string.Empty;

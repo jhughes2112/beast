@@ -80,9 +80,10 @@ public class AgentOrchestrator
 		// Signal to Beast that stdin is open and we are ready to receive input.
 		_transport.Status("ready");
 		SendCompletionCandidates(conversation);
-		// Start as busy so the first idle loop iteration sends the Idle frame,
-		// clearing any busy state Beast may have set while replaying history.
-		bool agentBusy = true;
+		// Clear any busy state Beast may have set while replaying history.
+		_transport.Idle();
+
+		bool didSomething = false;
 
 		while (!cancellationToken.IsCancellationRequested && !wantsExit)
 		{
@@ -133,8 +134,10 @@ public class AgentOrchestrator
 							if (canRunLLM)
 							{
 								_transport.Status("Running compaction...");
-								LlmResult compactResult = await CompactAsync(conversation, bundle, service!, role!, cancellationToken);
+								(LlmResult compactResult, BeastSession compactedSession, ListenerBundle compactedBundle) = await CompactAsync(conversation, bundle, service!, role!, cancellationToken);
 								canRunLLM = compactResult.Success;
+								conversation = compactedSession;
+								bundle = compactedBundle;
 							}
 							break;
 						case "session":
@@ -241,16 +244,15 @@ public class AgentOrchestrator
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
 				if (!cancellationToken.IsCancellationRequested && canRunLLM && conversation.NeedsLlmAttention)
 				{
-					if (!agentBusy)
-					{
-						agentBusy = true;
-					}
 					_turnCts = new CancellationTokenSource();
 					try
 					{
-						LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, _turnCts.Token);
+						(LlmResult result, BeastSession turnSession, ListenerBundle turnBundle) = await RunLlmTurnAsync(conversation, bundle, role!, service!, _turnCts.Token);
+						conversation = turnSession;
+						bundle = turnBundle;
 						if (result.ExitReason == LlmExitReason.Failed)
 						{
+							conversation.NeedsLlmAttention = false;
 							_transport.Error(result.ErrorMessage + ": Change to a different /model and manually /compact, or /clear or start a /session new.");
 							exitCode = 1;
 						}
@@ -267,13 +269,14 @@ public class AgentOrchestrator
 						_turnCts.Dispose();
 						_turnCts = null;
 					}
+					didSomething = true;
 				}
 				else
 				{
-					if (agentBusy)
+					if (didSomething)
 					{
-						agentBusy = false;
 						_transport.Idle();
+						didSomething = false;
 					}
 					await Task.Delay(10, cancellationToken);
 				}
@@ -332,7 +335,7 @@ public class AgentOrchestrator
 
 	// Runs one LLM turn. Applies the role (system prompt) before calling the LLM.
 	// If the context is full, compaction is attempted immediately and the result reflects that outcome.
-	public async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, CancellationToken cancellationToken)
+	public async Task<(LlmResult result, BeastSession resultConversation, ListenerBundle resultBundle)> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, CancellationToken cancellationToken)
 	{
 		conversation.Model = service!.Model.ConfigId;
 
@@ -356,58 +359,99 @@ public class AgentOrchestrator
 		if (result.ExitReason == LlmExitReason.ContextFull)
 		{
 			_transport.Status("Running compaction...");
-			result = await CompactAsync(conversation, bundle, service, role, cancellationToken);
+			(LlmResult compactResult, BeastSession compactSession, ListenerBundle compactBundle) = await CompactAsync(conversation, bundle, service, role, cancellationToken);
+			return (compactResult, compactSession, compactBundle);
 		}
 
-		return result;
+		return (result, conversation, bundle);
 	}
 
 	// ---- Compaction ----
 
-	private async Task<LlmResult> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role, CancellationToken cancellationToken)
+	private async Task<(LlmResult result, BeastSession newConversation, ListenerBundle newBundle)> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role, CancellationToken cancellationToken)
 	{
-		// Snapshot all protocol state before any modification so we can restore it exactly on failure.
+		// Snapshot all protocol state so we can restore on failure.
 		StateSnapshot snapshot = conversation.Snapshot();
 
-		// If there is a pending user message, cache it and replace it with the compaction prompt
-		// so the model sees the prompt at the end. On success it gets appended to the fresh context.
-		string? pendingUserMessage = bundle.PopLastUserMessage();
+		// Capture the last 2 user-exchange groups before we modify anything.
+		List<JsonNode> tailExchanges = ExtractTailExchanges(conversation.ChatCompletionsState, 2);
+
+		// Append the compaction prompt as a coalesced user message (preserves prompt cache).
 		bundle.OnUserMessage(null!, _settings.Settings.CompactionPrompt);
 
 		// Single-shot: stop as soon as the model responds once.
 		_transport.Status("[Compaction] Started.");
 		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, Array.Empty<Tool>(), 0, _transport, cancellationToken);
 
-	 string? compactedContent = bundle.GetLastAssistantText();
+		string? summary = bundle.GetLastAssistantText();
 
-		if (result.Success && !string.IsNullOrWhiteSpace(compactedContent))
+		if (result.Success && !string.IsNullOrWhiteSpace(summary))
 		{
-			// Wipe every protocol state and rebuild from the compacted summary as an assistant turn.
-			bundle.OnClear();
+			// Save the old session before we switch away from it.
+			SessionService.Save(conversation);
+
+			// Build the new session: new id, incremented display name, same role/model.
+			string newDisplayName = BeastSession.IncrementDisplayName(conversation.DisplayName);
+			BeastSession fresh = BeastSession.CreateNew(Guid.NewGuid().ToString(), conversation.Role, newDisplayName);
+			fresh.Model = conversation.Model;
+			ListenerBundle freshBundle = BuildBundle(fresh);
+
+			// System prompt first.
 			if (!string.IsNullOrEmpty(role.SystemPrompt))
-				bundle.OnSystemMessage(null!, role.SystemPrompt);
-			bundle.OnAssistantTurn(null!, compactedContent, string.Empty, Array.Empty<SemanticToolCall>());
-			_transport.Status("[Compaction] Complete.");
+				freshBundle.OnSystemMessage(null!, role.SystemPrompt);
 
-			if (pendingUserMessage != null)
+			// Summary becomes the first user message in the new session.
+			freshBundle.OnUserMessage(null!, summary);
+
+			// Replay the captured tail exchanges directly into the new session's ChatCompletions state
+			// so all protocol listeners reflect the same exchanges via the semantic fan-out path.
+			foreach (JsonNode tailNode in tailExchanges)
 			{
-				bundle.OnUserMessage(null!, pendingUserMessage);
+				string nodeRole = tailNode["role"]?.GetValue<string>() ?? string.Empty;
+				string content = tailNode["content"]?.GetValue<string>() ?? string.Empty;
+
+				if (nodeRole == "user")
+				{
+					freshBundle.OnUserMessage(null!, content);
+				}
+				else if (nodeRole == "assistant")
+				{
+					List<SemanticToolCall> toolCalls = new List<SemanticToolCall>();
+					JsonArray? tcs = tailNode["tool_calls"]?.AsArray();
+					if (tcs != null)
+					{
+						foreach (JsonNode? tc in tcs)
+						{
+							if (tc == null) continue;
+							toolCalls.Add(new SemanticToolCall
+							{
+								Id = tc["id"]?.GetValue<string>() ?? string.Empty,
+								Name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty,
+								ArgumentsJson = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty
+							});
+						}
+					}
+					string thinking = tailNode["reasoning_content"]?.GetValue<string>() ?? string.Empty;
+					freshBundle.OnAssistantTurn(null!, content, thinking, toolCalls);
+				}
+				else if (nodeRole == "tool")
+				{
+					string toolCallId = tailNode["tool_call_id"]?.GetValue<string>() ?? string.Empty;
+					freshBundle.OnToolResult(null!, toolCallId, content);
+				}
 			}
-		}
-		else
-		{
-			conversation.RestoreSnapshot(snapshot);
 
-			if (pendingUserMessage != null)
-			{
-				bundle.OnUserMessage(null!, pendingUserMessage);
+				_settings.Settings.LastSessionId = fresh.Id;
+					_settings.SaveSettings();
+
+					_transport.Status("[Compaction] Complete.");
+					return (result, fresh, freshBundle);
+				}
+
+				conversation.RestoreSnapshot(snapshot);
+				_transport.Status("[Compaction] Failed.");
+				return (result, conversation, bundle);
 			}
-
-			_transport.Status("[Compaction] Failed.");
-		}
-
-		return result;
-	}
 
    // Pushes the current completion candidates to Beast as a JSON array.
 	private void SendCompletionCandidates(BeastSession conversation)
@@ -496,6 +540,36 @@ public class AgentOrchestrator
 	{
 		_settings.LoadSettings();
 		_registry.LoadFromConfigs(_settings, _roleService);
+	}
+
+	// Returns the last `count` user-exchange groups from the ChatCompletions state.
+	// Each group is: the user message node followed by all assistant/tool nodes that follow it
+	// up to (but not including) the next user message. The result is ordered oldest-first.
+	private static List<JsonNode> ExtractTailExchanges(JsonArray state, int count)
+	{
+		// Locate the start indices of each user message.
+		List<int> userStarts = new List<int>();
+		for (int i = 0; i < state.Count; i++)
+		{
+			JsonNode? n = state[i];
+			if (n != null && n["role"]?.GetValue<string>() == "user")
+				userStarts.Add(i);
+		}
+
+		if (userStarts.Count == 0)
+			return new List<JsonNode>();
+
+		int startGroup = userStarts.Count > count ? userStarts.Count - count : 0;
+		int startIndex = userStarts[startGroup];
+
+		List<JsonNode> result = new List<JsonNode>();
+		for (int i = startIndex; i < state.Count; i++)
+		{
+			JsonNode? n = state[i];
+			if (n != null)
+				result.Add((JsonNode)n.DeepClone());
+		}
+		return result;
 	}
 
 	// Sends a Stats frame to Beast with model, token counts, total cost, and context window.

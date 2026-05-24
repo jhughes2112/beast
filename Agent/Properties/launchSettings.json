@@ -2,7 +2,7 @@
   "profiles": {
     "Debug": {
       "commandName": "Project",
-      "commandLineArgs": "--debug",
+      "commandLineArgs": "--debug --verbose",
       "workingDirectory": "d:\\beast"
     }
   }

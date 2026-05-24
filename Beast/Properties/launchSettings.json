@@ -2,7 +2,7 @@
   "profiles": {
     "Beast": {
       "commandName": "Project",
-      "commandLineArgs": "--test -p hello world!",
+      "commandLineArgs": "/debug",
       "workingDirectory": "d:\\beast"
     }
   }

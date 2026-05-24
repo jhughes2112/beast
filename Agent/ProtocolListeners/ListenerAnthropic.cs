@@ -132,53 +132,6 @@ public class ListenerAnthropic : IProtocolListener
         return text;
     }
 
-    public void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
-    {
-        JsonArray messages = Messages;
-        for (int i = messages.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = messages[i];
-            if (n != null && n["role"]?.GetValue<string>() == "assistant")
-            {
-                messages.RemoveAt(i);
-                break;
-            }
-        }
-        OnAssistantTurn(null!, text, thinking, toolCalls);
-    }
-
-    public string? PopLastUserMessage()
-    {
-        JsonArray messages = Messages;
-        for (int i = messages.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = messages[i];
-            if (n == null || n["role"]?.GetValue<string>() != "user") continue;
-
-            // Extract text from the first text block or inline string.
-            string? text = null;
-            JsonNode? content = n["content"];
-            if (content is JsonValue jv)
-            {
-                jv.TryGetValue<string>(out text);
-            }
-            else if (content is JsonArray ca)
-            {
-                foreach (JsonNode? block in ca)
-                {
-                    if (block != null && block["type"]?.GetValue<string>() == "text")
-                    {
-                        text = block["text"]?.GetValue<string>();
-                        break;
-                    }
-                }
-            }
-            messages.RemoveAt(i);
-            return text;
-        }
-        return null;
-    }
-
     // Producer-only: append a verbatim native assistant message (preserves thinking blocks
     // with signatures and any unknown block types Anthropic returns).
     public void AppendNativeAssistant(JsonObject nativeMessage)

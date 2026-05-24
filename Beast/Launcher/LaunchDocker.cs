@@ -6,23 +6,27 @@ using System.Threading.Tasks;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 
-// Launches and manages Docker containers on the host.
-// Transport is now WebSocket; this class only handles container lifecycle.
-public class DockerContext : IDisposable
+// Launches and manages an Agent Docker container.
+// Implements IAgentContext so BeastApp can swap it for NativeContext.
+public class LaunchDocker : ILauncher
 {
+    private readonly string _image;
     private readonly DockerClient _dockerClient;
     private readonly Log _log;
+    private string? _containerId;
 
-    public DockerContext(Log log)
+    public LaunchDocker(string image, Log log)
     {
+        _image = image;
         _log = log;
         _dockerClient = new DockerClientConfiguration().CreateClient();
     }
 
-    // Launches a container from the given image, binds port 13131, and mounts workspace/config volumes.
-    public async Task<string> LaunchContainerAsync(
-        string image, string name, IList<string> entrypoint)
+    // Removes any stale container with the same name, then creates and starts a fresh one.
+    public async Task StartAsync(string name, CancellationToken cancellationToken)
     {
+        await RemoveContainerByNameAsync(name);
+
         string cwd = Directory.GetCurrentDirectory();
         string beastConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
@@ -30,7 +34,7 @@ public class DockerContext : IDisposable
 
         CreateContainerParameters createParams = new CreateContainerParameters
         {
-            Image = image,
+            Image = _image,
             Name = name,
             WorkingDir = "/workspace",
             Env = new List<string> { "BEAST_HOST=host.docker.internal" },
@@ -54,46 +58,37 @@ public class DockerContext : IDisposable
             }
         };
 
-        if (entrypoint.Count > 0)
-        {
-            createParams.Entrypoint = entrypoint;
-        }
-
-        _log.Verbose($"[docker] Creating container {name} from image {image}");
+        _log.Verbose($"[docker] Creating container {name} from image {_image}");
         CreateContainerResponse response = await _dockerClient.Containers.CreateContainerAsync(createParams);
-        string containerId = response.ID;
-        _log.Verbose($"[docker] Container created: {containerId}");
+        _containerId = response.ID;
+        _log.Verbose($"[docker] Container created: {_containerId}");
 
-        await _dockerClient.Containers.StartContainerAsync(containerId, new ContainerStartParameters());
+        await _dockerClient.Containers.StartContainerAsync(_containerId, new ContainerStartParameters());
         _log.Verbose($"[docker] Container started: {name}");
-
-        return containerId;
     }
 
-    // Stops a container gracefully then removes it. Tolerates containers that are already gone.
-    public async Task StopAndRemoveContainerAsync(string containerId)
+    // Stops and removes the container started by StartAsync.
+    public async Task StopAsync()
     {
-        try
-        {
-            await _dockerClient.Containers.StopContainerAsync(containerId, new ContainerStopParameters { WaitBeforeKillSeconds = 10 });
-        }
-        catch (DockerContainerNotFoundException)
-        {
-            // Already gone.
-        }
+        if (_containerId == null) return;
+        string id = _containerId;
+        _containerId = null;
 
         try
         {
-            await _dockerClient.Containers.RemoveContainerAsync(containerId, new ContainerRemoveParameters { Force = true });
+            await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKillSeconds = 10 });
         }
-        catch (DockerContainerNotFoundException)
+        catch (DockerContainerNotFoundException) { }
+
+        try
         {
-            // Already gone.
+            await _dockerClient.Containers.RemoveContainerAsync(id, new ContainerRemoveParameters { Force = true });
         }
+        catch (DockerContainerNotFoundException) { }
     }
 
     // Removes a named container if it exists, regardless of state. Used to clean up before relaunching.
-    public async Task RemoveContainerByNameAsync(string name)
+    private async Task RemoveContainerByNameAsync(string name)
     {
         try
         {

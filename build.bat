@@ -9,46 +9,29 @@ echo   Beast CLI Build Script
 echo ============================================
 echo.
 
-REM Check for .NET SDK
-dotnet --version >nul 2>&1
+REM Check for Docker
+docker --version >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: .NET SDK not found. Please install .NET 10.0 SDK or later.
+    echo ERROR: Docker not found. Please install Docker Desktop.
     exit /b 1
 )
 
-echo .NET SDK version:
-dotnet --version
+echo Docker version:
+docker --version
 echo.
 
 REM Configuration
 set BUILD_CONFIG=Release
-set BEAST_PROJECT=Beast\Beast.csproj
-set AGENT_PROJECT=Agent\Agent.csproj
-set OUTPUT_DIR=build\bin\release
+set BEAST_PROJECT=Beast/Beast.csproj
 
-REM Clean previous builds
-echo Cleaning previous builds...
-if exist %OUTPUT_DIR% rmdir /s /q %OUTPUT_DIR%
-dotnet clean Beast.slnx -c %BUILD_CONFIG% 2>nul
-echo.
-
-REM Restore NuGet packages
-echo Restoring NuGet packages...
-dotnet restore Beast.slnx
+REM Publish beast.exe inside the .NET SDK container; source tree is bind-mounted at /src.
+echo Building beast.exe inside Docker (mcr.microsoft.com/dotnet/sdk:10.0)...
+docker run --rm -v "%CD%:/src" -w /src mcr.microsoft.com/dotnet/sdk:10.0 sh -c "dotnet publish %BEAST_PROJECT% -c %BUILD_CONFIG% -r win-x64 --self-contained -o /tmp/beast-out && cp /tmp/beast-out/Beast.exe /src/beast.exe"
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: Failed to restore packages
+    echo ERROR: Docker build failed
     exit /b 1
 )
-echo.
-
-REM Publish Beast as self-contained .exe
-echo Publishing beast.exe...
-dotnet publish %BEAST_PROJECT% -c %BUILD_CONFIG% -r win-x64 --self-contained -o %OUTPUT_DIR%\beast-win-x64
-if %ERRORLEVEL% neq 0 (
-    echo ERROR: Beast publish failed
-    exit /b 1
-)
-echo beast.exe published to %OUTPUT_DIR%\beast-win-x64\
+echo beast.exe copied to %CD%\beast.exe
 echo.
 
 REM Build Docker image (contains Agent at /app/Agent as entrypoint)
@@ -69,7 +52,7 @@ echo Build Complete!
 echo ============================================
 echo.
 echo Outputs:
-echo   %OUTPUT_DIR%\beast-win-x64\beast.exe
+echo   %CD%\beast.exe
 echo   Docker image: beastagent:latest  (entrypoint: /app/Agent)
 echo ============================================
 

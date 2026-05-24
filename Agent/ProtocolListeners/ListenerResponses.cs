@@ -43,6 +43,26 @@ public class ListenerResponses : IProtocolListener
 
     public void OnUserMessage(IProtocolListener sender, string text)
     {
+        // If the last item is already a user message, append a new content block in-place
+        // rather than creating a consecutive user turn (mirrors ListenerChatCompletions).
+        int count = _state.Count;
+        if (count > 0)
+        {
+            JsonNode? last = _state[count - 1];
+            if (last != null && last["role"]?.GetValue<string>() == "user")
+            {
+                JsonArray? existingContent = last["content"]?.AsArray();
+                if (existingContent != null)
+                {
+                    JsonObject extra = new JsonObject();
+                    extra["type"] = "input_text";
+                    extra["text"] = text;
+                    existingContent.Add(extra);
+                    return;
+                }
+            }
+        }
+
         JsonObject item = new JsonObject();
         item["type"] = "message";
         item["role"] = "user";
@@ -126,49 +146,6 @@ public class ListenerResponses : IProtocolListener
             }
         }
         return text;
-    }
-
-    public void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
-    {
-        for (int i = _state.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = _state[i];
-            if (n == null) continue;
-            if (n["type"]?.GetValue<string>() == "message" && n["role"]?.GetValue<string>() == "assistant")
-            {
-                _state.RemoveAt(i);
-                break;
-            }
-        }
-        OnAssistantTurn(null!, text, thinking, toolCalls);
-    }
-
-    public string? PopLastUserMessage()
-    {
-        for (int i = _state.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = _state[i];
-            if (n != null && n["type"]?.GetValue<string>() == "message" && n["role"]?.GetValue<string>() == "user")
-            {
-                // Extract text from the first input_text block.
-                string? text = null;
-                JsonNode? content = n["content"];
-                if (content is JsonArray ca)
-                {
-                    foreach (JsonNode? block in ca)
-                    {
-                        if (block != null && block["type"]?.GetValue<string>() == "input_text")
-                        {
-                            text = block["text"]?.GetValue<string>();
-                            break;
-                        }
-                    }
-                }
-                _state.RemoveAt(i);
-                return text;
-            }
-        }
-        return null;
     }
 
     // Producer-only: append a verbatim native item directly.

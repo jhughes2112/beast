@@ -14,82 +14,11 @@ public static class LlmServiceTests
 	{
 		ctx.Log("  LlmServiceTests");
 
-		LlmService service = BuildTestService();
-		List<Tool> tools = BuildTestTools();
-
 		TestEpochToSecondsFromNow(ctx);
 		TestGetFirstHeaderValue(ctx);
-		TestXmlToolCallParsing(ctx, service, tools);
-		TestIsRateLimited(ctx, service);
-		TestParseRateLimitSecondsFromErrorBody(ctx, service);
+		TestIsRateLimited(ctx);
+		TestParseRateLimitSecondsFromErrorBody(ctx);
 		TestTryAdaptToError(ctx);
-	}
-
-	private static LlmService BuildTestService()
-	{
-		ModelConfig config = new ModelConfig
-		{
-			Id = "test-model-id",
-			Name = "test-model",
-			ContextWindow = 128000,
-			Cost = new CostConfig { Input = 0m, Output = 0m }
-		};
-		LlmModel model = new LlmModel(config.Id, "https://test.example.com/v1", "test-key", new System.Collections.Generic.Dictionary<string, JsonNode?>(), config);
-		LlmService svc = new LlmService(model);
-		return svc;
-	}
-
-	private static List<Tool> BuildTestTools()
-	{
-		List<Tool> tools = new List<Tool>();
-
-		tools.Add(new Tool
-		{
-			Definition = new ToolDefinition
-			{
-				Type = "function",
-				Function = new FunctionDefinition
-				{
-					Name = "read_file",
-					Description = "Read a file",
-					Parameters = new JsonObject
-					{
-						["type"] = "object",
-						["properties"] = new JsonObject
-						{
-							["path"] = new JsonObject { ["type"] = "string" },
-							["encoding"] = new JsonObject { ["type"] = "string" }
-						}
-					}
-				}
-			},
-			Handler = (JsonObject args, CancellationToken ct2, ITransportServer transport) => Task.FromResult(new ToolResult("file content", false))
-		});
-
-		tools.Add(new Tool
-		{
-			Definition = new ToolDefinition
-			{
-				Type = "function",
-				Function = new FunctionDefinition
-				{
-					Name = "write_file",
-					Description = "Write a file",
-					Parameters = new JsonObject
-					{
-						["type"] = "object",
-						["properties"] = new JsonObject
-						{
-							["path"] = new JsonObject { ["type"] = "string" },
-							["content"] = new JsonObject { ["type"] = "string" }
-						}
-					}
-				}
-			},
-			Handler = (JsonObject args, CancellationToken ct2, ITransportServer transport) => Task.FromResult(new ToolResult("ok", false))
-		});
-
-		return tools;
 	}
 
 	private static void TestEpochToSecondsFromNow(TestContext ctx)
@@ -126,87 +55,7 @@ public static class LlmServiceTests
 		ctx.AssertNull(missing, "GetFirstHeaderValue: returns null for missing header");
 	}
 
-	private static (List<ConversationToolCall> calls, List<string> errors) ParseXml(LlmService service, string content, Tool[] toolArray)
-	{
-		Type[] types = [typeof(string), typeof(Tool[])];
-		object result = Reflect.Instance(service, "TryParseXmlToolCalls", types, [content, toolArray])!;
-		// Unpack the ValueTuple<List<ConversationToolCall>, List<string>>
-		List<ConversationToolCall> calls = (List<ConversationToolCall>)result.GetType().GetField("Item1")!.GetValue(result)!;
-		List<string> errors = (List<string>)result.GetType().GetField("Item2")!.GetValue(result)!;
-		return (calls, errors);
-	}
-
-	private static void TestXmlToolCallParsing(TestContext ctx, LlmService service, List<Tool> tools)
-	{
-		Tool[] toolArray = new Tool[tools.Count];
-		for (int i = 0; i < tools.Count; i++) toolArray[i] = tools[i];
-
-		// Valid single tool_call tag.
-		string validContent = "Some text\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"/test.txt\"}}\n</tool_call>";
-		(List<ConversationToolCall> valid, List<string> _) = ParseXml(service, validContent, toolArray);
-		ctx.AssertEqual(1, valid.Count, "XmlToolCalls: single call found");
-		ctx.AssertEqual("read_file", valid[0].Function.Name, "XmlToolCalls: correct tool name");
-
-		// function_call variant.
-		string fcContent = "<function_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"a.txt\", \"content\": \"hello\"}}</function_call>";
-		(List<ConversationToolCall> fc, List<string> _) = ParseXml(service, fcContent, toolArray);
-		ctx.AssertEqual(1, fc.Count, "XmlToolCalls: function_call variant parsed");
-		ctx.AssertEqual("write_file", fc[0].Function.Name, "XmlToolCalls: function_call correct name");
-
-		// Multiple tool calls in one response.
-		string multiContent = "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"a\"}}</tool_call>\n<tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"b\", \"content\": \"c\"}}</tool_call>";
-		(List<ConversationToolCall> multi, List<string> _) = ParseXml(service, multiContent, toolArray);
-		ctx.AssertEqual(2, multi.Count, "XmlToolCalls: multiple calls found");
-
-		// No tags returns empty lists.
-		(List<ConversationToolCall> noTagsCalls, List<string> noTagsErrors) = ParseXml(service, "Just a regular response", toolArray);
-		ctx.AssertEqual(0, noTagsCalls.Count, "XmlToolCalls: no tags returns no calls");
-		ctx.AssertEqual(0, noTagsErrors.Count, "XmlToolCalls: no tags returns no errors");
-
-		// Unknown tool name yields an error.
-		string unknownTool = "<tool_call>{\"name\": \"unknown_tool\", \"arguments\": {}}</tool_call>";
-		(List<ConversationToolCall> unknownCalls, List<string> unknownErrors) = ParseXml(service, unknownTool, toolArray);
-		ctx.AssertEqual(0, unknownCalls.Count, "XmlToolCalls: unknown tool yields no calls");
-		ctx.Assert(unknownErrors.Count > 0, "XmlToolCalls: unknown tool yields error");
-
-		// Extra argument not in definition yields an error.
-		string extraArg = "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"a\", \"bogus\": \"b\"}}</tool_call>";
-		(List<ConversationToolCall> extraCalls, List<string> extraErrors) = ParseXml(service, extraArg, toolArray);
-		ctx.AssertEqual(0, extraCalls.Count, "XmlToolCalls: extra arg yields no calls");
-		ctx.Assert(extraErrors.Count > 0, "XmlToolCalls: extra arg yields error");
-
-		// Invalid JSON inside tags yields an error.
-		string invalidJson = "<tool_call>not valid json at all</tool_call>";
-		(List<ConversationToolCall> invalidCalls, List<string> invalidErrors) = ParseXml(service, invalidJson, toolArray);
-		ctx.AssertEqual(0, invalidCalls.Count, "XmlToolCalls: invalid JSON yields no calls");
-		ctx.Assert(invalidErrors.Count > 0, "XmlToolCalls: invalid JSON yields error");
-
-		// Empty arguments is valid.
-		string emptyArgs = "<tool_call>{\"name\": \"read_file\", \"arguments\": {}}</tool_call>";
-		(List<ConversationToolCall> emptyCalls, List<string> _) = ParseXml(service, emptyArgs, toolArray);
-		ctx.AssertEqual(1, emptyCalls.Count, "XmlToolCalls: empty args is valid");
-
-		// parameters key accepted as alias for arguments.
-		string paramsKey = "<tool_call>{\"name\": \"read_file\", \"parameters\": {\"path\": \"test\"}}</tool_call>";
-		(List<ConversationToolCall> paramsCalls, List<string> _) = ParseXml(service, paramsKey, toolArray);
-		ctx.AssertEqual(1, paramsCalls.Count, "XmlToolCalls: parameters key accepted");
-
-		// Case-insensitive tags.
-		string upperCase = "<TOOL_CALL>{\"name\": \"read_file\", \"arguments\": {\"path\": \"a\"}}</TOOL_CALL>";
-		(List<ConversationToolCall> upperCalls, List<string> _) = ParseXml(service, upperCase, toolArray);
-		ctx.AssertEqual(1, upperCalls.Count, "XmlToolCalls: case insensitive tags");
-
-		// Missing name field yields an error.
-		string noName = "<tool_call>{\"arguments\": {\"path\": \"a\"}}</tool_call>";
-		(List<ConversationToolCall> noNameCalls, List<string> noNameErrors) = ParseXml(service, noName, toolArray);
-		ctx.AssertEqual(0, noNameCalls.Count, "XmlToolCalls: missing name yields no calls");
-		ctx.Assert(noNameErrors.Count > 0, "XmlToolCalls: missing name yields error");
-
-		// Generated IDs start with xmltc_ prefix.
-		ctx.Assert(valid[0].Id.StartsWith("xmltc_"), "XmlToolCalls: generated ID has xmltc_ prefix");
-	}
-
-	private static void TestIsRateLimited(TestContext ctx, LlmService service)
+	private static void TestIsRateLimited(TestContext ctx)
 	{
 		Type[] types = [typeof(HttpResponseMessage), typeof(string)];
 
@@ -238,7 +87,7 @@ public static class LlmServiceTests
 		ctx.Assert(isRemaining, "IsRateLimited: X-RateLimit-Remaining 0 detected");
 	}
 
-	private static void TestParseRateLimitSecondsFromErrorBody(TestContext ctx, LlmService service)
+	private static void TestParseRateLimitSecondsFromErrorBody(TestContext ctx)
 	{
 		Type[] types = [typeof(string)];
 

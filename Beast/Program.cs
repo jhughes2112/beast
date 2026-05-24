@@ -47,7 +47,7 @@ public class Program
         List<string> agentSwitches = new List<string>();
         foreach (string sw in switches)
         {
-            if (sw != "/help" && sw != "/h" && sw != "/verbose")
+            if (sw != "/help" && sw != "/h" && sw != "/verbose" && sw != "/debug")
                 agentSwitches.Add(sw);
         }
 
@@ -78,7 +78,14 @@ public class Program
         Log log = new Log(verbose);
         CollapseMode initialMode = verbose ? CollapseMode.Verbose : CollapseMode.Minimized;
         IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayScreen(initialMode);
-        await using BeastApp app = new BeastApp("beastagent", messages, display, log);
+
+        // /debug — connect to an already-running agent on port 13131 (start Agent separately in VS).
+        bool useDebug = switches.Contains("/debug");
+
+        ILauncher agentContext = useDebug
+            ? (ILauncher)new LaunchDebug()
+            : new LaunchDocker("beastagent", log);
+        await using BeastApp app = new BeastApp(agentContext, messages, display, log);
         return await app.Run();
     }
 
@@ -93,6 +100,7 @@ public class Program
         Console.WriteLine("  <switch>          Any command switch forwarded to the agent container");
         Console.WriteLine("  -p <text>         Prompt text; everything after -p is treated as the prompt");
         Console.WriteLine("  --test            Run Beast transport tests locally");
+        Console.WriteLine("  --debug           Connect to an agent already running on port 13131 (for VS debugging).");
         Console.WriteLine("  --verbose         Show diagnostic debug output from the Agent");
         Console.WriteLine("  --help            Show this help");
     }

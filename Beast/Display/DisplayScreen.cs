@@ -586,7 +586,12 @@ public class DisplayScreen : IDisplay
             if (isStreaming || !_blockCache.TryGetValue(msg.Index, out BlockLayer? cached))
             {
                 layer = BuildBlockLayer(msg, w, plainText: isStreaming);
-                if (!isStreaming) _blockCache[msg.Index] = layer;
+                // Force streaming slots fully expanded so the user always sees content as it arrives.
+                // Once streaming ends the normal collapsed state takes over.
+                if (isStreaming)
+                    layer = new BlockLayer(layer.SlotIndex, layer.Collapsed, layer.Expanded, isExpanded: true);
+                else
+                    _blockCache[msg.Index] = layer;
             }
             else
             {
@@ -1362,27 +1367,6 @@ public class DisplayScreen : IDisplay
         return _lastView.ScrollOffset;
     }
 
-    // Records the slot we are about to toggle along with its current placement and the view's top source
-    // row. The next Redraw consumes these in ApplyToggleAnchor() once the layout has been rebuilt.
-    private void CaptureToggleAnchor(int slotIndex)
-    {
-        if (_lastStack == null || _lastView == null)
-        {
-            _pendingToggleSlot = null;
-            return;
-        }
-        BlockPlacement? p = _lastStack.PlacementOfSlot(slotIndex);
-        if (!p.HasValue)
-        {
-            _pendingToggleSlot = null;
-            return;
-        }
-        _pendingToggleSlot       = slotIndex;
-        _pendingToggleSlotTop    = p.Value.Top;
-        _pendingToggleSlotBottom = p.Value.Bottom;
-        _pendingToggleViewTop    = _lastView.ScrollOffset;
-    }
-
     private float ComputeScrollbarOpacity()
     {
         long now = Environment.TickCount64;
@@ -1512,11 +1496,37 @@ public class DisplayScreen : IDisplay
                         int? slot = SlotAtTerminalRow(inputEv.Row);
                         if (slot.HasValue)
                         {
-                            // Capture the block's current placement and the view's top source-row so the next
-                            // Redraw can pick the best anchoring strategy depending on where the block lives
-                            // relative to the viewport (above, intersecting, or below). This avoids the popping
-                            // that happens when an expanded block taller than the screen gets collapsed.
-                            CaptureToggleAnchor(slot.Value);
+                            // Compute the toggle anchor only when we have everything we need. All state
+                            // mutations happen together at the bottom — no early-outs, no partial writes.
+                            bool hasAnchor = false;
+                            int anchorSlotTop = 0;
+                            int anchorSlotBottom = 0;
+                            int anchorViewTop = 0;
+
+                            if (_lastStack != null && _lastView != null)
+                            {
+                                BlockPlacement? p = _lastStack.PlacementOfSlot(slot.Value);
+                                if (p.HasValue)
+                                {
+                                    hasAnchor        = true;
+                                    anchorSlotTop    = p.Value.Top;
+                                    anchorSlotBottom = p.Value.Bottom;
+                                    anchorViewTop    = _lastView.ScrollOffset;
+                                }
+                            }
+
+                            // Apply all mutations at once.
+                            if (hasAnchor)
+                            {
+                                _pendingToggleSlot       = slot.Value;
+                                _pendingToggleSlotTop    = anchorSlotTop;
+                                _pendingToggleSlotBottom = anchorSlotBottom;
+                                _pendingToggleViewTop    = anchorViewTop;
+                            }
+                            else
+                            {
+                                _pendingToggleSlot = null;
+                            }
                             _model?.ToggleCollapsed(slot.Value);
                             // Keep hover indicator after the click — mouse is still over the block.
                             _hoverSlot = slot.Value;

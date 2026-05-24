@@ -8,9 +8,10 @@ using System.Threading.Tasks;
 // Builds the tool dictionary with explicit registrations — no reflection.
 public static class ToolFactory
 {
-    private const int MaxResponseLength = 160000;
-    private const int TruncateHeadLength = 80000;
-    private const int TruncateTailLength = 80000;
+    private const int DefaultMaxChars = 8192;
+    private const int BashMaxChars = 4096;
+    private const int FileMaxLines = 1000;
+    private const int FileMaxChars = 8192;
 
     public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig)
     {
@@ -90,7 +91,7 @@ public static class ToolFactory
                 string command = Str(args, "command");
                 string? workingDir = StrOpt(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return Truncate(await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct));
+                return Truncate(await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct), BashMaxChars);
             });
 
         Register(tools, "read_file",
@@ -104,7 +105,7 @@ public static class ToolFactory
                 string filePath = Str(args, "file_path");
                 string offset = Str(args, "offset");
                 string lines = Str(args, "lines");
-                return Truncate(await FileTools.ReadFileAsync(filePath, offset, lines, ct));
+                return TruncateFile(await FileTools.ReadFileAsync(filePath, offset, lines, ct));
             });
 
         Register(tools, "write_file",
@@ -231,13 +232,42 @@ public static class ToolFactory
         return null;
     }
 
-    private static ToolResult Truncate(ToolResult result)
+    private static ToolResult Truncate(ToolResult result, int maxChars = DefaultMaxChars)
     {
-        if (result.MessageHandled || result.Response.Length <= MaxResponseLength) return result;
+        if (result.MessageHandled || result.Response.Length <= maxChars) return result;
+        string truncated = result.Response.Substring(0, maxChars);
+        return new ToolResult(truncated + $"\n[truncated — {result.Response.Length - maxChars} chars omitted]", result.MessageHandled);
+    }
 
-        int omittedCount = result.Response.Length - TruncateHeadLength - TruncateTailLength;
-        string head = result.Response.Substring(0, TruncateHeadLength);
-        string tail = result.Response.Substring(result.Response.Length - TruncateTailLength);
-        return new ToolResult($"{head}\n\n... [{omittedCount} characters omitted] ...\n\n{tail}", result.MessageHandled);
+    private static ToolResult TruncateFile(ToolResult result)
+    {
+        if (result.MessageHandled) return result;
+        string text = result.Response;
+
+        // Count lines and cut at FileMaxLines if needed.
+        int lineCount = 0;
+        int cutPos = -1;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\n')
+            {
+                lineCount++;
+                if (lineCount >= FileMaxLines)
+                {
+                    cutPos = i + 1;
+                    break;
+                }
+            }
+        }
+        if (cutPos >= 0 && cutPos < text.Length)
+        {
+            int remaining = text.Length - cutPos;
+            text = text.Substring(0, cutPos) + $"[truncated — {remaining} chars omitted]";
+        }
+
+        if (text.Length <= FileMaxChars) return new ToolResult(text, result.MessageHandled);
+        string head = text.Substring(0, FileMaxChars);
+        int omitted = text.Length - FileMaxChars;
+        return new ToolResult(head + $"\n[truncated — {omitted} chars omitted]", result.MessageHandled);
     }
 }
