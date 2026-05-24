@@ -19,16 +19,15 @@ Agent (Docker container)
 ## Quick Start
 
 ### Prerequisites
-- .NET 10 SDK
 - Docker Desktop
 - Local LLM or API keys (OpenAI, Anthropic, OpenRouter, etc)
 
 ### Build
 
 ```bat
-# Full build: Produces beast.exe and "beastagent" Docker image
 build.bat
 ```
+This produces beast.exe in the same directory (entirely using docker as the build environment) and also a local "beastagent" Docker image
 
 ### Run Tests
 The /p prompt mode removes the TUI and outputs directly to stdout for easy scripting, also useful when running tests.
