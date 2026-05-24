@@ -1,4 +1,4 @@
-![Beast](env/wwwroot/beast.jpg)
+![Beast](readme/beast.jpg)
 
 **It's your new favorite agent.**
 
