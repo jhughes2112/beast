@@ -144,7 +144,6 @@ public static class AnsiString
             {
                 // Word is longer than the line width: hard-break inside it.
                 // Re-walk wordBuf and emit chunks character by character.
-                int wVis = 0;
                 StringBuilder esc = new StringBuilder();
                 StringBuilder chunkEscState = new StringBuilder(currentEscState.ToString());
                 bool wInEsc = false;

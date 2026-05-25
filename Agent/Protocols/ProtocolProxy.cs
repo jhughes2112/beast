@@ -47,7 +47,7 @@ public class ProtocolProxy
             _protocol = await DetectProtocolAsync(_model, transport);
             if (_protocol == null)
             {
-                return ProtocolResult.PermanentFailure($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
+                return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
             }
         }
 

@@ -79,11 +79,12 @@ public class AgentOrchestrator
 
 		// Signal to Beast that stdin is open and we are ready to receive input.
 		_transport.Status("ready");
-		SendCompletionCandidates(conversation);
 		// Clear any busy state Beast may have set while replaying history.
 		_transport.Idle();
 
 		bool didSomething = false;
+		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
+		_transport.Completions(lastCompletionCandidates);
 
 		while (!cancellationToken.IsCancellationRequested && !wantsExit)
 		{
@@ -92,7 +93,7 @@ public class AgentOrchestrator
 			LlmService? service = null;
 			if (role != null)
 			{
-				service = _registry.GetServiceForRole(role, conversation.Model);
+				service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
 			}
 
 			bool canRunLLM = role != null && service != null;
@@ -142,22 +143,20 @@ public class AgentOrchestrator
 							break;
 						case "session":
 							if (args == "new")
-									{
-										SessionService.Save(conversation);
-										conversation = CreateFreshConversation(conversation.Role, out bundle);
-								  SendCompletionCandidates(conversation);
-										_transport.Status("New session started.");
-									}
+							{
+								SessionService.Save(conversation);
+								conversation = CreateFreshConversation(conversation.Role, out bundle);
+								_transport.Status("New session started.");
+							}
 							else if (args != null)
 							{
 								BeastSession? loaded = SessionService.Load(args);
 								if (loaded != null)
 								{
 									SessionService.Save(conversation);
-										conversation = loaded;
-										bundle = BuildBundle(conversation);
-									SendCompletionCandidates(conversation);
-										_transport.Status("Switched to session: " + loaded.DisplayName);
+									conversation = loaded;
+									bundle = BuildBundle(conversation);
+									_transport.Status("Switched to session: " + loaded.DisplayName);
 								}
 								else
 								{
@@ -167,22 +166,19 @@ public class AgentOrchestrator
 							break;
 						case "clear":
 							bundle.OnClear();
-							conversation.NeedsLlmAttention = false;
+							_registry.ResetAllAvailability();
 							_transport.Status("Session cleared.");
 							break;
 						case "reload":
 							_roleService.Reload();
 							ReloadRegistry();
-							canRunLLM = false;
-                            SendCompletionCandidates(conversation);
+							_registry.ResetAllAvailability();
 							_transport.Status("Config files reloaded.");
 							break;
 						case "role":
 							if (args != null)
 							{
 								conversation.Role = args;
-								canRunLLM = false;
-                               SendCompletionCandidates(conversation);
 								_transport.Status($"Role set to {args}");
 							}
 							break;
@@ -190,13 +186,12 @@ public class AgentOrchestrator
 							if (args != null)
 							{
 								conversation.Model = args;
-								canRunLLM = false;
-							  SendCompletionCandidates(conversation);
+								_registry.ResetAvailability(args);
 								_transport.Status($"Model set to {args}");
 								// Push a Stats frame immediately so Beast's status bar reflects the new model
 								// without waiting for the next LLM turn.
 								LLMRole? modelRole = _roleService.GetRole(conversation.Role);
-								LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, conversation.Model) : null;
+								LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, conversation.Model, conversation.GetUsedTokenCount()) : null;
 								SendStats(conversation, modelService?.Model.Config.ContextWindow ?? 0);
 							}
 							break;
@@ -217,32 +212,46 @@ public class AgentOrchestrator
 				}
 			}
 
-         // Re-resolve after commands so queued user text uses the current role/model immediately.
+			// Re-resolve after commands so queued user text uses the current role/model immediately.
 			role = _roleService.GetRole(conversation.Role);
 			service = null;
 			if (role != null)
 			{
-				service = _registry.GetServiceForRole(role, conversation.Model);
+				service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
 			}
 
 			canRunLLM = role != null && service != null;
-				if (canRunLLM)
-				{
-					if (role != null && role.SystemPrompt != conversation.GetSystemPrompt())
-					{
-						if (!string.IsNullOrEmpty(role.SystemPrompt))
-							bundle.OnSystemMessage(null!, role.SystemPrompt);
-					}
 
-					if (!string.IsNullOrEmpty(accumulatedText))
-					{
-						bundle.OnUserMessage(null!, accumulatedText);
-						conversation.NeedsLlmAttention = true;
-					}
+			string currentCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
+			if (currentCandidates != lastCompletionCandidates)
+			{
+				lastCompletionCandidates = currentCandidates;
+				_transport.Completions(currentCandidates);
+			}
+
+			if (canRunLLM && service!.Model.ConfigId != conversation.Model)
+			{
+				conversation.Model = service.Model.ConfigId;
+				SendStats(conversation, service.Model.Config.ContextWindow);
+			}
+			if (canRunLLM)
+			{
+				if (role != null && role.SystemPrompt != conversation.GetSystemPrompt())
+				{
+					if (!string.IsNullOrEmpty(role.SystemPrompt))
+						bundle.OnSystemMessage(null!, role.SystemPrompt);
 				}
 
+				if (!string.IsNullOrEmpty(accumulatedText))
+				{
+					bundle.OnUserMessage(null!, accumulatedText);
+				}
+			}
+
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
-				if (!cancellationToken.IsCancellationRequested && canRunLLM && conversation.NeedsLlmAttention)
+			if (!cancellationToken.IsCancellationRequested && conversation.NeedsLlmAttention())
+			{
+				if (canRunLLM)
 				{
 					_turnCts = new CancellationTokenSource();
 					try
@@ -252,16 +261,13 @@ public class AgentOrchestrator
 						bundle = turnBundle;
 						if (result.ExitReason == LlmExitReason.Failed)
 						{
-							conversation.NeedsLlmAttention = false;
-							_transport.Error(result.ErrorMessage + ": Change to a different /model and manually /compact, or /clear or start a /session new.");
-							exitCode = 1;
+							_transport.Error(result.ErrorMessage);
 						}
 						else exitCode = 0;
 					}
 					catch (OperationCanceledException) when (_turnCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
 					{
 						// User pressed Escape (sent /cancel) — abandon this turn and return to idle.
-						conversation.NeedsLlmAttention = false;
 						exitCode = 0;
 					}
 					finally
@@ -278,8 +284,30 @@ public class AgentOrchestrator
 						_transport.Idle();
 						didSomething = false;
 					}
-					await Task.Delay(10, cancellationToken);
+
+					int delayMs = 10;
+					if (role != null)
+					{
+						DateTimeOffset earliest = _registry.GetEarliestAvailableTime(role);
+						if (earliest != DateTimeOffset.MinValue && earliest != DateTimeOffset.MaxValue)
+						{
+							int waitMs = (int)Math.Ceiling((earliest - DateTimeOffset.UtcNow).TotalMilliseconds);
+							if (waitMs > delayMs) delayMs = waitMs;
+						}
+					}
+
+					await Task.Delay(delayMs, cancellationToken);
 				}
+			}
+			else
+			{
+				if (didSomething)
+				{
+					_transport.Idle();
+					didSomething = false;
+				}
+				await Task.Delay(10, cancellationToken);
+			}
 		}
 
 		SessionService.Save(conversation);
@@ -353,7 +381,6 @@ public class AgentOrchestrator
 		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, tools, CompactionReserveTokens, _transport, cancellationToken);
 		if (result.Success)
 		{
-			conversation.NeedsLlmAttention = false;
 			SendStats(conversation, service.Model.Config.ContextWindow);
 		}
 		if (result.ExitReason == LlmExitReason.ContextFull)
@@ -441,24 +468,16 @@ public class AgentOrchestrator
 				}
 			}
 
-				_settings.Settings.LastSessionId = fresh.Id;
-					_settings.SaveSettings();
+			_settings.Settings.LastSessionId = fresh.Id;
+			_settings.SaveSettings();
 
-					_transport.Status("[Compaction] Complete.");
-					return (result, fresh, freshBundle);
-				}
+			_transport.Status("[Compaction] Complete.");
+			return (result, fresh, freshBundle);
+		}
 
-				conversation.RestoreSnapshot(snapshot);
-				_transport.Status("[Compaction] Failed.");
-				return (result, conversation, bundle);
-			}
-
-   // Pushes the current completion candidates to Beast as a JSON array.
-	private void SendCompletionCandidates(BeastSession conversation)
-	{
-		List<string> candidates = BuildCompletionCandidates(conversation);
-		string json = JsonSerializer.Serialize(candidates);
-		_transport.Completions(json);
+		conversation.RestoreSnapshot(snapshot);
+		_transport.Status("[Compaction] Failed.");
+		return (result, conversation, bundle);
 	}
 
 	// Returns all completable tokens: slash commands and session ids.
@@ -476,7 +495,7 @@ public class AgentOrchestrator
 				"/test"
 		};
 
-        LLMRole? activeRole = string.IsNullOrEmpty(conversation.Role) ? null : _roleService.GetRole(conversation.Role);
+		LLMRole? activeRole = string.IsNullOrEmpty(conversation.Role) ? null : _roleService.GetRole(conversation.Role);
 		LlmService? activeService = null;
 		if (activeRole != null)
 		{
@@ -488,7 +507,7 @@ public class AgentOrchestrator
 
 		if (activeRole != null)
 		{
-            string currentModelId = activeService != null ? activeService.Model.ConfigId : conversation.Model;
+			string currentModelId = activeService != null ? activeService.Model.ConfigId : conversation.Model;
 			AddCurrentFirst(candidates, "/model ", currentModelId, activeRole.Models);
 		}
 

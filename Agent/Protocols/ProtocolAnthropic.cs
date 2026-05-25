@@ -136,6 +136,10 @@ public class ProtocolAnthropic : IProtocol
         {
             throw;
         }
+        catch (HttpRequestException ex)
+        {
+            return ProtocolResult.Transient(ex.Message);
+        }
         catch (Exception ex)
         {
             return ProtocolResult.Failed(ex.Message);
@@ -173,12 +177,9 @@ public class ProtocolAnthropic : IProtocol
         }
 
         int statusCode = (int)httpResponse.StatusCode;
-        if (statusCode >= 500 || statusCode == 401 || statusCode == 403)
-        {
-            return ProtocolResult.PermanentFailure($"HTTP {statusCode}: {responseBody}");
-        }
-
-        return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+        if (statusCode == 401 || statusCode == 403)
+            return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+        return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
     }
 
     private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerAnthropic listener, IProtocolListener bundle, ITransportServer transport, CancellationToken cancellationToken)
@@ -199,6 +200,10 @@ public class ProtocolAnthropic : IProtocol
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            return ProtocolResult.Transient(ex.Message);
         }
         catch (Exception ex)
         {
@@ -224,15 +229,10 @@ public class ProtocolAnthropic : IProtocol
                 return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
             }
 
-            if (statusCode >= 500 || statusCode == 401 || statusCode == 403)
-            {
-                return ProtocolResult.PermanentFailure($"HTTP {statusCode}: {errorBody}");
-            }
-
-            return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
+            if (statusCode == 401 || statusCode == 403)
+                return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
+            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}");
         }
-
-        // Accumulate full native content blocks per index so we can write the final native
         // assistant message back into Anthropic state preserving block identity and signatures.
         Dictionary<int, JsonObject> blocksByIndex = new Dictionary<int, JsonObject>();
         Dictionary<int, StringBuilder> textBuilders = new Dictionary<int, StringBuilder>();

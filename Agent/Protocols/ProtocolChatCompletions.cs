@@ -68,6 +68,10 @@ public class ProtocolChatCompletions : IProtocol
             {
                 throw;
             }
+            catch (HttpRequestException ex)
+            {
+                return ProtocolResult.Transient(ex.Message);
+            }
             catch (Exception ex)
             {
                 return ProtocolResult.Failed(ex.Message);
@@ -125,12 +129,9 @@ public class ProtocolChatCompletions : IProtocol
             }
 
             int statusCode = (int)httpResponse.StatusCode;
-            if (statusCode >= 500 || statusCode == 401 || statusCode == 403)
-            {
-                return ProtocolResult.PermanentFailure($"HTTP {statusCode}: {responseBody}");
-            }
-
-            return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+            if (statusCode == 401 || statusCode == 403)
+                return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+            return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
         }
     }
 
@@ -280,6 +281,10 @@ public class ProtocolChatCompletions : IProtocol
         {
             throw;
         }
+        catch (HttpRequestException ex)
+        {
+            return ProtocolResult.Transient(ex.Message);
+        }
         catch (Exception ex)
         {
             return ProtocolResult.Failed(ex.Message);
@@ -304,12 +309,9 @@ public class ProtocolChatCompletions : IProtocol
                 return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
             }
 
-            if (statusCode >= 500 || statusCode == 401 || statusCode == 403)
-            {
-                return ProtocolResult.PermanentFailure($"HTTP {statusCode}: {errorBody}");
-            }
-
-            return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
+            if (statusCode == 401 || statusCode == 403)
+                return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
+            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}");
         }
 
         StringBuilder contentBuilder = new StringBuilder();

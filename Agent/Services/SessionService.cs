@@ -14,6 +14,7 @@ public static class SessionService
 
 	public static void Save(BeastSession data)
 	{
+		if (data.IsEmpty) return;
 		Directory.CreateDirectory(SessionsDir);
 		string path = Path.Combine(SessionsDir, data.Id + ".json");
 		string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });

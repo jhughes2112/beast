@@ -36,6 +36,7 @@ public class LlmService
     private DateTimeOffset _availableAt = DateTimeOffset.MinValue;
     public LlmModel Model => _model;
     public bool IsAvailable => DateTimeOffset.UtcNow >= _availableAt;
+    public DateTimeOffset AvailableAt => _availableAt;
 
     public LlmService(LlmModel model)
     {
@@ -47,6 +48,13 @@ public class LlmService
     {
         _model = model;
         _handler = new ProtocolProxy(model);
+    }
+
+    // Clears any down-timer so this service becomes a candidate again.
+    // Call when the user explicitly indicates intent to retry (new input, /reload, /model, /clear).
+    public void ResetAvailability()
+    {
+        _availableAt = DateTimeOffset.MinValue;
     }
 
     public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
@@ -127,14 +135,15 @@ public class LlmService
                     finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited, retry after {_availableAt:u}");
                     break;
                 }
-                else if (callResult.Outcome == ProtocolCallOutcome.PermanentFailure)
+                else if (callResult.Outcome == ProtocolCallOutcome.Transient)
                 {
-                    _availableAt = DateTimeOffset.MaxValue;
+                    _availableAt = DateTimeOffset.UtcNow.AddSeconds(30);
                     finalResult = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
                     break;
                 }
                 else
                 {
+                    _availableAt = DateTimeOffset.MaxValue;
                     finalResult = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
                     break;
                 }

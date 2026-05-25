@@ -68,12 +68,13 @@ public class LlmRegistry
 	}
 
 	// Finds the first available service from the role's preferred model list, in order.
-	public LlmService? GetServiceForRole(LLMRole role, string configId)
+	// Skips models that are unavailable or whose context window is too small for usedTokens.
+	public LlmService? GetServiceForRole(LLMRole role, string configId, int usedTokens = 0)
 	{
 		LlmService? service = null;
 		if (role.Models.Contains(configId))  // if the current model is in the list, continue using it
 		{
-			if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable)
+			if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
 			{
 				service = svc;
 			}
@@ -82,7 +83,7 @@ public class LlmRegistry
 		{
 			foreach (string cid in role.Models)  // nope, try them in order
 			{
-				if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable)
+				if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
 				{
 					service = svc;
 					break;
@@ -108,6 +109,43 @@ public class LlmRegistry
 	{
 		_services.TryGetValue(configId, out LlmService? svc);
 		return svc;
+	}
+
+	// Returns the earliest time at which any service in the role's model list will become available.
+	// Returns DateTimeOffset.MinValue if at least one service is already available.
+	// Returns DateTimeOffset.MaxValue if all services are permanently down.
+	public DateTimeOffset GetEarliestAvailableTime(LLMRole role)
+	{
+		DateTimeOffset earliest = DateTimeOffset.MaxValue;
+		foreach (string cid in role.Models)
+		{
+			if (_services.TryGetValue(cid, out LlmService? svc))
+			{
+				if (svc.IsAvailable) return DateTimeOffset.MinValue;
+				if (svc.AvailableAt < earliest) earliest = svc.AvailableAt;
+			}
+		}
+		return earliest;
+	}
+
+
+	// Call when the user signals intent to retry: /reload, /clear.
+	public void ResetAllAvailability()
+	{
+		foreach (LlmService svc in _services.Values)
+		{
+			svc.ResetAvailability();
+		}
+	}
+
+	// Resets availability on a single service by model config id.
+	// Call when the user explicitly selects a specific model via /model.
+	public void ResetAvailability(string configId)
+	{
+		if (_services.TryGetValue(configId, out LlmService? svc))
+		{
+			svc.ResetAvailability();
+		}
 	}
 
 	private Tool[] BuildToolsForRole(LLMRole role)

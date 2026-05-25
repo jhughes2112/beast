@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -44,11 +45,46 @@ public class BeastSession
     [JsonPropertyName("totalCost")]
     public decimal TotalCost { get; set; }
 
-    // True when there is uncommitted user/tool input awaiting an LLM response.
-    // Set by the orchestrator when user input arrives or tool results are recorded;
-    // cleared when the LLM turn completes.
+    // Returns true when the LLM has pending work: either the last message is a user turn,
+    // or there is an assistant tool_call ID with no matching tool result anywhere in state.
+    public bool NeedsLlmAttention()
+    {
+        int count = ChatCompletionsState.Count;
+        if (count == 0) return false;
+
+        string? lastRole = ChatCompletionsState[count - 1]?["role"]?.GetValue<string>();
+        if (lastRole == "user") return true;
+
+        // Collect all tool result IDs present in state.
+        System.Collections.Generic.HashSet<string> satisfiedIds = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+        foreach (JsonNode? node in ChatCompletionsState)
+        {
+            if (node != null && node["role"]?.GetValue<string>() == "tool")
+            {
+                string? id = node["tool_call_id"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(id)) satisfiedIds.Add(id);
+            }
+        }
+
+        // Check if any assistant tool_call lacks a result.
+        foreach (JsonNode? node in ChatCompletionsState)
+        {
+            if (node == null || node["role"]?.GetValue<string>() != "assistant") continue;
+            JsonArray? toolCalls = node["tool_calls"]?.AsArray();
+            if (toolCalls == null) continue;
+            foreach (JsonNode? tc in toolCalls)
+            {
+                string? id = tc?["id"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(id) && !satisfiedIds.Contains(id)) return true;
+            }
+        }
+
+        return false;
+    }
+
+    // True when the session has no meaningful content worth persisting.
     [JsonIgnore]
-    public bool NeedsLlmAttention { get; set; }
+    public bool IsEmpty => string.IsNullOrEmpty(DisplayName);
 
     [JsonConstructor]
     public BeastSession(

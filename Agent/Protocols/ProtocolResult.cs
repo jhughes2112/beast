@@ -5,8 +5,8 @@ public enum ProtocolCallOutcome
 {
     Success,     // A well-formed assistant turn was received and written to session state.
     RateLimited, // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
-    Failed,      // A transient or unclassified error. The provider may be retried later.
-    PermanentFailure // An unrecoverable error (auth failure, permanent 5xx). The provider should not be retried.
+    Transient,   // A recoverable infrastructure error (network failure, timeout, 5xx). LlmService backs off briefly then retries.
+    Failed,      // An unrecoverable error (auth failure, bad request). LlmService marks the model down until the user resets.
 }
 
 // Normalised payload returned on ProviderCallOutcome.Success.
@@ -72,13 +72,13 @@ public class ProtocolResult
         return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "");
     }
 
+    public static ProtocolResult Transient(string errorMessage)
+    {
+        return new ProtocolResult(ProtocolCallOutcome.Transient, null, null, errorMessage);
+    }
+
     public static ProtocolResult Failed(string errorMessage)
     {
         return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage);
-    }
-
-    public static ProtocolResult PermanentFailure(string errorMessage)
-    {
-        return new ProtocolResult(ProtocolCallOutcome.PermanentFailure, null, null, errorMessage);
     }
 }
