@@ -128,7 +128,7 @@ public static class PerModelLlmTests
                 }
             }
 
-            if (!result.Success)
+            if (result.ExitReason != LlmExitReason.Completed)
             {
                 ctx.Log($"        SKIP [{role.Name}/{modelId}]: {result.ErrorMessage}");
                 return;

@@ -15,7 +15,6 @@ public enum LlmExitReason
 public class LlmResult
 {
     public LlmExitReason ExitReason { get; }
-    public bool Success => ExitReason == LlmExitReason.Completed || ExitReason == LlmExitReason.ContextFull;
     public string ErrorMessage { get; }
 
     public LlmResult(LlmExitReason exitReason, string errorMessage)

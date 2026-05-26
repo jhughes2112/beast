@@ -69,24 +69,27 @@ public class LlmRegistry
 
 	// Finds the first available service from the role's preferred model list, in order.
 	// Skips models that are unavailable or whose context window is too small for usedTokens.
-	public LlmService? GetServiceForRole(LLMRole role, string configId, int usedTokens = 0)
+	public LlmService? GetServiceForRole(LLMRole? role, string configId, int usedTokens = 0)
 	{
 		LlmService? service = null;
-		if (role.Models.Contains(configId))  // if the current model is in the list, continue using it
+		if (role!=null)
 		{
-			if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
+			if (role.Models.Contains(configId))  // if the current model is in the list, continue using it
 			{
-				service = svc;
-			}
-		}
-		if (service == null)
-		{
-			foreach (string cid in role.Models)  // nope, try them in order
-			{
-				if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
+				if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
 				{
 					service = svc;
-					break;
+				}
+			}
+			if (service == null)
+			{
+				foreach (string cid in role.Models)  // nope, try them in order
+				{
+					if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
+					{
+						service = svc;
+						break;
+					}
 				}
 			}
 		}
@@ -111,18 +114,19 @@ public class LlmRegistry
 		return svc;
 	}
 
-	// Returns the earliest time at which any service in the role's model list will become available.
-	// Returns DateTimeOffset.MinValue if at least one service is already available.
-	// Returns DateTimeOffset.MaxValue if all services are permanently down.
-	public DateTimeOffset GetEarliestAvailableTime(LLMRole role)
+	// Returns milliseconds until the earliest service in the role's model list becomes available.
+	// Returns 0 if at least one service is already available.
+	// Returns long.MaxValue if all services are permanently down.
+	public long GetMillisecondsUntilAvailable(LLMRole role)
 	{
-		DateTimeOffset earliest = DateTimeOffset.MaxValue;
+		long earliest = long.MaxValue;
 		foreach (string cid in role.Models)
 		{
 			if (_services.TryGetValue(cid, out LlmService? svc))
 			{
-				if (svc.IsAvailable) return DateTimeOffset.MinValue;
-				if (svc.AvailableAt < earliest) earliest = svc.AvailableAt;
+				if (svc.IsAvailable) return 0;
+				long ms = (long)Math.Ceiling((svc.AvailableAt - DateTimeOffset.UtcNow).TotalMilliseconds);
+				if (ms < earliest) earliest = ms;
 			}
 		}
 		return earliest;

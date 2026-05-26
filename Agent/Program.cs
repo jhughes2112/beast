@@ -60,23 +60,21 @@ public class Program
 			await wsServer.AcceptAsync(cts.Token);
 			transport = wsServer;
 		}
-		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport);
+		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts.Token);
 
-		int exitCode;
 		try
 		{
-			exitCode = await orchestrator.RunAsync(cts.Token);
+			await orchestrator.RunAsync();
 		}
 		catch (OperationCanceledException)
 		{
-			exitCode = 0;
 		}
 		catch (Exception ex)
 		{
 			Console.Error.WriteLine($"Agent terminated with error: {ex.Message}");
-			exitCode = 1;
+			return 1;
 		}
 
-		return exitCode;
+		return 0;
 	}
 }
