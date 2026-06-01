@@ -1,4 +1,6 @@
 using System;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -11,7 +13,7 @@ using System.Threading.Tasks;
 public class TransportWebSocketServer : ITransportServer, IDisposable
 {
     private readonly int _port;
-    private readonly HttpListener _listener = new HttpListener();
+    private HttpListener _listener = new HttpListener();
     private WebSocket? _ws;
     private readonly Channel<string> _frames = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
     private readonly Channel<string> _outbound = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
@@ -23,12 +25,50 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         _port = port;
     }
 
+    // Registers the http://*:{port}/ URL ACL via an elevated netsh call (UAC prompt).
+    // Returns true if the ACL was added successfully, false if the user cancelled.
+    private bool EnsureUrlAcl()
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "netsh",
+            Arguments = $"http add urlacl url=http://*:{_port}/ user=Everyone",
+            Verb = "runas",
+            UseShellExecute = true,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        try
+        {
+            using Process p = Process.Start(psi)!;
+            p.WaitForExit();
+            return p.ExitCode == 0;
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
+    }
+
     // Starts listening, accepts the first client, begins the receive loop.
     // Blocks until a client connects.
     public async Task AcceptAsync(CancellationToken cancellationToken)
     {
         _listener.Prefixes.Add($"http://*:{_port}/");
-        _listener.Start();
+        try
+        {
+            _listener.Start();
+        }
+        catch (HttpListenerException ex) when (ex.ErrorCode == 5 && OperatingSystem.IsWindows())
+        {
+            Console.Error.WriteLine("[ws-server] Access denied — requesting URL ACL registration (UAC prompt)...");
+            if (!EnsureUrlAcl())
+                throw new InvalidOperationException($"Could not register URL ACL for port {_port}. User cancelled UAC prompt.");
+            // The failed Start() leaves the listener in a broken state; replace it.
+            _listener = new HttpListener();
+            _listener.Prefixes.Add($"http://*:{_port}/");
+            _listener.Start();
+        }
         Console.Error.WriteLine($"[ws-server] Listening on port {_port}");
 
         HttpListenerContext ctx = await _listener.GetContextAsync();
