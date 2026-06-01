@@ -14,6 +14,7 @@ public static class SessionService
 
 	public static void Save(BeastSession data)
 	{
+		if (data.Ephemeral) return;
 		if (data.IsEmpty) return;
 		Directory.CreateDirectory(SessionsDir);
 		string path = Path.Combine(SessionsDir, data.Id + ".json");

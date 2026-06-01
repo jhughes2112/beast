@@ -196,8 +196,11 @@ public class AgentOrchestrator
 		finally
 		{
 			SessionService.Save(conversation);
-			_settings.Settings.LastSessionId = conversation.Id;
-			_settings.SaveSettings();
+			if (!conversation.Ephemeral)
+			{
+				_settings.Settings.LastSessionId = conversation.Id;
+				_settings.SaveSettings();
+			}
 		}
 	}
 
@@ -301,6 +304,7 @@ public class AgentOrchestrator
 			string newDisplayName = BeastSession.IncrementDisplayName(conversation.DisplayName);
 			BeastSession fresh = BeastSession.CreateNew(Guid.NewGuid().ToString(), conversation.Role, newDisplayName);
 			fresh.Model = conversation.Model;
+			fresh.Ephemeral = conversation.Ephemeral;
 			ListenerBundle freshBundle = BuildBundle(fresh);
 
 			// System prompt first.
@@ -348,8 +352,11 @@ public class AgentOrchestrator
 				}
 			}
 
-			_settings.Settings.LastSessionId = fresh.Id;
-			_settings.SaveSettings();
+			if (!fresh.Ephemeral)
+			{
+				_settings.Settings.LastSessionId = fresh.Id;
+				_settings.SaveSettings();
+			}
 			_cachedSessions = SessionService.List();
 
 			_transport.Status("[Compaction] Complete.");
@@ -431,6 +438,14 @@ public class AgentOrchestrator
 					_cachedSessions = SessionService.List();
 					_transport.Status("New session started.");
 				}
+				else if (args == "none")
+				{
+					SessionService.Save(conversation);
+					conversation = CreateFreshConversation(conversation.Role, out bundle);
+					conversation.Ephemeral = true;
+					_cachedSessions = SessionService.List();
+					_transport.Status("Ephemeral session started (not saved).");
+				}
 				else if (args != null)
 				{
 					// Accept either the display name or the raw id.
@@ -495,7 +510,7 @@ public class AgentOrchestrator
 				}
 				break;
 			case "help":
-				_transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /test, /quit");
+				_transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
 				break;
 			case "test":
 				await RunTestsAsync(args);
@@ -536,10 +551,12 @@ public class AgentOrchestrator
 		if (activeRole != null)
 		{
 			string currentModelId = activeService != null ? activeService.Model.ConfigId : conversation.Model;
-			AddCurrentFirst(candidates, "/model ", currentModelId, activeRole.Models);
+			List<string> enabledModels = _registry.GetEnabledModelsForRole(activeRole);
+			AddCurrentFirst(candidates, "/model ", currentModelId, enabledModels);
 		}
 
 		candidates.Add("/session new");
+		candidates.Add("/session none");
 		foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
 		{
 			if (!string.IsNullOrEmpty(s.displayName))

@@ -107,6 +107,22 @@ public class LlmRegistry
 		return _models.ContainsKey(configId);
 	}
 
+	// Returns the role's models filtered to those currently registered (enabled in settings),
+	// preserving the role's preference order. Disabled or unknown models are dropped so callers
+	// like the /model picker never offer a model the agent cannot actually use.
+	public List<string> GetEnabledModelsForRole(LLMRole role)
+	{
+		List<string> enabled = new List<string>();
+		foreach (string configId in role.Models)
+		{
+			if (_models.ContainsKey(configId))
+			{
+				enabled.Add(configId);
+			}
+		}
+		return enabled;
+	}
+
 	// Returns the live service for a specific model ID, or null if not registered.
 	public LlmService? GetServiceById(string configId)
 	{

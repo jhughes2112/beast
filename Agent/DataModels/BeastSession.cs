@@ -86,6 +86,11 @@ public class BeastSession
     [JsonIgnore]
     public bool IsEmpty => string.IsNullOrEmpty(DisplayName);
 
+    // When true, the session is strictly in-memory: never saved to disk and never set as the
+    // resume target. Used by "/session none" for benchmarks and throwaway queries.
+    [JsonIgnore]
+    public bool Ephemeral { get; set; }
+
     [JsonConstructor]
     public BeastSession(
         string id,
