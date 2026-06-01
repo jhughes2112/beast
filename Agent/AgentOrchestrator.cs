@@ -79,11 +79,6 @@ public class AgentOrchestrator
 
 		Task readerTask = ReadInputAsync();
 
-		// Signal to Beast that stdin is open and we are ready to receive input.
-		_transport.Status("ready");
-		// Clear any busy state Beast may have set while replaying history.
-		_transport.Idle();
-
 		_cachedSessions = SessionService.List();
 		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
 		_transport.Completions(lastCompletionCandidates);
@@ -128,13 +123,21 @@ public class AgentOrchestrator
 				if (_wantsCompact)
 				{
 					_wantsCompact = false;
-					_transport.Status("Running compaction...");
-					(LlmResult compactResult, BeastSession compactedSession, ListenerBundle compactedBundle) = await CompactAsync(conversation, bundle, service!, role!);
-					conversation = compactedSession;
-					bundle = compactedBundle;
+					try
+					{
+						_transport.Busy();
+						_transport.Status("Running compaction...");
+						(LlmResult compactResult, BeastSession compactedSession, ListenerBundle compactedBundle) = await CompactAsync(conversation, bundle, service!, role!);
+						conversation = compactedSession;
+						bundle = compactedBundle;
+					}
+					finally
+					{
+						_transport.Idle();
 
-					// Re-resolve after compaction because the service may have changed
-					service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
+						// Re-resolve after compaction because the service may have changed
+						service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
+					}
 				}
 			}
 
@@ -146,6 +149,7 @@ public class AgentOrchestrator
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
 			if (!_cancellationToken.IsCancellationRequested && conversation.NeedsLlmAttention() && service!=null)
 			{
+				_transport.Busy();
 				_turnCts = new CancellationTokenSource();
 				try
 				{
@@ -159,12 +163,10 @@ public class AgentOrchestrator
 				}
 				finally
 				{
+					_transport.Idle();
 					_turnCts.Dispose();
 					_turnCts = null;
 				}
-
-				if (inputQueue.IsEmpty)  // if a new message is inbound, do not tell the client it is idle.  Still race condition, but let's make an effort.
-					_transport.Idle();
 			}
 
 			if (role != null)
@@ -455,14 +457,18 @@ public class AgentOrchestrator
 			case "model":
 				if (args != null)
 				{
-					conversation.Model = args;
-					_registry.ResetAvailability(args);
-					_transport.Status($"Model set to {args}");
-					// Push a Stats frame immediately so Beast's status bar reflects the new model
-					// without waiting for the next LLM turn.
 					LLMRole? modelRole = _roleService.GetRole(conversation.Role);
-					LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, conversation.Model, conversation.GetUsedTokenCount()) : null;
-					SendStats(conversation, modelService?.Model.Config.ContextWindow ?? 0);
+					LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, conversation.GetUsedTokenCount()) : null;
+					if (modelService == null)
+					{
+						_transport.Error($"Unknown model: {args}");
+					}
+					else
+					{
+						conversation.Model = args;
+						_registry.ResetAvailability(args);
+						_transport.Status($"Model set to {args}");
+					}
 				}
 				break;
 			case "help":

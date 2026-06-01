@@ -1556,12 +1556,6 @@ public class DisplayScreen : IDisplay
                 {
                     if (history.Count == 0 || history[history.Count - 1] != text)
                         history.Add(text);
-                    lock (_consoleLock)
-                    {
-                        _agentBusy = true;
-                        _busyStartTick = Environment.TickCount64;
-                        _busyWordIndex++;
-                    }
                     _ = SendAsync(text);
                 }
 

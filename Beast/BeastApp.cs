@@ -216,6 +216,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 // Debug frames are suppressed on the Beast side; they appear in the agent's own console.
                 break;
 
+            case FrameType.Busy:
+                _display.SetAgentBusy(true);
+                break;
+
             case FrameType.Idle:
                 _display.SetAgentBusy(false);
                 PlayIdleSound();

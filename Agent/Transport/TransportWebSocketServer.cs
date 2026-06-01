@@ -19,6 +19,7 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
     private readonly Channel<string> _outbound = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
     private Task? _writeTask;
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+    private bool? _lastBusyState;  // null = never sent; true = Busy sent; false = Idle sent
 
     public TransportWebSocketServer(int port)
     {
@@ -111,6 +112,12 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
 
     public void Send(FrameType type, string text)
     {
+        if (type == FrameType.Busy || type == FrameType.Idle)
+        {
+            bool wantBusy = type == FrameType.Busy;
+            if (_lastBusyState == wantBusy) return;
+            _lastBusyState = wantBusy;
+        }
         _outbound.Writer.TryWrite($"{(byte)type}|{text}");
     }
 

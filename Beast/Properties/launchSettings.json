@@ -2,8 +2,8 @@
   "profiles": {
     "Beast": {
       "commandName": "Project",
-      "commandLineArgs": "/debug",
-      "workingDirectory": "d:\\beast"
+      "commandLineArgs": "--debug",
+      "workingDirectory": "D:\\Github\\beast"
     }
   }
 }

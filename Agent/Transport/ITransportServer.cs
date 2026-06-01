@@ -22,7 +22,8 @@ public enum FrameType : byte
     Clear = 13,       // clears the client's mirrored conversation memory/display
     User = 14,        // user message; used when replaying history to the client
     Stats = 15,       // JSON stats payload: model, promptTokens, completionTokens, totalCost
-    Idle = 16         // agent is waiting for user input (not processing anything)
+    Idle = 16,        // agent is waiting for user input (not processing anything)
+    Busy = 17         // agent is actively processing
 }
 
 // Single-character tags that identify the type of a streaming block.
@@ -67,6 +68,7 @@ public interface ITransportServer : IStreamingMessage
     void User(string text) => Send(FrameType.User, text);
     void Stats(string json) => Send(FrameType.Stats, json);
     void Idle() => Send(FrameType.Idle, string.Empty);
+    void Busy() => Send(FrameType.Busy, string.Empty);
     void Clear() => Send(FrameType.Clear, string.Empty);
 
     // Streaming: bracket a sequence of incremental chunks with start/end frames.
