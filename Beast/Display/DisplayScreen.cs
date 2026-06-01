@@ -24,7 +24,7 @@ public class DisplayScreen : IDisplay
 
     private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "compact", "clear", "reload", "role", "model", "session", "test", "quit", "ping", "history", "cancel"
+        "compact", "clear", "reload", "role", "model", "session", "test", "quit", "cancel"
     };
 
     private static class Palette
@@ -175,8 +175,6 @@ public class DisplayScreen : IDisplay
     {
         "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙"
     };
-
-    public bool RequestHistory => true;
 
     public DisplayScreen(CollapseMode initialMode)
     {
@@ -1387,6 +1385,11 @@ public class DisplayScreen : IDisplay
         int historyIndex = -1;
         string historySavedDraft = "";
 
+        // Large clipboard pastes are replaced in the input line with a short placeholder key;
+        // the full content is held here and substituted back in when the line is committed.
+        Dictionary<string, string> pasteBuffers = new Dictionary<string, string>();
+        int pasteSeq = 0;
+
         SetInput("", 0);
 
         while (!token.IsCancellationRequested)
@@ -1536,6 +1539,19 @@ public class DisplayScreen : IDisplay
                 continue;
             }
 
+            if (inputEv.Type == InputEventType.Paste)
+            {
+                lock (_consoleLock)
+                {
+                    inCompletion = false;
+                    string insert = BuildPasteInsert(inputEv.Text, pasteBuffers, ref pasteSeq);
+                    inputBuffer.Insert(cursorPos, insert);
+                    cursorPos += insert.Length;
+                    SetInput(inputBuffer.ToString(), cursorPos);
+                }
+                continue;
+            }
+
             ConsoleKeyInfo key = inputEv.Key;
             bool ctrl  = key.Modifiers.HasFlag(ConsoleModifiers.Control);
             bool alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
@@ -1544,6 +1560,9 @@ public class DisplayScreen : IDisplay
             if (key.Key == ConsoleKey.Enter && !shift && !alt)
             {
                 string text = inputBuffer.ToString().TrimEnd('\n');
+                foreach ((string placeholder, string content) in pasteBuffers)
+                    text = text.Replace(placeholder, content);
+                pasteBuffers.Clear();
                 inputBuffer.Clear();
                 cursorPos = 0;
                 matchIndex = 0;
@@ -1797,8 +1816,9 @@ public class DisplayScreen : IDisplay
                 if (!string.IsNullOrEmpty(clip))
                 {
                     inCompletion = false;
-                    inputBuffer.Insert(cursorPos, clip);
-                    cursorPos += clip.Length;
+                    string insert = BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
+                    inputBuffer.Insert(cursorPos, insert);
+                    cursorPos += insert.Length;
                     SetInput(inputBuffer.ToString(), cursorPos);
                 }
             }
@@ -1833,6 +1853,20 @@ public class DisplayScreen : IDisplay
                 SetInput(inputBuffer.ToString(), cursorPos);
             }
         }
+    }
+
+    // Builds the text to insert at the cursor for a paste. Content under 256 characters is inserted
+    // inline (embedded newlines preserved as literal text); larger content is stored under a short
+    // placeholder key that is expanded back to the full content when the line is committed.
+    private static string BuildPasteInsert(string content, Dictionary<string, string> pasteBuffers, ref int pasteSeq)
+    {
+        if (content.Length < 256)
+            return content;
+
+        int byteCount = Encoding.UTF8.GetByteCount(content);
+        string placeholder = $"[Pasted {byteCount} bytes from clipboard #{++pasteSeq}]";
+        pasteBuffers[placeholder] = content;
+        return placeholder;
     }
 
     private static int WordStartBefore(string text, int pos)

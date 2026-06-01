@@ -8,7 +8,6 @@ using System.Threading.Tasks;
 // SetSendAsync wires up the user input path (no-op for non-interactive displays).
 public interface IDisplay
 {
-    bool RequestHistory { get; }
     void Attach(ConversationModel model);
     void SetStatus(string text);
     void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens);

@@ -29,8 +29,6 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private Dictionary<int, FrameType> _slotTypes = new Dictionary<int, FrameType>();     // slot → type
     private Dictionary<FrameType, int> _pendingCommit = new Dictionary<FrameType, int>();  // type → slot to reuse
     private string _streamContent = "";
-    private string? _pingNonce;
-    private bool _readyFired;
     // Inbound frames queued by ReadLoop and drained under _consoleLock by DrainFrameQueue().
     private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string Content)> _frameQueue
         = new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string)>();
@@ -185,22 +183,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
             case FrameType.Status:
                 if (content == "ready")
                 {
-                    _pingNonce = Guid.NewGuid().ToString("N");
-                    string nonce = _pingNonce;
-                    async Task SendPingAsync()
-                    {
-                        try { await _wsClient!.SendAsync($"/ping {nonce}"); }
-                        catch (Exception ex) { _display.SetStatus($"[ping error] {ex.Message}"); }
-                    }
-                    _ = SendPingAsync();
-                }
-                else if (_pingNonce != null && content == $"pong {_pingNonce}" && !_readyFired)
-                {
-                    _readyFired = true;
                     async Task SendMessagesAsync()
                     {
-                        if (_display.RequestHistory)
-                            await _wsClient!.SendAsync("/history");
                         foreach (string msg in _messages)
                             await _wsClient!.SendAsync(msg);
                     }

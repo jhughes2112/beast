@@ -24,8 +24,6 @@ public class DisplayConsole : IDisplay
         _verbose = verbose;
     }
 
-    public bool RequestHistory => false;
-
     public void Attach(ConversationModel model)
     {
         model.MessageUpdated += OnMessageUpdated;

@@ -50,6 +50,7 @@ public class AgentOrchestrator
 	private CancellationToken _cancellationToken;
 	private bool _wantsExit = false;
 	private bool _wantsCompact = false;
+	private string _clientSessionId = string.Empty;
 	private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
 	public async Task RunAsync()
@@ -83,8 +84,10 @@ public class AgentOrchestrator
 		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
 		_transport.Completions(lastCompletionCandidates);
 
-		while (!_cancellationToken.IsCancellationRequested && !_wantsExit)
+		try
 		{
+			while (!_cancellationToken.IsCancellationRequested && !_wantsExit)
+			{
 			// 1. Resolve role and service.
 			LLMRole? role = _roleService.GetRole(conversation.Role);
 			LlmService? service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
@@ -102,6 +105,16 @@ public class AgentOrchestrator
 			service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
 			if (service!=null)
 			{
+				// Send history to the client whenever the active session changes.
+				if (conversation.Id != _clientSessionId)
+				{
+					_clientSessionId = conversation.Id;
+					_transport.Clear();
+					ReplayHistory(conversation);
+					SendStats(conversation, service?.Model.Config.ContextWindow ?? 0);
+					_transport.Status("ready");
+				}
+
 				string currentCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
 				if (currentCandidates != lastCompletionCandidates)
 				{
@@ -109,7 +122,7 @@ public class AgentOrchestrator
 					_transport.Completions(currentCandidates);
 				}
 
-				if (service.Model.ConfigId != conversation.Model)
+				if (service!=null && service.Model.ConfigId != conversation.Model)
 				{
 					conversation.Model = service.Model.ConfigId;
 					SendStats(conversation, service.Model.Config.ContextWindow);
@@ -176,10 +189,16 @@ public class AgentOrchestrator
 				await Task.Delay(delayMs, _cancellationToken);
 			}
 		}
-
-		SessionService.Save(conversation);
-		_settings.Settings.LastSessionId = conversation.Id;
-		_settings.SaveSettings();
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		finally
+		{
+			SessionService.Save(conversation);
+			_settings.Settings.LastSessionId = conversation.Id;
+			_settings.SaveSettings();
+		}
 	}
 
 	// ---- Session management ----
@@ -398,13 +417,6 @@ public class AgentOrchestrator
 
 		switch (verb)
 		{
-			case "ping":
-				_transport.Status($"pong {args}");
-				break;
-			case "history":
-				ReplayHistory(conversation);
-				SendStats(conversation, service?.Model.Config.ContextWindow ?? 0);
-				break;
 			case "quit":
 				_wantsExit = true;
 				break;
@@ -421,7 +433,18 @@ public class AgentOrchestrator
 				}
 				else if (args != null)
 				{
-					BeastSession? loaded = SessionService.Load(args);
+					// Accept either the display name or the raw id.
+					string resolvedId = args;
+					foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
+					{
+						if (string.Equals(s.displayName, args, StringComparison.Ordinal) ||
+							string.Equals(s.id, args, StringComparison.Ordinal))
+						{
+							resolvedId = s.id;
+							break;
+						}
+					}
+					BeastSession? loaded = SessionService.Load(resolvedId);
 					if (loaded != null)
 					{
 						SessionService.Save(conversation);
@@ -519,7 +542,10 @@ public class AgentOrchestrator
 		candidates.Add("/session new");
 		foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
 		{
-			candidates.Add("/session " + s.id);
+			if (!string.IsNullOrEmpty(s.displayName))
+				candidates.Add("/session " + s.displayName);
+			else
+				candidates.Add("/session " + s.id);
 		}
 
 		return candidates;
