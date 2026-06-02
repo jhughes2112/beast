@@ -86,6 +86,8 @@ public class LlmService
 
             int emptyResponseCount = 0;
             const int kMaxEmptyResponses = 10;
+            int rateLimitRetries = 0;
+            const int kMaxRateLimitRetries = 10;
 
             for (; ; )
             {
@@ -152,9 +154,24 @@ public class LlmService
                 }
                 else if (callResult.Outcome == ProtocolCallOutcome.RateLimited)
                 {
-                    _availableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
-                    finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited, retry after {_availableAt:u}");
-                    break;
+                    rateLimitRetries++;
+                    DateTimeOffset retryAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
+
+                    if (rateLimitRetries <= kMaxRateLimitRetries)
+                    {
+                        TimeSpan delay = retryAt - DateTimeOffset.UtcNow;
+                        transport.Status($"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry (attempt {rateLimitRetries}/{kMaxRateLimitRetries})");
+                        if (delay > TimeSpan.Zero)
+                        {
+                            await Task.Delay(delay, cancellationToken);
+                        }
+                    }
+                    else
+                    {
+                        _availableAt = retryAt;
+                        finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availableAt:u}");
+                        break;
+                    }
                 }
                 else if (callResult.Outcome == ProtocolCallOutcome.Transient)
                 {
