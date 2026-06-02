@@ -52,16 +52,36 @@ public class RoleService
 
 		if (sourcePath != null)
 		{
-			string json = File.ReadAllText(sourcePath);
-			List<LLMRole>? roleList = JsonSerializer.Deserialize<List<LLMRole>>(json);
-			if (roleList != null)
+			try
 			{
-				foreach (LLMRole role in roleList)
+				string json = File.ReadAllText(sourcePath);
+				List<LLMRole>? roleList = JsonSerializer.Deserialize<List<LLMRole>>(json);
+				if (roleList != null)
 				{
-					Roles[role.Name] = role;
+					foreach (LLMRole role in roleList)
+					{
+						Roles[role.Name] = role;
+					}
 				}
+				return;
 			}
-			return;
+			catch (JsonException ex)
+			{
+				Console.Error.WriteLine($"ERROR: Failed to parse roles.json at {sourcePath}");
+				Console.Error.WriteLine($"       {ex.Message}");
+				if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
+				{
+					Console.Error.WriteLine($"       Line {ex.LineNumber}, column {ex.BytePositionInLine}");
+				}
+				Console.Error.WriteLine("       Fix the JSON syntax or delete the file to use defaults.");
+				Environment.Exit(1);
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"ERROR: Failed to load roles.json from {sourcePath}");
+				Console.Error.WriteLine($"       {ex.Message}");
+				Environment.Exit(1);
+			}
 		}
 
 		string firstModelId = string.Empty;

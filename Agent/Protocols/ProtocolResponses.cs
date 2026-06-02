@@ -34,30 +34,78 @@ public class ProtocolResponses : IProtocolListener
 
     private bool _streamingSupported = true;
 
-    // Native runtime state: the last server-issued response id, and the count of canonical
-    // items already sent to the server. Both are in-memory only and reset by Rehydrate.
+    // Native runtime state: the last server-issued response id. In-memory only, reset by Rehydrate.
     private string? _previousResponseId;
-    private int _sentItemCount;
+    // Full input array built once during Rehydrate for the first post-rehydration turn.
+    // After successful send, cleared so subsequent turns use incremental chaining.
+    private JsonArray? _rehydratedInput;
+    // Incremental input items accumulated since the last successful send via IProtocolListener callbacks.
+    // Used for chaining mode after _rehydratedInput is consumed.
+    private JsonArray _deltaInput;
+
+    public ProtocolResponses()
+    {
+        _deltaInput = new JsonArray();
+    }
 
     // Clears native chaining state so the next turn replays the full canonical history once.
     public void Rehydrate(JsonArray canonical)
     {
         _previousResponseId = null;
-        _sentItemCount = 0;
+        _rehydratedInput = BuildInputFromCanonical(canonical, 0);
+        _deltaInput.Clear();
     }
 
-    // The canonical store records all semantic events; this protocol holds no message state.
-    public void OnSystemMessage(IProtocolListener sender, string text) { }
-    public void OnUserMessage(IProtocolListener sender, string text) { }
-    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content) { }
+    // Track incremental changes to build deltas for chaining mode.
+    public void OnSystemMessage(IProtocolListener sender, string text)
+    {
+        if (sender == this) return;
+        _deltaInput.Add(BuildMessageItem("system", "input_text", text));
+    }
+
+    public void OnUserMessage(IProtocolListener sender, string text)
+    {
+        if (sender == this) return;
+        _deltaInput.Add(BuildMessageItem("user", "input_text", text));
+    }
+
+    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    {
+        if (sender == this) return;
+        if (!string.IsNullOrEmpty(text))
+        {
+            _deltaInput.Add(BuildMessageItem("assistant", "output_text", text));
+        }
+
+        foreach (SemanticToolCall tc in toolCalls)
+        {
+            JsonObject item = new JsonObject();
+            item["type"] = "function_call";
+            item["id"] = tc.Id;
+            item["call_id"] = tc.Id;
+            item["name"] = tc.Name;
+            item["arguments"] = tc.ArgumentsJson;
+            _deltaInput.Add(item);
+        }
+    }
+
+    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    {
+        if (sender == this) return;
+        JsonObject item = new JsonObject();
+        item["type"] = "function_call_output";
+        item["call_id"] = toolCallId;
+        item["output"] = content;
+        _deltaInput.Add(item);
+    }
     public void OnStreamStart(IProtocolListener sender, string tag) { }
     public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
     public void OnStreamEnd(IProtocolListener sender, string tag) { }
     public void OnClear()
     {
         _previousResponseId = null;
-        _sentItemCount = 0;
+        _rehydratedInput = null;
+        _deltaInput.Clear();
     }
 
     public async Task<ProtocolResult> ExecuteAsync(
@@ -71,14 +119,13 @@ public class ProtocolResponses : IProtocolListener
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
-        ListenerChatCompletions listener = bundle.Canonical!;
-        JsonObject body = BuildBody(model, listener, tools, maxCompletionTokens, extraPayload);
-
         if (_streamingSupported)
         {
-            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, listener, onProgress, transport, cancellationToken);
+            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, tools, maxCompletionTokens, extraPayload, extraHeaders, bundle, onProgress, transport, cancellationToken);
             if (streamResult != null) return streamResult;
         }
+
+        JsonObject body = BuildBody(model, tools, maxCompletionTokens, extraPayload);
 
         string requestJson = body.ToJsonString();
         string postLine = $"[http] POST {model.Endpoint}";
@@ -121,7 +168,7 @@ public class ProtocolResponses : IProtocolListener
             JsonNode? root = JsonNode.Parse(responseBody);
             if (root == null) return ProtocolResult.Failed("Empty response from Responses API");
 
-            return CommitResponse(bundle, listener, root, model);
+            return CommitResponse(bundle, root, model);
         }
 
         if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
@@ -135,24 +182,27 @@ public class ProtocolResponses : IProtocolListener
         return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
     }
 
-    private JsonObject BuildBody(LlmModel model, ListenerChatCompletions listener, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
+    private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
         JsonObject body = new JsonObject();
         body["model"] = model.Config.Id;
 
-        // When chaining from a prior response, the server already holds everything we sent before,
-        // so only the items appended since then are transmitted. Otherwise replay full history.
-        JsonArray canonical = listener.State;
-        int startIndex = _previousResponseId != null ? _sentItemCount : 0;
-        if (startIndex < 0 || startIndex > canonical.Count) startIndex = 0;
-
-        body["input"] = BuildInputFromCanonical(canonical, startIndex);
-        if (maxCompletionTokens > 0) body["max_output_tokens"] = maxCompletionTokens.Value;
-
-        if (_previousResponseId != null)
+        // If we have rehydrated input, send the full history once (no previous_response_id).
+        // Otherwise, chain from the last response id and send only the delta items.
+        if (_rehydratedInput != null)
         {
-            body["previous_response_id"] = _previousResponseId;
+            body["input"] = _rehydratedInput;
         }
+        else
+        {
+            body["input"] = _deltaInput;
+            if (_previousResponseId != null)
+            {
+                body["previous_response_id"] = _previousResponseId;
+            }
+        }
+
+        if (maxCompletionTokens > 0) body["max_output_tokens"] = maxCompletionTokens.Value;
 
         if (tools.Count > 0)
         {
@@ -247,9 +297,9 @@ public class ProtocolResponses : IProtocolListener
         return item;
     }
 
-    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, ListenerChatCompletions listener, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
     {
-        JsonObject streamBody = (JsonObject)body.DeepClone();
+        JsonObject streamBody = BuildBody(model, tools, maxCompletionTokens, extraPayload);
         streamBody["stream"] = true;
 
         string requestJson = streamBody.ToJsonString();
@@ -379,7 +429,7 @@ public class ProtocolResponses : IProtocolListener
 
         if (finalResponseNode != null)
         {
-            return CommitResponse(bundle, listener, finalResponseNode, model);
+            return CommitResponse(bundle, finalResponseNode, model);
         }
 
         return ProtocolResult.Failed("Stream ended without a response.completed event");
@@ -401,9 +451,9 @@ public class ProtocolResponses : IProtocolListener
 
     // Raises a single semantic assistant turn through the bundle so the canonical store records
     // the normalized turn and the transport listener emits the committed frames. Captures the
-    // server response id for the next turn's previous_response_id chaining, and advances the
-    // sent-item watermark to the post-turn canonical count.
-    private ProtocolResult CommitResponse(ListenerBundle bundle, ListenerChatCompletions listener, JsonNode responseRoot, LlmModel model)
+    // server response id for the next turn's previous_response_id chaining. Clears rehydrated
+    // input and delta accumulator after successful send.
+    private ProtocolResult CommitResponse(ListenerBundle bundle, JsonNode responseRoot, LlmModel model)
     {
         JsonArray? output = responseRoot["output"]?.AsArray();
         if (output == null || output.Count == 0)
@@ -465,11 +515,12 @@ public class ProtocolResponses : IProtocolListener
         // turn while this protocol (whose listener members are no-ops) is skipped.
         bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
 
-        // Capture the server response id for next-turn chaining, then advance the watermark to
-        // the post-turn canonical count so only newly-appended items are sent next time. The
-        // id is in-memory only and never written into canonical state.
+        // Capture the server response id for next-turn chaining, then clear rehydrated input
+        // and delta buffer so subsequent turns accumulate fresh deltas via IProtocolListener.
+        // The id is in-memory only and never written into canonical state.
         _previousResponseId = responseRoot["id"]?.GetValue<string>();
-        _sentItemCount = listener.State.Count;
+        _rehydratedInput = null;
+        _deltaInput.Clear();
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
 

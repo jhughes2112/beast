@@ -34,13 +34,53 @@ public class SettingsService
 		BeastSettings? bs = null;
 		if (File.Exists(_workDirSettingsPath))
 		{
-			string json = File.ReadAllText(_workDirSettingsPath);
-			bs = JsonSerializer.Deserialize<BeastSettings>(json);
+			try
+			{
+				string json = File.ReadAllText(_workDirSettingsPath);
+				bs = JsonSerializer.Deserialize<BeastSettings>(json);
+			}
+			catch (JsonException ex)
+			{
+				Console.Error.WriteLine($"ERROR: Failed to parse settings.json at {_workDirSettingsPath}");
+				Console.Error.WriteLine($"       {ex.Message}");
+				if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
+				{
+					Console.Error.WriteLine($"       Line {ex.LineNumber}, column {ex.BytePositionInLine}");
+				}
+				Console.Error.WriteLine("       Fix the JSON syntax or delete the file to use defaults.");
+				Environment.Exit(1);
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"ERROR: Failed to load settings.json from {_workDirSettingsPath}");
+				Console.Error.WriteLine($"       {ex.Message}");
+				Environment.Exit(1);
+			}
 		}
 		if (bs == null && File.Exists(_homeDirSettingsPath))
 		{
-			string json = File.ReadAllText(_homeDirSettingsPath);
-			bs = JsonSerializer.Deserialize<BeastSettings>(json);
+			try
+			{
+				string json = File.ReadAllText(_homeDirSettingsPath);
+				bs = JsonSerializer.Deserialize<BeastSettings>(json);
+			}
+			catch (JsonException ex)
+			{
+				Console.Error.WriteLine($"ERROR: Failed to parse settings.json at {_homeDirSettingsPath}");
+				Console.Error.WriteLine($"       {ex.Message}");
+				if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
+				{
+					Console.Error.WriteLine($"       Line {ex.LineNumber}, column {ex.BytePositionInLine}");
+				}
+				Console.Error.WriteLine("       Fix the JSON syntax or delete the file to use defaults.");
+				Environment.Exit(1);
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"ERROR: Failed to load settings.json from {_homeDirSettingsPath}");
+				Console.Error.WriteLine($"       {ex.Message}");
+				Environment.Exit(1);
+			}
 		}
 
 		if (bs == null)

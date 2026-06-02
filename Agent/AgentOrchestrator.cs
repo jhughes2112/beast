@@ -185,7 +185,9 @@ public class AgentOrchestrator
 			if (role != null)
 			{
 				long waitMs = _registry.GetMillisecondsUntilAvailable(role);
-				int delayMs = waitMs <= 0 || waitMs == long.MaxValue ? 10 : (int)Math.Min(waitMs, 30000);
+				if (waitMs > 0)
+					_transport.Status($"No Models Available, waiting {(int)Math.Ceiling(waitMs/1000.0)}s");
+				int delayMs = Math.Clamp((int)waitMs, 10, 30000);
 				await Task.Delay(delayMs, _cancellationToken);
 			}
 		}

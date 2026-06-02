@@ -67,7 +67,7 @@ public class ProtocolChatCompletions : IProtocolListener
 
             if (_streamingSupported)
             {
-                ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, listener, bundle, transport, cancellationToken);
+                ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, listener, bundle, onProgress, transport, cancellationToken);
                 if (streamResult != null) return streamResult;
                 // null means the provider rejected streaming; fall through to non-streaming
             }
@@ -257,6 +257,7 @@ public class ProtocolChatCompletions : IProtocolListener
         Dictionary<string, JsonNode?> extraPayload,
         ListenerChatCompletions listener,
         ListenerBundle bundle,
+        LiveUsageProgress onProgress,
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
@@ -333,6 +334,8 @@ public class ProtocolChatCompletions : IProtocolListener
         string finishReason = string.Empty;
         JsonNode? usageNodeFinal = null;
         string? openStreamTag = null;
+        int streamedCharCount = 0;
+        int livePromptTokens = 0;
 
         using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
         using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
@@ -353,6 +356,11 @@ public class ProtocolChatCompletions : IProtocolListener
                 if (usageNode != null)
                 {
                     usageNodeFinal = usageNode;
+                    int? promptTokens = usageNode["prompt_tokens"]?.GetValue<int?>();
+                    if (promptTokens.HasValue && promptTokens.Value > 0)
+                    {
+                        livePromptTokens = promptTokens.Value;
+                    }
                 }
 
                 JsonArray? choices = chunkNode["choices"]?.AsArray();
@@ -377,6 +385,8 @@ public class ProtocolChatCompletions : IProtocolListener
 
                         reasoningBuilder.Append(reasoningDelta);
                         bundle.OnStreamChunk(listener, StreamTag.Thinking, reasoningDelta);
+                        streamedCharCount += reasoningDelta.Length;
+                        EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
                 }
 
                 string? contentDelta = delta["content"]?.GetValue<string>();
@@ -391,6 +401,8 @@ public class ProtocolChatCompletions : IProtocolListener
 
                         contentBuilder.Append(contentDelta);
                         bundle.OnStreamChunk(listener, StreamTag.Assistant, contentDelta);
+                        streamedCharCount += contentDelta.Length;
+                        EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
                 }
 
                 JsonArray? tcDeltas = delta["tool_calls"]?.AsArray();
@@ -450,6 +462,18 @@ public class ProtocolChatCompletions : IProtocolListener
         public string Id = string.Empty;
         public string Name = string.Empty;
         public StringBuilder Arguments = new StringBuilder();
+    }
+
+    // Emits live usage progress during streaming. ChatCompletions reports prompt_tokens in
+    // the usage object (when stream_options.include_usage is set), typically in the final
+    // chunk. Until then, livePromptTokens is 0. Output tokens are estimated from streamed
+    // character count (chars/4). The committed usage will correct both at end-of-turn.
+    private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress)
+    {
+        int estimatedOutputTokens = streamedCharCount / 4;
+        decimal estimatedCost = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
+                              + (estimatedOutputTokens / 1_000_000m) * model.Config.Cost.Output;
+        onProgress(livePromptTokens, estimatedOutputTokens, estimatedCost);
     }
 
     // Pulls semantic content and tool calls out of a non-streaming message object.
