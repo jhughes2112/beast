@@ -34,14 +34,13 @@ public class WebSearchOpenrouter
         {
             BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), string.Empty, "websearch");
 
-            ListenerBundle bundle = new ListenerBundle();
-            bundle.Add(new ListenerChatCompletions(session.ChatCompletionsState));
+            ListenerBundle bundle = new ListenerBundle(new ListenerChatCompletions(session.ChatCompletionsState), null);
             bundle.OnUserMessage(null!, query);
 
             int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
 
             ProtocolProxy proxy = new ProtocolProxy(_model);
-            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, transport, cancellationToken);
+            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, (i, o, c) => { }, transport, cancellationToken);
 
             if (result.Outcome == ProtocolCallOutcome.Success)
             {

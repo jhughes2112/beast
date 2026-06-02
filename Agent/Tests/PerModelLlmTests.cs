@@ -86,11 +86,9 @@ public static class PerModelLlmTests
             TestCaptureTransport localTransport = new TestCaptureTransport();
             BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, $"test-{modelId}");
 
-            ListenerBundle bundle = new ListenerBundle();
-            bundle.Add(new ListenerChatCompletions(session.ChatCompletionsState));
-            bundle.Add(new ListenerResponses(session.ResponsesState));
-            bundle.Add(new ListenerAnthropic(session.AnthropicState));
-            bundle.Add(new ListenerTransport(localTransport));
+            ListenerBundle bundle = new ListenerBundle(
+                new ListenerChatCompletions(session.ChatCompletionsState),
+                new ListenerTransport(localTransport));
 
             if (!string.IsNullOrEmpty(role.SystemPrompt))
                 bundle.OnSystemMessage(null!, role.SystemPrompt);

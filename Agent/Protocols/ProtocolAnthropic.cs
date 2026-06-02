@@ -1,25 +1,33 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Net.Http;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
+using Anthropic.SDK;
+using Anthropic.SDK.Common;
+using Anthropic.SDK.Extensions;
+using Anthropic.SDK.Messaging;
 
-// ── Anthropic Messages API ────────────────────────────────────────────────────
-// Wire protocol requires strict user→assistant alternation; two consecutive
-// user messages will cause a 400 error. The system prompt is a top-level
-// parameter — never put it inside the messages array. Messages must begin
-// with a user turn; the array cannot lead with an assistant message.
-// Tool results must be wrapped in a user-role message as a tool_result
-// content block, not sent as plain text.
+// ── Anthropic Messages API (native SDK) ───────────────────────────────────────
+// This protocol talks to Claude exclusively through Anthropic.SDK. The SDK's own
+// List<Message> is the protocol-native runtime state: each completed assistant turn
+// is appended verbatim as res.Message, which preserves the signed ThinkingContent and
+// ToolUseContent blocks intact across turns in a live session. That signed state is
+// exactly what a raw-HTTP reconstruction would destroy.
 //
-// Reads native messages from session.AnthropicState. The producing assistant turn is
-// appended in native form (preserving thinking blocks with signatures and any unknown
-// block types Anthropic returns) and then fanned out semantically to the other listeners.
-public class ProtocolAnthropic : IProtocol
+// The canonical ChatCompletions store remains ground truth and is kept in sync through
+// the semantic OnAssistantTurn fan-out. Rehydrate (session load or protocol switch)
+// starts from empty native state and does the best it can from canonical: it strips
+// thinking (canonical thinking is unsigned and Anthropic would reject it), maps
+// tool_calls to ToolUseContent and tool results to ToolResultContent, and enforces the
+// strict user/assistant alternation the wire protocol requires. Once a real signed turn
+// is produced live, that native message supersedes the lossy reconstruction.
+//
+// ProbeAsync stays a raw-HTTP detection call; it only classifies the endpoint and never
+// participates in a real conversation.
+public class ProtocolAnthropic : IProtocolListener
 {
     private const string AnthropicVersion = "2023-06-01";
 
@@ -28,411 +36,378 @@ public class ProtocolAnthropic : IProtocol
 
     private bool _streamingSupported = true;
 
+    // Native runtime state: the SDK message chain plus the system prompt text. Both are
+    // in-memory only and rebuilt from canonical by Rehydrate.
+    private readonly List<Message> _native = new List<Message>();
+    private string _system = string.Empty;
+
+    // Rebuilds the native SDK message chain from canonical, stripping thinking and enforcing
+    // user/assistant alternation. Called by ListenerBundle right after creating or switching in.
+    public void Rehydrate(JsonArray canonical)
+    {
+        _native.Clear();
+        _system = string.Empty;
+
+        foreach (JsonNode? n in canonical)
+        {
+            if (n == null) continue;
+            string role = n["role"]?.GetValue<string>() ?? string.Empty;
+
+            if (role == "system")
+            {
+                _system = n["content"]?.GetValue<string>() ?? string.Empty;
+            }
+            else if (role == "user")
+            {
+                AppendContent(RoleType.User, new TextContent { Text = n["content"]?.GetValue<string>() ?? string.Empty });
+            }
+            else if (role == "tool")
+            {
+                ToolResultContent result = new ToolResultContent
+                {
+                    ToolUseId = n["tool_call_id"]?.GetValue<string>() ?? string.Empty,
+                    Content = new List<ContentBase> { new TextContent { Text = n["content"]?.GetValue<string>() ?? string.Empty } }
+                };
+                AppendContent(RoleType.User, result);
+            }
+            else if (role == "assistant")
+            {
+                string text = n["content"]?.GetValue<string>() ?? string.Empty;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    AppendContent(RoleType.Assistant, new TextContent { Text = text });
+                }
+
+                JsonArray? toolCalls = n["tool_calls"]?.AsArray();
+                if (toolCalls != null)
+                {
+                    foreach (JsonNode? tc in toolCalls)
+                    {
+                        if (tc == null) continue;
+                        AppendContent(RoleType.Assistant, BuildToolUse(tc));
+                    }
+                }
+            }
+        }
+    }
+
+    public void OnSystemMessage(IProtocolListener sender, string text)
+    {
+        _system = text;
+    }
+
+    public void OnUserMessage(IProtocolListener sender, string text)
+    {
+        AppendContent(RoleType.User, new TextContent { Text = text });
+    }
+
+    // A completed assistant turn raised by another protocol (sender != this). We reconstruct a
+    // native assistant message without signature; thinking is intentionally dropped because an
+    // unsigned thinking block cannot be replayed to Anthropic.
+    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    {
+        if (ReferenceEquals(sender, this)) return;
+
+        if (!string.IsNullOrEmpty(text))
+        {
+            AppendContent(RoleType.Assistant, new TextContent { Text = text });
+        }
+
+        foreach (SemanticToolCall tc in toolCalls)
+        {
+            ToolUseContent use = new ToolUseContent
+            {
+                Id = tc.Id,
+                Name = tc.Name,
+                Input = ParseInput(tc.ArgumentsJson)
+            };
+            AppendContent(RoleType.Assistant, use);
+        }
+    }
+
+    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    {
+        ToolResultContent result = new ToolResultContent
+        {
+            ToolUseId = toolCallId,
+            Content = new List<ContentBase> { new TextContent { Text = content } }
+        };
+        AppendContent(RoleType.User, result);
+    }
+
+    public void OnStreamStart(IProtocolListener sender, string tag) { }
+    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
+    public void OnStreamEnd(IProtocolListener sender, string tag) { }
+
+    public void OnClear()
+    {
+        _native.Clear();
+        _system = string.Empty;
+    }
+
     public async Task<ProtocolResult> ExecuteAsync(
         LlmModel model,
-        IProtocolListener bundle,
+        ListenerBundle bundle,
         List<ToolDefinition> tools,
-        int maxCompletionTokens,
+        int? maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
+        LiveUsageProgress onProgress,
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
-        ListenerAnthropic listener = ((ListenerBundle)bundle).Get<ListenerAnthropic>()!;
-        JsonObject body = BuildBody(listener, model, tools, maxCompletionTokens, extraPayload);
+        AnthropicClient client = BuildClient(model, extraHeaders);
+        MessageParameters parameters = BuildParameters(model, tools, maxCompletionTokens, extraPayload);
 
+        ProtocolResult result;
         if (_streamingSupported)
         {
-            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, listener, bundle, transport, cancellationToken);
-            if (streamResult != null) return streamResult;
+            parameters.Stream = true;
+            result = await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, cancellationToken);
+        }
+        else
+        {
+            parameters.Stream = false;
+            result = await ExecuteBlockingAsync(client, parameters, model, bundle, transport, cancellationToken);
         }
 
-        return await ExecuteBlockingAsync(model, body, extraHeaders, listener, bundle, transport, cancellationToken);
+        return result;
     }
 
-    private static JsonObject BuildBody(ListenerAnthropic listener, LlmModel model, List<ToolDefinition> tools, int maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
+    private MessageParameters BuildParameters(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
-        JsonObject body = new JsonObject();
-        body["model"] = model.Config.Id;
-        body["max_tokens"] = maxCompletionTokens > 0 ? maxCompletionTokens : 4096;
-
-        if (!string.IsNullOrEmpty(listener.System))
+        MessageParameters parameters = new MessageParameters
         {
-            body["system"] = listener.System;
-        }
+            Model = model.Config.Id,
+            Messages = _native,
+            Temperature = 1.0m
+        };
 
-        JsonArray msgArray = new JsonArray();
-        foreach (JsonNode? n in listener.Messages)
+        // Anthropic requires a positive max_tokens; it cannot be omitted like the OpenAI protocols.
+        // Prefer the caller's computed budget, otherwise fall back to the model's declared limit.
+        int maxTokens = maxCompletionTokens > 0 ? maxCompletionTokens.Value : model.Config.MaxOutputTokens;
+        parameters.MaxTokens = maxTokens;
+
+        if (!string.IsNullOrEmpty(_system))
         {
-            if (n != null) msgArray.Add(n.DeepClone());
+            parameters.System = new List<SystemMessage> { new SystemMessage(_system) };
         }
-        body["messages"] = msgArray;
 
         if (tools.Count > 0)
         {
-            body["tools"] = BuildTools(tools);
+            parameters.Tools = BuildTools(tools);
         }
 
-        foreach (KeyValuePair<string, JsonNode?> kv in extraPayload)
+        ThinkingParameters? thinking = BuildThinking(model, extraPayload);
+        if (thinking != null)
         {
-            body[kv.Key] = kv.Value?.DeepClone();
+            parameters.Thinking = thinking;
         }
 
-        return body;
+        return parameters;
     }
 
-    private static JsonArray BuildTools(List<ToolDefinition> tools)
+    // Thinking is dynamic: the agent will set it later. A payload-level "thinking" block wins;
+    // otherwise model.Extras may carry it. Enabled only when a positive budget is present.
+    private static ThinkingParameters? BuildThinking(LlmModel model, Dictionary<string, JsonNode?> extraPayload)
     {
-        JsonArray arr = new JsonArray();
+        JsonNode? source = null;
+        if (extraPayload.TryGetValue("thinking", out JsonNode? payloadThinking) && payloadThinking != null)
+        {
+            source = payloadThinking;
+        }
+        else if (model.Extras.TryGetValue("thinking", out JsonNode? extrasThinking) && extrasThinking != null)
+        {
+            source = extrasThinking;
+        }
+
+        ThinkingParameters? result = null;
+        if (source != null)
+        {
+            int budget = source["budget_tokens"]?.GetValue<int>() ?? 0;
+            if (budget > 0)
+            {
+                result = new ThinkingParameters { BudgetTokens = budget };
+            }
+        }
+
+        return result;
+    }
+
+    private static List<Anthropic.SDK.Common.Tool> BuildTools(List<ToolDefinition> tools)
+    {
+        List<Anthropic.SDK.Common.Tool> arr = new List<Anthropic.SDK.Common.Tool>();
         foreach (ToolDefinition tool in tools)
         {
-            JsonObject t = new JsonObject();
-            t["name"] = tool.Function.Name;
-            if (!string.IsNullOrEmpty(tool.Function.Description))
-            {
-                t["description"] = tool.Function.Description;
-            }
-
-            t["input_schema"] = tool.Function.Parameters?.DeepClone() ?? new JsonObject();
-            arr.Add(t);
+            JsonNode schema = tool.Function.Parameters?.DeepClone() ?? new JsonObject();
+            arr.Add(new Function(tool.Function.Name, tool.Function.Description, schema));
         }
 
         return arr;
     }
 
-    private static HttpRequestMessage BuildRequest(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders)
+    // The SDK reads its API key from APIAuthentication. The user-provided endpoint is honored
+    // exactly by routing the SDK's HttpClient at it; we never override user data.
+    private static AnthropicClient BuildClient(LlmModel model, Dictionary<string, string> extraHeaders)
     {
-        HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-        req.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-        req.Headers.TryAddWithoutValidation("x-api-key", model.ApiKey);
-        req.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
+        HttpClient httpClient = new HttpClient
+        {
+            BaseAddress = new Uri(model.Endpoint)
+        };
 
         foreach (KeyValuePair<string, string> kv in extraHeaders)
         {
-            req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(kv.Key, kv.Value);
         }
 
-        return req;
+        return new AnthropicClient(new APIAuthentication(model.ApiKey), httpClient);
     }
 
-    private static async Task<ProtocolResult> ExecuteBlockingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerAnthropic listener, IProtocolListener bundle, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<ProtocolResult> ExecuteBlockingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, ITransportServer transport, CancellationToken cancellationToken)
     {
-        string requestJson = body.ToJsonString();
-        string postLine = $"[http] POST {model.Endpoint}";
+        string postLine = $"[sdk] Messages {model.Endpoint}";
         Log(postLine); transport.Debug(postLine);
-        Log(requestJson); transport.Debug(requestJson);
 
-        HttpResponseMessage httpResponse;
-        string responseBody;
+        MessageResponse response;
         try
         {
-            httpResponse = await ProtocolHelpers.GetClient().SendAsync(BuildRequest(model, body, extraHeaders), cancellationToken);
-            responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-            string rspLine = $"[http] RSP {(int)httpResponse.StatusCode}";
-            Log(rspLine); transport.Debug(rspLine);
-            Log(responseBody); transport.Debug(responseBody);
+            response = await client.Messages.GetClaudeMessageAsync(parameters, cancellationToken);
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (HttpRequestException ex)
-        {
-            return ProtocolResult.Transient(ex.Message);
-        }
         catch (Exception ex)
         {
-            return ProtocolResult.Failed(ex.Message);
+            return ClassifyException(ex);
         }
 
-        if (httpResponse.IsSuccessStatusCode)
-        {
-            JsonNode? root = JsonNode.Parse(responseBody);
-            if (root == null) return ProtocolResult.Failed("Empty response from Anthropic API");
-
-            JsonArray? content = root["content"]?.AsArray();
-            if (content == null || content.Count == 0)
-            {
-                return ProtocolResult.Failed("Empty response from Anthropic API");
-            }
-
-            // Build native assistant message preserving every block verbatim.
-            JsonObject nativeMsg = new JsonObject();
-            nativeMsg["role"] = "assistant";
-            nativeMsg["content"] = content.DeepClone();
-            listener.AppendNativeAssistant(nativeMsg);
-
-            (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemantic(content);
-            bundle.OnAssistantTurn(listener, assistantText, thinking, toolCalls);
-
-            string finishReason = toolCalls.Count > 0 ? "tool_calls" : (root["stop_reason"]?.GetValue<string>() ?? "end_turn");
-            (TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
-
-            return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
-        }
-
-        if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
-        {
-            return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
-        }
-
-        int statusCode = (int)httpResponse.StatusCode;
-        if (statusCode == 401 || statusCode == 403)
-            return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
-        return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
+        return CommitResponse(response, model, bundle);
     }
 
-    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerAnthropic listener, IProtocolListener bundle, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
     {
-        JsonObject streamBody = (JsonObject)body.DeepClone();
-        streamBody["stream"] = true;
-
-        string requestJson = streamBody.ToJsonString();
-        string postLine = $"[http] POST {model.Endpoint} (streaming)";
+        string postLine = $"[sdk] Messages {model.Endpoint} (streaming)";
         Log(postLine); transport.Debug(postLine);
-        Log(requestJson); transport.Debug(requestJson);
 
-        HttpResponseMessage httpResponse;
-        try
-        {
-            httpResponse = await ProtocolHelpers.GetClient().SendAsync(BuildRequest(model, streamBody, extraHeaders), HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (HttpRequestException ex)
-        {
-            return ProtocolResult.Transient(ex.Message);
-        }
-        catch (Exception ex)
-        {
-            return ProtocolResult.Failed(ex.Message);
-        }
-
-        if (!httpResponse.IsSuccessStatusCode)
-        {
-            string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-            int statusCode = (int)httpResponse.StatusCode;
-            string errLine = $"[http] RSP {statusCode} (streaming error)";
-            Log(errLine); transport.Debug(errLine);
-            Log(errorBody); transport.Debug(errorBody);
-
-            if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
-            {
-                _streamingSupported = false;
-                return null;
-            }
-
-            if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
-            {
-                return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
-            }
-
-            if (statusCode == 401 || statusCode == 403)
-                return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
-            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}");
-        }
-        // assistant message back into Anthropic state preserving block identity and signatures.
-        Dictionary<int, JsonObject> blocksByIndex = new Dictionary<int, JsonObject>();
-        Dictionary<int, StringBuilder> textBuilders = new Dictionary<int, StringBuilder>();
-        Dictionary<int, StringBuilder> argBuilders = new Dictionary<int, StringBuilder>();
-        List<int> blockOrder = new List<int>();
-
-        string stopReason = "end_turn";
-        int inputTokens = 0;
-        int outputTokens = 0;
+        List<MessageResponse> outputs = new List<MessageResponse>();
         string? openStreamTag = null;
+        int liveInputTokens = 0;
+        int liveOutputTokens = 0;
+        int streamedChars = 0;
 
-        using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
-        using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
+        try
         {
-            string? eventType = null;
-
-            while (true)
+            await foreach (MessageResponse res in client.Messages.StreamClaudeMessageAsync(parameters, cancellationToken))
             {
-                string? line = await reader.ReadLineAsync(cancellationToken);
-                if (line == null) break;
+                outputs.Add(res);
 
-                if (line.StartsWith("event: "))
+                if (res.StreamStartMessage?.Usage != null)
                 {
-                    eventType = line.Substring(7);
-                    continue;
+                    liveInputTokens = res.StreamStartMessage.Usage.InputTokens;
                 }
 
-                if (!line.StartsWith("data: ")) continue;
-
-                string data = line.Substring(6);
-                JsonNode? node = JsonNode.Parse(data);
-                if (node == null) continue;
-
-                if (eventType == "message_start")
+                string? assistantDelta = res.Delta?.Text;
+                if (!string.IsNullOrEmpty(assistantDelta))
                 {
-                    inputTokens = node["message"]?["usage"]?["input_tokens"]?.GetValue<int>() ?? 0;
-                }
-                else if (eventType == "content_block_start")
-                {
-                    int index = node["index"]?.GetValue<int>() ?? 0;
-                    JsonNode? cb = node["content_block"];
-                    if (cb is JsonObject cbObj)
+                    streamedChars += assistantDelta.Length;
+                    if (openStreamTag != StreamTag.Assistant)
                     {
-                        JsonObject native = (JsonObject)cbObj.DeepClone();
-                        blocksByIndex[index] = native;
-                        blockOrder.Add(index);
-
-                        string? blockType = native["type"]?.GetValue<string>();
-                        if (blockType == "text")
-                        {
-                            textBuilders[index] = new StringBuilder(native["text"]?.GetValue<string>() ?? string.Empty);
-                        }
-                        else if (blockType == "tool_use")
-                        {
-                            argBuilders[index] = new StringBuilder();
-                        }
-                        else if (blockType == "thinking")
-                        {
-                            textBuilders[index] = new StringBuilder(native["thinking"]?.GetValue<string>() ?? string.Empty);
-                        }
+                        if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+                        bundle.OnStreamStart(this, StreamTag.Assistant);
+                        openStreamTag = StreamTag.Assistant;
                     }
+                    bundle.OnStreamChunk(this, StreamTag.Assistant, assistantDelta);
                 }
-                else if (eventType == "content_block_delta")
+
+                string? thinkingDelta = res.Delta?.Thinking;
+                if (!string.IsNullOrEmpty(thinkingDelta))
                 {
-                    int index = node["index"]?.GetValue<int>() ?? 0;
-                    string? deltaType = node["delta"]?["type"]?.GetValue<string>();
-
-                    if (deltaType == "text_delta")
+                    streamedChars += thinkingDelta.Length;
+                    if (openStreamTag != StreamTag.Thinking)
                     {
-                        string? text = node["delta"]?["text"]?.GetValue<string>();
-                        if (!string.IsNullOrEmpty(text))
-                        {
-                            if (openStreamTag != StreamTag.Assistant)
-                            {
-                                if (openStreamTag != null) bundle.OnStreamEnd(listener, openStreamTag);
-                                    bundle.OnStreamStart(listener, StreamTag.Assistant);
-                                    openStreamTag = StreamTag.Assistant;
-                                }
-
-                                if (!textBuilders.TryGetValue(index, out StringBuilder? sb))
-                                {
-                                    sb = new StringBuilder();
-                                    textBuilders[index] = sb;
-                                }
-                                sb.Append(text);
-                                bundle.OnStreamChunk(listener, StreamTag.Assistant, text);
-                        }
+                        if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+                        bundle.OnStreamStart(this, StreamTag.Thinking);
+                        openStreamTag = StreamTag.Thinking;
                     }
-                    else if (deltaType == "thinking_delta")
-                    {
-                        string? text = node["delta"]?["thinking"]?.GetValue<string>();
-                        if (!string.IsNullOrEmpty(text))
-                        {
-                            if (openStreamTag != StreamTag.Thinking)
-                            {
-                                if (openStreamTag != null) bundle.OnStreamEnd(listener, openStreamTag);
-                                    bundle.OnStreamStart(listener, StreamTag.Thinking);
-                                    openStreamTag = StreamTag.Thinking;
-                                }
-
-                                if (!textBuilders.TryGetValue(index, out StringBuilder? sb))
-                                {
-                                    sb = new StringBuilder();
-                                    textBuilders[index] = sb;
-                                }
-                                sb.Append(text);
-                                bundle.OnStreamChunk(listener, StreamTag.Thinking, text);
-                        }
-                    }
-                    else if (deltaType == "signature_delta")
-                    {
-                        string? sig = node["delta"]?["signature"]?.GetValue<string>();
-                        if (!string.IsNullOrEmpty(sig) && blocksByIndex.TryGetValue(index, out JsonObject? blk))
-                        {
-                            string existing = blk["signature"]?.GetValue<string>() ?? string.Empty;
-                            blk["signature"] = existing + sig;
-                        }
-                    }
-                    else if (deltaType == "input_json_delta")
-                    {
-                        string? partialJson = node["delta"]?["partial_json"]?.GetValue<string>();
-                        if (partialJson != null)
-                        {
-                            if (!argBuilders.TryGetValue(index, out StringBuilder? sb))
-                            {
-                                sb = new StringBuilder();
-                                argBuilders[index] = sb;
-                            }
-                            sb.Append(partialJson);
-                        }
-                    }
+                    bundle.OnStreamChunk(this, StreamTag.Thinking, thinkingDelta);
                 }
-                else if (eventType == "message_delta")
+
+                // Anthropic only reports output tokens on the final message_delta, so during the body
+                // of the stream we estimate from accumulated streamed characters (~4 chars/token) to
+                // give the live display continuous motion. The real count is preferred once it arrives.
+                if (res.Usage != null && res.Usage.OutputTokens > 0)
                 {
-                    stopReason = node["delta"]?["stop_reason"]?.GetValue<string>() ?? stopReason;
-                    outputTokens = node["usage"]?["output_tokens"]?.GetValue<int>() ?? 0;
+                    liveOutputTokens = res.Usage.OutputTokens;
                 }
-                else if (eventType == "message_stop")
+                else
                 {
-                    break;
+                    liveOutputTokens = streamedChars / 4;
                 }
+
+                // Provisional running usage for this turn. The cost is computed from the same config
+                // pricing the commit path uses, so the live display and committed total agree. When
+                // config pricing is zero the commit applies the SDK cost fallback instead, which is
+                // the single intentional correction at end-of-turn.
+                decimal liveCost = (liveInputTokens / 1_000_000m) * model.Config.Cost.Input
+                                 + (liveOutputTokens / 1_000_000m) * model.Config.Cost.Output;
+                onProgress(liveInputTokens, liveOutputTokens, liveCost);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+            return ClassifyException(ex);
         }
 
         if (openStreamTag != null)
         {
-            bundle.OnStreamEnd(listener, openStreamTag);
+            bundle.OnStreamEnd(this, openStreamTag);
         }
 
-        // Finalise native blocks: write accumulated text into text/thinking blocks and parse
-        // tool_use arguments into input objects.
-        JsonArray nativeContent = new JsonArray();
-        StringBuilder assistantTextBuilder = new StringBuilder();
-        StringBuilder thinkingBuilder = new StringBuilder();
-        List<SemanticToolCall> toolCalls = new List<SemanticToolCall>();
-
-        foreach (int idx in blockOrder)
+        if (outputs.Count == 0)
         {
-            if (!blocksByIndex.TryGetValue(idx, out JsonObject? block)) continue;
-            string? type = block["type"]?.GetValue<string>();
-
-            if (type == "text")
-            {
-                string text = textBuilders.TryGetValue(idx, out StringBuilder? tb) ? tb.ToString() : string.Empty;
-                block["text"] = text;
-                assistantTextBuilder.Append(text);
-            }
-            else if (type == "thinking")
-            {
-                string text = textBuilders.TryGetValue(idx, out StringBuilder? tb) ? tb.ToString() : string.Empty;
-                block["thinking"] = text;
-                thinkingBuilder.Append(text);
-            }
-            else if (type == "tool_use")
-            {
-                string argsJson = argBuilders.TryGetValue(idx, out StringBuilder? ab) ? ab.ToString() : string.Empty;
-                JsonNode? parsed = null;
-                if (!string.IsNullOrEmpty(argsJson))
-                {
-                    try { parsed = JsonNode.Parse(argsJson); } catch (JsonException) { parsed = null; }
-                }
-                block["input"] = parsed ?? new JsonObject();
-
-                string id = block["id"]?.GetValue<string>() ?? string.Empty;
-                string name = block["name"]?.GetValue<string>() ?? string.Empty;
-                toolCalls.Add(new SemanticToolCall { Id = id, Name = name, ArgumentsJson = string.IsNullOrEmpty(argsJson) ? "{}" : argsJson });
-            }
-
-            nativeContent.Add(block);
+            return ProtocolResult.Failed("Empty response from Anthropic API");
         }
 
-        string assistantText = assistantTextBuilder.ToString();
-        string thinking = thinkingBuilder.ToString();
+        return CommitStreamedResponse(outputs, model, bundle);
+    }
 
-        JsonObject nativeMessage = new JsonObject();
-        nativeMessage["role"] = "assistant";
-        nativeMessage["content"] = nativeContent;
-        listener.AppendNativeAssistant(nativeMessage);
+    // Reassembles the assistant turn from the collected stream events. A streamed MessageResponse
+    // is a delta event whose Message/Content are null; only new Message(outputs) reconstructs the
+    // full assistant message with its signed thinking and tool-use blocks intact. Usage is read
+    // from the message_start (input tokens) and the final message_delta (output tokens / stop).
+    private ProtocolResult CommitStreamedResponse(List<MessageResponse> outputs, LlmModel model, ListenerBundle bundle)
+    {
+        Message assistant = new Message(outputs);
+        _native.Add(assistant);
 
-        bundle.OnAssistantTurn(listener, assistantText, thinking, toolCalls);
+        (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(assistant.Content);
+        bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
+
+        int inputTokens = 0;
+        int outputTokens = 0;
+        string stopReason = "end_turn";
+
+        foreach (MessageResponse res in outputs)
+        {
+            if (res.StreamStartMessage?.Usage != null)
+            {
+                inputTokens = res.StreamStartMessage.Usage.InputTokens;
+            }
+            if (res.Usage != null)
+            {
+                outputTokens = res.Usage.OutputTokens;
+            }
+            if (res.Delta?.StopReason != null)
+            {
+                stopReason = res.Delta.StopReason;
+            }
+        }
 
         TokenUsageInfo usage = new TokenUsageInfo
         {
@@ -441,62 +416,159 @@ public class ProtocolAnthropic : IProtocol
             TotalTokens = inputTokens + outputTokens
         };
 
-        decimal cost = (inputTokens / 1_000_000m) * model.Config.Cost.Input
-                     + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
+        decimal cost = ResolveCost(inputTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
 
         return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
     }
 
-    private static (string assistantText, string thinking, List<SemanticToolCall> toolCalls) ExtractSemantic(JsonArray content)
+    // Appends the native assistant message verbatim (preserving signed blocks), extracts the
+    // semantic view for the canonical fan-out, and builds the LlmService payload.
+    private ProtocolResult CommitResponse(MessageResponse response, LlmModel model, ListenerBundle bundle)
+    {
+        if (response.Message != null)
+        {
+            _native.Add(response.Message);
+        }
+
+        (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(response.Content);
+        bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
+
+        int inputTokens = response.Usage?.InputTokens ?? 0;
+        int outputTokens = response.Usage?.OutputTokens ?? 0;
+
+        TokenUsageInfo usage = new TokenUsageInfo
+        {
+            PromptTokens = inputTokens,
+            CompletionTokens = outputTokens,
+            TotalTokens = inputTokens + outputTokens
+        };
+
+        decimal cost = ResolveCost(inputTokens, outputTokens, model, response);
+
+        string finishReason = toolCalls.Count > 0 ? "tool_calls" : (response.StopReason ?? "end_turn");
+
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
+    }
+
+    // Computes cost from the model's configured per-million pricing. When that yields zero
+    // (model pricing not configured), falls back to the SDK's own cost calculation derived
+    // from the response usage and model id.
+    private static decimal ResolveCost(int inputTokens, int outputTokens, LlmModel model, MessageResponse? response)
+    {
+        decimal cost = (inputTokens / 1_000_000m) * model.Config.Cost.Input
+                     + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
+
+        if (cost == 0m && response != null)
+        {
+            cost = (decimal)response.CalculateCost().TotalCostUsd;
+        }
+
+        return cost;
+    }
+
+    private static (string assistantText, string thinking, List<SemanticToolCall> toolCalls) ExtractSemanticFromContent(List<ContentBase>? content)
     {
         StringBuilder textBuilder = new StringBuilder();
         StringBuilder thinkingBuilder = new StringBuilder();
         List<SemanticToolCall> toolCalls = new List<SemanticToolCall>();
 
-        foreach (JsonNode? blockNode in content)
+        if (content != null)
         {
-            if (blockNode == null) continue;
-            string? type = blockNode["type"]?.GetValue<string>();
-
-            if (type == "text")
+            foreach (ContentBase block in content)
             {
-                string? t = blockNode["text"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(t)) textBuilder.Append(t);
-            }
-            else if (type == "thinking")
-            {
-                string? t = blockNode["thinking"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(t)) thinkingBuilder.Append(t);
-            }
-            else if (type == "tool_use")
-            {
-                string id = blockNode["id"]?.GetValue<string>() ?? string.Empty;
-                string name = blockNode["name"]?.GetValue<string>() ?? string.Empty;
-                JsonNode? input = blockNode["input"];
-                string args = input != null ? input.ToJsonString() : "{}";
-                toolCalls.Add(new SemanticToolCall { Id = id, Name = name, ArgumentsJson = args });
+                if (block is TextContent text)
+                {
+                    if (!string.IsNullOrEmpty(text.Text)) textBuilder.Append(text.Text);
+                }
+                else if (block is ThinkingContent thinkingBlock)
+                {
+                    if (!string.IsNullOrEmpty(thinkingBlock.Thinking)) thinkingBuilder.Append(thinkingBlock.Thinking);
+                }
+                else if (block is ToolUseContent use)
+                {
+                    string args = use.Input != null ? use.Input.ToJsonString() : "{}";
+                    toolCalls.Add(new SemanticToolCall { Id = use.Id ?? string.Empty, Name = use.Name ?? string.Empty, ArgumentsJson = args });
+                }
             }
         }
 
         return (textBuilder.ToString(), thinkingBuilder.ToString(), toolCalls);
     }
 
-    private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode root, LlmModel model)
+    // Appends content to the trailing message when it shares the role, otherwise starts a new
+    // message. This collapses consecutive same-role blocks into the alternation Anthropic requires.
+    private void AppendContent(RoleType role, ContentBase block)
     {
-        TokenUsageInfo usage = new TokenUsageInfo();
-        decimal cost = 0m;
-        JsonNode? usageNode = root["usage"];
-        if (usageNode == null) return (usage, cost);
+        if (_native.Count > 0)
+        {
+            Message last = _native[_native.Count - 1];
+            if (last.Role == role)
+            {
+                last.Content.Add(block);
+                return;
+            }
+        }
 
-        usage.PromptTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
-        usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
-        usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens;
+        Message msg = new Message
+        {
+            Role = role,
+            Content = new List<ContentBase> { block }
+        };
+        _native.Add(msg);
+    }
 
-        cost += (usage.PromptTokens / 1_000_000m) * model.Config.Cost.Input;
-        cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
-        return (usage, cost);
+    private static ToolUseContent BuildToolUse(JsonNode tc)
+    {
+        string argsJson = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
+        return new ToolUseContent
+        {
+            Id = tc["id"]?.GetValue<string>() ?? string.Empty,
+            Name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty,
+            Input = ParseInput(argsJson)
+        };
+    }
+
+    private static JsonNode ParseInput(string argsJson)
+    {
+        JsonNode? parsed = null;
+        if (!string.IsNullOrEmpty(argsJson))
+        {
+            try { parsed = JsonNode.Parse(argsJson); } catch (System.Text.Json.JsonException) { parsed = null; }
+        }
+        return parsed ?? new JsonObject();
+    }
+
+    private static ProtocolResult ClassifyException(Exception ex)
+    {
+        ProtocolResult result;
+        if (ex is HttpRequestException http && http.StatusCode.HasValue)
+        {
+            int status = (int)http.StatusCode.Value;
+            if (status == 429)
+            {
+                result = ProtocolResult.RateLimited(null);
+            }
+            else if (status >= 400 && status < 500)
+            {
+                result = ProtocolResult.Failed($"HTTP {status}: {ex.Message}");
+            }
+            else
+            {
+                result = ProtocolResult.Transient($"HTTP {status}: {ex.Message}");
+            }
+        }
+        else if (ex is HttpRequestException)
+        {
+            result = ProtocolResult.Transient(ex.Message);
+        }
+        else
+        {
+            result = ProtocolResult.Failed(ex.Message);
+        }
+
+        return result;
     }
 
     public static async Task<ProbeResult> ProbeAsync(string apiKey, string endpoint)

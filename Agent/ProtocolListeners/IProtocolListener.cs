@@ -1,12 +1,13 @@
 using System.Collections.Generic;
+using System.Text.Json.Nodes;
 
 // Semantic conversation surface. Every event that happens in a conversation flows through
 // this interface — user input, system prompt changes, assistant deltas, completed assistant
-// turns, tool calls, and tool results. Concrete listeners include the per-protocol native
-// state writers (ChatCompletions/Responses/Anthropic) and the transport adapter that renders
-// to the client. Listeners are composed via ListenerBundle which fans every call out to all
-// peers EXCEPT the sender, so a protocol that received a streaming chunk from its provider
-// only echoes it to the others (not back to itself).
+// turns, tool calls, and tool results. Concrete listeners include the canonical ChatCompletions
+// store, the executing protocol-listeners, and the transport adapter that renders to the client.
+// Listeners are composed via ListenerBundle which fans every call out to all peers EXCEPT the
+// sender, so a protocol that received a streaming chunk from its provider only echoes it to the
+// others (not back to itself).
 public interface IProtocolListener
 {
     // Discrete completed events.
@@ -24,7 +25,7 @@ public interface IProtocolListener
     // Lifecycle — clears all conversation state held by this listener.
     void OnClear();
 
-    // Returns the most recent assistant text held by this listener, or null.
-    string? GetLastAssistantText();
-
-    }
+    // Seeds protocol-native state from the canonical ChatCompletions array. Called by
+    // ListenerBundle immediately after creating or switching to a new protocol instance.
+    void Rehydrate(JsonArray canonical);
+}

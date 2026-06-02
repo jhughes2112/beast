@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Nodes;
 
 // Adapter that turns an ITransportServer into an IProtocolListener so the transport can sit
 // in the bundle alongside the protocol listeners. It never originates events, only renders
@@ -58,7 +59,8 @@ public class ListenerTransport : IProtocolListener
         _transport.Clear();
     }
 
-    public string? GetLastAssistantText() { return null; }
+    public void Rehydrate(JsonArray canonical) { }
+
     public void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
     public string? PopLastUserMessage() { return null; }
 }

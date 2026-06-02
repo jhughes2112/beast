@@ -4,26 +4,6 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Encapsulates a single LLM wire format (ChatCompletions, Responses, Anthropic, etc.).
-// A protocol knows how to build a request, send it, parse the response, and write the
-// assistant turn into the session's native state for its own protocol while fanning the
-// semantic event out to the other protocol listeners. IProvider holds a protocol and
-// delegates HTTP work to it; extra_headers and extra_payload from LlmModel.Extras are
-// passed through verbatim so no protocol-specific knowledge is needed in providers or
-// in configuration.
-public interface IProtocol
-{
-	// Executes one round-trip using this wire format.
-  // bundle carries the protocol-native listeners; the protocol reads its own listener state
-    // to build the request, then writes the assistant turn (and any tool results from prior
-    // turns) into that same native state and fans out to peers.
-	// extraHeaders are added to the HTTP request; extraPayload entries are merged into the
-	// top-level JSON body. Values are JsonNode so nested objects (e.g. provider blocks) work.
-	// transport receives streaming deltas (content and thinking) as they arrive.
-  Task<ProtocolResult> ExecuteAsync(LlmModel model, IProtocolListener bundle, List<ToolDefinition> tools, int maxCompletionTokens,
-										Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, CancellationToken cancellationToken);
-}
-
 // Result of a protocol probe against a single endpoint.
 public enum ProbeOutcome
 {
@@ -31,6 +11,13 @@ public enum ProbeOutcome
     NotSupported, // The endpoint returned a definitive 404 or wrong-shaped body — not this protocol.
     Unreachable   // The probe could not connect at all (network error, timeout).
 }
+
+// Reports running token counts and the protocol-computed running cost for the current
+// (still in-flight) assistant turn while a response streams. These numbers are provisional:
+// LlmService uses them only to push live stats frames, and discards them at commit in favor
+// of the authoritative payload usage and cost. The protocol owns the cost basis so the live
+// display and the committed total are computed identically.
+public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost);
 
 public class ProbeResult
 {

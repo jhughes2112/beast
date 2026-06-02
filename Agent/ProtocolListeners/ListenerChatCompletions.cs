@@ -2,11 +2,10 @@ using System.Collections.Generic;
 using System.Text;
 using System.Text.Json.Nodes;
 
-// ChatCompletions native-state listener. Emits OpenAI-style {role, content, tool_calls,
-// tool_call_id} items. Thinking from foreign protocols is inlined as <thinking>...</thinking>
-// at the head of content. Streaming events are translated into in-place mutation of an
-// open assistant message so the saved state matches what a real ChatCompletions stream would
-// have produced if it had been the source.
+// ChatCompletions canonical-state listener. Emits OpenAI-style {role, content, tool_calls,
+// tool_call_id} items and is the single source of truth for the conversation. Thinking is
+// never persisted. Streaming events are translated into in-place mutation of an open assistant
+// message so the saved state matches what a real ChatCompletions stream would have produced.
 public class ListenerChatCompletions : IProtocolListener
 {
     private readonly JsonArray _state;
@@ -14,7 +13,6 @@ public class ListenerChatCompletions : IProtocolListener
     // In-flight streaming assistant message and its open builders (null when no stream open).
     private JsonObject? _streamingMessage;
     private StringBuilder? _streamingContent;
-    private StringBuilder? _streamingThinking;
 
     public ListenerChatCompletions(JsonArray state)
     {
@@ -63,12 +61,12 @@ public class ListenerChatCompletions : IProtocolListener
 
     public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
     {
-        // If the producer is us, the protocol writes its own native turn directly via
-        // AppendNativeAssistant — this method only handles fan-out from peer protocols.
+        // Canonical assistant turns are normalized text + tool_calls. Thinking is broadcast to
+        // transport listeners but never persisted in canonical state.
         JsonObject msg = new JsonObject();
         msg["role"] = "assistant";
 
-        string body = ComposeBody(text, thinking);
+        string body = ComposeBody(text);
         msg["content"] = body;
 
         if (toolCalls.Count > 0)
@@ -108,7 +106,6 @@ public class ListenerChatCompletions : IProtocolListener
             _streamingMessage["role"] = "assistant";
             _streamingMessage["content"] = string.Empty;
             _streamingContent = new StringBuilder();
-            _streamingThinking = new StringBuilder();
             _state.Add(_streamingMessage);
         }
     }
@@ -126,22 +123,15 @@ public class ListenerChatCompletions : IProtocolListener
     public void OnStreamEnd(IProtocolListener sender, string tag)
     {
         // Stream end alone does not finalise — the producing protocol follows with a
-        // completed OnAssistantTurn (or its native append) which replaces the buffered
-        // message. We drop the in-flight scaffold here so the authoritative version wins.
+        // completed OnAssistantTurn which replaces the buffered message. We drop the
+        // in-flight scaffold here so the authoritative version wins.
         if (_streamingMessage != null)
         {
             int idx = _state.IndexOf(_streamingMessage);
             if (idx >= 0) _state.RemoveAt(idx);
             _streamingMessage = null;
             _streamingContent = null;
-            _streamingThinking = null;
         }
-    }
-
-    // Producer-only: append a verbatim assistant message (with any native fields preserved).
-    public void AppendNativeAssistant(JsonObject nativeMessage)
-    {
-        _state.Add(nativeMessage);
     }
 
     public void OnClear()
@@ -149,25 +139,11 @@ public class ListenerChatCompletions : IProtocolListener
         _state.Clear();
         _streamingMessage = null;
         _streamingContent = null;
-        _streamingThinking = null;
     }
 
-    public string? GetLastAssistantText()
-    {
-        string? text = null;
-        for (int i = _state.Count - 1; i >= 0; i--)
-        {
-            JsonNode? n = _state[i];
-            if (n != null && n["role"]?.GetValue<string>() == "assistant")
-            {
-                text = n["content"]?.GetValue<string>();
-                break;
-            }
-        }
-        return text;
-    }
+    public void Rehydrate(JsonArray canonical) { }
 
-    private static string ComposeBody(string text, string thinking)
+    private static string ComposeBody(string text)
     {
         return text ?? string.Empty;
     }

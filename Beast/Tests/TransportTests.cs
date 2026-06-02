@@ -1,6 +1,26 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+
+// No-op IDisplay for use in tests — suppresses all console output and side-effects.
+file sealed class NullDisplay : IDisplay
+{
+    public void Attach(ConversationModel model) { }
+    public void SetStatus(string text) { }
+    public void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens) { }
+    public void SetCompletions(IReadOnlyList<string> completions) { }
+    public void OnStreamStart(int streamIndex, FrameType type) { }
+    public void OnStreamChunk(string chunk) { }
+    public void OnStreamEnd() { }
+    public void SetAgentBusy(bool busy) { }
+    public void SetSendAsync(Func<string, Task> sendAsync) { }
+    public void SetRequestExit(Action requestExit) { }
+    public void SetFrameDrain(Action drain) { }
+    public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
 
 
 // Tests the wire-level framing protocol used between Beast and Agent.
@@ -144,6 +164,8 @@ public static class TransportTests
         model.Mode = CollapseMode.Quiet;
         foreach (DisplayMessage msg in model.Messages)
         {
+            // Output and User are never collapsed in any mode by design (ShouldCollapse enforces this).
+            if (msg.Type == FrameType.Output || msg.Type == FrameType.User) continue;
             ctx.Assert(msg.Collapsed, $"ConversationModel: quiet mode collapses {msg.Type}");
         }
     }
@@ -153,7 +175,7 @@ public static class TransportTests
     private static void TestAgentTransportProcessing(TestContext ctx)
     {
         ConversationModel model = new ConversationModel();
-        BeastApp transport = new BeastApp(new LaunchDebug(), new List<string>(), new DisplayConsole(new Log(false), false), new Log(false));
+        BeastApp transport = new BeastApp(new LaunchDebug(), new List<string>(), new NullDisplay(), new Log(false));
         Reflect.SetField(transport, "_model", model);
 
         // Simulate a Status frame arriving — should not add to the model.

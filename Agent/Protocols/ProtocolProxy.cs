@@ -1,11 +1,12 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
-
+// So it is clear, Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
+// The lifetime of a ProtocolProxy is tied to the LLMService it is created for.
 // The whole purpose of this class is to 1) detect the protocol by probing the endpoint for Anthropic, ChatCompletions, or Responses,
 // and then 2) route the call to the appropriate protocol implementation, 3) inject headers and payload fields based on the Extras dictionary.
 // They all work the same way, so this saves a lot of boilerplate and simplifies the protocol handling.
@@ -33,58 +34,82 @@ public class ProtocolProxy
     private const string OpenRouterCategories = "cli-agent";
 
     private readonly LlmModel _model;
-    private IProtocol? _protocol;
+
+    // The endpoint cannot change for the life of this proxy, so the protocol only needs
+    // to be detected once. After the first successful probe the result is cached here and
+    // every later call routes directly to it without re-probing.
+    private DetectedProtocol _detected;
 
     public ProtocolProxy(LlmModel model)
     {
         _model = model;
+        _detected = DetectedProtocol.Unknown;
     }
 
-    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int maxCompletionTokens, ITransportServer transport, CancellationToken cancellationToken)
+    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
     {
-        if (_protocol == null)
-        {
-            _protocol = await DetectProtocolAsync(_model, transport);
-            if (_protocol == null)
-            {
-                return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {_model.Endpoint}");
-            }
-        }
-
         (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
-        return await _protocol.ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, transport, cancellationToken);
-    }
+        string endpoint = _model.Endpoint;
 
-    // Probes the endpoint in fixed order (Anthropic → Responses → ChatCompletions).
-    // Returns null if no protocol responds as supported.
-    private static async Task<IProtocol?> DetectProtocolAsync(LlmModel model, ITransportServer transport)
-    {
-        string endpoint = model.Endpoint;
-
-        (string Name, Func<Task<ProbeResult>> Probe, Func<IProtocol> Factory)[] candidates =
+        if (_detected == DetectedProtocol.Unknown)
         {
-            ("Anthropic",       () => ProtocolAnthropic.ProbeAsync(model.ApiKey, endpoint),       () => new ProtocolAnthropic()),
-            ("Responses",       () => ProtocolResponses.ProbeAsync(model.ApiKey, endpoint),       () => new ProtocolResponses()),
-            ("ChatCompletions", () => ProtocolChatCompletions.ProbeAsync(model.ApiKey, endpoint), () => new ProtocolChatCompletions()),
-        };
-
-        foreach ((string name, Func<Task<ProbeResult>> probe, Func<IProtocol> factory) in candidates)
-        {
-            ProbeResult result = await probe();
-            string probeLine = $"[probe] {name}: {result.Outcome} — {result.Detail}";
-            ProtocolChatCompletions.Log(probeLine);
-            transport.Debug(probeLine);
-            if (result.Outcome == ProbeOutcome.Supported)
+            ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, endpoint);
+            LogProbe(transport, "Anthropic", anthropic);
+            if (anthropic.Outcome == ProbeOutcome.Supported)
             {
-                return factory();
+                _detected = DetectedProtocol.Anthropic;
+            }
+            else
+            {
+                ProbeResult responses = await ProtocolResponses.ProbeAsync(_model.ApiKey, endpoint);
+                LogProbe(transport, "Responses", responses);
+                if (responses.Outcome == ProbeOutcome.Supported)
+                {
+                    _detected = DetectedProtocol.Responses;
+                }
+                else
+                {
+                    ProbeResult chat = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, endpoint);
+                    LogProbe(transport, "ChatCompletions", chat);
+                    if (chat.Outcome == ProbeOutcome.Supported)
+                    {
+                        _detected = DetectedProtocol.ChatCompletions;
+                    }
+                }
             }
         }
+
+        if (_detected == DetectedProtocol.Anthropic)
+            return await bundle.EnsureProtocolAnthropic().ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+
+        if (_detected == DetectedProtocol.Responses)
+            return await bundle.EnsureProtocolResponses().ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+
+        if (_detected == DetectedProtocol.ChatCompletions)
+            return await bundle.EnsureProtocolChatCompletions().ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
 
         string failLine = $"[probe] No recognized protocol found for: {endpoint}";
         ProtocolChatCompletions.Log(failLine);
         transport.Debug(failLine);
-        return null;
+        return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
     }
+
+    // The protocol an endpoint speaks, resolved once by probing and then cached.
+    private enum DetectedProtocol
+    {
+        Unknown,
+        Anthropic,
+        Responses,
+        ChatCompletions
+    }
+
+    private static void LogProbe(ITransportServer transport, string name, ProbeResult result)
+    {
+        string line = $"[probe] {name}: {result.Outcome} — {result.Detail}";
+        ProtocolChatCompletions.Log(line);
+        transport.Debug(line);
+    }
+
 
     // Returns true if a JsonNode represents an "empty" extra value that should be skipped.
     // Null nodes and empty-string JsonValues are skipped so settings files can contain

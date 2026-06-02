@@ -175,7 +175,7 @@ public static class ToolFactory
                 Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
             },
             Handler = handler
-        };
+        };						   
     }
 
     private static JsonObject Params(params JsonObject[] props)

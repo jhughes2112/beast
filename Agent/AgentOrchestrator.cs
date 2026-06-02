@@ -236,15 +236,14 @@ public class AgentOrchestrator
 		return fresh;
 	}
 
-	// Builds a fresh ListenerBundle wired to the session's native state arrays and the transport.
+	// Builds a fresh ListenerBundle wired to the session's canonical store and the transport.
+	// The active executing protocol is installed later by LlmService once the model (and thus the
+	// wire format) is known.
 	private ListenerBundle BuildBundle(BeastSession session)
 	{
-		ListenerBundle b = new ListenerBundle();
-		b.Add(new ListenerChatCompletions(session.ChatCompletionsState));
-		b.Add(new ListenerResponses(session.ResponsesState));
-		b.Add(new ListenerAnthropic(session.AnthropicState));
-		b.Add(new ListenerTransport(_transport));
-		return b;
+		return new ListenerBundle(
+			new ListenerChatCompletions(session.ChatCompletionsState),
+			new ListenerTransport(_transport));
 	}
 
 	// ---- LLM execution ----
@@ -280,8 +279,8 @@ public class AgentOrchestrator
 
 	private async Task<(LlmResult result, BeastSession newConversation, ListenerBundle newBundle)> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role)
 	{
-		// Snapshot all protocol state so we can restore on failure.
-		StateSnapshot snapshot = conversation.Snapshot();
+		// Snapshot canonical state so we can restore on failure.
+		JsonArray snapshot = conversation.Snapshot();
 
 		// Capture the last 2 user-exchange groups before we modify anything.
 		List<JsonNode> tailExchanges = ExtractTailExchanges(conversation.ChatCompletionsState, 2);
@@ -505,6 +504,7 @@ public class AgentOrchestrator
 					{
 						conversation.Model = args;
 						_registry.ResetAvailability(args);
+						bundle.InvalidateProtocol();
 						_transport.Status($"Model set to {args}");
 					}
 				}
@@ -596,6 +596,7 @@ public class AgentOrchestrator
 		await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
 		await SearchToolsTests.TestAsync(ctx);
 		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, _cancellationToken);
+		await ProtocolSwitchTests.TestAsync(ctx, _registry, _roleService, _cancellationToken);
 
 		_transport.Output($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 	}
@@ -641,9 +642,8 @@ public class AgentOrchestrator
 	// Sends a Stats frame to Beast with model, token counts, total cost, and context window.
 	private void SendStats(BeastSession conversation, int maxContext)
 	{
-		TokenUsageInfo? usage = conversation.LastTokenUsage;
-		int prompt = usage != null ? usage.PromptTokens : 0;
-		int completion = usage != null ? usage.CompletionTokens : 0;
+		int prompt = conversation.CumulativeInputTokens;
+		int completion = conversation.CumulativeOutputTokens;
 		int contextTokens = conversation.GetUsedTokenCount();
 		string json = JsonSerializer.Serialize(new
 		{

@@ -115,4 +115,14 @@ static class ProtocolHelpers
         long delta = epochSeconds - nowSeconds + 1;
         return delta > 0 ? (int)delta : 0;
     }
+
+    // The Responses API requires call_id values to start with "fc_". Canonical state may carry
+    // foreign ids (e.g. OpenAI "call_...") so normalize before sending. Applied symmetrically
+    // to function_call id/call_id and function_call_output call_id so pairs stay linked.
+    public static string NormalizeToolCallId(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return id;
+        if (id.StartsWith("fc_", StringComparison.Ordinal)) return id;
+        return $"fc_{id}";
+    }
 }

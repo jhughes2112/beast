@@ -15,10 +15,14 @@ using System.Threading.Tasks;
 // "tool" role (not "user") and must immediately follow the assistant message
 // that issued the tool call — the ordering is load-bearing.
 //
-// Reads native messages from ListenerChatCompletions.State. On a successful turn the
-// returned assistant message is appended to that state as the producer's
-// native record, then fanned out to the other protocol listeners as a semantic turn.
-public class ProtocolChatCompletions : IProtocol
+// ChatCompletions is unique among the executing protocols: its native wire state IS the
+// canonical ChatCompletions array held by ListenerChatCompletions. It therefore reads its
+// request directly from bundle.Canonical and keeps no separate copy. Its IProtocolListener
+// members are no-ops (the canonical store already records every event via the fan-out) and
+// Rehydrate is a no-op for the same reason. On a successful turn the assistant message is
+// written to canonical state through the semantic fan-out path, so the recorded turn is
+// normalized identically to every other protocol.
+public class ProtocolChatCompletions : IProtocolListener
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -31,18 +35,32 @@ public class ProtocolChatCompletions : IProtocol
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
 
+    // Canonical is the native state; nothing to seed. No-op.
+    public void Rehydrate(JsonArray canonical) { }
+
+    // The canonical store records all semantic events; this protocol holds no separate state.
+    public void OnSystemMessage(IProtocolListener sender, string text) { }
+    public void OnUserMessage(IProtocolListener sender, string text) { }
+    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
+    public void OnToolResult(IProtocolListener sender, string toolCallId, string content) { }
+    public void OnStreamStart(IProtocolListener sender, string tag) { }
+    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
+    public void OnStreamEnd(IProtocolListener sender, string tag) { }
+    public void OnClear() { }
+
 
     public async Task<ProtocolResult> ExecuteAsync(
         LlmModel model,
-        IProtocolListener bundle,
+        ListenerBundle bundle,
         List<ToolDefinition> tools,
-        int maxCompletionTokens,
+        int? maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
+        LiveUsageProgress onProgress,
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
-        ListenerChatCompletions listener = ((ListenerBundle)bundle).Get<ListenerChatCompletions>()!;
+        ListenerChatCompletions listener = bundle.Canonical!;
         for (;;)
         {
             JsonObject body = BuildRequestBody(model, listener, tools, maxCompletionTokens);
@@ -98,17 +116,12 @@ public class ProtocolChatCompletions : IProtocol
                     return ProtocolResult.Failed("Response missing message object");
                 }
 
-                JsonObject nativeAssistant = (JsonObject)messageObj.DeepClone();
-                if (nativeAssistant["role"] == null) nativeAssistant["role"] = "assistant";
-
-                listener.AppendNativeAssistant(nativeAssistant);
-
                 (string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
                 string thinking = ExtractThinking(messageObj);
 
-                // Fan-out to peers (and the transport listener) — sender is our own listener so
-                // ChatCompletions does not re-record the turn it just wrote natively.
-                bundle.OnAssistantTurn(listener, assistantText, thinking, toolCalls);
+                // Fan-out to all listeners including our own canonical store, which records the
+                // normalized assistant turn. Thinking is broadcast but not persisted in canonical.
+                bundle.OnAssistantTurn(null!, assistantText, thinking, toolCalls);
 
                 string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
                 if (toolCalls.Count > 0) finishReason = "tool_calls";
@@ -163,7 +176,7 @@ public class ProtocolChatCompletions : IProtocol
         }
     }
 
-    private JsonObject BuildRequestBody(LlmModel model, ListenerChatCompletions listener, List<ToolDefinition> tools, int maxCompletionTokens)
+    private JsonObject BuildRequestBody(LlmModel model, ListenerChatCompletions listener, List<ToolDefinition> tools, int? maxCompletionTokens)
     {
         JsonObject body = new JsonObject();
         body["model"] = model.Config.Id;
@@ -205,7 +218,7 @@ public class ProtocolChatCompletions : IProtocol
         }
 
         body["seed"] = Random.Shared.Next();
-        if (maxCompletionTokens > 0) body["max_completion_tokens"] = maxCompletionTokens;
+        if (maxCompletionTokens > 0) body["max_completion_tokens"] = maxCompletionTokens.Value;
 
         return body;
     }
@@ -243,7 +256,7 @@ public class ProtocolChatCompletions : IProtocol
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
         ListenerChatCompletions listener,
-        IProtocolListener bundle,
+        ListenerBundle bundle,
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
@@ -411,41 +424,21 @@ public class ProtocolChatCompletions : IProtocol
         string assistantText = contentBuilder.ToString();
         string thinking = reasoningBuilder.ToString();
 
-        // Build native assistant message and append to ChatCompletions state.
-        JsonObject native = new JsonObject();
-        native["role"] = "assistant";
-        native["content"] = assistantText;
-        if (!string.IsNullOrEmpty(thinking))
-        {
-            native["reasoning_content"] = thinking;
-        }
-
         List<SemanticToolCall> semanticToolCalls = new List<SemanticToolCall>();
         if (toolCallAccumulators.Count > 0)
         {
-            JsonArray tcArr = new JsonArray();
             foreach (StreamingToolCall acc in toolCallAccumulators)
             {
-                JsonObject tcObj = new JsonObject();
-                tcObj["id"] = acc.Id;
-                tcObj["type"] = "function";
-                JsonObject fn = new JsonObject();
-                fn["name"] = acc.Name;
-                fn["arguments"] = acc.Arguments.ToString();
-                tcObj["function"] = fn;
-                tcArr.Add(tcObj);
-
                 semanticToolCalls.Add(new SemanticToolCall { Id = acc.Id, Name = acc.Name, ArgumentsJson = acc.Arguments.ToString() });
             }
-            native["tool_calls"] = tcArr;
             finishReason = "tool_calls";
         }
 
-        listener.AppendNativeAssistant(native);
-
-        // Fan-out to peers and the transport. The transport listener emits the committed
-        // Thinking + Output frames that replace the live stream block on the client side.
-        bundle.OnAssistantTurn(listener, assistantText, thinking, semanticToolCalls);
+        // Fan-out to all listeners including our own canonical store, which records the
+        // normalized assistant turn. The transport listener emits the committed Thinking +
+        // Output frames that replace the live stream block on the client side. Thinking is
+        // broadcast but not persisted in canonical state.
+        bundle.OnAssistantTurn(null!, assistantText, thinking, semanticToolCalls);
 
         (TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(usageNodeFinal, model);
 

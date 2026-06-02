@@ -16,10 +16,13 @@ using System.Threading.Tasks;
 // Mixing the two approaches within a session produces subtle, hard-to-debug
 // context corruption.
 //
-// Reads native input items from session.ResponsesState. Each completed turn's output
-// items are appended verbatim to that state as the producer's native record and fanned
-// out semantically to the other protocol listeners.
-public class ProtocolResponses : IProtocol
+// Reads canonical messages from bundle.Canonical and translates them into the Responses flat
+// input-item shape. This protocol keeps one piece of native runtime state: previous_response_id.
+// When the server returns a response id, the next turn chains from it by sending previous_response_id
+// plus only the NEW input items appended since the last turn (never replaying the whole history).
+// previous_response_id is in-memory only and is never written into canonical state. On Rehydrate
+// (session load or protocol switch) the id is cleared so the next turn replays full history once.
+public class ProtocolResponses : IProtocolListener
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -31,22 +34,49 @@ public class ProtocolResponses : IProtocol
 
     private bool _streamingSupported = true;
 
+    // Native runtime state: the last server-issued response id, and the count of canonical
+    // items already sent to the server. Both are in-memory only and reset by Rehydrate.
+    private string? _previousResponseId;
+    private int _sentItemCount;
+
+    // Clears native chaining state so the next turn replays the full canonical history once.
+    public void Rehydrate(JsonArray canonical)
+    {
+        _previousResponseId = null;
+        _sentItemCount = 0;
+    }
+
+    // The canonical store records all semantic events; this protocol holds no message state.
+    public void OnSystemMessage(IProtocolListener sender, string text) { }
+    public void OnUserMessage(IProtocolListener sender, string text) { }
+    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
+    public void OnToolResult(IProtocolListener sender, string toolCallId, string content) { }
+    public void OnStreamStart(IProtocolListener sender, string tag) { }
+    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
+    public void OnStreamEnd(IProtocolListener sender, string tag) { }
+    public void OnClear()
+    {
+        _previousResponseId = null;
+        _sentItemCount = 0;
+    }
+
     public async Task<ProtocolResult> ExecuteAsync(
         LlmModel model,
-        IProtocolListener bundle,
+        ListenerBundle bundle,
         List<ToolDefinition> tools,
-        int maxCompletionTokens,
+        int? maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
+        LiveUsageProgress onProgress,
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
-        ListenerResponses listener = ((ListenerBundle)bundle).Get<ListenerResponses>()!;
+        ListenerChatCompletions listener = bundle.Canonical!;
         JsonObject body = BuildBody(model, listener, tools, maxCompletionTokens, extraPayload);
 
         if (_streamingSupported)
         {
-            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, listener, bundle, transport, cancellationToken);
+            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, listener, onProgress, transport, cancellationToken);
             if (streamResult != null) return streamResult;
         }
 
@@ -91,7 +121,7 @@ public class ProtocolResponses : IProtocol
             JsonNode? root = JsonNode.Parse(responseBody);
             if (root == null) return ProtocolResult.Failed("Empty response from Responses API");
 
-            return CommitResponse(listener, bundle, root, model);
+            return CommitResponse(bundle, listener, root, model);
         }
 
         if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
@@ -105,21 +135,24 @@ public class ProtocolResponses : IProtocol
         return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
     }
 
-    private static JsonObject BuildBody(LlmModel model, ListenerResponses listener, List<ToolDefinition> tools, int maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
+    private JsonObject BuildBody(LlmModel model, ListenerChatCompletions listener, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
         JsonObject body = new JsonObject();
         body["model"] = model.Config.Id;
 
-        JsonArray input = new JsonArray();
-        foreach (JsonNode? n in listener.State)
-        {
-            if (n != null) input.Add(n.DeepClone());
-        }
-        body["input"] = input;
-        body["max_output_tokens"] = maxCompletionTokens > 0 ? maxCompletionTokens : 4096;
+        // When chaining from a prior response, the server already holds everything we sent before,
+        // so only the items appended since then are transmitted. Otherwise replay full history.
+        JsonArray canonical = listener.State;
+        int startIndex = _previousResponseId != null ? _sentItemCount : 0;
+        if (startIndex < 0 || startIndex > canonical.Count) startIndex = 0;
 
-        // System prompts arrive through the bundle as semantic events (see BeastSession.RaiseSystemPrompt),
-        // so `instructions` is not set — the Responses input array carries them itself.
+        body["input"] = BuildInputFromCanonical(canonical, startIndex);
+        if (maxCompletionTokens > 0) body["max_output_tokens"] = maxCompletionTokens.Value;
+
+        if (_previousResponseId != null)
+        {
+            body["previous_response_id"] = _previousResponseId;
+        }
 
         if (tools.Count > 0)
         {
@@ -145,7 +178,76 @@ public class ProtocolResponses : IProtocol
         return body;
     }
 
-    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerResponses listener, IProtocolListener bundle, ITransportServer transport, CancellationToken cancellationToken)
+    // Translates canonical ChatCompletions messages into Responses flat input items, starting
+    // from startIndex so chained turns only send what the server has not already received.
+    private static JsonArray BuildInputFromCanonical(JsonArray canonical, int startIndex)
+    {
+        JsonArray input = new JsonArray();
+
+        for (int i = startIndex; i < canonical.Count; i++)
+        {
+            JsonNode? n = canonical[i];
+            if (n == null) continue;
+            string role = n["role"]?.GetValue<string>() ?? string.Empty;
+
+            if (role == "system" || role == "user")
+            {
+                string text = n["content"]?.GetValue<string>() ?? string.Empty;
+                input.Add(BuildMessageItem(role, "input_text", text));
+            }
+            else if (role == "assistant")
+            {
+                string text = n["content"]?.GetValue<string>() ?? string.Empty;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    input.Add(BuildMessageItem("assistant", "output_text", text));
+                }
+
+                JsonArray? toolCalls = n["tool_calls"]?.AsArray();
+                if (toolCalls != null)
+                {
+                    foreach (JsonNode? tc in toolCalls)
+                    {
+                        if (tc == null) continue;
+                        string id = ProtocolHelpers.NormalizeToolCallId(tc["id"]?.GetValue<string>() ?? string.Empty);
+                        JsonObject item = new JsonObject();
+                        item["type"] = "function_call";
+                        item["id"] = id;
+                        item["call_id"] = id;
+                        item["name"] = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty;
+                        item["arguments"] = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
+                        input.Add(item);
+                    }
+                }
+            }
+            else if (role == "tool")
+            {
+                JsonObject item = new JsonObject();
+                item["type"] = "function_call_output";
+                item["call_id"] = ProtocolHelpers.NormalizeToolCallId(n["tool_call_id"]?.GetValue<string>() ?? string.Empty);
+                item["output"] = n["content"]?.GetValue<string>() ?? string.Empty;
+                input.Add(item);
+            }
+        }
+
+        return input;
+    }
+
+    private static JsonObject BuildMessageItem(string role, string blockType, string text)
+    {
+        JsonObject item = new JsonObject();
+        item["type"] = "message";
+        item["role"] = role;
+        JsonArray content = new JsonArray();
+        JsonObject block = new JsonObject();
+        block["type"] = blockType;
+        block["text"] = text;
+        content.Add(block);
+        item["content"] = content;
+        return item;
+    }
+
+    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, ListenerChatCompletions listener, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
     {
         JsonObject streamBody = (JsonObject)body.DeepClone();
         streamBody["stream"] = true;
@@ -204,6 +306,7 @@ public class ProtocolResponses : IProtocol
 
                 JsonNode? finalResponseNode = null;
                 string? openStreamTag = null;
+                int liveInputTokens = 0;
 
         using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
         using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
@@ -222,6 +325,15 @@ public class ProtocolResponses : IProtocol
 
                 string? eventType = eventNode["type"]?.GetValue<string>();
 
+                // Any event that carries a response.usage.input_tokens establishes the input
+                // baseline for live frames. response.created and response.in_progress provide
+                // this before the first text delta, so input no longer counts up from zero.
+                int? eventInputTokens = eventNode["response"]?["usage"]?["input_tokens"]?.GetValue<int?>();
+                if (eventInputTokens.HasValue && eventInputTokens.Value > 0)
+                {
+                    liveInputTokens = eventInputTokens.Value;
+                }
+
                 if (eventType == "response.output_text.delta")
                 {
                     string? delta = eventNode["delta"]?.GetValue<string>();
@@ -229,11 +341,12 @@ public class ProtocolResponses : IProtocol
                     {
                         if (openStreamTag != StreamTag.Assistant)
                         {
-                            if (openStreamTag != null) bundle.OnStreamEnd(listener, openStreamTag);
-                            bundle.OnStreamStart(listener, StreamTag.Assistant);
+                            if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+                            bundle.OnStreamStart(this, StreamTag.Assistant);
                             openStreamTag = StreamTag.Assistant;
                         }
-                        bundle.OnStreamChunk(listener, StreamTag.Assistant, delta);
+                        bundle.OnStreamChunk(this, StreamTag.Assistant, delta);
+                        EmitProgress(model, liveInputTokens, onProgress);
                     }
                 }
                 else if (eventType == "response.reasoning_summary_text.delta")
@@ -243,11 +356,12 @@ public class ProtocolResponses : IProtocol
                     {
                         if (openStreamTag != StreamTag.Thinking)
                         {
-                            if (openStreamTag != null) bundle.OnStreamEnd(listener, openStreamTag);
-                            bundle.OnStreamStart(listener, StreamTag.Thinking);
+                            if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+                            bundle.OnStreamStart(this, StreamTag.Thinking);
                             openStreamTag = StreamTag.Thinking;
                         }
-                        bundle.OnStreamChunk(listener, StreamTag.Thinking, delta);
+                        bundle.OnStreamChunk(this, StreamTag.Thinking, delta);
+                        EmitProgress(model, liveInputTokens, onProgress);
                     }
                 }
                 else if (eventType == "response.completed" || eventType == "response.done")
@@ -260,20 +374,36 @@ public class ProtocolResponses : IProtocol
 
         if (openStreamTag != null)
         {
-            bundle.OnStreamEnd(listener, openStreamTag);
+            bundle.OnStreamEnd(this, openStreamTag);
         }
 
         if (finalResponseNode != null)
         {
-            return CommitResponse(listener, bundle, finalResponseNode, model);
+            return CommitResponse(bundle, listener, finalResponseNode, model);
         }
 
         return ProtocolResult.Failed("Stream ended without a response.completed event");
     }
 
-    // Appends each native output item to ResponsesState verbatim, then raises a single semantic
-    // assistant turn through the bundle for fan-out to peer protocols and the transport.
-    private static ProtocolResult CommitResponse(ListenerResponses listener, IProtocolListener bundle, JsonNode responseRoot, LlmModel model)
+    // The Responses SSE stream does not surface usage on text deltas, but response.created and
+    // response.in_progress carry response.usage.input_tokens early, which the caller passes in as
+    // liveInputTokens. Output is intentionally NOT estimated from streamed characters here: the
+    // committed output_tokens includes hidden reasoning tokens that never appear in the stream, so
+    // a streamedChars/4 estimate badly undercounts and the commit then snaps up by a large amount,
+    // which reads as a double count on the client. Instead the live frame advances only the
+    // authoritative input (and its cost), holding output at the session baseline until the
+    // committed usage arrives at end-of-turn.
+    private void EmitProgress(LlmModel model, int liveInputTokens, LiveUsageProgress onProgress)
+    {
+        decimal liveCost = (liveInputTokens / 1_000_000m) * model.Config.Cost.Input;
+        onProgress(liveInputTokens, 0, liveCost);
+    }
+
+    // Raises a single semantic assistant turn through the bundle so the canonical store records
+    // the normalized turn and the transport listener emits the committed frames. Captures the
+    // server response id for the next turn's previous_response_id chaining, and advances the
+    // sent-item watermark to the post-turn canonical count.
+    private ProtocolResult CommitResponse(ListenerBundle bundle, ListenerChatCompletions listener, JsonNode responseRoot, LlmModel model)
     {
         JsonArray? output = responseRoot["output"]?.AsArray();
         if (output == null || output.Count == 0)
@@ -289,7 +419,6 @@ public class ProtocolResponses : IProtocol
         foreach (JsonNode? item in output)
         {
             if (item == null) continue;
-            listener.AppendNativeItem((JsonObject)item.DeepClone());
 
             string? type = item["type"]?.GetValue<string>();
             if (type == "function_call")
@@ -332,7 +461,15 @@ public class ProtocolResponses : IProtocol
         string assistantText = assistantTextBuilder.ToString();
         string thinking = thinkingBuilder.ToString();
 
-        bundle.OnAssistantTurn(listener, assistantText, thinking, toolCalls);
+        // Fan out with this protocol as sender so the canonical store and transport record the
+        // turn while this protocol (whose listener members are no-ops) is skipped.
+        bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
+
+        // Capture the server response id for next-turn chaining, then advance the watermark to
+        // the post-turn canonical count so only newly-appended items are sent next time. The
+        // id is in-memory only and never written into canonical state.
+        _previousResponseId = responseRoot["id"]?.GetValue<string>();
+        _sentItemCount = listener.State.Count;
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
 
@@ -352,8 +489,23 @@ public class ProtocolResponses : IProtocol
         usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
         usage.TotalTokens = usageNode["total_tokens"]?.GetValue<int>() ?? (usage.PromptTokens + usage.CompletionTokens);
 
-        cost += (usage.PromptTokens / 1_000_000m) * model.Config.Cost.Input;
-        cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
+        // Prefer a server-reported cost when present; otherwise calculate from token counts.
+        decimal? reported = null;
+        JsonNode? costNode = usageNode["cost"];
+        if (costNode is JsonValue cv && cv.TryGetValue<decimal>(out decimal dv))
+        {
+            reported = dv;
+        }
+
+        if (reported.HasValue)
+        {
+            cost = reported.Value;
+        }
+        else
+        {
+            cost += (usage.PromptTokens / 1_000_000m) * model.Config.Cost.Input;
+            cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
+        }
 
         return (usage, cost);
     }

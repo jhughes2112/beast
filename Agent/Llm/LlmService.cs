@@ -97,15 +97,37 @@ public class LlmService
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                int maxCompletionTokens = ComputeMaxCompletionTokens(conversation, model.Config.ContextWindow, reserveTokens) ?? 0;
+                int? maxCompletionTokens = ComputeMaxCompletionTokens(conversation, model.Config.ContextWindow, reserveTokens);
 
-                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, maxCompletionTokens, transport, cancellationToken);
+                // Provisional live stats while the turn streams. Protocols report inputTokens as the
+                // whole-conversation input the provider bills this turn (Anthropic via StreamStart
+                // usage, Responses via response.created usage), which is exactly what the committed
+                // frame reports as promptTokens. outputTokens is the per-turn completion count. The
+                // displayed in/out counters are the absolute session totals, so the live frame adds
+                // the in-flight turn on top of the persisted cumulative baselines; contextTokens
+                // stays as the current context occupancy. These are superseded at commit by the
+                // authoritative cumulative values.
+                decimal costBaseline = conversation.TotalCost;
+                int contextBaseline = conversation.GetUsedTokenCount();
+                int inputBaseline = conversation.CumulativeInputTokens;
+                int outputBaseline = conversation.CumulativeOutputTokens;
+                LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
+                {
+                    int liveContextTokens = inputTokens > 0 ? inputTokens + outputTokens : contextBaseline + outputTokens;
+                    int livePromptTokens = inputBaseline + inputTokens;
+                    int liveCompletionTokens = outputBaseline + outputTokens;
+                    string liveJson = BuildStatsJson(conversation.Model, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, model.Config.ContextWindow, liveContextTokens);
+                    transport.Stats(liveJson);
+                };
+
+                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, maxCompletionTokens, onProgress, transport, cancellationToken);
 
                 if (callResult.Outcome == ProtocolCallOutcome.Success)
                 {
                     ProtocolCallPayload payload = callResult.Payload!;
-                    conversation.TotalCost += payload.Cost;
-                    conversation.LastTokenUsage = payload.Usage;
+                    conversation.AddTurnUsage(payload.Usage, payload.Cost);
+
+                    SendCostUpdate(conversation, model.Config.ContextWindow, transport);
 
                     (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, conversation, bundle, transport, cancellationToken);
                     if (terminalResult != null)
@@ -252,13 +274,38 @@ public class LlmService
 
     internal int? ComputeMaxCompletionTokens(BeastSession conversation, int contextLength, int reserveTokens)
     {
-        const int DefaultCompletion = 65536;
-
         int usedTokens = conversation.GetUsedTokenCount();
         long available = contextLength - usedTokens - reserveTokens;
         if (available <= 0) return 0;
 
-        int ceiling = _model.Config.MaxOutputTokens > 0 ? _model.Config.MaxOutputTokens : DefaultCompletion;
-        return (int)Math.Min(available, ceiling);
+        if (_model.Config.MaxOutputTokens <= 0) return null;
+
+        return (int)Math.Min(available, _model.Config.MaxOutputTokens);
+    }
+
+    // Pushes a Stats frame to the client the moment the session cost changes so the displayed
+    // total updates in realtime, rather than only at turn boundaries via the orchestrator. This
+    // carries the authoritative committed totals and supersedes any provisional live frame.
+    private void SendCostUpdate(BeastSession conversation, int maxContext, ITransportServer transport)
+    {
+        int prompt = conversation.CumulativeInputTokens;
+        int completion = conversation.CumulativeOutputTokens;
+        int contextTokens = conversation.GetUsedTokenCount();
+
+        string json = BuildStatsJson(conversation.Model, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
+        transport.Stats(json);
+    }
+
+    private static string BuildStatsJson(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            model,
+            promptTokens,
+            completionTokens,
+            totalCost,
+            maxContext,
+            contextTokens
+        });
     }
 }

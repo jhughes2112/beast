@@ -85,8 +85,8 @@ public class SettingsService
 					{
 						new ModelConfig
 						{
-							Id = "baidu/cobuddy:free",
-							Name = "baidu/cobuddy:free",
+							Id = "openrouter/free",
+							Name = "Random Free Model",
 							Enabled = false,
 							ContextWindow = 131078,
 							Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
@@ -125,6 +125,7 @@ public class SettingsService
 							Name = "Claude Sonnet 4.5",
 							Enabled = false,
 							ContextWindow = 200000,
+							MaxOutputTokens = 64000,
 							Cost = new CostConfig { Input = 3.00m, Output = 15.00m, CacheWrite = 0.0m, CacheRead = 0.0m },
 							Extras = new Dictionary<string, JsonNode?>
 							{

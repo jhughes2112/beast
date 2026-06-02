@@ -24,19 +24,11 @@ public class BeastSession
     [JsonPropertyName("role")]
     public string Role { get; set; } = string.Empty;
 
-    // Native protocol state: each is the exact collection of message/input items in the
-    // shape the corresponding protocol sends to its endpoint.
+    // Native protocol state in canonical ChatCompletions wire shape. This is the single
+    // persisted source of truth. Live protocol-listeners (Responses, Anthropic) keep their own
+    // native runtime state in-memory and rehydrate from this array on creation or model switch.
     [JsonPropertyName("chatCompletionsState")]
     public JsonArray ChatCompletionsState { get; set; } = new JsonArray();
-
-    [JsonPropertyName("responsesState")]
-    public JsonArray ResponsesState { get; set; } = new JsonArray();
-
-    // AnthropicState is a JsonObject with two keys:
-    //   "system"   — string, the hoisted system prompt (updated by ListenerAnthropic.OnSystemMessage)
-    //   "messages" — JsonArray of native Anthropic message objects
-    [JsonPropertyName("anthropicState")]
-    public JsonObject AnthropicState { get; set; } = new JsonObject();
 
     [JsonPropertyName("lastTokenUsage")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -44,6 +36,27 @@ public class BeastSession
 
     [JsonPropertyName("totalCost")]
     public decimal TotalCost { get; set; }
+
+    // Absolute session totals. These only ever increase over the life of a session and are never
+    // reset, not on model switch and not on compaction. CumulativeInputTokens and
+    // CumulativeOutputTokens are what the client displays as the running in/out counters, while
+    // LastTokenUsage stays scoped to the most recent turn for context-occupancy math.
+    [JsonPropertyName("cumulativeInputTokens")]
+    public int CumulativeInputTokens { get; set; }
+
+    [JsonPropertyName("cumulativeOutputTokens")]
+    public int CumulativeOutputTokens { get; set; }
+
+    // Accrues one committed turn's authoritative usage and cost into the monotonic session totals,
+    // and records the turn usage for context-occupancy. The only path that mutates these counters,
+    // so they can only grow.
+    public void AddTurnUsage(TokenUsageInfo usage, decimal cost)
+    {
+        CumulativeInputTokens += usage.PromptTokens;
+        CumulativeOutputTokens += usage.CompletionTokens;
+        TotalCost += cost;
+        LastTokenUsage = usage;
+    }
 
     // Returns true when the LLM has pending work: either the last message is a user turn,
     // or there is an assistant tool_call ID with no matching tool result anywhere in state.
@@ -99,10 +112,10 @@ public class BeastSession
         string model,
         string role,
         JsonArray chatCompletionsState,
-        JsonArray responsesState,
-        JsonObject anthropicState,
         TokenUsageInfo? lastTokenUsage,
-        decimal totalCost)
+        decimal totalCost,
+        int cumulativeInputTokens,
+        int cumulativeOutputTokens)
     {
         Id = id;
         DisplayName = displayName;
@@ -110,17 +123,17 @@ public class BeastSession
         Model = model;
         Role = role;
         ChatCompletionsState = chatCompletionsState ?? new JsonArray();
-        ResponsesState = responsesState ?? new JsonArray();
-        AnthropicState = anthropicState ?? new JsonObject();
         LastTokenUsage = lastTokenUsage;
         TotalCost = totalCost;
+        CumulativeInputTokens = cumulativeInputTokens;
+        CumulativeOutputTokens = cumulativeOutputTokens;
     }
 
     public static BeastSession CreateNew(string id, string role, string displayName)
     {
         return new BeastSession(
             id, displayName, string.Empty, string.Empty, role,
-            new JsonArray(), new JsonArray(), new JsonObject(), null, 0m);
+            new JsonArray(), null, 0m, 0, 0);
     }
 
     // Rough token estimate by character count when no provider-reported usage is available.
@@ -191,42 +204,19 @@ public class BeastSession
         return null;
     }
 
-    // Deep snapshot of all three states; used by compaction for rollback.
-    public StateSnapshot Snapshot()
+    // Deep snapshot of canonical state; used by compaction for rollback.
+    public JsonArray Snapshot()
     {
-        return new StateSnapshot(
-            (JsonArray)ChatCompletionsState.DeepClone(),
-            (JsonArray)ResponsesState.DeepClone(),
-            (JsonObject)AnthropicState.DeepClone());
+        return (JsonArray)ChatCompletionsState.DeepClone();
     }
 
     // Restores state in-place so existing listener array references remain valid.
-    public void RestoreSnapshot(StateSnapshot snapshot)
+    public void RestoreSnapshot(JsonArray snapshot)
     {
         ChatCompletionsState.Clear();
-        foreach (JsonNode? node in snapshot.ChatCompletions)
+        foreach (JsonNode? node in snapshot)
         {
             ChatCompletionsState.Add(node?.DeepClone());
-        }
-
-        ResponsesState.Clear();
-        foreach (JsonNode? node in snapshot.Responses)
-        {
-            ResponsesState.Add(node?.DeepClone());
-        }
-
-        List<string> keys = new List<string>();
-        foreach (KeyValuePair<string, JsonNode?> kvp in AnthropicState)
-        {
-            keys.Add(kvp.Key);
-        }
-        foreach (string key in keys)
-        {
-            AnthropicState.Remove(key);
-        }
-        foreach (KeyValuePair<string, JsonNode?> kvp in snapshot.Anthropic)
-        {
-            AnthropicState[kvp.Key] = kvp.Value?.DeepClone();
         }
     }
 }
