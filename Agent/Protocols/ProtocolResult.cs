@@ -27,16 +27,21 @@ public class ProtocolCallPayload
     // Token counts for this call.
     public TokenUsageInfo Usage { get; }
 
+    // Raw prompt + completion tokens as reported by the provider (before subtracting cached tokens).
+    // This represents the actual full context size and is used to track conversation length.
+    public int CurrentContextSize { get; }
+
     // Cost in USD already computed by the provider using its model config.
     public decimal Cost { get; }
 
-    public ProtocolCallPayload(string assistantText, IReadOnlyList<SemanticToolCall> toolCalls, string finishReason, TokenUsageInfo usage, decimal cost)
+    public ProtocolCallPayload(string assistantText, IReadOnlyList<SemanticToolCall> toolCalls, string finishReason, TokenUsageInfo usage, decimal cost, int currentContextSize)
     {
         AssistantText = assistantText;
         ToolCalls = toolCalls;
         FinishReason = finishReason;
         Usage = usage;
         Cost = cost;
+        CurrentContextSize = currentContextSize;
     }
 }
 

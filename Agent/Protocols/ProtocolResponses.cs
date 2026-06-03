@@ -526,7 +526,14 @@ public class ProtocolResponses : IProtocolListener
 
         (TokenUsageInfo usage, decimal cost) = ExtractUsage(responseRoot, model);
 
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
+        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
+        int totalInputTokens = responseRoot["usage"]?["input_tokens"]?.GetValue<int>() ?? 0;
+        int cachedTokens = responseRoot["usage"]?["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
+        int freshInputTokens = usage.PromptTokens;
+        string logLine = $"[usage] input={totalInputTokens} (fresh={freshInputTokens} cached={cachedTokens}) output={usage.CompletionTokens} total={usage.PromptTokens + usage.CompletionTokens} cost={cost:F6} msg=\"{msgPreview}\"";
+        Console.WriteLine(logLine);
+
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + usage.CompletionTokens));
     }
 
     private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode responseRoot, LlmModel model)
@@ -536,11 +543,16 @@ public class ProtocolResponses : IProtocolListener
         JsonNode? usageNode = responseRoot["usage"];
         if (usageNode == null) return (usage, cost);
 
-        usage.PromptTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
+        int totalInputTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
         usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
-        usage.TotalTokens = usageNode["total_tokens"]?.GetValue<int>() ?? (usage.PromptTokens + usage.CompletionTokens);
 
-        // Prefer a server-reported cost when present; otherwise calculate from token counts.
+        int cachedTokens = usageNode["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
+        int freshInputTokens = totalInputTokens - cachedTokens;
+
+        // Store only fresh input tokens for session accumulation
+        usage.PromptTokens = freshInputTokens;
+
+        // Prefer a server-reported cost when present; otherwise calculate from fresh token counts.
         decimal? reported = null;
         JsonNode? costNode = usageNode["cost"];
         if (costNode is JsonValue cv && cv.TryGetValue<decimal>(out decimal dv))
@@ -554,7 +566,7 @@ public class ProtocolResponses : IProtocolListener
         }
         else
         {
-            cost += (usage.PromptTokens / 1_000_000m) * model.Config.Cost.Input;
+            cost += (freshInputTokens / 1_000_000m) * model.Config.Cost.Input;
             cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
         }
 

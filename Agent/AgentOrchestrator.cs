@@ -58,6 +58,12 @@ public class AgentOrchestrator
 		BeastSession conversation = LoadOrCreateConversation(out ListenerBundle bundle);
 		ConcurrentQueue<string> inputQueue = new();
 
+		// Send initial stats so the client sees token counts and cost immediately.
+		LLMRole? initialRole = _roleService.GetRole(conversation.Role);
+		LlmService? initialService = _registry.GetServiceForRole(initialRole, conversation.Model, conversation.GetContextLength());
+		int contextWindow = initialService?.Model.Config.ContextWindow ?? 0;
+		SendStats(conversation, contextWindow);
+
 		// Cooperative async reader: awaits input and feeds the queue; no thread pool thread involved.
 		async Task ReadInputAsync()
 		{
@@ -90,7 +96,7 @@ public class AgentOrchestrator
 			{
 			// 1. Resolve role and service.
 			LLMRole? role = _roleService.GetRole(conversation.Role);
-			LlmService? service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
+			LlmService? service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength());
 
 			// 2. Drain all pending input: run commands in order, accumulate text into one user message.
 			// Returns null accumulatedText if nothing was dequeued; empty string if only commands ran.
@@ -102,7 +108,7 @@ public class AgentOrchestrator
 
 			// Re-resolve after commands so queued user text uses the current role/model immediately.
 			role = _roleService.GetRole(conversation.Role);
-			service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
+			service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength());
 			if (service!=null)
 			{
 				// Send history to the client whenever the active session changes.
@@ -149,7 +155,7 @@ public class AgentOrchestrator
 						_transport.Idle();
 
 						// Re-resolve after compaction because the service may have changed
-						service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetUsedTokenCount());
+						service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength());
 					}
 				}
 			}
@@ -301,9 +307,10 @@ public class AgentOrchestrator
 			// Save the old session before we switch away from it.
 			SessionService.Save(conversation);
 
-			// Build the new session: new id, incremented display name, same role/model.
+			// Build the new session: derived id, incremented display name, same role/model.
 			string newDisplayName = BeastSession.IncrementDisplayName(conversation.DisplayName);
-			BeastSession fresh = BeastSession.CreateNew(Guid.NewGuid().ToString(), conversation.Role, newDisplayName);
+			string newSessionId = IncrementSessionId(conversation.Id);
+			BeastSession fresh = BeastSession.CreateNew(newSessionId, conversation.Role, newDisplayName);
 			fresh.Model = conversation.Model;
 			fresh.Ephemeral = conversation.Ephemeral;
 			ListenerBundle freshBundle = BuildBundle(fresh);
@@ -497,7 +504,7 @@ public class AgentOrchestrator
 				if (args != null)
 				{
 					LLMRole? modelRole = _roleService.GetRole(conversation.Role);
-					LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, conversation.GetUsedTokenCount()) : null;
+					LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, conversation.GetContextLength()) : null;
 					if (modelService == null)
 					{
 						_transport.Error($"Unknown model: {args}");
@@ -641,12 +648,30 @@ public class AgentOrchestrator
 		return result;
 	}
 
+	// Generates a new session ID from an existing one by incrementing the numeric suffix.
+	// Examples: "abc" -> "abc_2", "abc_2" -> "abc_3", "abc_5" -> "abc_6"
+	private static string IncrementSessionId(string sessionId)
+	{
+		int lastUnderscore = sessionId.LastIndexOf('_');
+		if (lastUnderscore >= 0 && lastUnderscore < sessionId.Length - 1)
+		{
+			string suffix = sessionId.Substring(lastUnderscore + 1);
+			if (int.TryParse(suffix, out int number))
+			{
+				string basePart = sessionId.Substring(0, lastUnderscore);
+				return $"{basePart}_{number + 1}";
+			}
+		}
+
+		return $"{sessionId}_2";
+	}
+
 	// Sends a Stats frame to Beast with model, token counts, total cost, and context window.
 	private void SendStats(BeastSession conversation, int maxContext)
 	{
 		int prompt = conversation.CumulativeInputTokens;
 		int completion = conversation.CumulativeOutputTokens;
-		int contextTokens = conversation.GetUsedTokenCount();
+		int contextTokens = conversation.GetContextLength();
 		string json = JsonSerializer.Serialize(new
 		{
 			model = conversation.Model,

@@ -91,7 +91,7 @@ public class LlmService
 
             for (; ; )
             {
-                if (model.Config.ContextWindow - conversation.GetUsedTokenCount() <= reserveTokens)
+                if (conversation.GetContextLength() + reserveTokens > model.Config.ContextWindow)
                 {
                     finalResult = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
                     break;
@@ -110,12 +110,12 @@ public class LlmService
                 // stays as the current context occupancy. These are superseded at commit by the
                 // authoritative cumulative values.
                 decimal costBaseline = conversation.TotalCost;
-                int contextBaseline = conversation.GetUsedTokenCount();
+                int contextBaseline = conversation.GetContextLength();
                 int inputBaseline = conversation.CumulativeInputTokens;
                 int outputBaseline = conversation.CumulativeOutputTokens;
                 LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
                 {
-                    int liveContextTokens = inputTokens > 0 ? inputTokens + outputTokens : contextBaseline + outputTokens;
+                    int liveContextTokens = contextBaseline;
                     int livePromptTokens = inputBaseline + inputTokens;
                     int liveCompletionTokens = outputBaseline + outputTokens;
                     string liveJson = BuildStatsJson(conversation.Model, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, model.Config.ContextWindow, liveContextTokens);
@@ -127,7 +127,7 @@ public class LlmService
                 if (callResult.Outcome == ProtocolCallOutcome.Success)
                 {
                     ProtocolCallPayload payload = callResult.Payload!;
-                    conversation.AddTurnUsage(payload.Usage, payload.Cost);
+                    conversation.AddTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
 
                     SendCostUpdate(conversation, model.Config.ContextWindow, transport);
 
@@ -291,7 +291,7 @@ public class LlmService
 
     internal int? ComputeMaxCompletionTokens(BeastSession conversation, int contextLength, int reserveTokens)
     {
-        int usedTokens = conversation.GetUsedTokenCount();
+        int usedTokens = conversation.GetContextLength();
         long available = contextLength - usedTokens - reserveTokens;
         if (available <= 0) return 0;
 
@@ -307,7 +307,7 @@ public class LlmService
     {
         int prompt = conversation.CumulativeInputTokens;
         int completion = conversation.CumulativeOutputTokens;
-        int contextTokens = conversation.GetUsedTokenCount();
+        int contextTokens = conversation.GetContextLength();
 
         string json = BuildStatsJson(conversation.Model, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
         transport.Stats(json);

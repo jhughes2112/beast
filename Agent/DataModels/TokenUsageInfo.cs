@@ -31,7 +31,4 @@ public class TokenUsageInfo
 
     [JsonPropertyName("completionTokens")]
     public int CompletionTokens { get; set; }
-
-    [JsonPropertyName("totalTokens")]
-    public int TotalTokens { get; set; }
 }

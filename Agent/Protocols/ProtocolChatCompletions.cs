@@ -128,7 +128,14 @@ public class ProtocolChatCompletions : IProtocolListener
 
                 (TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
 
-                return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
+                string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
+                int totalPromptTokens = root["usage"]?["prompt_tokens"]?.GetValue<int>() ?? 0;
+                int cachedTokens = root["usage"]?["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
+                int freshPromptTokens = usage.PromptTokens;
+                string logLine = $"[usage] prompt={totalPromptTokens} (fresh={freshPromptTokens} cached={cachedTokens}) completion={usage.CompletionTokens} cost={cost:F6} msg=\"{msgPreview}\"";
+                Console.WriteLine(logLine);
+
+                return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalPromptTokens + usage.CompletionTokens));
             }
 
             if (TryAdaptToError(httpResponse, responseBody))
@@ -454,7 +461,14 @@ public class ProtocolChatCompletions : IProtocolListener
 
         (TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(usageNodeFinal, model);
 
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, semanticToolCalls, finishReason, tokenUsage, cost));
+        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
+        int totalPromptTokens = usageNodeFinal?["prompt_tokens"]?.GetValue<int>() ?? 0;
+        int cachedTokens = usageNodeFinal?["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
+        int freshPromptTokens = tokenUsage.PromptTokens;
+        string logLine = $"[usage] prompt={totalPromptTokens} (fresh={freshPromptTokens} cached={cachedTokens}) completion={tokenUsage.CompletionTokens} total={tokenUsage.PromptTokens + tokenUsage.CompletionTokens} cost={cost:F6} msg=\"{msgPreview}\"";
+        Console.WriteLine(logLine);
+
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, semanticToolCalls, finishReason, tokenUsage, cost, totalPromptTokens + tokenUsage.CompletionTokens));
     }
 
     private sealed class StreamingToolCall
@@ -537,9 +551,14 @@ public class ProtocolChatCompletions : IProtocolListener
         decimal cost = 0m;
         if (usageNode == null) return (usage, cost);
 
-        usage.PromptTokens = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
+        int totalPromptTokens = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
         usage.CompletionTokens = usageNode["completion_tokens"]?.GetValue<int>() ?? 0;
-        usage.TotalTokens = usageNode["total_tokens"]?.GetValue<int>() ?? (usage.PromptTokens + usage.CompletionTokens);
+
+        int cachedTokens = usageNode["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
+        int freshPromptTokens = totalPromptTokens - cachedTokens;
+
+        // Store only fresh prompt tokens for session accumulation
+        usage.PromptTokens = freshPromptTokens;
 
         decimal? reported = null;
         JsonNode? costNode = usageNode["cost"];
@@ -554,7 +573,7 @@ public class ProtocolChatCompletions : IProtocolListener
         }
         else
         {
-            cost += (usage.PromptTokens / 1_000_000m) * model.Config.Cost.Input;
+            cost += (freshPromptTokens / 1_000_000m) * model.Config.Cost.Input;
             cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
         }
 

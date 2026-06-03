@@ -389,7 +389,9 @@ public class ProtocolAnthropic : IProtocolListener
         (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(assistant.Content);
         bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
 
-        int inputTokens = 0;
+        int totalInputTokens = 0;
+        int cacheCreationTokens = 0;
+        int cacheReadTokens = 0;
         int outputTokens = 0;
         string stopReason = "end_turn";
 
@@ -397,7 +399,9 @@ public class ProtocolAnthropic : IProtocolListener
         {
             if (res.StreamStartMessage?.Usage != null)
             {
-                inputTokens = res.StreamStartMessage.Usage.InputTokens;
+                totalInputTokens = res.StreamStartMessage.Usage.InputTokens;
+                cacheCreationTokens = res.StreamStartMessage.Usage.CacheCreationInputTokens;
+                cacheReadTokens = res.StreamStartMessage.Usage.CacheReadInputTokens;
             }
             if (res.Usage != null)
             {
@@ -409,18 +413,24 @@ public class ProtocolAnthropic : IProtocolListener
             }
         }
 
+        int cachedTokens = cacheCreationTokens + cacheReadTokens;
+        int freshInputTokens = totalInputTokens - cachedTokens;
+
         TokenUsageInfo usage = new TokenUsageInfo
         {
-            PromptTokens = inputTokens,
-            CompletionTokens = outputTokens,
-            TotalTokens = inputTokens + outputTokens
+            PromptTokens = freshInputTokens,
+            CompletionTokens = outputTokens
         };
 
-        decimal cost = ResolveCost(inputTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
+        decimal cost = ResolveCost(freshInputTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
 
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
+        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
+        string logLine = $"[usage] input={totalInputTokens} (fresh={freshInputTokens} cache_write={cacheCreationTokens} cache_read={cacheReadTokens}) output={outputTokens} total={totalInputTokens + outputTokens} cost={cost:F6} msg=\"{msgPreview}\"";
+        Console.WriteLine(logLine);
+
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + outputTokens));
     }
 
     // Appends the native assistant message verbatim (preserving signed blocks), extracts the
@@ -435,21 +445,35 @@ public class ProtocolAnthropic : IProtocolListener
         (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(response.Content);
         bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
 
-        int inputTokens = response.Usage?.InputTokens ?? 0;
+        int totalInputTokens = response.Usage?.InputTokens ?? 0;
+        int cacheCreationTokens = 0;
+        int cacheReadTokens = 0;
         int outputTokens = response.Usage?.OutputTokens ?? 0;
+
+        if (response.Usage != null)
+        {
+            cacheCreationTokens = response.Usage.CacheCreationInputTokens;
+            cacheReadTokens = response.Usage.CacheReadInputTokens;
+        }
+
+        int cachedTokens = cacheCreationTokens + cacheReadTokens;
+        int freshInputTokens = totalInputTokens - cachedTokens;
 
         TokenUsageInfo usage = new TokenUsageInfo
         {
-            PromptTokens = inputTokens,
-            CompletionTokens = outputTokens,
-            TotalTokens = inputTokens + outputTokens
+            PromptTokens = freshInputTokens,
+            CompletionTokens = outputTokens
         };
 
-        decimal cost = ResolveCost(inputTokens, outputTokens, model, response);
+        decimal cost = ResolveCost(freshInputTokens, outputTokens, model, response);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : (response.StopReason ?? "end_turn");
 
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost));
+        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
+        string logLine = $"[usage] input={totalInputTokens} (fresh={freshInputTokens} cache_write={cacheCreationTokens} cache_read={cacheReadTokens}) output={outputTokens} total={totalInputTokens + outputTokens} cost={cost:F6} msg=\"{msgPreview}\"";
+        Console.WriteLine(logLine);
+
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + outputTokens));
     }
 
     // Computes cost from the model's configured per-million pricing. When that yields zero

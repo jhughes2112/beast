@@ -34,6 +34,12 @@ public class BeastSession
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TokenUsageInfo? LastTokenUsage { get; set; }
 
+    // The actual context size after the last turn: raw prompt_tokens + completion_tokens
+    // as reported by the provider (before subtracting cached tokens). This is the true
+    // conversation size that determines how much space remains in the context window.
+    [JsonPropertyName("currentContextSize")]
+    public int CurrentContextSize { get; set; }
+
     [JsonPropertyName("totalCost")]
     public decimal TotalCost { get; set; }
 
@@ -48,14 +54,16 @@ public class BeastSession
     public int CumulativeOutputTokens { get; set; }
 
     // Accrues one committed turn's authoritative usage and cost into the monotonic session totals,
-    // and records the turn usage for context-occupancy. The only path that mutates these counters,
-    // so they can only grow.
-    public void AddTurnUsage(TokenUsageInfo usage, decimal cost)
+    // records the turn usage for context-occupancy, and updates the actual context size.
+    // usage contains fresh tokens (for billing), currentContextSize is the actual full context
+    // size reported by the provider (before subtracting cached tokens).
+    public void AddTurnUsage(TokenUsageInfo usage, decimal cost, int currentContextSize)
     {
         CumulativeInputTokens += usage.PromptTokens;
         CumulativeOutputTokens += usage.CompletionTokens;
         TotalCost += cost;
         LastTokenUsage = usage;
+        CurrentContextSize = currentContextSize;
     }
 
     // Returns true when the LLM has pending work: either the last message is a user turn,
@@ -115,7 +123,8 @@ public class BeastSession
         TokenUsageInfo? lastTokenUsage,
         decimal totalCost,
         int cumulativeInputTokens,
-        int cumulativeOutputTokens)
+        int cumulativeOutputTokens,
+        int currentContextSize)
     {
         Id = id;
         DisplayName = displayName;
@@ -127,34 +136,22 @@ public class BeastSession
         TotalCost = totalCost;
         CumulativeInputTokens = cumulativeInputTokens;
         CumulativeOutputTokens = cumulativeOutputTokens;
+        CurrentContextSize = currentContextSize;
     }
 
     public static BeastSession CreateNew(string id, string role, string displayName)
     {
         return new BeastSession(
             id, displayName, string.Empty, string.Empty, role,
-            new JsonArray(), null, 0m, 0, 0);
+            new JsonArray(), null, 0m, 0, 0, 0);
     }
 
-    // Rough token estimate by character count when no provider-reported usage is available.
-    public int GetUsedTokenCount()
+    // Returns the current context length (conversation size in tokens).
+    // This is the actual size of the conversation as reported by the provider on the last turn.
+    // It represents prompt_tokens + completion_tokens from the last committed turn.
+    public int GetContextLength()
     {
-        if (LastTokenUsage != null)
-        {
-            return LastTokenUsage.TotalTokens;
-        }
-
-        return (int)(MeasureChars(ChatCompletionsState) / 4);
-    }
-
-    private static long MeasureChars(JsonArray arr)
-    {
-        long total = 0;
-        foreach (JsonNode? node in arr)
-        {
-            if (node != null) total += node.ToJsonString().Length;
-        }
-        return total;
+        return CurrentContextSize;
     }
 
     // Returns the first system message content from ChatCompletionsState, or empty if none.
