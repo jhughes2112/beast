@@ -3,16 +3,13 @@ using System.Collections.Generic;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using System.IO;
+using System.Text;
 
 
 // Builds the tool dictionary with explicit registrations — no reflection.
 public static class ToolFactory
 {
-    private const int DefaultMaxChars = 8192;
-    private const int BashMaxChars = 4096;
-    private const int FileMaxLines = 1000;
-    private const int FileMaxChars = 8192;
-
     public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig)
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
@@ -26,7 +23,7 @@ public static class ToolFactory
             {
                 string pattern = Str(args, "pattern");
                 string path = Str(args, "path");
-                return Truncate(await SearchTools.GlobAsync(pattern, path));
+                return await SearchTools.GlobAsync(pattern, path, ct);
             });
 
         Register(tools, "grep",
@@ -40,7 +37,7 @@ public static class ToolFactory
                 string path = Str(args, "path");
                 string pattern = Str(args, "pattern");
                 int? contextLines = IntOpt(args, "context_lines");
-                return Truncate(await SearchTools.GrepAsync(path, pattern, contextLines));
+                return await SearchTools.GrepAsync(path, pattern, contextLines, ct);
             });
 
         Register(tools, "list_directory",
@@ -52,7 +49,7 @@ public static class ToolFactory
             {
                 string path = Str(args, "path");
                 string? pattern = StrOpt(args, "pattern");
-                return Truncate(await SearchTools.ListDirectoryAsync(path, pattern));
+                return await SearchTools.ListDirectoryAsync(path, pattern, ct);
             });
 
         WebFetch webFetch = new();
@@ -63,7 +60,7 @@ public static class ToolFactory
             async (args, ct, transport) =>
             {
                 string url = Str(args, "url");
-                return Truncate(await webFetch.FetchPageAsync(url, ct));
+                return await webFetch.FetchPageAsync(url, ct);
             });
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
@@ -76,7 +73,7 @@ public static class ToolFactory
                 async (args, ct, transport) =>
                 {
                     string query = Str(args, "query");
-                    return Truncate(await webSearch.SearchWebAsync(query, transport, ct));
+                    return await webSearch.SearchWebAsync(query, transport, ct);
                 });
         }
 
@@ -91,78 +88,101 @@ public static class ToolFactory
                 string command = Str(args, "command");
                 string? workingDir = StrOpt(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return Truncate(await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct), BashMaxChars);
+                return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
             });
 
         Register(tools, "read_file",
-            "Read the contents of a file.",
+            "Reads a file in modified cat -n format with hash anchors per line. CWD is /workspace/",
             Params(
-                Req("file_path", "string", "Absolute path to the file to read."),
-                Opt("offset", "string", "The line number to start reading from (1 based). Only provide if the file is too large to read at once."),
-                Opt("lines", "string", "The number of lines to read. Only provide if the file is too large to read at once.")),
+                Req("file_path", "string", "File path"),
+                Opt("offset", "string", "Starting line number (1 based)"),
+                Opt("lines", "string", "Number of lines to read. Empty means to the end of the file.")),
             async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string offset = Str(args, "offset");
                 string lines = Str(args, "lines");
-                return TruncateFile(await FileTools.ReadFileAsync(filePath, offset, lines, ct));
+                return await FileTools.ReadFileAsync(filePath, offset, lines, ct);
             });
 
         Register(tools, "write_file",
-            "Create a new file or overwrite an existing one. If the file already exists, you must read_file first. Prefer edit_file for partial changes. Never create files not required by the task.",
+            "Create a new file or overwrite an existing one. If the file already exists, you must read_file first. Prefer edit_file for partial changes. Only create files required by the task. Temporary files should go in /tmp/",
             Params(
-                Req("file_path", "string", "The exact full path to the file to create or overwrite. Absolute paths only."),
-                Req("content", "string", "The complete content to write to the file. This replaces the entire file contents.")),
+                Req("file_path", "string", "File path"),
+                Req("content", "string", "Complete file contents")),
             async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string content = Str(args, "content");
-                return Truncate(await FileTools.WriteFileAsync(filePath, content, ct));
-            });
-
-        Register(tools, "edit_file",
-            "Apply multiple line-anchored edits to a file. The edits parameter is a JSON string representing an ordered array of operations.",
-            Params(
-                Req("file_path", "string", "Absolute path to the file to modify."),
-                Req("edits", "string", "A JSON string encoding an ordered array of edit operations (see tool description).")),
-            async (args, ct, transport) =>
-            {
-                string filePath = Str(args, "file_path");
-                string edits = Str(args, "edits");
-                return Truncate(await FileTools.EditFileAsync(filePath, edits, ct));
+                return await FileTools.WriteFileAsync(filePath, content, ct);
             });
 
         Register(tools, "edit_file_replace",
-            "Apply a single replace_lines edit to a file.",
+            "Replace a block of text defined by the start and end line:hash anchors. CWD is /workspace/",
             Params(
-                Req("file_path", "string", "Absolute path to the file to modify."),
-                Req("start_anchor", "string", "Start anchor in the form '<line>:<hh>'."),
-                Req("end_anchor", "string", "End anchor in the form '<line>:<hh>'."),
-                Req("new_text", "string", "Replacement text to insert between the anchors.")),
+                Req("file_path", "string", "File path"),
+                Req("start_anchor", "string", "Start anchor"),
+                Req("end_anchor", "string", "End anchor"),
+                Req("new_text", "string", "Replacement text")),
             async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string startAnchor = Str(args, "start_anchor");
                 string endAnchor = Str(args, "end_anchor");
                 string newText = Str(args, "new_text");
-                return Truncate(await FileTools.EditFileReplaceAsync(filePath, startAnchor, endAnchor, newText, ct));
+                return await FileTools.EditFileReplaceAsync(filePath, startAnchor, endAnchor, newText, ct);
             });
 
         Register(tools, "edit_file_insert",
-            "Apply a single insert_after edit to a file.",
+            "Insert a line of text AFTER the indicated line:hash anchor. CWD is /workspace/",
             Params(
-                Req("file_path", "string", "Absolute path to the file to modify."),
-                Req("anchor", "string", "Anchor in the form '<line>:<hh>'."),
-                Req("new_text", "string", "Text to insert after the anchor.")),
+                Req("file_path", "string", "File path"),
+                Req("anchor", "string", "Line anchor"),
+                Req("new_text", "string", "Text to insert")),
             async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
                 string anchor = Str(args, "anchor");
                 string newText = Str(args, "new_text");
-                return Truncate(await FileTools.EditFileInsertAsync(filePath, anchor, newText, ct));
+                return await FileTools.EditFileInsertAsync(filePath, anchor, newText, ct);
             });
 
         return tools;
+    }
+
+    private static async Task<ToolResult> TruncateIfNeeded(Task<ToolResult> resultTask, CancellationToken cancellationToken)
+    {
+        const int MaxContentLength = 4000;
+        const int HeadLength = 1024;
+        const int TailLength = 1024;
+
+        ToolResult result = await resultTask;
+
+        if (result.Response.Length <= MaxContentLength)
+        {
+            return result;
+        }
+
+        string tempPath = Path.Combine(Path.GetTempPath(), $"beast_tool_output_{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(tempPath, result.Response, cancellationToken);
+
+        string head = result.Response.Substring(0, HeadLength);
+        string tail = result.Response.Substring(result.Response.Length - TailLength, TailLength);
+
+        int skippedLength = result.Response.Length - HeadLength - TailLength;
+
+        StringBuilder truncated = new StringBuilder();
+        truncated.Append(head);
+        truncated.AppendLine();
+        truncated.AppendLine();
+        truncated.AppendLine($"... [{skippedLength} characters omitted] ...");
+        truncated.AppendLine();
+        truncated.Append(tail);
+        truncated.AppendLine();
+        truncated.AppendLine();
+        truncated.AppendLine($"Full output saved to: {tempPath}");
+
+        return new ToolResult(truncated.ToString(), result.MessageHandled);
     }
 
     private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, ITransportServer, Task<ToolResult>> handler)
@@ -174,7 +194,7 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
             },
-            Handler = handler
+            Handler = async (args, ct, transport) => await TruncateIfNeeded(handler(args, ct, transport), ct)
         };						   
     }
 
@@ -230,44 +250,5 @@ public static class ToolFactory
     {
         if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && int.TryParse(node.ToString(), out int v)) return v;
         return null;
-    }
-
-    private static ToolResult Truncate(ToolResult result, int maxChars = DefaultMaxChars)
-    {
-        if (result.MessageHandled || result.Response.Length <= maxChars) return result;
-        string truncated = result.Response.Substring(0, maxChars);
-        return new ToolResult(truncated + $"\n[truncated — {result.Response.Length - maxChars} chars omitted]", result.MessageHandled);
-    }
-
-    private static ToolResult TruncateFile(ToolResult result)
-    {
-        if (result.MessageHandled) return result;
-        string text = result.Response;
-
-        // Count lines and cut at FileMaxLines if needed.
-        int lineCount = 0;
-        int cutPos = -1;
-        for (int i = 0; i < text.Length; i++)
-        {
-            if (text[i] == '\n')
-            {
-                lineCount++;
-                if (lineCount >= FileMaxLines)
-                {
-                    cutPos = i + 1;
-                    break;
-                }
-            }
-        }
-        if (cutPos >= 0 && cutPos < text.Length)
-        {
-            int remaining = text.Length - cutPos;
-            text = text.Substring(0, cutPos) + $"[truncated — {remaining} chars omitted]";
-        }
-
-        if (text.Length <= FileMaxChars) return new ToolResult(text, result.MessageHandled);
-        string head = text.Substring(0, FileMaxChars);
-        int omitted = text.Length - FileMaxChars;
-        return new ToolResult(head + $"\n[truncated — {omitted} chars omitted]", result.MessageHandled);
     }
 }

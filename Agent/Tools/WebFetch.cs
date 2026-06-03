@@ -55,9 +55,6 @@ public class WebFetch
             string html = await response.Content.ReadAsStringAsync(cts.Token);
             string text = StripHtmlTags(html);
 
-            if (text.Length > 50000)
-                text = text.Substring(0, 50000) + "\n\n[Content truncated at 50000 characters]";
-
             if (string.IsNullOrWhiteSpace(text))
                 return new ToolResult("Error: No readable text content found at URL: " + url, false);
 

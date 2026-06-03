@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 
@@ -11,7 +12,8 @@ public static class SearchTools
 {
 	public static async Task<ToolResult> GlobAsync(
 		string pattern,
-		string path)
+		string path,
+		CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(pattern))
 		{
@@ -40,6 +42,7 @@ public static class SearchTools
 			List<string> files = new List<string>();
 			foreach (string f in Directory.GetFiles(searchPath, "*", SearchOption.AllDirectories))
 			{
+				cancellationToken.ThrowIfCancellationRequested();
 				string relativePath = f;
 				try { relativePath = Path.GetRelativePath(searchPath, f); } catch { }
 				if (GlobMatch(relativePath, pattern))
@@ -57,23 +60,28 @@ public static class SearchTools
 
 			StringBuilder sb = new StringBuilder();
 			sb.AppendLine("Found " + files.Count + " file(s) matching '" + pattern + "' in " + searchPath + ":");
-			foreach (string f in files)
-			{
-				sb.AppendLine("  " + f.Replace('\\', '/'));
-			}
+					foreach (string f in files)
+					{
+						sb.AppendLine("  " + f.Replace('\\', '/'));
+					}
 
-			return new ToolResult(sb.ToString().TrimEnd(), false);
-		}
-		catch (Exception ex)
-		{
-			return new ToolResult("Error: " + ex.Message, false);
-		}
-	}
+					return new ToolResult(sb.ToString().TrimEnd(), false);
+				}
+				catch (OperationCanceledException)
+				{
+					return new ToolResult("Error: Operation was cancelled.", false);
+				}
+				catch (Exception ex)
+				{
+					return new ToolResult("Error: " + ex.Message, false);
+				}
+			}
 
 	public static async Task<ToolResult> GrepAsync(
 		string path,
 		string pattern,
-		int? contextLines)
+		int? contextLines,
+		CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(path))
 		{
@@ -107,6 +115,7 @@ public static class SearchTools
 
 			foreach (string file in files)
 			{
+				cancellationToken.ThrowIfCancellationRequested();
 				try
 				{
 					string[] lines = File.ReadAllLines(file);
@@ -146,25 +155,30 @@ public static class SearchTools
 				}
 				catch { }
 
-				sb.AppendLine("  " + relativePath + ":");
-				foreach ((int lineNum, string line) in kvp.Value)
-				{
-					string display = line.Length > 200 ? line.Substring(0, 200) + "…" : line;
-					sb.AppendLine("    " + lineNum + ": " + display);
-				}
-			}
+							sb.AppendLine("  " + relativePath + ":");
+							foreach ((int lineNum, string line) in kvp.Value)
+							{
+								string display = line.Length > 200 ? line.Substring(0, 200) + "…" : line;
+								sb.AppendLine("    " + lineNum + ": " + display);
+							}
+						}
 
-			return new ToolResult(sb.ToString().TrimEnd(), false);
-		}
-		catch (Exception ex)
-		{
-			return new ToolResult("Error: " + ex.Message, false);
-		}
-	}
+						return new ToolResult(sb.ToString().TrimEnd(), false);
+					}
+					catch (OperationCanceledException)
+					{
+						return new ToolResult("Error: Operation was cancelled.", false);
+					}
+					catch (Exception ex)
+					{
+						return new ToolResult("Error: " + ex.Message, false);
+					}
+				}
 
 	public static async Task<ToolResult> ListDirectoryAsync(
 		string path,
-		string? pattern)
+		string? pattern,
+		CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(path))
 		{
@@ -185,39 +199,45 @@ public static class SearchTools
 				searchPath = workspacePath;
 			}
 
-			StringBuilder sb = new StringBuilder();
-			sb.AppendLine("Contents of " + searchPath + ":");
+					StringBuilder sb = new StringBuilder();
+					sb.AppendLine("Contents of " + searchPath + ":");
 
-			string[] dirs = Directory.GetDirectories(searchPath);
-			Array.Sort(dirs, StringComparer.Ordinal);
-			foreach (string dir in dirs)
-			{
-				sb.AppendLine("  [DIR]  " + Path.GetFileName(dir) + "/");
-			}
+					string[] dirs = Directory.GetDirectories(searchPath);
+					Array.Sort(dirs, StringComparer.Ordinal);
+					foreach (string dir in dirs)
+					{
+						cancellationToken.ThrowIfCancellationRequested();
+						sb.AppendLine("  [DIR]  " + Path.GetFileName(dir) + "/");
+					}
 
-			string[] files;
-			if (string.IsNullOrWhiteSpace(pattern))
-			{
-				files = Directory.GetFiles(searchPath);
-			}
-			else
-			{
-				files = Directory.GetFiles(searchPath, pattern);
-			}
+					string[] files;
+					if (string.IsNullOrWhiteSpace(pattern))
+					{
+						files = Directory.GetFiles(searchPath);
+					}
+					else
+					{
+						files = Directory.GetFiles(searchPath, pattern);
+					}
 
-			Array.Sort(files, StringComparer.Ordinal);
-			foreach (string file in files)
-			{
-				sb.AppendLine("  [FILE] " + Path.GetFileName(file));
-			}
+					Array.Sort(files, StringComparer.Ordinal);
+					foreach (string file in files)
+					{
+						cancellationToken.ThrowIfCancellationRequested();
+						sb.AppendLine("  [FILE] " + Path.GetFileName(file));
+					}
 
-			return new ToolResult(sb.ToString().TrimEnd(), false);
-		}
-		catch (Exception ex)
-		{
-			return new ToolResult("Error: " + ex.Message, false);
-		}
-	}
+					return new ToolResult(sb.ToString().TrimEnd(), false);
+				}
+				catch (OperationCanceledException)
+				{
+					return new ToolResult("Error: Operation was cancelled.", false);
+				}
+				catch (Exception ex)
+				{
+					return new ToolResult("Error: " + ex.Message, false);
+				}
+			}
 
 	// Matches a file path against a glob pattern.
 	// ** matches across directory boundaries; * and ? match within a single segment.
