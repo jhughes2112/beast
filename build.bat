@@ -25,8 +25,9 @@ set BUILD_CONFIG=Release
 set BEAST_PROJECT=Beast/Beast.csproj
 
 REM Publish beast.exe inside the .NET SDK container; source tree is bind-mounted at /src.
+REM Also bind-mount the local NuGet package cache to avoid redundant downloads.
 echo Building beast.exe inside Docker (mcr.microsoft.com/dotnet/sdk:10.0)...
-docker run --rm -v "%CD%:/src" -w /src mcr.microsoft.com/dotnet/sdk:10.0 sh -c "dotnet publish %BEAST_PROJECT% -c %BUILD_CONFIG% -r win-x64 --self-contained -o /tmp/beast-out && cp /tmp/beast-out/Beast.exe /src/beast.exe"
+docker run --rm -v "%CD%:/src" -v "%USERPROFILE%/.nuget/packages:/root/.nuget/packages" -w /src mcr.microsoft.com/dotnet/sdk:10.0 sh -c "dotnet publish %BEAST_PROJECT% -c %BUILD_CONFIG% -r win-x64 --self-contained -o /tmp/beast-out && cp /tmp/beast-out/Beast.exe /src/beast.exe"
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Docker build failed
     exit /b 1
