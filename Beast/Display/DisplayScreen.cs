@@ -1610,7 +1610,9 @@ public class DisplayScreen : IDisplay
             {
                 string text = inputBuffer.ToString().TrimEnd('\n');
                 foreach ((string placeholder, string content) in pasteBuffers)
+                {
                     text = text.Replace(placeholder, content);
+                }
                 pasteBuffers.Clear();
                 inputBuffer.Clear();
                 cursorPos = 0;

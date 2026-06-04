@@ -15,13 +15,10 @@ using System.Threading.Tasks;
 // "tool" role (not "user") and must immediately follow the assistant message
 // that issued the tool call — the ordering is load-bearing.
 //
-// ChatCompletions is unique among the executing protocols: its native wire state IS the
-// canonical ChatCompletions array held by ListenerChatCompletions. It therefore reads its
-// request directly from bundle.Canonical and keeps no separate copy. Its IProtocolListener
-// members are no-ops (the canonical store already records every event via the fan-out) and
-// Rehydrate is a no-op for the same reason. On a successful turn the assistant message is
-// written to canonical state through the semantic fan-out path, so the recorded turn is
-// normalized identically to every other protocol.
+// This protocol maintains its own separate copy of messages (_native) that are sent to the
+// server each turn. It must never retain thinking blocks. The native state is rebuilt from
+// canonical by Rehydrate and kept in sync through the IProtocolListener events. Thinking is
+// intentionally stripped because the server should not see unsigned thinking blocks.
 public class ProtocolChatCompletions : IProtocolListener
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -35,18 +32,113 @@ public class ProtocolChatCompletions : IProtocolListener
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
 
-    // Canonical is the native state; nothing to seed. No-op.
-    public void Rehydrate(JsonArray canonical) { }
+    // Native runtime state: the message chain that will be sent to the server. Thinking blocks
+    // are never included. This is in-memory only and rebuilt from canonical by Rehydrate.
+    private readonly JsonArray _native = new JsonArray();
 
-    // The canonical store records all semantic events; this protocol holds no separate state.
-    public void OnSystemMessage(IProtocolListener sender, string text) { }
-    public void OnUserMessage(IProtocolListener sender, string text) { }
-    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
-    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result) { }
+    // Rebuilds the native message chain from canonical, stripping thinking blocks.
+    // Called by ListenerBundle right after creating or switching in.
+    public void Rehydrate(JsonArray canonical)
+    {
+        _native.Clear();
+
+        foreach (JsonNode? n in canonical)
+        {
+            if (n != null)
+            {
+                _native.Add(n.DeepClone());
+            }
+        }
+    }
+
+    public void OnSystemMessage(IProtocolListener sender, string text)
+    {
+        // If a system message already exists at the head, update it in-place.
+        if (_native.Count > 0 && _native[0]?["role"]?.GetValue<string>() == "system")
+        {
+            _native[0]!["content"] = text;
+            return;
+        }
+
+        JsonObject msg = new JsonObject();
+        msg["role"] = "system";
+        msg["content"] = text;
+        _native.Insert(0, msg);
+    }
+
+    public void OnUserMessage(IProtocolListener sender, string text)
+    {
+        // If the last item is already a user message, merge text in-place.
+        int count = _native.Count;
+        if (count > 0)
+        {
+            JsonNode? last = _native[count - 1];
+            if (last != null && last["role"]?.GetValue<string>() == "user")
+            {
+                string? existing = last["content"]?.GetValue<string>();
+                last["content"] = string.IsNullOrEmpty(existing) ? text : existing + "\n" + text;
+                return;
+            }
+        }
+
+        JsonObject msg = new JsonObject();
+        msg["role"] = "user";
+        msg["content"] = text;
+        _native.Add(msg);
+    }
+
+    // A completed assistant turn. Thinking is intentionally dropped because it should never
+    // be sent to the server.
+    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    {
+        if (ReferenceEquals(sender, this)) return;
+
+        JsonObject msg = new JsonObject();
+        msg["role"] = "assistant";
+        msg["content"] = text ?? string.Empty;
+
+        if (toolCalls.Count > 0)
+        {
+            JsonArray tcArr = new JsonArray();
+            foreach (SemanticToolCall tc in toolCalls)
+            {
+                JsonObject tcObj = new JsonObject();
+                tcObj["id"] = tc.Id;
+                tcObj["type"] = "function";
+                JsonObject fn = new JsonObject();
+                fn["name"] = tc.Name;
+                fn["arguments"] = tc.ArgumentsJson;
+                tcObj["function"] = fn;
+                tcArr.Add(tcObj);
+            }
+            msg["tool_calls"] = tcArr;
+        }
+
+        _native.Add(msg);
+    }
+
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
+    {
+        JsonObject msg = new JsonObject();
+        msg["role"] = "tool";
+        string content = result.StdOut;
+        if (!string.IsNullOrEmpty(result.StdErr))
+        {
+            content = content + "\nstderr: " + result.StdErr;
+        }
+        msg["content"] = content;
+        msg["tool_call_id"] = toolCallId;
+        _native.Add(msg);
+    }
+
     public void OnStreamStart(IProtocolListener sender, string tag) { }
     public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
     public void OnStreamEnd(IProtocolListener sender, string tag) { }
-    public void OnClear() { }
+
+    public void OnClear()
+    {
+        _native.Clear();
+    }
 
 
     public async Task<ProtocolResult> ExecuteAsync(
@@ -60,14 +152,13 @@ public class ProtocolChatCompletions : IProtocolListener
         ITransportServer transport,
         CancellationToken cancellationToken)
     {
-        ListenerChatCompletions listener = bundle.Canonical!;
         for (;;)
         {
-            JsonObject body = BuildRequestBody(model, listener, tools, maxCompletionTokens);
+            JsonObject body = BuildRequestBody(model, tools, maxCompletionTokens);
 
             if (_streamingSupported)
             {
-                ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, listener, bundle, onProgress, transport, cancellationToken);
+                ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, cancellationToken);
                 if (streamResult != null) return streamResult;
                 // null means the provider rejected streaming; fall through to non-streaming
             }
@@ -119,9 +210,8 @@ public class ProtocolChatCompletions : IProtocolListener
                 (string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
                 string thinking = ExtractThinking(messageObj);
 
-                // Fan-out to all listeners including our own canonical store, which records the
-                // normalized assistant turn. Thinking is broadcast but not persisted in canonical.
-                bundle.OnAssistantTurn(null!, assistantText, thinking, toolCalls);
+                // Fan-out to all listeners including canonical. Thinking is broadcast but not persisted in canonical.
+                bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
 
                 string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
                 if (toolCalls.Count > 0) finishReason = "tool_calls";
@@ -183,7 +273,7 @@ public class ProtocolChatCompletions : IProtocolListener
         }
     }
 
-    private JsonObject BuildRequestBody(LlmModel model, ListenerChatCompletions listener, List<ToolDefinition> tools, int? maxCompletionTokens)
+    private JsonObject BuildRequestBody(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens)
     {
         JsonObject body = new JsonObject();
         body["model"] = model.Config.Id;
@@ -192,7 +282,7 @@ public class ProtocolChatCompletions : IProtocolListener
         // so the messages array is sent verbatim with no prepended global system block.
         JsonArray messages = new JsonArray();
 
-        foreach (JsonNode? n in listener.State)
+        foreach (JsonNode? n in _native)
         {
             if (n != null) messages.Add(n.DeepClone());
         }
@@ -262,7 +352,6 @@ public class ProtocolChatCompletions : IProtocolListener
         JsonObject body,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
-        ListenerChatCompletions listener,
         ListenerBundle bundle,
         LiveUsageProgress onProgress,
         ITransportServer transport,
@@ -385,15 +474,15 @@ public class ProtocolChatCompletions : IProtocolListener
                 {
                     if (openStreamTag != StreamTag.Thinking)
                     {
-                        if (openStreamTag != null) bundle.OnStreamEnd(listener, openStreamTag);
-                            bundle.OnStreamStart(listener, StreamTag.Thinking);
-                            openStreamTag = StreamTag.Thinking;
-                        }
+                        if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+                        bundle.OnStreamStart(this, StreamTag.Thinking);
+                        openStreamTag = StreamTag.Thinking;
+                    }
 
-                        reasoningBuilder.Append(reasoningDelta);
-                        bundle.OnStreamChunk(listener, StreamTag.Thinking, reasoningDelta);
-                        streamedCharCount += reasoningDelta.Length;
-                        EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
+                    reasoningBuilder.Append(reasoningDelta);
+                    bundle.OnStreamChunk(this, StreamTag.Thinking, reasoningDelta);
+                    streamedCharCount += reasoningDelta.Length;
+                    EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
                 }
 
                 string? contentDelta = delta["content"]?.GetValue<string>();
@@ -401,15 +490,15 @@ public class ProtocolChatCompletions : IProtocolListener
                 {
                     if (openStreamTag != StreamTag.Assistant)
                     {
-                        if (openStreamTag != null) bundle.OnStreamEnd(listener, openStreamTag);
-                            bundle.OnStreamStart(listener, StreamTag.Assistant);
-                            openStreamTag = StreamTag.Assistant;
-                        }
+                        if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+                        bundle.OnStreamStart(this, StreamTag.Assistant);
+                        openStreamTag = StreamTag.Assistant;
+                    }
 
-                        contentBuilder.Append(contentDelta);
-                        bundle.OnStreamChunk(listener, StreamTag.Assistant, contentDelta);
-                        streamedCharCount += contentDelta.Length;
-                        EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
+                    contentBuilder.Append(contentDelta);
+                    bundle.OnStreamChunk(this, StreamTag.Assistant, contentDelta);
+                    streamedCharCount += contentDelta.Length;
+                    EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
                 }
 
                 JsonArray? tcDeltas = delta["tool_calls"]?.AsArray();
@@ -437,7 +526,7 @@ public class ProtocolChatCompletions : IProtocolListener
 
         if (openStreamTag != null)
         {
-            bundle.OnStreamEnd(listener, openStreamTag);
+            bundle.OnStreamEnd(this, openStreamTag);
         }
 
         string assistantText = contentBuilder.ToString();
@@ -453,11 +542,10 @@ public class ProtocolChatCompletions : IProtocolListener
             finishReason = "tool_calls";
         }
 
-        // Fan-out to all listeners including our own canonical store, which records the
-        // normalized assistant turn. The transport listener emits the committed Thinking +
-        // Output frames that replace the live stream block on the client side. Thinking is
+        // Fan-out to all listeners including canonical. The transport listener emits the committed
+        // Thinking + Output frames that replace the live stream block on the client side. Thinking is
         // broadcast but not persisted in canonical state.
-        bundle.OnAssistantTurn(null!, assistantText, thinking, semanticToolCalls);
+        bundle.OnAssistantTurn(this, assistantText, thinking, semanticToolCalls);
 
         (TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(usageNodeFinal, model);
 

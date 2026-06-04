@@ -56,7 +56,7 @@ public class LlmService
         _availableAt = DateTimeOffset.MinValue;
     }
 
-    public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
+    public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, Func<string?> checkForUserInput, CancellationToken cancellationToken)
     {
         if (!IsAvailable)
         {
@@ -68,10 +68,10 @@ public class LlmService
             return new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is unavailable until {_availableAt:u}");
         }
 
-        return await ExecuteConversationAsync(conversation, bundle, tools, reserveTokens, transport, cancellationToken);
+        return await ExecuteConversationAsync(conversation, bundle, tools, reserveTokens, transport, checkForUserInput, cancellationToken);
     }
 
-    private async Task<LlmResult> ExecuteConversationAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<LlmResult> ExecuteConversationAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, Func<string?> checkForUserInput, CancellationToken cancellationToken)
     {
         LlmModel model = _model;
         LlmResult finalResult = new LlmResult(LlmExitReason.Completed, "");
@@ -136,6 +136,14 @@ public class LlmService
                     {
                         finalResult = terminalResult;
                         break;
+                    }
+
+                    // Check if new user input has arrived. If so, apply it and continue the turn
+                    // so the LLM can see and respond to it on the next iteration.
+                    string? newUserInput = checkForUserInput();
+                    if (!string.IsNullOrEmpty(newUserInput))
+                    {
+                        bundle.OnUserMessage(null!, newUserInput);
                     }
 
                     if (toolsDispatched)

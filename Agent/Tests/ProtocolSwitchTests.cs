@@ -108,7 +108,7 @@ public static class ProtocolSwitchTests
 				using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 				cts.CancelAfter(TimeSpan.FromSeconds(30));
 
-				LlmResult result = await service.RunToCompletionAsync(session, bundle, tools, 0, transport, cts.Token);
+				LlmResult result = await service.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
 
 				if (result.ExitReason != LlmExitReason.Completed)
 				{
@@ -169,7 +169,7 @@ public static class ProtocolSwitchTests
 			cts.CancelAfter(TimeSpan.FromSeconds(60));
 
 			// Turn 1 — model A.
-			LlmResult result1 = await serviceA.RunToCompletionAsync(session, bundle, tools, 0, transport, cts.Token);
+			LlmResult result1 = await serviceA.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
 			if (result1.ExitReason != LlmExitReason.Completed)
 			{
 				ctx.Log($"      SKIP: turn 1 failed — {result1.ErrorMessage}");
@@ -181,7 +181,7 @@ public static class ProtocolSwitchTests
 			// Turn 2 — model B (same protocol). ProtocolProxy on serviceB will detect, install,
 			// and rehydrate from the canonical state that already holds the prior exchange.
 			bundle.OnUserMessage(null!, "Now say exactly: PONG");
-			LlmResult result2 = await serviceB.RunToCompletionAsync(session, bundle, tools, 0, transport, cts.Token);
+			LlmResult result2 = await serviceB.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
 			if (result2.ExitReason != LlmExitReason.Completed)
 			{
 				ctx.Log($"      SKIP: turn 2 failed — {result2.ErrorMessage}");
@@ -244,7 +244,7 @@ public static class ProtocolSwitchTests
 			cts.CancelAfter(TimeSpan.FromSeconds(90));
 
 			// Turn 1 — OpenAI-style model.
-			LlmResult result1 = await openAiService.RunToCompletionAsync(session, bundle, tools, 0, transport, cts.Token);
+			LlmResult result1 = await openAiService.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
 			if (result1.ExitReason != LlmExitReason.Completed)
 			{
 				ctx.Log($"      SKIP: turn 1 (OpenAI-style) failed — {result1.ErrorMessage}");
@@ -255,7 +255,7 @@ public static class ProtocolSwitchTests
 
 			// Turn 2 — same OpenAI-style model, ask for PONG.
 			bundle.OnUserMessage(null!, "Now say exactly: PONG");
-			LlmResult result2 = await openAiService.RunToCompletionAsync(session, bundle, tools, 0, transport, cts.Token);
+			LlmResult result2 = await openAiService.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
 			if (result2.ExitReason != LlmExitReason.Completed)
 			{
 				ctx.Log($"      SKIP: turn 2 (OpenAI-style) failed — {result2.ErrorMessage}");
@@ -267,7 +267,7 @@ public static class ProtocolSwitchTests
 			// Turn 3 — Anthropic model (cross-protocol). ProtocolProxy detects Anthropic,
 			// installs ProtocolAnthropic, and rehydrates from the accumulated canonical state.
 			bundle.OnUserMessage(null!, "Now say exactly: BOOMERANG");
-			LlmResult result3 = await anthropicService.RunToCompletionAsync(session, bundle, tools, 0, transport, cts.Token);
+			LlmResult result3 = await anthropicService.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
 			if (result3.ExitReason != LlmExitReason.Completed)
 			{
 				ctx.Log($"      SKIP: turn 3 (Anthropic) failed — {result3.ErrorMessage}");

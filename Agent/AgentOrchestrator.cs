@@ -192,7 +192,7 @@ public class AgentOrchestrator
 				_turnCts = new CancellationTokenSource();
 				try
 				{
-					LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, _turnCts.Token);
+					LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, inputQueue, _turnCts.Token);
 					if (result.ExitReason == LlmExitReason.Failed)
 						_transport.Error(result.ErrorMessage);
 				}
@@ -278,7 +278,7 @@ public class AgentOrchestrator
 
 	// Runs one LLM turn. Applies the role (system prompt) before calling the LLM.
 	// Sets _wantsCompact if the context is full so the main loop handles it uniformly.
-	private async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, CancellationToken cancellationToken)
+	private async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, ConcurrentQueue<string> inputQueue, CancellationToken cancellationToken)
 	{
 		conversation.Model = service.Model.ConfigId;
 
@@ -292,8 +292,32 @@ public class AgentOrchestrator
 			}
 		}
 
+		// Callback to check for new user input during the LLM turn.
+		// Drains all pending non-command text and returns it as a single string.
+		Func<string?> checkForUserInput = () =>
+		{
+			if (!inputQueue.TryPeek(out _)) return null;
+
+			string accumulatedText = string.Empty;
+			while (inputQueue.TryDequeue(out string? line))
+			{
+				if (!line.StartsWith("/"))
+				{
+					accumulatedText = string.IsNullOrEmpty(accumulatedText) ? line : accumulatedText + "\n" + line;
+				}
+				else
+				{
+					// Commands during a turn are re-enqueued to be processed in the main loop.
+					inputQueue.Enqueue(line);
+					break;
+				}
+			}
+
+			return string.IsNullOrEmpty(accumulatedText) ? null : accumulatedText;
+		};
+
 		Tool[] tools = _registry.GetToolsForRole(role);
-		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, tools, CompactionReserveTokens, _transport, cancellationToken);
+		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, tools, CompactionReserveTokens, _transport, checkForUserInput, cancellationToken);
 		SendStats(conversation, service.Model.Config.ContextWindow);
 		if (result.ExitReason == LlmExitReason.ContextFull)
 		{
@@ -318,7 +342,7 @@ public class AgentOrchestrator
 
 		// Single-shot: stop as soon as the model responds once.
 		_transport.Status("[Compaction] Started.");
-		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, Array.Empty<Tool>(), 0, _transport, _cancellationToken);
+		LlmResult result = await service.RunToCompletionAsync(conversation, bundle, Array.Empty<Tool>(), 0, _transport, () => null, _cancellationToken);
 
 		string? summary = bundle.GetLastAssistantText();
 

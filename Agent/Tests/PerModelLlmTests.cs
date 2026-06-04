@@ -107,7 +107,7 @@ public static class PerModelLlmTests
             LlmResult result;
             try
             {
-                result = await service.RunToCompletionAsync(session, bundle, tools, 0, localTransport, linkedCts.Token);
+                result = await service.RunToCompletionAsync(session, bundle, tools, 0, localTransport, () => null, linkedCts.Token);
             }
             finally
             {
