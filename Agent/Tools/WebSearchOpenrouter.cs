@@ -28,7 +28,7 @@ public class WebSearchOpenrouter
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return new ToolResult("Error: Search query cannot be empty.", false);
+            return new ToolResult(string.Empty, "Error: Search query cannot be empty.", 1);
 
         try
         {
@@ -45,28 +45,28 @@ public class WebSearchOpenrouter
             if (result.Outcome == ProtocolCallOutcome.Success)
             {
                 string content = result.Payload!.AssistantText ?? string.Empty;
-                return new ToolResult(string.IsNullOrWhiteSpace(content) ? "No search results found." : content, false);
+                return new ToolResult(string.IsNullOrWhiteSpace(content) ? "No search results found." : content, string.Empty, 0);
             }
             else if (result.Outcome == ProtocolCallOutcome.RateLimited)
             {
-                return new ToolResult("Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, false);
+                return new ToolResult(string.Empty, "Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, 1);
             }
             else
             {
-                return new ToolResult("Error: OpenRouter search failed: " + result.ErrorMessage, false);
+                return new ToolResult(string.Empty, "Error: OpenRouter search failed: " + result.ErrorMessage, 1);
             }
         }
         catch (OperationCanceledException)
         {
-            return new ToolResult("Error: Search request timed out or cancelled for query: " + query, false);
+            return new ToolResult(string.Empty, "Error: Search request timed out or cancelled for query: " + query, 1);
         }
         catch (HttpRequestException ex)
         {
-            return new ToolResult("Error: Network error during search: " + ex.Message, false);
+            return new ToolResult(string.Empty, "Error: Network error during search: " + ex.Message, 1);
         }
         catch (Exception ex)
         {
-            return new ToolResult("Error: Search failed: " + ex.Message, false);
+            return new ToolResult(string.Empty, "Error: Search failed: " + ex.Message, 1);
         }
     }
 
@@ -82,3 +82,4 @@ public class WebSearchOpenrouter
         return defaultValue;
     }
 }
+

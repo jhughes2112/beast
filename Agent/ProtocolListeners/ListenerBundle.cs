@@ -106,9 +106,9 @@ public class ListenerBundle : IProtocolListener
         Each(sender, l => l.OnAssistantTurn(sender, text, thinking, toolCalls));
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
     {
-        Each(sender, l => l.OnToolResult(sender, toolCallId, content));
+        Each(sender, l => l.OnToolResult(sender, toolCallId, result));
     }
 
     public void OnStreamStart(IProtocolListener sender, string tag)

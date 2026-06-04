@@ -103,7 +103,7 @@ public static class FileTools
 
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
-			result = new ToolResult("Error: Path cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: Path cannot be empty", 1);
 		}
 		else
 		{
@@ -181,17 +181,17 @@ public static class FileTools
 									sb.AppendLine($"{startLine + i,6}:{hash:x2}\t{readLines[i]}");
 								}
 
-								result = new ToolResult(sb.ToString(), false);
+								result = new ToolResult(sb.ToString(), string.Empty, 0);
 							}
 							else
 							{
 								if (currentLine == 0)
 								{
-									result = new ToolResult($"File is empty: {filePath}", false);
+									result = new ToolResult($"File is empty: {filePath}", string.Empty, 0);
 								}
 								else
 								{
-									result = new ToolResult($"Offset {startLine} is beyond the end of the file (file has {currentLine} lines).", false);
+									result = new ToolResult(string.Empty, $"Offset {startLine} is beyond the end of the file (file has {currentLine} lines).", 1);
 								}
 							}
 						}
@@ -204,34 +204,34 @@ public static class FileTools
 					{
 						if (!offsetValid)
 						{
-							result = new ToolResult($"Error: Invalid offset value: {offset}", false);
+							result = new ToolResult(string.Empty, $"Error: Invalid offset value: {offset}", 1);
 						}
 						else if (!linesValid)
 						{
-							result = new ToolResult($"Error: Invalid lines value: {lines}", false);
+							result = new ToolResult(string.Empty, $"Error: Invalid lines value: {lines}", 1);
 						}
 						else if (offsetValue < 0)
 						{
-							result = new ToolResult("Error: offset must be >= 0", false);
+							result = new ToolResult(string.Empty, "Error: offset must be >= 0", 1);
 						}
 						else
 						{
-							result = new ToolResult("Error: lines must be >= 0", false);
+							result = new ToolResult(string.Empty, "Error: lines must be >= 0", 1);
 						}
 					}
 				}
 				else
 				{
-					result = new ToolResult($"Error: File not found: {filePath}", false);
+					result = new ToolResult(string.Empty, $"Error: File not found: {filePath}", 1);
 				}
 			}
 			catch (OperationCanceledException)
 			{
-				result = new ToolResult($"Error: Timed out or cancelled reading file: {filePath}", false);
+				result = new ToolResult(string.Empty, $"Error: Timed out or cancelled reading file: {filePath}", 1);
 			}
 			catch (Exception ex)
 			{
-				result = new ToolResult($"Error: Failed to read file: {ex.Message}", false);
+				result = new ToolResult(string.Empty, $"Error: Failed to read file: {ex.Message}", 1);
 			}
 		}
 
@@ -252,15 +252,15 @@ public static class FileTools
 
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
-			result = new ToolResult("Error: Path cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: Path cannot be empty", 1);
 		}
 		else if (string.IsNullOrWhiteSpace(startAnchor))
 		{
-			result = new ToolResult("Error: start_anchor cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: start_anchor cannot be empty", 1);
 		}
 		else if (string.IsNullOrWhiteSpace(endAnchor))
 		{
-			result = new ToolResult("Error: end_anchor cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: end_anchor cannot be empty", 1);
 		}
 		else if (TryParseAnchor(startAnchor, out int startLine, out byte startHash, out string startHex))
 		{
@@ -310,27 +310,27 @@ public static class FileTools
 										newWorking += Environment.NewLine;
 									}
 									await File.WriteAllTextAsync(fullPath, newWorking, cts.Token);
-									result = new ToolResult("OK", false);
+									result = new ToolResult("OK", string.Empty, 0);
 								}
 								else
 								{
 									StringBuilder sbErr = new StringBuilder();
 									sbErr.AppendLine("Error: One or more anchor hashes did not match. No edits were applied.");
 									if (actualStart != startHash)
-									{
-										sbErr.AppendLine($"{startLine,6}:{actualStart:x2}\t{linesList[startLine - 1]}");
+											{
+												sbErr.AppendLine($"{startLine,6}:{actualStart:x2}\t{linesList[startLine - 1]}");
+											}
+											if (actualEnd != endHash)
+											{
+												sbErr.AppendLine($"{endLine,6}:{actualEnd:x2}\t{linesList[endLine - 1]}");
+											}
+											result = new ToolResult(string.Empty, sbErr.ToString(), 1);
+										}
 									}
-									if (actualEnd != endHash)
+									else
 									{
-										sbErr.AppendLine($"{endLine,6}:{actualEnd:x2}\t{linesList[endLine - 1]}");
+										result = new ToolResult(string.Empty, "Error: Anchor line numbers out of range.", 1);
 									}
-									result = new ToolResult(sbErr.ToString(), false);
-								}
-							}
-							else
-							{
-								result = new ToolResult("Error: Anchor line numbers out of range.", false);
-							}
 						}
 						finally
 						{
@@ -339,26 +339,26 @@ public static class FileTools
 					}
 					else
 					{
-						result = new ToolResult($"Error: File not found: {filePath}", false);
+						result = new ToolResult(string.Empty, $"Error: File not found: {filePath}", 1);
 					}
 				}
 				catch (OperationCanceledException)
 				{
-					result = new ToolResult($"Error: Timed out or cancelled editing file: {filePath}", false);
+					result = new ToolResult(string.Empty, $"Error: Timed out or cancelled editing file: {filePath}", 1);
 				}
 				catch (Exception ex)
 				{
-					result = new ToolResult($"Error: Failed to edit file: {ex.Message}", false);
+					result = new ToolResult(string.Empty, $"Error: Failed to edit file: {ex.Message}", 1);
 				}
 			}
 			else
 			{
-				result = new ToolResult($"Error: Invalid end_anchor format: {endAnchor}", false);
+				result = new ToolResult(string.Empty, $"Error: Invalid end_anchor format: {endAnchor}", 1);
 			}
 		}
 		else
 		{
-			result = new ToolResult($"Error: Invalid start_anchor format: {startAnchor}", false);
+			result = new ToolResult(string.Empty, $"Error: Invalid start_anchor format: {startAnchor}", 1);
 		}
 
 		return result;
@@ -377,11 +377,11 @@ public static class FileTools
 
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
-			result = new ToolResult("Error: Path cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: Path cannot be empty", 1);
 		}
 		else if (string.IsNullOrWhiteSpace(anchor))
 		{
-			result = new ToolResult("Error: anchor cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: anchor cannot be empty", 1);
 		}
 		else if (TryParseAnchor(anchor, out int anchorLine, out byte anchorHash, out string anchorHex))
 		{
@@ -425,20 +425,20 @@ public static class FileTools
 									newWorking += Environment.NewLine;
 								}
 								await File.WriteAllTextAsync(fullPath, newWorking, cts.Token);
-								result = new ToolResult("OK", false);
+								result = new ToolResult("OK", string.Empty, 0);
+							}
+								else
+								{
+									StringBuilder sbErr = new StringBuilder();
+									sbErr.AppendLine("Error: Anchor hash did not match. No edits were applied.");
+									sbErr.AppendLine($"{anchorLine,6}:{actual:x2}\t{linesList[anchorLine - 1]}");
+									result = new ToolResult(string.Empty, sbErr.ToString(), 1);
+								}
 							}
 							else
 							{
-								StringBuilder sbErr = new StringBuilder();
-								sbErr.AppendLine("Error: Anchor hash did not match. No edits were applied.");
-								sbErr.AppendLine($"{anchorLine,6}:{actual:x2}\t{linesList[anchorLine - 1]}");
-								result = new ToolResult(sbErr.ToString(), false);
+								result = new ToolResult(string.Empty, "Error: Anchor line number out of range.", 1);
 							}
-						}
-						else
-						{
-							result = new ToolResult("Error: Anchor line number out of range.", false);
-						}
 					}
 					finally
 					{
@@ -447,21 +447,21 @@ public static class FileTools
 				}
 				else
 				{
-					result = new ToolResult($"Error: File not found: {filePath}", false);
+					result = new ToolResult(string.Empty, $"Error: File not found: {filePath}", 1);
 				}
 			}
 			catch (OperationCanceledException)
 			{
-				result = new ToolResult($"Error: Timed out or cancelled editing file: {filePath}", false);
+				result = new ToolResult(string.Empty, $"Error: Timed out or cancelled editing file: {filePath}", 1);
 			}
 			catch (Exception ex)
 			{
-				result = new ToolResult($"Error: Failed to edit file: {ex.Message}", false);
+				result = new ToolResult(string.Empty, $"Error: Failed to edit file: {ex.Message}", 1);
 			}
 		}
 		else
 		{
-			result = new ToolResult($"Error: Invalid anchor format: {anchor}", false);
+			result = new ToolResult(string.Empty, $"Error: Invalid anchor format: {anchor}", 1);
 		}
 
 		return result;
@@ -481,7 +481,7 @@ public static class FileTools
 
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
-			result = new ToolResult("Error: Path cannot be empty", false);
+			result = new ToolResult(string.Empty, "Error: Path cannot be empty", 1);
 		}
 		else
 		{
@@ -508,18 +508,23 @@ public static class FileTools
 					FileLock.Release();
 				}
 
-				result = new ToolResult("OK", false);
+				result = new ToolResult("OK", string.Empty, 0);
 			}
 			catch (OperationCanceledException)
 			{
-				result = new ToolResult($"Error: Timed out or cancelled writing file: {filePath}", false);
+				result = new ToolResult(string.Empty, $"Error: Timed out or cancelled writing file: {filePath}", 1);
 			}
 			catch (Exception ex)
 			{
-				result = new ToolResult($"Error: Failed to write file: {ex.Message}", false);
+				result = new ToolResult(string.Empty, $"Error: Failed to write file: {ex.Message}", 1);
 			}
 		}
 
 		return result;
 	}
 }
+
+
+
+
+

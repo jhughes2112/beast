@@ -14,44 +14,6 @@ public static class ToolFactory
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
-        Register(tools, "glob",
-            "Search for files matching a glob pattern.",
-            Params(
-                Req("pattern", "string", "Glob pattern to match (e.g. **/*.cs)."),
-                Req("path", "string", "Directory to search in.")),
-            async (args, ct, transport) =>
-            {
-                string pattern = Str(args, "pattern");
-                string path = Str(args, "path");
-                return await SearchTools.GlobAsync(pattern, path, ct);
-            });
-
-        Register(tools, "grep",
-            "Search file contents for a pattern.",
-            Params(
-                Req("path", "string", "Directory or file path to search."),
-                Req("pattern", "string", "Text or regex pattern to search for."),
-                Opt("context_lines", "integer", "Number of context lines to include around each match.")),
-            async (args, ct, transport) =>
-            {
-                string path = Str(args, "path");
-                string pattern = Str(args, "pattern");
-                int? contextLines = IntOpt(args, "context_lines");
-                return await SearchTools.GrepAsync(path, pattern, contextLines, ct);
-            });
-
-        Register(tools, "list_directory",
-            "List files and directories at a path.",
-            Params(
-                Req("path", "string", "Directory path to list."),
-                Opt("pattern", "string", "Optional glob pattern to filter results.")),
-            async (args, ct, transport) =>
-            {
-                string path = Str(args, "path");
-                string? pattern = StrOpt(args, "pattern");
-                return await SearchTools.ListDirectoryAsync(path, pattern, ct);
-            });
-
         WebFetch webFetch = new();
         Register(tools, "fetch_page",
             "Fetch the text content of a web page.",
@@ -86,9 +48,8 @@ public static class ToolFactory
             async (args, ct, transport) =>
             {
                 string command = Str(args, "command");
-                string? workingDir = StrOpt(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
+                return await ShellTools.BashAsync(command, timeoutSeconds, ct);
             });
 
         Register(tools, "read_file",
@@ -152,38 +113,49 @@ public static class ToolFactory
 
     private static async Task<ToolResult> TruncateIfNeeded(Task<ToolResult> resultTask, CancellationToken cancellationToken)
     {
-        const int MaxContentLength = 4000;
-        const int HeadLength = 1024;
-        const int TailLength = 1024;
+        const int MaxContentLength = 5000;
+            const int HeadLength = 2500;
+            const int TailLength = 2500;
 
-        ToolResult result = await resultTask;
+            ToolResult result = await resultTask;
 
-        if (result.Response.Length <= MaxContentLength)
-        {
-            return result;
+            // Determine which content to truncate based on exit code
+            string fullContent = result.ExitCode == 0 ? result.StdOut : result.StdErr;
+
+            if (fullContent.Length <= MaxContentLength)
+            {
+                return result;
+            }
+
+            string tempPath = Path.Combine(Path.GetTempPath(), $"beast_tool_output_{Guid.NewGuid():N}.txt");
+            await File.WriteAllTextAsync(tempPath, fullContent, cancellationToken);
+
+            string head = fullContent.Substring(0, HeadLength);
+            string tail = fullContent.Substring(fullContent.Length - TailLength, TailLength);
+
+            int skippedLength = fullContent.Length - HeadLength - TailLength;
+
+            StringBuilder truncated = new StringBuilder();
+            truncated.Append(head);
+            truncated.AppendLine();
+            truncated.AppendLine();
+            truncated.AppendLine($"... [{skippedLength} characters omitted] ...");
+            truncated.AppendLine();
+            truncated.Append(tail);
+            truncated.AppendLine();
+            truncated.AppendLine();
+            truncated.AppendLine($"Full output saved to: {tempPath}");
+
+            // Return truncated version in the appropriate field
+            if (result.ExitCode == 0)
+            {
+                return new ToolResult(truncated.ToString(), result.StdErr, result.ExitCode);
+            }
+            else
+            {
+                return new ToolResult(result.StdOut, truncated.ToString(), result.ExitCode);
+            }
         }
-
-        string tempPath = Path.Combine(Path.GetTempPath(), $"beast_tool_output_{Guid.NewGuid():N}.txt");
-        await File.WriteAllTextAsync(tempPath, result.Response, cancellationToken);
-
-        string head = result.Response.Substring(0, HeadLength);
-        string tail = result.Response.Substring(result.Response.Length - TailLength, TailLength);
-
-        int skippedLength = result.Response.Length - HeadLength - TailLength;
-
-        StringBuilder truncated = new StringBuilder();
-        truncated.Append(head);
-        truncated.AppendLine();
-        truncated.AppendLine();
-        truncated.AppendLine($"... [{skippedLength} characters omitted] ...");
-        truncated.AppendLine();
-        truncated.Append(tail);
-        truncated.AppendLine();
-        truncated.AppendLine();
-        truncated.AppendLine($"Full output saved to: {tempPath}");
-
-        return new ToolResult(truncated.ToString(), result.MessageHandled);
-    }
 
     private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, ITransportServer, Task<ToolResult>> handler)
     {
@@ -238,12 +210,6 @@ public static class ToolFactory
     {
         if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null) return node.ToString();
         return string.Empty;
-    }
-
-    private static string? StrOpt(JsonObject args, string key)
-    {
-        if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null) return node.ToString();
-        return null;
     }
 
     private static int? IntOpt(JsonObject args, string key)

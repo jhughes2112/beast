@@ -10,89 +10,150 @@ using System.Threading.Tasks;
 // Shell tools — all static methods.
 public static class ShellTools
 {
+	[Description("""
+		Standard bash command. CWD is /workspace/
+		""")]
 	public static async Task<ToolResult> BashAsync(
-		[Description("The shell command to execute (e.g. \"ls -la\", \"git status\").")] string command,
-		[Description("Optional working directory for the command.")] string? workingDir,
-		[Description("Optional timeout in seconds (default 60).")] int? timeoutSeconds,
+		[Description("Shell command to execute")] string command,
+		[Description("Timeout in seconds (default 60).")] int? timeoutSeconds,
 		CancellationToken cancellationToken)
 	{
-		if (string.IsNullOrWhiteSpace(command))
-			return new ToolResult("Error: command cannot be empty.", false);
+		ToolResult finalResult;
 
-		int timeout = timeoutSeconds ?? 60;
-		if (timeout <= 0) timeout = 60;
-
-		string cwd = string.IsNullOrWhiteSpace(workingDir) ? Directory.GetCurrentDirectory() : workingDir;
-
-		if (!Directory.Exists(cwd))
-			return new ToolResult($"Error: working directory does not exist: {cwd}", false);
-
-		try
+		if (!string.IsNullOrWhiteSpace(command))
 		{
-			var psi = new ProcessStartInfo
+			int timeout = timeoutSeconds ?? 60;
+			if (timeout <= 0)
 			{
-				FileName = "/bin/bash",
-				Arguments = $"-c \"{command.Replace("\"", "\\\"")}\"",
-				WorkingDirectory = cwd,
-				RedirectStandardOutput = true,
-				RedirectStandardError = true,
-				UseShellExecute = false,
-				CreateNoWindow = true
-			};
-
-			using var process = new Process { StartInfo = psi };
-			var output = new StringBuilder();
-			var error = new StringBuilder();
-
-			process.OutputDataReceived += (_, e) =>
-			{
-				if (e.Data != null) output.AppendLine(e.Data);
-			};
-			process.ErrorDataReceived += (_, e) =>
-			{
-				if (e.Data != null) error.AppendLine(e.Data);
-			};
-
-			process.Start();
-			process.BeginOutputReadLine();
-			process.BeginErrorReadLine();
-
-			using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-			cts.CancelAfter(TimeSpan.FromSeconds(timeout));
-
-			try
-			{
-				await process.WaitForExitAsync(cts.Token);
-			}
-			catch (OperationCanceledException)
-			{
-				if (cancellationToken.IsCancellationRequested)
-					throw;
-
-				try { process.Kill(true); } catch { }
-				return new ToolResult($"Error: Command timed out after {timeout}s.", false);
+				timeout = 60;
 			}
 
-			string result = output.ToString().TrimEnd();
-			string err = error.ToString().TrimEnd();
+			string cwd = Directory.GetCurrentDirectory();
 
-			// Wire format is deliberately minimal so the UI can render it verbatim: stdout immediately
-			// followed by stderr, with no labels or separators. Failure is conveyed by a bare "Error:"
-			// prefix purely so the UI's IsErrorResponse heuristic flips the block to red — the exit
-			// code itself carries no useful information beyond that, so we don't embed it.
-			string combined = result + err;
-			if (process.ExitCode != 0)
-				return new ToolResult($"Error: {combined}", false);
+			if (Directory.Exists(cwd))
+			{
+				try
+				{
+					ProcessStartInfo psi = new ProcessStartInfo
+					{
+						FileName = "/bin/bash",
+						Arguments = $"-c \"{command.Replace("\"", "\\\"")}\"",
+						WorkingDirectory = cwd,
+						RedirectStandardOutput = true,
+						RedirectStandardError = true,
+						UseShellExecute = false,
+						CreateNoWindow = true
+					};
 
-			return new ToolResult(combined, false);
-		}
-		catch (OperationCanceledException)
-		{
-			throw;
-		}
-		catch (Exception ex)
-		{
-			return new ToolResult($"Error: {ex.Message}", false);
-		}
+					using (Process process = new Process { StartInfo = psi })
+					{
+						StringBuilder output = new StringBuilder();
+						StringBuilder error = new StringBuilder();
+
+						process.OutputDataReceived += (_, e) =>
+						{
+							if (e.Data != null)
+							{
+								output.AppendLine(e.Data);
+							}
+						};
+						process.ErrorDataReceived += (_, e) =>
+						{
+							if (e.Data != null)
+							{
+								error.AppendLine(e.Data);
+							}
+						};
+
+						process.Start();
+						process.BeginOutputReadLine();
+						process.BeginErrorReadLine();
+
+						using (CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+						{
+							cts.CancelAfter(TimeSpan.FromSeconds(timeout));
+
+							bool processCompleted = false;
+							bool timedOut = false;
+
+							try
+							{
+								await process.WaitForExitAsync(cts.Token);
+								processCompleted = true;
+							}
+							catch (OperationCanceledException)
+							{
+								if (cancellationToken.IsCancellationRequested)
+								{
+									throw;
+								}
+								else
+								{
+									timedOut = true;
+									try
+									{
+										process.Kill(true);
+									}
+									catch
+									{
+									}
+								}
+							}
+
+							if (processCompleted)
+							{
+								string result = output.ToString().TrimEnd();
+								string err = error.ToString().TrimEnd();
+
+								// Use string.Empty for no output to avoid nulls.
+								string stdOut = string.IsNullOrEmpty(result) ? string.Empty : result;
+								string stdErr = string.IsNullOrEmpty(err) ? string.Empty : err;
+
+								if (process.ExitCode == 0)
+								{
+									finalResult = new ToolResult(stdOut, stdErr, 0);
+								}
+								else
+								{
+									finalResult = new ToolResult(stdOut, stdErr, process.ExitCode);
+								}
+							}
+							else if (timedOut)
+							{
+								string result = output.ToString().TrimEnd();
+								string err = error.ToString().TrimEnd();
+								string stdOut = string.IsNullOrEmpty(result) ? string.Empty : result;
+								string stdErr = string.IsNullOrEmpty(err) ? string.Empty : err;
+
+								string timeoutMessage = $"Error: Command timed out after {timeout} seconds.";
+								finalResult = new ToolResult(stdOut, stdErr + (string.IsNullOrEmpty(stdErr) ? "" : "\n") + timeoutMessage, 1);
+							}
+							else
+							{
+								finalResult = new ToolResult(string.Empty, "Error: Process termination failed for unknown reason.", 1);
+							}
+						}
+					}
+				}
+						catch (OperationCanceledException)
+						{
+							throw;
+						}
+						catch (Exception ex)
+						{
+							finalResult = new ToolResult(string.Empty, $"Error: Failed to execute command. {ex.GetType().Name}: {ex.Message}", 1);
+						}
+					}
+					else
+					{
+						finalResult = new ToolResult(string.Empty, $"Error: Working directory does not exist: {cwd}", 1);
+					}
+				}
+				else
+				{
+					finalResult = new ToolResult(string.Empty, "Error: Command cannot be empty or whitespace.", 1);
+				}
+
+		return finalResult;
 	}
 }

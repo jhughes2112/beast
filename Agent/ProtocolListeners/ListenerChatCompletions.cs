@@ -89,10 +89,15 @@ public class ListenerChatCompletions : IProtocolListener
         _state.Add(msg);
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
     {
         JsonObject msg = new JsonObject();
         msg["role"] = "tool";
+        string content = result.StdOut;
+        if (!string.IsNullOrEmpty(result.StdErr))
+        {
+            content = content + "\nstderr: " + result.StdErr;
+        }
         msg["content"] = content;
         msg["tool_call_id"] = toolCallId;
         _state.Add(msg);

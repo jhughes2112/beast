@@ -38,9 +38,10 @@ public static class WebToolsTests
             using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             ToolResult result = await searcher.SearchWebAsync("What is the capital of France?", captureTransport, cts.Token);
 
-            ctx.Log($"    response: {result.Response}");
-            ctx.Assert(!result.Response.StartsWith("Error:"), "WebSearch: no error returned");
-            ctx.Assert(result.Response.Length > 10, "WebSearch: non-empty response");
+            string response = result.ExitCode == 0 ? result.StdOut : result.StdErr;
+            ctx.Log($"    response: {response}");
+            ctx.Assert(result.ExitCode == 0 && !string.IsNullOrEmpty(result.StdOut), "WebSearch: no error returned");
+            ctx.Assert(response.Length > 10, "WebSearch: non-empty response");
         }
         catch (OperationCanceledException)
         {

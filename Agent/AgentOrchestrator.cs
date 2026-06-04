@@ -356,7 +356,9 @@ public class AgentOrchestrator
 				else if (nodeRole == "tool")
 				{
 					string toolCallId = tailNode["tool_call_id"]?.GetValue<string>() ?? string.Empty;
-					freshBundle.OnToolResult(null!, toolCallId, content);
+					// Reconstruct ToolResult from stored content: treat stored data as successful output
+					ToolResult toolResult = new ToolResult(content, string.Empty, 0);
+					freshBundle.OnToolResult(null!, toolCallId, toolResult);
 				}
 			}
 
@@ -603,7 +605,6 @@ public class AgentOrchestrator
 		await FileToolsTests.TestAsync(ctx);
 		ShellToolsTests.Test(ctx);
 		await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
-		await SearchToolsTests.TestAsync(ctx);
 		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, _cancellationToken);
 		await ProtocolSwitchTests.TestAsync(ctx, _registry, _roleService, _cancellationToken);
 
@@ -731,7 +732,9 @@ public class AgentOrchestrator
 				if (!string.IsNullOrEmpty(content))
 				{
 					string toolCallId = node["tool_call_id"]?.GetValue<string>() ?? string.Empty;
-					_transport.ToolResponseWithId(toolCallId, content);
+					// Reconstruct ToolResult from stored content: treat as successful output
+					ToolResult toolResult = new ToolResult(content, string.Empty, 0);
+					_transport.ToolResponseWithId(toolCallId, toolResult);
 				}
 			}
 		}

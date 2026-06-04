@@ -18,9 +18,11 @@ public class DisplayMessage
     public FrameType Type { get; set; }
     public string Content { get; set; }
     public bool Collapsed { get; set; }
-    // When this is a ToolCall slot, holds the paired ToolResponse text (or null if not yet received).
+    // When this is a ToolCall slot, holds the paired ToolResponse stdout (or null if not yet received).
     public string? PairedResponseContent { get; set; }
-    // True when the paired response indicates an error.
+    // When this is a ToolCall slot, holds the paired ToolResponse stderr (or null if not yet received).
+    public string? PairedResponseError { get; set; }
+    // True when the paired response exit code indicates an error (non-zero).
     public bool PairedResponseIsError { get; set; }
     // When this is a ToolCall slot, wall-clock time the call was first observed.
     public DateTime ToolCallStartedUtc { get; set; }
@@ -81,15 +83,31 @@ public class ConversationModel
         DisplayMessage msg = _messages[index];
         bool typeChanged = msg.Type != type;
 
-        // Strip the call ID prefix ("callId\x01content") from ToolCall and ToolResponse frames.
+        // Strip the call ID prefix ("callId\x01content") from ToolCall frames.
+        // For ToolResponse frames, format is "callId\x01exitCode\x01stdout\x01stderr".
         string callId = string.Empty;
-        if (type == FrameType.ToolCall || type == FrameType.ToolResponse)
+        int exitCode = 0;
+        string stdOut = string.Empty;
+        string stdErr = string.Empty;
+
+        if (type == FrameType.ToolCall)
         {
             int sep = content.IndexOf('\x01');
             if (sep >= 0)
             {
                 callId = content.Substring(0, sep);
                 content = content.Substring(sep + 1);
+            }
+        }
+        else if (type == FrameType.ToolResponse)
+        {
+            string[] parts = content.Split('\x01');
+            if (parts.Length >= 4)
+            {
+                callId = parts[0];
+                int.TryParse(parts[1], out exitCode);
+                stdOut = parts[2];
+                stdErr = parts[3];
             }
         }
 
@@ -121,8 +139,9 @@ public class ConversationModel
             if (callIndex >= 0)
             {
                 DisplayMessage callMsg = _messages[callIndex];
-                callMsg.PairedResponseContent = content;
-                callMsg.PairedResponseIsError = IsErrorResponse(content);
+                callMsg.PairedResponseContent = stdOut;
+                callMsg.PairedResponseError = stdErr;
+                callMsg.PairedResponseIsError = exitCode != 0;
                 if (callMsg.ToolCallStartedUtc != default)
                     callMsg.ToolDuration = DateTime.UtcNow - callMsg.ToolCallStartedUtc;
                 MessageUpdated?.Invoke(callMsg);
@@ -151,15 +170,6 @@ public class ConversationModel
         _messages.Clear();
         _pendingToolCallById.Clear();
         MessageUpdated?.Invoke(new DisplayMessage(0, FrameType.Clear, string.Empty));
-    }
-
-    private static bool IsErrorResponse(string content)
-    {
-        if (string.IsNullOrEmpty(content)) return false;
-        string lower = content.TrimStart();
-        return lower.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
-            || lower.StartsWith("Exception:", StringComparison.OrdinalIgnoreCase)
-            || lower.StartsWith("failed", StringComparison.OrdinalIgnoreCase);
     }
 
     // Returns whether a message of the given type should be hidden entirely in the given mode.

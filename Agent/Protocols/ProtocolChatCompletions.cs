@@ -42,7 +42,7 @@ public class ProtocolChatCompletions : IProtocolListener
     public void OnSystemMessage(IProtocolListener sender, string text) { }
     public void OnUserMessage(IProtocolListener sender, string text) { }
     public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content) { }
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result) { }
     public void OnStreamStart(IProtocolListener sender, string tag) { }
     public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
     public void OnStreamEnd(IProtocolListener sender, string tag) { }

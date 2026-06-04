@@ -125,14 +125,19 @@ public class ProtocolAnthropic : IProtocolListener
         }
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
     {
-        ToolResultContent result = new ToolResultContent
+        string content = result.StdOut;
+        if (!string.IsNullOrEmpty(result.StdErr))
+        {
+            content = content + "\nstderr: " + result.StdErr;
+        }
+        ToolResultContent toolResult = new ToolResultContent
         {
             ToolUseId = toolCallId,
             Content = new List<ContentBase> { new TextContent { Text = content } }
         };
-        AppendContent(RoleType.User, result);
+        AppendContent(RoleType.User, toolResult);
     }
 
     public void OnStreamStart(IProtocolListener sender, string tag) { }

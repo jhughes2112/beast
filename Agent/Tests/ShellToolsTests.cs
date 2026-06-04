@@ -29,26 +29,25 @@ public static class ShellToolsTests
 	private static void TestEdgeCases(TestContext ctx)
 	{
 		// Empty command.
-		ToolResult emptyCmd = ShellTools.BashAsync("", null, null, CancellationToken.None).GetAwaiter().GetResult();
-		ctx.Assert(emptyCmd.Response.Contains("Error") && emptyCmd.Response.Contains("empty"), "ShellTools: empty command returns error");
+		ToolResult emptyCmd = ShellTools.BashAsync("", null, CancellationToken.None).GetAwaiter().GetResult();
+		ctx.Assert(emptyCmd.StdErr.Contains("Error") && emptyCmd.StdErr.Contains("empty"), "ShellTools: empty command returns error");
 
-		// Non-existent working directory.
-		ToolResult badDir = ShellTools.BashAsync("echo test", "/nonexistent/path/that/does/not/exist", null, CancellationToken.None).GetAwaiter().GetResult();
-		ctx.Assert(badDir.Response.Contains("Error"), "ShellTools: non-existent workDir returns error");
+		// Non-existent working directory - can't test this easily without changing CWD
 	}
 
 	private static void TestRunCommand(TestContext ctx)
 	{
 		// Simple echo — may or may not work depending on WSL/bash availability.
-		ToolResult echoResult = ShellTools.BashAsync("echo hello", null, null, CancellationToken.None).GetAwaiter().GetResult();
-		// Output now has no envelope: a successful run is just stdout+stderr; a failure starts with "Error:".
-		bool validResponse = echoResult.Response.Contains("hello") || echoResult.Response.StartsWith("Error:");
+		ToolResult echoResult = ShellTools.BashAsync("echo hello", null, CancellationToken.None).GetAwaiter().GetResult();
+		// Successful run has output in stdout; failures have errors in stderr.
+		bool validResponse = echoResult.StdOut.Contains("hello") || !string.IsNullOrEmpty(echoResult.StdErr);
 		ctx.Assert(validResponse, "ShellTools: echo returns valid response format");
 
 		// If the command succeeded, verify output was captured.
-		if (!echoResult.Response.StartsWith("Error:"))
+		if (string.IsNullOrEmpty(echoResult.StdErr))
 		{
-			ctx.Assert(echoResult.Response.Contains("hello"), "ShellTools: echo output captured");
+			ctx.Assert(echoResult.StdOut.Contains("hello"), "ShellTools: echo output captured");
 		}
 	}
 }
+

@@ -89,13 +89,18 @@ public class ProtocolResponses : IProtocolListener
         }
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
     {
         if (sender == this) return;
         JsonObject item = new JsonObject();
         item["type"] = "function_call_output";
         item["call_id"] = toolCallId;
-        item["output"] = content;
+        string output = result.StdOut;
+        if (!string.IsNullOrEmpty(result.StdErr))
+        {
+            output = output + "\nstderr: " + result.StdErr;
+        }
+        item["output"] = output;
         _deltaInput.Add(item);
     }
     public void OnStreamStart(IProtocolListener sender, string tag) { }

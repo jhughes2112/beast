@@ -28,18 +28,21 @@ public class FunctionDefinition
 }
 
 // Result returned by a tool after execution.
+// ExitCode: 0 = success, non-zero = error
+// StdOut: Response content when successful (or both stdout and stderr may be present)
+// StdErr: Error message when exitCode is non-zero (or both stdout and stderr may be present)
 public class ToolResult
 {
-	public string Response { get; }
-	public bool MessageHandled { get; }
+	public string StdOut { get; }
+	public string StdErr { get; }
+	public int ExitCode { get; }
 
-	public ToolResult(string response, bool messageHandled)
+	public ToolResult(string stdOut, string stdErr, int exitCode)
 	{
-		Response = response;
-		MessageHandled = messageHandled;
+		StdOut = stdOut;
+		StdErr = stdErr;
+		ExitCode = exitCode;
 	}
-
-	public override string ToString() => Response;
 }
 
 // Internal tool representation used by LlmService's execution loop.

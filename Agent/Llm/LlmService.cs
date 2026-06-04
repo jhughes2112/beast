@@ -239,12 +239,12 @@ public class LlmService
 
         for (int i = 0; i < completedTools.Length; i++)
         {
-            if (!completedTools[i].toolResult.MessageHandled)
-            {
-                // Sender is null so every listener (each protocol's native state and the transport)
-                // records the tool result.
-                bundle.OnToolResult(null!, toolCalls[i].Id, completedTools[i].toolResult.Response);
-            }
+            ToolResult result = completedTools[i].toolResult;
+
+            // Sender is null so every listener (each protocol's native state and the transport)
+            // records the tool result. Listeners can inspect StdOut, StdErr, and ExitCode to
+            // decide how to handle the result.
+            bundle.OnToolResult(null!, toolCalls[i].Id, result);
         }
 
         return (null, true);
@@ -264,7 +264,7 @@ public class LlmService
 
         if (matchedTool == null)
         {
-            return new ToolResult($"Error: Tool '{toolCall.Name}' not found in available tools.", false);
+            return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1);
         }
 
         JsonObject? argsObj;
@@ -279,7 +279,7 @@ public class LlmService
 
         if (argsObj == null)
         {
-            return new ToolResult($"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", false);
+            return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
         }
 
         // ToolCall framing is already emitted by the TransportListener when the assistant turn
@@ -326,3 +326,4 @@ public class LlmService
         });
     }
 }
+

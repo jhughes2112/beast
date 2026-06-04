@@ -651,7 +651,7 @@ public class DisplayScreen : IDisplay
         collapsedLines.Add(prefix + AnsiString.TruncateVisible(summary, availW));
 
         // Multi-line collapsed previews for tools where a tiny excerpt is far more useful than the
-        // bare summary line alone. Bash shows the tail; read_file / list_directory show the head;
+        // bare summary line alone. Bash shows the tail; read_file shows the head;
         // write_file pulls from the call's own content argument (its response is just a status line).
         if (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
@@ -662,7 +662,7 @@ public class DisplayScreen : IDisplay
                 for (int i = start; i < respLines.Length; i++)
                     collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), "bash", respBgAnsi));
             }
-            else if (toolName == "read_file" || toolName == "list_directory")
+            else if (toolName == "read_file")
             {
                 int end = Math.Min(respLines.Length, 5);
                 for (int i = 0; i < end; i++)
@@ -976,9 +976,9 @@ public class DisplayScreen : IDisplay
 
     private static List<string> RenderToolCallRows(DisplayMessage msg, int w)
     {
-        // Tool calls and their paired responses do NOT word-wrap; long lines are truncated at the screen
-        // edge by the Screen blitter. This keeps things like code/diffs/log output readable rather than
-        // breaking mid-token.
+        // Tool call arguments and paired responses do NOT word-wrap; long lines are truncated at the
+        // screen edge by the Screen blitter. This keeps things like code/diffs/log output readable
+        // rather than breaking mid-token. However, the summary line wraps so long commands are visible.
         List<string> result = new List<string>();
         string content = msg.Content;
 
@@ -988,8 +988,10 @@ public class DisplayScreen : IDisplay
         if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
             argsJson = argsJson.Substring(0, argsJson.Length - 1);
 
+        // Show wrapped summary as first line(s) so long commands are fully visible when expanded
         string summary = FormatToolCallSummary(content, msg.PairedResponseContent);
-        result.Add(summary);
+        foreach (string wrappedLine in AnsiString.WordWrap(summary, w))
+            result.Add(wrappedLine);
 
         // Properties whose values are already shown in the summary line — don't repeat them in the body.
         // "content" is shown as a free-floating block with the response background instead of a labeled value.
@@ -1063,12 +1065,21 @@ public class DisplayScreen : IDisplay
         // of the summary, so suppressing them removes redundant noise. Errors are never suppressed.
         bool suppressPairedResponse = !msg.PairedResponseIsError
             && (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert");
+
+        // Render stdout (PairedResponseContent) with normal response background (blue/gray).
         if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
             // Pass bg-only SGR so token foreground colors are preserved in syntax-highlighted response lines.
             string respBgAnsi = msg.PairedResponseIsError ? Palette.ErrBodyBgAnsi : respBodyBgAnsi;
             foreach (string respLine in msg.PairedResponseContent.Split('\n'))
                 result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLine), fileLang, respBgAnsi));
+        }
+
+        // Render stderr (PairedResponseError) with error background (red).
+        if (!string.IsNullOrEmpty(msg.PairedResponseError))
+        {
+            foreach (string errLine in msg.PairedResponseError.Split('\n'))
+                result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(errLine), fileLang, Palette.ErrBodyBgAnsi));
         }
 
         if (result.Count == 0)
@@ -1090,10 +1101,6 @@ public class DisplayScreen : IDisplay
             case "edit_file_replace":
             case "edit_file_insert":
                 set.Add("file_path"); break;
-            case "list_directory":
-            case "glob":
-            case "grep":
-                set.Add("path"); set.Add("pattern"); break;
             case "bash":
                 set.Add("command"); break;
             case "search_web":
@@ -1143,8 +1150,6 @@ public class DisplayScreen : IDisplay
             "read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
             "write_file" or "edit_file"
                 or "edit_file_replace" or "edit_file_insert"           => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
-            "list_directory"                                           => BuildPathSummary(label, Get("path"), respLineCount),
-            "glob" or "grep"                                           => BuildPathPatternSummary(label, Get("path"), Get("pattern"), respLineCount),
             "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
             "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
             "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),
@@ -1191,14 +1196,6 @@ public class DisplayScreen : IDisplay
         if (string.IsNullOrEmpty(path)) return label;
         string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
         return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
-    }
-
-    private static string BuildPathPatternSummary(string label, string path, string pattern, int respLineCount)
-    {
-        string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
-        string pathPart = !string.IsNullOrEmpty(path) ? $" {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}" : string.Empty;
-        string patPart  = !string.IsNullOrEmpty(pattern) ? $"  {pattern}" : string.Empty;
-        return $"{label}{pathPart}{patPart}{tail}";
     }
 
     private static string BuildWriteFileSummary(string label, string path, int writeLineCount)

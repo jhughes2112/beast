@@ -34,9 +34,9 @@ public class ListenerTransport : IProtocolListener
         }
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, string content)
+    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
     {
-        _transport.ToolResponseWithId(toolCallId, content);
+        _transport.ToolResponseWithId(toolCallId, result);
     }
 
     public void OnStreamStart(IProtocolListener sender, string tag)

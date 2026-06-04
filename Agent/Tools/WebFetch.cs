@@ -32,10 +32,10 @@ public class WebFetch
     {
 
         if (string.IsNullOrWhiteSpace(url))
-            return new ToolResult("Error: URL cannot be empty.", false);
+            return new ToolResult(string.Empty, "Error: URL cannot be empty.", 1);
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
-            return new ToolResult("Error: Invalid URL format: " + url, false);
+            return new ToolResult(string.Empty, "Error: Invalid URL format: " + url, 1);
 
         try
         {
@@ -43,35 +43,35 @@ public class WebFetch
             cts.CancelAfter(DefaultTimeout);
 
             if (_cache.TryGetValue(url, out CacheEntry? entry) && DateTime.UtcNow < entry.ExpiresAt)
-                return new ToolResult(entry.Content, false);
+                return new ToolResult(entry.Content, string.Empty, 0);
 
             _cache.TryRemove(url, out _);
 
             HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, cts.Token);
 
             if (!response.IsSuccessStatusCode)
-                return new ToolResult("Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, false);
+                return new ToolResult(string.Empty, "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, 1);
 
             string html = await response.Content.ReadAsStringAsync(cts.Token);
             string text = StripHtmlTags(html);
 
             if (string.IsNullOrWhiteSpace(text))
-                return new ToolResult("Error: No readable text content found at URL: " + url, false);
+                return new ToolResult(string.Empty, "Error: No readable text content found at URL: " + url, 1);
 
             _cache[url] = new CacheEntry(text, DateTime.UtcNow + CacheTtl);
-            return new ToolResult(text, false);
+            return new ToolResult(text, string.Empty, 0);
         }
         catch (OperationCanceledException)
         {
-            return new ToolResult("Error: Request timed out or cancelled for URL: " + url, false);
+            return new ToolResult(string.Empty, "Error: Request timed out or cancelled for URL: " + url, 1);
         }
         catch (HttpRequestException ex)
         {
-            return new ToolResult("Error: Network error fetching URL " + url + ": " + ex.Message, false);
+            return new ToolResult(string.Empty, "Error: Network error fetching URL " + url + ": " + ex.Message, 1);
         }
         catch (Exception ex)
         {
-            return new ToolResult("Error: Failed to fetch URL " + url + ": " + ex.Message, false);
+            return new ToolResult(string.Empty, "Error: Failed to fetch URL " + url + ": " + ex.Message, 1);
         }
     }
 
@@ -86,3 +86,4 @@ public class WebFetch
         return html.Trim();
     }
 }
+

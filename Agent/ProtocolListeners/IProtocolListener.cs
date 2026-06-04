@@ -14,7 +14,7 @@ public interface IProtocolListener
     void OnSystemMessage(IProtocolListener sender, string text);
     void OnUserMessage(IProtocolListener sender, string text);
     void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls);
-    void OnToolResult(IProtocolListener sender, string toolCallId, string content);
+    void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result);
 
     // Live streaming. tag is one of StreamTag.Assistant/Thinking; protocols translate to native,
     // the transport adapter forwards as StreamStart/Chunk/End frames.
