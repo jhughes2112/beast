@@ -165,16 +165,57 @@ public class DisplayScreen : IDisplay
 
     private static readonly string[] BusyWords = new string[]
     {
-        "Working", "Thinking", "Reasoning", "Planning", "Analyzing", "Processing",
-        "Calculating", "Pondering", "Considering", "Evaluating", "Deliberating",
-        "Synthesizing", "Inferring", "Deducing", "Formulating", "Composing"
+        "Rampaging", "Burninating", "Mauling", "Howling", "Stampeding", "Pouncing",
+        "Ripping", "Devouring", "Chomping", "Gnashing", "Roaring", "Thundering",
+        "Smashing", "Wrecking", "Ravaging", "Preying", "Stalking", "Charging",
+        "Attacking", "Clawing", "Biting", "Tearing", "Feasting", "Unleashing",
+        "Slashing", "Goring", "Gnawing", "Lunging", "Trampling", "Swooping",
+        "Burrowing", "Rending", "Pulverizing", "Sprinting", "Prowling", "Hunting",
+        "Snarling", "Hissing", "Snapping", "Striking", "Swiping", "Thrashing",
+        "Galloping", "Bolting", "Skulking", "Slithering", "Lurking", "Scuttling",
+        "Grappling", "Pinning", "Tossing", "Hurling", "Screeching", "Shrieking",
+        "Crunching", "Grinding", "Butting", "Ramming", "Pecking", "Tracking",
+        "Scouring", "Foraging", "Scavenging", "Obliterating", "Annihilating",
+        "Flattening", "Demolishing", "Rupturing", "Piercing", "Impaling",
+        "Skewering", "Slicing", "Cleaving", "Hacking", "Hewing", "Bashing",
+        "Pummeling", "Flailing", "Surging", "Seething", "Churning", "Whirling",
+        "Splintering", "Shattering", "Bursting", "Exploding", "Blasting", "Torching",
+        "Toppling", "Crushing", "Crumbling", "Leveling", "Uprooting", "Devastating",
+        "Submerging", "Melting", "Vaporizing", "Disintegrating", "Decimating", "Quaking",
+        "Trembling", "Splitting", "Catapulting", "Launching", "Tumbling", "Crashing",
+        "Bombarding", "Engulfing", "Swallowing", "Drowning", "Smothering", "Singeing",
+        "Searing", "Scorching", "Incinerating", "Moltening", "Corking", "Plunging",
+        "Diving", "Scaling", "Ascending", "Descending", "Encroaching", "Invading"
     };
 
-    // Worm animation frames — a 4-cell wide crawling shape.
-    private static readonly string[] WormFrames = new string[]
+    // Busy animation frames.
+    private static readonly string[][] BusyAnimations = new string[][]
     {
-        "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙"
+        new[] { "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙" }, // Worm
+        new[] { "∙∙∙∙", "●∙∙∙", "●●∙∙", "●●●∙", "●●●●", "∙●●●", "∙∙●●", "∙∙∙●" }, // Growth
+        new[] { "⠋   ", " ⠙  ", "  ⠹ ", "   ⠸", "   ⠼", "  ⠴ ", " ⠦  ", "⠧   " }, // Braille chase
+        new[] { "←↖↑↗", "↖↑↗→", "↑↗→↘", "↗→↘↓", "→↘↓↙", "↘↓↙←", "↓↙←↖", "↙←↖↑" }, // Arrow wave
+        new[] { "    ", "▃   ", "▆▃  ", "█▆▃ ", "▇█▆▃", " ▇█▆", "  ▇█", "   ▇" }, // Pulse bar
+        new[] { "▖   ", " ▘  ", "  ▝ ", "   ▗", "  ▝ ", " ▘  " },             // Quadrant scan
+        new[] { "◢◣◤◥", "◣◤◥◢", "◤◥◢◣", "◥◢◣◤" },                         // Triangles
+        new[] { "||||", "////", "----", "\\\\\\\\" },                        // Rotating pipes (escaped)
+        new[] { "◇◇◇◇", "◈◇◇◇", "◆◈◇◇", "◈◆◈◇", "◇◈◆◈", "◇◇◈◆", "◇◇◇◈" },    // Diamond pulse
+        new[] { "○◔◑◕", "◔◑◕●", "◑◕●◕", "◕●◕◑", "●◕◑◔", "◕◑◔○" },           // Moon cycle
+        new[] { "▐░▒▓", "░▒▓█", "▒▓█▓", "▓█▓▒", "█▓▒░", "▓▒░▐" },           // Density wave
+        new[] { "⊶⊷⊶⊷", "⊷⊶⊷⊶" },                                         // Oscillation
+        new[] { "◜◠◝◞", "◠◝◞◡", "◝◞◡◟", "◞◡◟◜", "◡◟◜◠", "◟◜◠◝" },           // Arc flow
+        new[] { "⌞⌜⌝⌟", "⌜⌝⌟⌞", "⌝⌟⌞⌜", "⌟⌞⌜⌝" },                         // Corner spin
+        new[] { "[●  ]", "[ ● ]", "[  ●]", "[ ● ]" },                     // Scanner
+        new[] { "{  }", " { }", "{  }", " { }" },                         // Pulse brackets
+        new[] { "<  >", "<==>", " <  >", "  <  >" },                      // Jaws
+        new[] { "v   ", " v  ", "  v ", "   v", "  ^ ", " ^  " },          // Gravity bounce
+        new[] { "◰◱◲◳", "◱◲◳◰", "◲◳◰◱", "◳◰◱◲" },                         // Box corners
+        new[] { "◴◵◶◷", "◵◶◷◴", "◶◷◴◵", "◷◴◵◶" },                         // Clock rotate
+        new[] { "⠐⠠⢀⡀", "⠠⢀⡀⠐", "⢀⡀⠐⠠", "⡀⠐⠠⢀" },                   // Marquee
+        new[] { "⠁⠂⠄⡀", "⠂⠄⡀⠠", "⠄⡀⠠⠐", "⡀⠠⠐⠈" }                    // Staircase
     };
+
+    private int _currentAnimationIndex = 0;
 
     public DisplayScreen(CollapseMode initialMode)
     {
@@ -240,6 +281,7 @@ public class DisplayScreen : IDisplay
             {
                 _busyStartTick = Environment.TickCount64;
                 _agentBusy = true;
+                _currentAnimationIndex = Random.Shared.Next(BusyAnimations.Length);
             }
             else if (busy && _agentBusy)
             {
@@ -496,12 +538,22 @@ public class DisplayScreen : IDisplay
         if (_agentBusy)
         {
             long elapsed = Environment.TickCount64 - _busyStartTick;
-            // Worm crawls at ~8 fps (125ms per frame).
-            int wormFrame = (int)(elapsed / 125) % WormFrames.Length;
+            // Animations crawl at or around ~8 fps (125ms per frame).
+            string[] anim = BusyAnimations[_currentAnimationIndex % BusyAnimations.Length];
+            int frameIdx = (int)(elapsed / 125) % anim.Length;
+            string frames = anim[frameIdx];
+
             // Word changes each time a new activity block arrives, not on a timer.
             string word   = BusyWords[_busyWordIndex % BusyWords.Length];
-            string worm   = WormFrames[wormFrame];
-            string label  = $" {worm} {word} ";
+
+            TimeSpan ts   = TimeSpan.FromMilliseconds(elapsed);
+            string timeLabel = ts.TotalHours >= 1 
+                ? $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}" 
+                : ts.TotalMinutes >= 1 
+                    ? $"{ts.Minutes}:{ts.Seconds:D2}" 
+                    : $"{ts.TotalSeconds:F1}s";
+
+            string label  = $" {frames} {word} {timeLabel} ";
             // Write the label in a calm cyan over the background so it reads as "active but not alarming".
             Rgb busyFg = new Rgb(80, 200, 200);
             AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, Palette.Background);

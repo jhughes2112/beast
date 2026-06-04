@@ -52,11 +52,31 @@ public class AgentOrchestrator
 	private bool _wantsCompact = false;
 	private string _clientSessionId = string.Empty;
 	private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
+	private int _busyDepth = 0;
+
+	private void IncrementBusy()
+	{
+		_busyDepth++;
+		if (_busyDepth == 1)
+		{
+			_transport.Busy();
+		}
+	}
+
+	private void DecrementBusy()
+	{
+		_busyDepth--;
+		if (_busyDepth == 0)
+		{
+			_transport.Idle();
+		}
+	}
 
 	public async Task RunAsync()
 	{
 		BeastSession conversation = LoadOrCreateConversation(out ListenerBundle bundle);
 		ConcurrentQueue<string> inputQueue = new();
+
 
 		// Send initial stats so the client sees token counts and cost immediately.
 		LLMRole? initialRole = _roleService.GetRole(conversation.Role);
@@ -144,7 +164,7 @@ public class AgentOrchestrator
 					_wantsCompact = false;
 					try
 					{
-						_transport.Busy();
+						IncrementBusy();
 						_transport.Status("Running compaction...");
 						(LlmResult compactResult, BeastSession compactedSession, ListenerBundle compactedBundle) = await CompactAsync(conversation, bundle, service!, role!);
 						conversation = compactedSession;
@@ -152,7 +172,7 @@ public class AgentOrchestrator
 					}
 					finally
 					{
-						_transport.Idle();
+						DecrementBusy();
 
 						// Re-resolve after compaction because the service may have changed
 						service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength());
@@ -168,7 +188,7 @@ public class AgentOrchestrator
 			// 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
 			if (!_cancellationToken.IsCancellationRequested && conversation.NeedsLlmAttention() && service!=null)
 			{
-				_transport.Busy();
+				IncrementBusy();
 				_turnCts = new CancellationTokenSource();
 				try
 				{
@@ -182,7 +202,7 @@ public class AgentOrchestrator
 				}
 				finally
 				{
-					_transport.Idle();
+					DecrementBusy();
 					_turnCts.Dispose();
 					_turnCts = null;
 				}
