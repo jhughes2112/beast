@@ -56,13 +56,19 @@ public static class FileTools
 			if (colon > 0)
 			{
 				string linePart = anchor.Substring(0, colon);
-				string hexPart = anchor.Substring(colon + 1, 2);  // only accept 2 characters for the hex part
-				if (int.TryParse(linePart, NumberStyles.None, CultureInfo.InvariantCulture, out lineNumber))
+				string remaining = anchor.Substring(colon + 1);
+				// Skip any leading whitespace and take the next 2 hex digits
+				string hexPart = remaining.TrimStart();
+				if (hexPart.Length >= 2)
 				{
-					if (hexPart.Length == 2 && byte.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out hashByte))
+					hexPart = hexPart.Substring(0, 2);
+					if (int.TryParse(linePart, NumberStyles.None, CultureInfo.InvariantCulture, out lineNumber))
 					{
-						hexString = hexPart.ToLowerInvariant();
-						result = true;
+						if (byte.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out hashByte))
+						{
+							hexString = hexPart.ToLowerInvariant();
+							result = true;
+						}
 					}
 				}
 			}

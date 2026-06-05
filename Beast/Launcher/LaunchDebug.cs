@@ -7,9 +7,9 @@ using System.Threading.Tasks;
 // Used when debugging: start Agent and Beast separately; Beast connects to the running agent.
 public class LaunchDebug : ILauncher
 {
-    public Task StartAsync(string name, CancellationToken cancellationToken)
+    public Task<int> StartAsync(string name, CancellationToken cancellationToken)
     {
-        return Task.CompletedTask;
+        return Task.FromResult(13131);
     }
 
     public Task StopAsync()

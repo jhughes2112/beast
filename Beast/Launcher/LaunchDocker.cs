@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Docker.DotNet;
@@ -14,6 +16,7 @@ public class LaunchDocker : ILauncher
     private readonly DockerClient _dockerClient;
     private readonly Log _log;
     private string? _containerId;
+    private int _hostPort;
 
     public LaunchDocker(string image, Log log)
     {
@@ -22,8 +25,10 @@ public class LaunchDocker : ILauncher
         _dockerClient = new DockerClientConfiguration().CreateClient();
     }
 
+    public int HostPort => _hostPort;
+
     // Removes any stale container with the same name, then creates and starts a fresh one.
-    public async Task StartAsync(string name, CancellationToken cancellationToken)
+    public async Task<int> StartAsync(string name, CancellationToken cancellationToken)
     {
         await RemoveContainerByNameAsync(name);
 
@@ -32,22 +37,25 @@ public class LaunchDocker : ILauncher
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
         Directory.CreateDirectory(beastConfigDir);
 
+        // Find an available port on the host
+        _hostPort = FindAvailablePort();
+
         CreateContainerParameters createParams = new CreateContainerParameters
         {
             Image = _image,
             Name = name,
             WorkingDir = "/workspace",
-            Env = new List<string> { "BEAST_HOST=host.docker.internal" },
+            Env = new List<string> { "BEAST_HOST=host.docker.internal", $"AGENT_PORT={_hostPort}" },
             ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
             HostConfig = new HostConfig
             {
                 AutoRemove = false,
-                ExtraHosts = new List<string> { "host.docker.internal:host-gateway" },  // for linux to pick this up
+                ExtraHosts = new List<string> { "host.docker.internal:host-gateway" },
                 PortBindings = new Dictionary<string, IList<PortBinding>>
                 {
                     ["13131/tcp"] = new List<PortBinding>
                     {
-                        new PortBinding { HostIP = "127.0.0.1", HostPort = "13131" }
+                        new PortBinding { HostIP = "127.0.0.1", HostPort = _hostPort.ToString() }
                     }
                 },
                 Binds = new List<string>
@@ -58,33 +66,41 @@ public class LaunchDocker : ILauncher
             }
         };
 
-        _log.Verbose($"[docker] Creating container {name} from image {_image}");
-        CreateContainerResponse response = await _dockerClient.Containers.CreateContainerAsync(createParams);
+        CreateContainerResponse response = await _dockerClient.Containers.CreateContainerAsync(createParams, cancellationToken);
         _containerId = response.ID;
         _log.Verbose($"[docker] Container created: {_containerId}");
 
         await _dockerClient.Containers.StartContainerAsync(_containerId, new ContainerStartParameters());
-        _log.Verbose($"[docker] Container started: {name}");
+        _log.Verbose($"[docker] Container started: {name} on host port {_hostPort}");
+        return _hostPort;
+    }
+
+    private static int FindAvailablePort()
+    {
+        using TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
     }
 
     // Stops and removes the container started by StartAsync.
     public async Task StopAsync()
     {
-        if (_containerId == null) return;
+        if (_containerId == null)
+            return;
         string id = _containerId;
-        _containerId = null;
-
         try
         {
-            await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKillSeconds = 10 });
+            await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKill = 15 });
+            _log.Verbose($"[docker] Container stopped: {id}");
+            await _dockerClient.Containers.RemoveContainerAsync(id, new ContainerRemoveParameters());
+            _log.Verbose($"[docker] Container removed: {id}");
         }
-        catch (DockerContainerNotFoundException) { }
-
-        try
+        catch (Exception ex)
         {
-            await _dockerClient.Containers.RemoveContainerAsync(id, new ContainerRemoveParameters { Force = true });
+            _log.Error($"[docker] Error stopping container: {ex.Message}");
         }
-        catch (DockerContainerNotFoundException) { }
     }
 
     // Removes a named container if it exists, regardless of state. Used to clean up before relaunching.
@@ -93,7 +109,7 @@ public class LaunchDocker : ILauncher
         try
         {
             IList<ContainerListResponse> containers = await _dockerClient.Containers.ListContainersAsync(
-                new ContainersListParameters { All = true });
+            new ContainersListParameters { All = true });
 
             foreach (ContainerListResponse container in containers)
             {
@@ -116,6 +132,6 @@ public class LaunchDocker : ILauncher
 
     public void Dispose()
     {
-        _dockerClient.Dispose();
+        _dockerClient?.Dispose();
     }
 }
