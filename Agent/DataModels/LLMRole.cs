@@ -11,6 +11,7 @@ public class LLMRole
 	[JsonPropertyName("name")]
 	public string Name { get; }
 
+    // One special note about the list of models is '*' means any model is allowed.  Order is still respected, so you can put * last in the list and set preferences higher.
 	[JsonPropertyName("models")]
 	public List<string> Models { get; }
 
@@ -29,9 +30,8 @@ public class LLMRole
 		SystemPrompt = systemPrompt;
 	}
 
-	public static LLMRole DefaultRole(string firstModelId, List<string> toolNames)
+	public static LLMRole DefaultRole(List<string> modelIds, List<string> toolNames)
 	{
-		List<string> models = string.IsNullOrEmpty(firstModelId) ? new List<string>() : new List<string> { firstModelId };
-		return new LLMRole("Default", models, toolNames, "You are a helpful assistant.");
+		return new LLMRole("Default", modelIds, toolNames, "You are a helpful assistant.");
 	}
 }

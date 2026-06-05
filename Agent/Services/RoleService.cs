@@ -3,109 +3,151 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 
-
-// Loads and provides LLMRole definitions from disk. Read-only at runtime.
+// Loads and provides LLMRole definitions from disk with merging: user profile as base, project as overrides.
 public class RoleService
 {
-	public Dictionary<string, LLMRole> Roles { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, LLMRole> Roles { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
 
-	private readonly string _projectRolesPath;
-	private readonly string _globalRolesPath;
+    private readonly string _projectRolesPath;
+    private readonly string _userRolesPath;
+    private readonly BeastSettings _settings;
 
-	private BeastSettings _settings;
+    public RoleService(string workDir, BeastSettings settings)
+    {
+        _projectRolesPath = Path.Combine(workDir, ".beast", "roles.json");
+        _userRolesPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "roles.json");
+        _settings = settings;
 
-	public RoleService(string workDir, BeastSettings settings)
-	{
-		_projectRolesPath = Path.Combine(workDir, ".beast", "roles.json");
-		_globalRolesPath = Path.Combine(
-		Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-		".beast", "roles.json");
-		_settings = settings;
+        LoadRoles();
+    }
 
-		LoadRoles();
-	}
+    public LLMRole? GetRole(string name)
+    {
+        Roles.TryGetValue(name, out LLMRole? role);
+        return role;
+    }
 
-	public LLMRole? GetRole(string name)
-	{
-		Roles.TryGetValue(name, out LLMRole? role);
-		return role;
-	}
+    public void Reload()
+    {
+        LoadRoles();
+    }
 
-	public void Reload()
-	{
-		LoadRoles();
-	}
+    private void LoadRoles()
+    {
+        Roles.Clear();
 
-	private void LoadRoles()
-	{
-		Roles.Clear();
-		string? sourcePath = null;
+        Dictionary<string, LLMRole>? userRoles = LoadRolesFromFile(_userRolesPath);
+        if (userRoles == null)
+        {
+            userRoles = CreateDefaultRoles();
+            WriteRoles(_userRolesPath, userRoles.Values);
+        }
 
-		if (File.Exists(_projectRolesPath))
-		{
-			sourcePath = _projectRolesPath;
-		}
-		else if (File.Exists(_globalRolesPath))
-		{
-			sourcePath = _globalRolesPath;
-		}
+        Dictionary<string, LLMRole>? projectRoles = LoadRolesFromFile(_projectRolesPath);
+        if (projectRoles == null)
+        {
+            projectRoles = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
+            WriteRoles(_projectRolesPath, projectRoles.Values);
+        }
 
-		if (sourcePath != null)
-		{
-			try
-			{
-				string json = File.ReadAllText(sourcePath);
-				List<LLMRole>? roleList = JsonSerializer.Deserialize<List<LLMRole>>(json);
-				if (roleList != null)
-				{
-					foreach (LLMRole role in roleList)
-					{
-						Roles[role.Name] = role;
-					}
-				}
-				return;
-			}
-			catch (JsonException ex)
-			{
-				Console.Error.WriteLine($"ERROR: Failed to parse roles.json at {sourcePath}");
-				Console.Error.WriteLine($"       {ex.Message}");
-				if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
-				{
-					Console.Error.WriteLine($"       Line {ex.LineNumber}, column {ex.BytePositionInLine}");
-				}
-				Console.Error.WriteLine("       Fix the JSON syntax or delete the file to use defaults.");
-				Environment.Exit(1);
-			}
-			catch (Exception ex)
-			{
-				Console.Error.WriteLine($"ERROR: Failed to load roles.json from {sourcePath}");
-				Console.Error.WriteLine($"       {ex.Message}");
-				Environment.Exit(1);
-			}
-		}
+        foreach (KeyValuePair<string, LLMRole> kv in userRoles)
+        {
+            Roles[kv.Key] = kv.Value;
+        }
 
-		string firstModelId = string.Empty;
-		if (_settings.Providers != null)
-		{
-			foreach (ProviderConfig provider in _settings.Providers)
-			{
-				if (provider.Models != null && provider.Models.Count > 0)
-				{
-					firstModelId = provider.Models[0].Id ?? string.Empty;
-					break;
-				}
-			}
-		}
+        foreach (KeyValuePair<string, LLMRole> kv in projectRoles)
+        {
+            Roles[kv.Key] = kv.Value;
+        }
+    }
 
-		Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch);
-		List<string> toolNames = new List<string>(tools.Keys);
+    private Dictionary<string, LLMRole>? LoadRolesFromFile(string path)
+    {
+        if (!File.Exists(path)) return null;
 
-		LLMRole defaultRole = LLMRole.DefaultRole(firstModelId, toolNames);
-		Roles[defaultRole.Name] = defaultRole;
+        try
+        {
+            string json = File.ReadAllText(path);
+            List<LLMRole>? roleList = JsonSerializer.Deserialize<List<LLMRole>>(json);
+            if (roleList != null)
+            {
+                Dictionary<string, LLMRole> dict = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
+                foreach (LLMRole role in roleList)
+                {
+                    dict[role.Name] = role;
+                }
+                return dict;
+            }
+        }
+        catch (JsonException ex)
+        {
+            Console.Error.WriteLine($"ERROR: Failed to parse roles.json at {path}");
+            Console.Error.WriteLine($"       {ex.Message}");
+            if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
+            {
+                Console.Error.WriteLine($"       Line {ex.LineNumber}, column {ex.BytePositionInLine}");
+            }
+            Console.Error.WriteLine("Fix the JSON syntax or delete the file to use defaults.");
+            Environment.Exit(1);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ERROR: Failed to load roles.json from {path}");
+            Console.Error.WriteLine($"       {ex.Message}");
+            Environment.Exit(1);
+        }
 
-		JsonSerializerOptions options = new() { WriteIndented = true };
-		string defaultJson = JsonSerializer.Serialize(new List<LLMRole> { defaultRole }, options);
-		Directory.CreateDirectory(Path.GetDirectoryName(_projectRolesPath)!);
-		File.WriteAllText(_projectRolesPath, defaultJson);
-	}
+        return null;
+    }
+
+    private Dictionary<string, LLMRole> CreateDefaultRoles()
+    {
+        List<string> modelIds = new List<string>();
+        if (_settings.Providers != null)
+        {
+            foreach (ProviderConfig provider in _settings.Providers)
+            {
+                if (provider.Models != null)
+                {
+                    foreach (ModelConfig model in provider.Models)
+                    {
+                        if (!string.IsNullOrEmpty(model.Id))
+                        {
+                            modelIds.Add(model.Id);
+                        }
+                    }
+                }
+            }
+        }
+        modelIds.Add("*"); // wildcard to allow any model, for future-proofing and flexibility
+
+        Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch);
+        List<string> toolNames = new List<string>(tools.Keys);
+
+        LLMRole defaultRole = LLMRole.DefaultRole(modelIds, toolNames);
+        Dictionary<string, LLMRole> dict = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
+        dict[defaultRole.Name] = defaultRole;
+        return dict;
+    }
+
+    private void WriteRoles(string path, IEnumerable<LLMRole> roles)
+    {
+        try
+        {
+            JsonSerializerOptions options = new JsonSerializerOptions() { WriteIndented = true };
+            string json = JsonSerializer.Serialize(new List<LLMRole>(roles), options);
+
+            string? dir = Path.GetDirectoryName(path);
+            if (dir != null)
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"WARNING: Failed to write roles.json at {path}: {ex.Message}");
+        }
+    }
 }

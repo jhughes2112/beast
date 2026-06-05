@@ -68,15 +68,15 @@ public class LlmRegistry
 	}
 
 	// Finds the first available service from the role's preferred model list, in order.
-	// Skips models that are unavailable or whose context window is too small for usedTokens.
-	public LlmService? GetServiceForRole(LLMRole? role, string configId, int usedTokens = 0)
+	// Skips models that are unavailable or whose context window is too small for minContextRequired.
+	public LlmService? GetServiceForRole(LLMRole? role, string configId, int minContextRequired)
 	{
 		LlmService? service = null;
 		if (role!=null)
 		{
 			if (role.Models.Contains(configId))  // if the current model is in the list, continue using it
 			{
-				if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
+				if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
 				{
 					service = svc;
 				}
@@ -85,7 +85,7 @@ public class LlmRegistry
 			{
 				foreach (string cid in role.Models)  // nope, try them in order
 				{
-					if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > usedTokens)
+					if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
 					{
 						service = svc;
 						break;

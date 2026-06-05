@@ -694,7 +694,7 @@ public class DisplayScreen : IDisplay
         string respAnsi   = isError ? Palette.ErrBodyAnsi   : Palette.BodyAnsi;
         string respBgAnsi = isError ? Palette.ErrBodyBgAnsi : Palette.BodyBgAnsi;
         string fileLang = string.Empty;
-        if (!isError && (toolName == "read_file" || toolName == "write_file" || toolName == "edit_file"
+        if (!isError && (toolName == "read_file" || toolName == "write_file" 
                       || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
             fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
@@ -1116,7 +1116,7 @@ public class DisplayScreen : IDisplay
         // "File edited: ... (N operation(s) applied)") — the filename and line count are already part
         // of the summary, so suppressing them removes redundant noise. Errors are never suppressed.
         bool suppressPairedResponse = !msg.PairedResponseIsError
-            && (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert");
+            && (name == "write_file" || name == "edit_file_replace" || name == "edit_file_insert");
 
         // Render stdout (PairedResponseContent) with normal response background (blue/gray).
         if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
@@ -1149,7 +1149,6 @@ public class DisplayScreen : IDisplay
             case "read_file":
                 set.Add("file_path"); set.Add("offset"); set.Add("lines"); break;
             case "write_file":
-            case "edit_file":
             case "edit_file_replace":
             case "edit_file_insert":
                 set.Add("file_path"); break;
@@ -1194,14 +1193,13 @@ public class DisplayScreen : IDisplay
         // file slice, write/edit don't return content but we know how many lines were written from the
         // call's own "content" arg. Computed once and threaded through the specific summary builders.
         int respLineCount = CountLines(pairedResponse);
-        int writeLineCount = (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert")
+        int writeLineCount = (name == "write_file" || name == "edit_file_replace" || name == "edit_file_insert")
             ? CountLines(Get("content") + Get("new_text"))
             : 0;
         string summary = name switch
         {
             "read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
-            "write_file" or "edit_file"
-                or "edit_file_replace" or "edit_file_insert"           => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
+            "write_file" or "edit_file_replace" or "edit_file_insert"  => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
             "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
             "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
             "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),

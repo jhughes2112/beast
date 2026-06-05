@@ -56,16 +56,13 @@ public static class FileTools
 			if (colon > 0)
 			{
 				string linePart = anchor.Substring(0, colon);
-				string hexPart = anchor.Substring(colon + 1);
+				string hexPart = anchor.Substring(colon + 1, 2);  // only accept 2 characters for the hex part
 				if (int.TryParse(linePart, NumberStyles.None, CultureInfo.InvariantCulture, out lineNumber))
 				{
-					if (hexPart.Length > 0 && hexPart.Length <= 2)
+					if (hexPart.Length == 2 && byte.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out hashByte))
 					{
-						if (byte.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out hashByte))
-						{
-							hexString = hexPart.ToLowerInvariant();
-							result = true;
-						}
+						hexString = hexPart.ToLowerInvariant();
+						result = true;
 					}
 				}
 			}
@@ -243,8 +240,8 @@ public static class FileTools
 		""")]
 	public static async Task<ToolResult> EditFileReplaceAsync(
 		[Description("File path")] string filePath,
-		[Description("Start anchor")] string startAnchor,
-		[Description("End anchor")] string endAnchor,
+		[Description("Start anchor is only the line:hash")] string startAnchor,
+		[Description("End anchor is only the line:hash")] string endAnchor,
 		[Description("Replacement text")] string newText,
 		CancellationToken cancellationToken)
 	{
@@ -369,7 +366,7 @@ public static class FileTools
 		""")]
 	public static async Task<ToolResult> EditFileInsertAsync(
 		[Description("File path")] string filePath,
-		[Description("Line anchor")] string anchor,
+		[Description("Line anchor is only the line:hash")] string anchor,
 		[Description("Text to insert")] string newText,
 		CancellationToken cancellationToken)
 	{

@@ -106,6 +106,7 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[ws-server] RecvLoop error: {ex.Message}");
+            try { Send(FrameType.Error, $"WebSocket receive error: {ex.Message}"); } catch { }
         }
         _frames.Writer.TryComplete();
     }

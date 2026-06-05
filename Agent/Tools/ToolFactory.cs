@@ -16,7 +16,7 @@ public static class ToolFactory
 
         WebFetch webFetch = new();
         Register(tools, "fetch_page",
-            "Fetch the text content of a web page.",
+            "Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.",
             Params(
                 Req("url", "string", "The fully-formed URL to fetch content from.")),
             async (args, ct, transport) =>
@@ -29,7 +29,7 @@ public static class ToolFactory
         {
             WebSearchOpenrouter webSearch = new(webSearchConfig.Openrouter.BuildModel());
             Register(tools, "search_web",
-                "Search the web using a natural language question or search query.",
+                "Search the web using OpenRouter's web search plugin. The query can be a natural language question or instruction, not just keywords — e.g. 'Show me how to call the Foo API and explain each parameter'.",
                 Params(
                     Req("query", "string", "The search query or natural language question to answer using the web.")),
                 async (args, ct, transport) =>
@@ -40,11 +40,11 @@ public static class ToolFactory
         }
 
         Register(tools, "bash",
-            "Execute a shell command.",
+            "Standard bash command. CWD is /workspace/",
             Params(
-                Req("command", "string", "The shell command to execute."),
+                Req("command", "string", "Shell command to execute"),
                 Opt("working_dir", "string", "Optional working directory for the command."),
-                Opt("timeout_seconds", "integer", "Optional timeout in seconds.")),
+                Opt("timeout_seconds", "integer", "Timeout in seconds (default 60).")),
             async (args, ct, transport) =>
             {
                 string command = Str(args, "command");
@@ -82,8 +82,8 @@ public static class ToolFactory
             "Replace a block of text defined by the start and end line:hash anchors. CWD is /workspace/",
             Params(
                 Req("file_path", "string", "File path"),
-                Req("start_anchor", "string", "Start anchor"),
-                Req("end_anchor", "string", "End anchor"),
+                Req("start_anchor", "string", "Start anchor is only the line:hash"),
+                Req("end_anchor", "string", "End anchor is only the line:hash"),
                 Req("new_text", "string", "Replacement text")),
             async (args, ct, transport) =>
             {
@@ -98,7 +98,7 @@ public static class ToolFactory
             "Insert a line of text AFTER the indicated line:hash anchor. CWD is /workspace/",
             Params(
                 Req("file_path", "string", "File path"),
-                Req("anchor", "string", "Line anchor"),
+                Req("anchor", "string", "Line anchor is only the line:hash"),
                 Req("new_text", "string", "Text to insert")),
             async (args, ct, transport) =>
             {

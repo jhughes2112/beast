@@ -290,10 +290,18 @@ public class LlmService
             return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
         }
 
-        // ToolCall framing is already emitted by the TransportListener when the assistant turn
+// ToolCall framing is already emitted by the TransportListener when the assistant turn
         // is fanned out by the producing protocol; ToolResponse framing is emitted when the tool
         // result is fanned out via Bundle.OnToolResult above. Just run the handler here.
-        ToolResult result = await matchedTool.Handler(argsObj, ct, transport);
+        ToolResult result;
+        try
+        {
+            result = await matchedTool.Handler(argsObj, ct, transport);
+        }
+        catch (Exception ex)
+        {
+            result = new ToolResult(string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1);
+        }
         return result;
     }
 
@@ -334,4 +342,3 @@ public class LlmService
         });
     }
 }
-

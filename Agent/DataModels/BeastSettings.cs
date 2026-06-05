@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 
 
 // Mirrors the Pi Agent models.json format for LLM provider/model configuration.
+// Mirrors the Pi Agent models.json format for LLM provider/model configuration.
 public class BeastSettings
 {
     [JsonPropertyName("providers")]
@@ -12,9 +13,6 @@ public class BeastSettings
 
     [JsonPropertyName("webSearch")]
     public WebSearchConfig? WebSearch { get; set; }
-
-    [JsonPropertyName("lastSessionId")]
-    public string? LastSessionId { get; set; }
 
     [JsonPropertyName("compactionPrompt")]
     public string CompactionPrompt { get; set; } = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.";
@@ -24,6 +22,9 @@ public class BeastSettings
 
     [JsonPropertyName("idleSoundFile")]
     public string? IdleSoundFile { get; set; }
+
+    [JsonPropertyName("compactionReserveTokens")]
+    public int CompactionReserveTokens { get; set; } = 4096;
 }
 
 public class ProviderConfig

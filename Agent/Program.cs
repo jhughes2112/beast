@@ -45,7 +45,7 @@ public class Program
 		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
 		ITransportServer transport = wsServer;
-		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts.Token);
+		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts);
 
 		try
 		{
