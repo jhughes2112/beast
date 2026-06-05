@@ -15,16 +15,16 @@ public class BeastSettings
     public WebSearchConfig? WebSearch { get; set; }
 
     [JsonPropertyName("compactionPrompt")]
-    public string CompactionPrompt { get; set; } = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.";
+    public string CompactionPrompt { get; set; } = string.Empty;
 
     [JsonPropertyName("continueMessage")]
-    public string ContinueMessage { get; set; } = "Are you done? If finished, respond accordingly.";
+    public string ContinueMessage { get; set; } = string.Empty;
 
     [JsonPropertyName("idleSoundFile")]
-    public string? IdleSoundFile { get; set; }
+    public string IdleSoundFile { get; set; } = string.Empty;
 
     [JsonPropertyName("compactionReserveTokens")]
-    public int CompactionReserveTokens { get; set; } = 4096;
+    public int CompactionReserveTokens { get; set; } = 0;
 }
 
 public class ProviderConfig

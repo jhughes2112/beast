@@ -29,10 +29,20 @@ public class SettingsService
     public void LoadSettings()
     {
         // 1. Load user profile settings first (base settings)
-        Settings = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
-            
-        // 2. Load local project settings (overrides) - keep raw for diff computation
-        BeastSettings localSettings = LoadSettingsFromFile(_workDirSettingsPath) ?? CreateDefaultProjectSettings();
+        Settings = LoadSettingsFromFile(_homeDirSettingsPath)!;
+        if (Settings == null)
+        {
+            Settings = CreateDefaultHomeSettings();
+            WriteSettings(_homeDirSettingsPath, Settings);
+        }
+
+        // 2. Load local project settings (overrides)
+        BeastSettings? localSettings = LoadSettingsFromFile(_workDirSettingsPath);
+        if (localSettings == null)
+        {
+            localSettings = CreateDefaultProjectSettings();
+            WriteSettings(_workDirSettingsPath, localSettings);
+        }
 
         // 3. Merge: local overrides user
         MergeSettings(localSettings);
@@ -75,13 +85,13 @@ public class SettingsService
     private void MergeSettings(BeastSettings local)
     {
         // Apply local overrides to the Settings object, which is pre-loaded with user settings.
-        if (!string.IsNullOrEmpty(local.CompactionPrompt))
+        if (!string.IsNullOrWhiteSpace(local.CompactionPrompt))
             Settings.CompactionPrompt = local.CompactionPrompt;
 
-        if (!string.IsNullOrEmpty(local.ContinueMessage))
+        if (!string.IsNullOrWhiteSpace(local.ContinueMessage))
             Settings.ContinueMessage = local.ContinueMessage;
 
-        if (!string.IsNullOrEmpty(local.IdleSoundFile))
+        if (!string.IsNullOrWhiteSpace(local.IdleSoundFile))
             Settings.IdleSoundFile = local.IdleSoundFile;
 
         // If the local settings file defines any providers, it replaces the entire list.
@@ -92,12 +102,29 @@ public class SettingsService
         if (local.WebSearch != null)
             Settings.WebSearch = local.WebSearch;
 
-        // Ensure required fields have defaults after merge.
-        if (string.IsNullOrWhiteSpace(Settings.CompactionPrompt))
-            Settings.CompactionPrompt = kCompactionPrompt;
+        if (local.CompactionReserveTokens>0)
+            Settings.CompactionReserveTokens = local.CompactionReserveTokens;
+    }
 
-        if (string.IsNullOrWhiteSpace(Settings.ContinueMessage))
-            Settings.ContinueMessage = kContinueMessage;
+    private void WriteSettings(string path, BeastSettings settings)
+    {
+        try
+        {
+            JsonSerializerOptions options = new JsonSerializerOptions() { WriteIndented = true };
+            string json = JsonSerializer.Serialize(settings, options);
+
+            string? dir = Path.GetDirectoryName(path);
+            if (dir != null)
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"WARNING: Failed to write settings.json at {path}: {ex.Message}");
+        }
     }
 
     private static BeastSettings CreateDefaultProjectSettings()
