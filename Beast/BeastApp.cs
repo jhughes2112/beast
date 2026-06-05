@@ -85,9 +85,9 @@ public class BeastApp : IDisposable, IAsyncDisposable
         try
         {
             string agentName = $"beastagent_{Guid.NewGuid():N}";
-            await _agentContext.StartAsync(agentName, _cts.Token);
+            int hostPort = await _agentContext.StartAsync(agentName, _cts.Token);
 
-            _wsClient = await RetryConnectAsync("ws://localhost:13131/", _log, _cts.Token);
+            _wsClient = await RetryConnectAsync($"ws://localhost:{hostPort}/", _log, _cts.Token);
 
             _readCts = new CancellationTokenSource();
             _readTask = ReadLoop(_wsClient, _readCts.Token);

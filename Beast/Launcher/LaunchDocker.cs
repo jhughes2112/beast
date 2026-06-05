@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -45,7 +46,7 @@ public class LaunchDocker : ILauncher
             Image = _image,
             Name = name,
             WorkingDir = "/workspace",
-            Env = new List<string> { "BEAST_HOST=host.docker.internal", $"AGENT_PORT={_hostPort}" },
+            Env = new List<string> { },
             ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
             HostConfig = new HostConfig
             {
@@ -77,11 +78,35 @@ public class LaunchDocker : ILauncher
 
     private static int FindAvailablePort()
     {
-        using TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
+        const int startPort = 20000;
+        const int endPort = 21000;
+        var usedPorts = GetUsedPorts();
+
+        for (int port = startPort; port <= endPort; port++)
+        {
+            if (!usedPorts.Contains(port))
+                return port;
+        }
+
+        throw new InvalidOperationException("No available port found in range.");
+    }
+
+    private static HashSet<int> GetUsedPorts()
+    {
+        var properties = IPGlobalProperties.GetIPGlobalProperties();
+
+        var used = new HashSet<int>();
+
+        foreach (var ep in properties.GetActiveTcpListeners())
+            used.Add(ep.Port);
+
+        foreach (var ep in properties.GetActiveUdpListeners())
+            used.Add(ep.Port);
+
+        foreach (var conn in properties.GetActiveTcpConnections())
+            used.Add(conn.LocalEndPoint.Port);
+
+        return used;
     }
 
     // Stops and removes the container started by StartAsync.
@@ -92,7 +117,7 @@ public class LaunchDocker : ILauncher
         string id = _containerId;
         try
         {
-            await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKill = 15 });
+            await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKillSeconds = 15 });
             _log.Verbose($"[docker] Container stopped: {id}");
             await _dockerClient.Containers.RemoveContainerAsync(id, new ContainerRemoveParameters());
             _log.Verbose($"[docker] Container removed: {id}");

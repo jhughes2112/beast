@@ -26,21 +26,6 @@ public class Program
 		}
 
 		RoleService roleService = new RoleService(Environment.CurrentDirectory, settingsService.Settings);
-
-		string? beastHost = Environment.GetEnvironmentVariable("BEAST_HOST");
-		if (!string.IsNullOrEmpty(beastHost))
-		{
-			foreach (ProviderConfig provider in settingsService.Settings.Providers)
-			{
-				if (provider.BaseUrl.Contains("localhost") || provider.BaseUrl.Contains("127.0.0.1"))
-				{
-					string rewritten = provider.BaseUrl.Replace("localhost", beastHost).Replace("127.0.0.1", beastHost);
-					Console.Error.WriteLine($"[agent] Rewriting provider URL: {provider.BaseUrl} -> {rewritten}");
-					provider.BaseUrl = rewritten;
-				}
-			}
-		}
-
 		LlmRegistry registry = new LlmRegistry();
 		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
