@@ -90,7 +90,18 @@ public class LlmRegistry
 						service = svc;
 						break;
 					}
-				}
+                    if (cid == "*")  // wildcard means "use any available model" so we have to run through all the models to see if any are valid, even if the wildcard is not first in the list
+                    {
+                        foreach (LlmService svc2 in _services.Values)
+                        {
+                            if (svc2.IsAvailable && svc2.Model.Config.ContextWindow > minContextRequired)
+                            {
+                                service = svc2;
+                                break;
+                            }
+                        }
+                    }
+                }
 			}
 		}
 		return service;
