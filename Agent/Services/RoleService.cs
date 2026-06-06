@@ -102,29 +102,10 @@ public class RoleService
 
     private Dictionary<string, LLMRole> CreateDefaultRoles()
     {
-        List<string> modelIds = new List<string>();
-        if (_settings.Providers != null)
-        {
-            foreach (ProviderConfig provider in _settings.Providers)
-            {
-                if (provider.Models != null)
-                {
-                    foreach (ModelConfig model in provider.Models)
-                    {
-                        if (!string.IsNullOrEmpty(model.Id))
-                        {
-                            modelIds.Add(model.Id);
-                        }
-                    }
-                }
-            }
-        }
-        modelIds.Add("*"); // wildcard to allow any model, for future-proofing and flexibility
-
         Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch);
         List<string> toolNames = new List<string>(tools.Keys);
 
-        LLMRole defaultRole = LLMRole.DefaultRole(modelIds, toolNames);
+        LLMRole defaultRole = LLMRole.DefaultRole(toolNames);
         Dictionary<string, LLMRole> dict = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
         dict[defaultRole.Name] = defaultRole;
         return dict;

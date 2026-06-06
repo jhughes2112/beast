@@ -30,8 +30,8 @@ public class LLMRole
 		SystemPrompt = systemPrompt;
 	}
 
-	public static LLMRole DefaultRole(List<string> modelIds, List<string> toolNames)
+	public static LLMRole DefaultRole(List<string> toolNames)
 	{
-		return new LLMRole("Default", modelIds, toolNames, "You are a helpful assistant.");
+		return new LLMRole("Default", new List<string> { "*" }, toolNames, "You are a helpful assistant.");
 	}
 }

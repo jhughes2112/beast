@@ -168,11 +168,9 @@ public class LlmService
                     if (rateLimitRetries <= kMaxRateLimitRetries)
                     {
                         TimeSpan delay = retryAt - DateTimeOffset.UtcNow;
-                        transport.Status($"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry (attempt {rateLimitRetries}/{kMaxRateLimitRetries})");
+                        transport.Status($"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
                         if (delay > TimeSpan.Zero)
-                        {
                             await Task.Delay(delay, cancellationToken);
-                        }
                     }
                     else
                     {

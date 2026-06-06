@@ -101,7 +101,7 @@ Context limits are a fact of life.  Compaction happens as a USER message, is pro
 ## How It Works
 
 1. Beast launches Agent Docker container
-2. Beast connects via WebSocket to Agent's server (port 8765)
+2. Beast connects via WebSocket to Agent's server
 3. User sends messages/prompts through Beast CLI
 4. AgentOrchestrator receives messages, resolves role and model
 5. LlmService runs conversation loop:
@@ -110,12 +110,6 @@ Context limits are a fact of life.  Compaction happens as a USER message, is pro
    - Dispatches tools
    - Handles rate limiting, retries, errors
 6. Session state persisted after each turn
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `BEAST_HOST` | Rewrites localhost provider URLs (used inside Docker to reach host) |
 
 ## License
 

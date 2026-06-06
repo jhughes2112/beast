@@ -6,7 +6,7 @@ using System.Text.Json.Serialization;
 // A session is conversation data plus minimal runtime tracking. Persisted to .beast/sessions/<id>.json.
 // State is stored separately for each protocol in native wire format so switching protocols
 // mid-conversation preserves provider-specific block fidelity (signatures, unknown types).
-// This class is pure data — no listeners, no bundle, no transport.
+// This class is pure data ï¿½ no listeners, no bundle, no transport.
 public class BeastSession
 {
     [JsonPropertyName("id")]
@@ -17,6 +17,9 @@ public class BeastSession
 
     [JsonPropertyName("workflow")]
     public string Workflow { get; set; } = string.Empty;
+
+    [JsonPropertyName("workflowState")]
+    public string WorkflowState { get; set; } = string.Empty;
 
     [JsonPropertyName("model")]
     public string Model { get; set; } = string.Empty;
@@ -77,7 +80,7 @@ public class BeastSession
         if (lastRole == "user") return true;
 
         // Collect all tool result IDs present in state.
-        System.Collections.Generic.HashSet<string> satisfiedIds = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+        HashSet<string> satisfiedIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (JsonNode? node in ChatCompletionsState)
         {
             if (node != null && node["role"]?.GetValue<string>() == "tool")
@@ -117,6 +120,7 @@ public class BeastSession
         string id,
         string displayName,
         string workflow,
+        string workflowState,
         string model,
         string role,
         JsonArray chatCompletionsState,
@@ -129,6 +133,7 @@ public class BeastSession
         Id = id;
         DisplayName = displayName;
         Workflow = workflow;
+        WorkflowState = workflowState;
         Model = model;
         Role = role;
         ChatCompletionsState = chatCompletionsState ?? new JsonArray();
@@ -142,7 +147,7 @@ public class BeastSession
     public static BeastSession CreateNew(string id, string role, string displayName)
     {
         return new BeastSession(
-            id, displayName, string.Empty, string.Empty, role,
+            id, displayName, "default", "default", string.Empty, role,
             new JsonArray(), null, 0m, 0, 0, 0);
     }
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -10,28 +11,28 @@ using System.Threading.Tasks;
 // Manages the agent loop: read input, run LLM turns, compact, save sessions.
 //
 // Architecture:
-//   - Conversation is a LOCAL VARIABLE in RunAsync. No field holds it.
+//   - Session is a LOCAL VARIABLE in RunAsync. No field holds it (except _activeSession for Interrupt).
 //   - Startup is silent: no upfront validation. Errors fire at interaction time.
 //   - A cooperative async reader task feeds a ConcurrentQueue; the main loop drains it each iteration.
-//   - The LLM runs whenever the conversation has pending work; it is not gated on input arrival.
-//   - /compact calls CompactAsync directly; no flag needed since role/service are resolved first.
-//   - Auto-compaction on ContextFull is handled inside RunLlmTurnAsync, not the loop.
+//   - The LLM runs whenever the session has pending work; it is not gated on input arrival.
+//   - /compact sets a flag; compaction runs at the top of the next iteration.
 //   - Sessions are loaded from disk on start (last session resumed by default)
-//     and saved after every turn and on exit.
-//   - RunLlmTurnAsync applies the role (system prompt, model) before running.
-//   - Model changes are transparent — the service swaps and the turn continues.
+//     and saved after compaction, session switch, and on exit.
+//   - The active role is resolved through the workflow state machine via ResolveRole; model selection
+//     follows from the role's allowed list, preferring the session's current model when compatible.
 public class AgentOrchestrator
 {
     private readonly LlmRegistry _registry;
     private readonly RoleService _roleService;
     private readonly SettingsService _settings;
     private readonly ITransportServer _transport;
-
-    // Cancels only the current LLM turn (not the whole process). Not linked to the process token
-    // so there is zero ambiguity about which cancel fired: if _turnCts fires, it was a user /cancel;
-    // if _cancellationTokenSource fires, the whole process is shutting down.
-    private CancellationTokenSource? _turnCts;
+    private readonly WorkflowService _workflowService;
     private readonly CancellationTokenSource _cancellationTokenSource;
+
+    // Reference to the currently running session, so the reader task can call Interrupt().
+    // Assignment is atomic on 64-bit; worst case the reader cancels an already-finished turn, which is a no-op.
+    private Session? _activeSession;
+
     private bool _wantsCompact = false;
     private string _clientSessionId = string.Empty;
     private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
@@ -42,12 +43,14 @@ public class AgentOrchestrator
         RoleService roleService,
         SettingsService settings,
         ITransportServer transport,
+        WorkflowService workflowService,
         CancellationTokenSource cancellationTokenSource)
     {
         _registry = registry;
         _roleService = roleService;
         _settings = settings;
         _transport = transport;
+        _workflowService = workflowService;
         _cancellationTokenSource = cancellationTokenSource;
         ReloadRegistry();
     }
@@ -56,32 +59,28 @@ public class AgentOrchestrator
     {
         _busyDepth++;
         if (_busyDepth == 1)
-        {
             _transport.Busy();
-        }
     }
 
     private void DecrementBusy()
     {
         _busyDepth--;
         if (_busyDepth == 0)
-        {
             _transport.Idle();
-        }
     }
 
     public async Task RunAsync()
     {
-        BeastSession conversation = LoadOrCreateConversation(out ListenerBundle bundle);
-        ConcurrentQueue<string> inputQueue = new();
+        Session session = LoadOrCreateSession();
+        _activeSession = session;
+        ConcurrentQueue<string> inputQueue = new ConcurrentQueue<string>();
 
         // Send initial stats so the client sees token counts and cost immediately.
-        LLMRole? initialRole = _roleService.GetRole(conversation.Role);
-        LlmService? initialService = _registry.GetServiceForRole(initialRole, conversation.Model, conversation.GetContextLength()+_settings.Settings.CompactionReserveTokens);
-        int contextWindow = initialService?.Model.Config.ContextWindow ?? 0;
-        SendStats(conversation, contextWindow);
+        LLMRole? initialRole = ResolveRole(session.Data);
+        LlmService? initialService = _registry.GetServiceForRole(initialRole, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
+        SendStats(session.Data, initialService?.Model.Config.ContextWindow ?? 0);
 
-        // Cooperative async reader: awaits input and feeds the queue; no thread pool thread involved.
+        // Cooperative async reader: awaits input and feeds the queue.
         async Task ReadInputAsync(CancellationToken token)
         {
             while (!token.IsCancellationRequested)
@@ -92,10 +91,8 @@ public class AgentOrchestrator
                 if (line.Length > 0)
                 {
                     _transport.Debug($"[orchestrator] Received: '{line}'");
-                    // /cancel is intercepted here so it signals the current turn's token immediately,
-                    // without waiting for the queue to drain between turns.
                     if (line.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
-                        _turnCts?.Cancel();
+                        _activeSession?.Interrupt();
                     else
                         inputQueue.Enqueue(line);
                 }
@@ -105,106 +102,113 @@ public class AgentOrchestrator
         Task readerTask = ReadInputAsync(_cancellationTokenSource.Token);
 
         _cachedSessions = SessionService.List();
-        string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
+        string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session.Data));
         _transport.Completions(lastCompletionCandidates);
 
         try
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
-                // 1. Resolve role and service.
-                LLMRole? role = _roleService.GetRole(conversation.Role);
-                LlmService? service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength()+_settings.Settings.CompactionReserveTokens);
+                // 1. Resolve role and service through the active workflow state.
+                LLMRole? role = ResolveRole(session.Data);
+                LlmService? service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
 
-                // 2. Drain all pending input: run commands in order, accumulate text into one user message.
+                // 2. Drain all pending input: run commands in order, accumulate text.
                 // Returns null accumulatedText if nothing was dequeued; empty string if only commands ran.
                 string? accumulatedText = null;
-                if (inputQueue.IsEmpty==false)
-                {
-                    (accumulatedText, conversation, bundle) = await DrainInputAsync(inputQueue, conversation, bundle, service, role);
-                }
+                if (!inputQueue.IsEmpty)
+                    (accumulatedText, session) = await DrainInputAsync(inputQueue, session, service, role);
 
-                // Re-resolve after commands so queued user text uses the current role/model immediately.
-                role = _roleService.GetRole(conversation.Role);
-                service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength() + _settings.Settings.CompactionReserveTokens);
+                // Re-resolve after commands so any role/model/workflow changes take effect immediately.
+                role = ResolveRole(session.Data);
+                service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
+
                 if (service != null)
                 {
                     // Send history to the client whenever the active session changes.
-                    if (conversation.Id != _clientSessionId)
+                    if (session.Data.Id != _clientSessionId)
                     {
-                        _clientSessionId = conversation.Id;
+                        _clientSessionId = session.Data.Id;
                         _transport.Clear();
-                        ReplayHistory(conversation);
-                        SendStats(conversation, service?.Model.Config.ContextWindow ?? 0);
+                        session.ReplayToTransport();
+                        SendStats(session.Data, service.Model.Config.ContextWindow);
                         _transport.Status("ready");
                     }
 
-                    string currentCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(conversation));
+                    string currentCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session.Data));
                     if (currentCandidates != lastCompletionCandidates)
                     {
                         lastCompletionCandidates = currentCandidates;
                         _transport.Completions(currentCandidates);
                     }
 
-                    if (service != null && service.Model.ConfigId != conversation.Model)
+                    if (service.Model.ConfigId != session.Data.Model)
                     {
-                        conversation.Model = service.Model.ConfigId;
-                        SendStats(conversation, service.Model.Config.ContextWindow);
+                        session.Data.Model = service.Model.ConfigId;
+                        SendStats(session.Data, service.Model.Config.ContextWindow);
                     }
 
-                    if (string.IsNullOrEmpty(role!.SystemPrompt) == false && role.SystemPrompt != conversation.GetSystemPrompt())
-                    {
-                        bundle.OnSystemMessage(null!, role.SystemPrompt);
-                    }
+                    if (!string.IsNullOrEmpty(role!.SystemPrompt) && role.SystemPrompt != session.Data.GetSystemPrompt())
+                        session.SetSystemPrompt(role.SystemPrompt);
 
                     if (_wantsCompact)
                     {
                         _wantsCompact = false;
+                        IncrementBusy();
                         try
                         {
-                            IncrementBusy();
                             _transport.Status("Running compaction...");
-                            (LlmResult compactResult, BeastSession compactedSession, ListenerBundle compactedBundle) = await CompactAsync(conversation, bundle, service!, role!);
-                            conversation = compactedSession;
-                            bundle = compactedBundle;
+                            Session? compacted = await RunCompactionAsync(session, service!, role!);
+                            if (compacted != null)
+                            {
+                                session = compacted;
+                                _activeSession = session;
+                            }
                         }
                         finally
                         {
                             DecrementBusy();
-
-                            // Re-resolve after compaction because the service may have changed
-                            service = _registry.GetServiceForRole(role, conversation.Model, conversation.GetContextLength() + _settings.Settings.CompactionReserveTokens);
+                            // Re-resolve after compaction because the model may differ in the new session.
+                            service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
                         }
                     }
                 }
 
-                // We do not add a user message until after we are sure that compaction is done first, if needed.
-                if (string.IsNullOrEmpty(accumulatedText) == false)
-                {
-                    //***** Technically, we probably can tell if this user message will push beyond context limits for all models, which would be an error, we could trigger compaction first.  If it's still too big, it's an error.
-                    bundle.OnUserMessage(null!, accumulatedText);
-                }
+                // Queue the accumulated user text; RunTurnAsync will flush it before calling the LLM.
+                if (!string.IsNullOrEmpty(accumulatedText))
+                    session.AddUserMessage(accumulatedText);
 
-                // 3. Run the LLM whenever the conversation has work; yield briefly if there is nothing to do.
-                if (conversation.NeedsLlmAttention() && service != null)
+                // 3. Run the LLM whenever the session has work; yield briefly if there is nothing to do.
+                if (session.NeedsAttention() && service != null && role != null)
                 {
                     IncrementBusy();
-                    _turnCts = new CancellationTokenSource();  // user hitting escape will trigger this to cancel the LLM immediately
                     try
                     {
-                        LlmResult result = await RunLlmTurnAsync(conversation, bundle, role!, service!, inputQueue, _turnCts.Token);
-                        if (result.ExitReason == LlmExitReason.Failed)
+                        Tool[] tools = _registry.GetToolsForRole(role);
+                        LlmResult result = await session.RunTurnAsync(service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
+                        SendStats(session.Data, service.Model.Config.ContextWindow);
+
+                        if (result.ExitReason == LlmExitReason.ContextFull)
+                        {
+                            _wantsCompact = true;
+                        }
+                        else if (result.ExitReason == LlmExitReason.Failed)
+                        {
                             _transport.Error(result.ErrorMessage);
-                    }
-                    catch (OperationCanceledException) when (_turnCts.IsCancellationRequested && !_cancellationTokenSource.Token.IsCancellationRequested)
-                    {
-                        // User pressed Escape (sent /cancel) — abandon this turn and return to idle.
+                        }
+                        else if (result.ExitReason == LlmExitReason.Completed)
+                        {
+                            Session? advanced = await AdvanceWorkflowAsync(session, service, role, _cancellationTokenSource.Token);
+                            if (advanced != null)
+                            {
+                                session = advanced;
+                                _activeSession = session;
+                            }
+                        }
                     }
                     finally
                     {
                         DecrementBusy();
-                        _turnCts.Dispose();
-                        _turnCts = null;
                     }
                 }
 
@@ -223,246 +227,126 @@ public class AgentOrchestrator
         }
         finally
         {
-            SessionService.Save(conversation);
-            // SessionService.Save already persists the session and updates lastSession.json.
+            SessionService.Save(session.Data);
         }
     }
 
     // ---- Session management ----
 
-    private BeastSession LoadOrCreateConversation(out ListenerBundle bundle)
+    private Session LoadOrCreateSession()
     {
         string? lastSessionId = SessionService.LoadLastSession();
         BeastSession? lastData = SessionService.LoadBySessionId(lastSessionId);
         if (lastData != null)
         {
-            bundle = BuildBundle(lastData);
             _transport.Status("Resumed session: " + lastData.DisplayName);
-            return lastData;
+            return new Session(lastData, _transport);
         }
-
-        return CreateFreshConversation(string.Empty, out bundle);
+        return CreateFreshSession(string.Empty);
     }
 
-    private BeastSession CreateFreshConversation(string roleName, out ListenerBundle bundle)
+    private Session CreateFreshSession(string roleName)
     {
         if (string.IsNullOrEmpty(roleName))
         {
-            foreach (LLMRole r in _roleService.Roles.Values)
+            string? wfRole = _workflowService.GetRoleForState("default", "default");
+            if (!string.IsNullOrEmpty(wfRole))
             {
-                roleName = r.Name;
-                break;
+                roleName = wfRole;
+            }
+            else
+            {
+                foreach (LLMRole r in _roleService.Roles.Values)
+                {
+                    roleName = r.Name;
+                    break;
+                }
             }
         }
-
         BeastSession fresh = BeastSession.CreateNew(Guid.NewGuid().ToString(), roleName, string.Empty);
-        bundle = BuildBundle(fresh);
-        return fresh;
-    }
-
-    // Builds a fresh ListenerBundle wired to the session's canonical store and the transport.
-    // The active executing protocol is installed later by LlmService once the model (and thus the
-    // wire format) is known.
-    private ListenerBundle BuildBundle(BeastSession session)
-    {
-        return new ListenerBundle(
-            new ListenerChatCompletions(session.ChatCompletionsState),
-            new ListenerTransport(_transport));
-    }
-
-	// ---- LLM execution ----
-
-	// Runs one LLM turn. Applies the role (system prompt) before calling the LLM.
-	// Sets _wantsCompact if the context is full so the main loop handles it uniformly.
-	private async Task<LlmResult> RunLlmTurnAsync(BeastSession conversation, ListenerBundle bundle, LLMRole role, LlmService service, ConcurrentQueue<string> inputQueue, CancellationToken turnCancellationToken)
-	{
-		conversation.Model = service.Model.ConfigId;
-
-		if (string.IsNullOrEmpty(conversation.DisplayName))
-		{
-			string? first = conversation.GetFirstUserText();
-			if (!string.IsNullOrWhiteSpace(first))
-			{
-				string name = first.Trim();
-				conversation.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
-			}
-		}
-
-		// Callback to check for new user input during the LLM turn.
-		// Drains all pending non-command text and returns it as a single string.
-		Func<string?> checkForUserInput = () =>
-		{
-			if (!inputQueue.TryPeek(out _))
-				return null;
-
-			string accumulatedText = string.Empty;
-			while (inputQueue.TryDequeue(out string? line))
-			{
-				if (!line.StartsWith("/"))
-				{
-					accumulatedText = string.IsNullOrEmpty(accumulatedText) ? line : accumulatedText + "\n" + line;
-				}
-				else
-				{
-					// Commands during a turn are re-enqueued to be processed in the main loop.
-					inputQueue.Enqueue(line);
-					break;
-				}
-			}
-
-			return string.IsNullOrEmpty(accumulatedText) ? null : accumulatedText;
-		};
-
-		Tool[] tools = _registry.GetToolsForRole(role);
-		using (CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(turnCancellationToken, _cancellationTokenSource.Token))
-		{
-			LlmResult result = await service.RunToCompletionAsync(conversation, bundle, tools, _settings.Settings.CompactionReserveTokens, _transport, checkForUserInput, linkedCts.Token);
-			SendStats(conversation, service.Model.Config.ContextWindow);
-			if (result.ExitReason == LlmExitReason.ContextFull)
-			{
-				_wantsCompact = true;
-			}
-
-			return result;
-		}
+        return new Session(fresh, _transport);
     }
 
     // ---- Compaction ----
 
-    private async Task<(LlmResult result, BeastSession newConversation, ListenerBundle newBundle)> CompactAsync(BeastSession conversation, ListenerBundle bundle, LlmService service, LLMRole role)
+    // Summarizes the current session and returns a new compacted Session, or null on failure.
+    private async Task<Session?> RunCompactionAsync(Session session, LlmService service, LLMRole role)
     {
-        // Snapshot canonical state so we can restore on failure.
-        JsonArray snapshot = conversation.Snapshot();
+        List<JsonNode> tailExchanges = ExtractTailExchanges(session.Data.ChatCompletionsState, 2);
 
-        // Capture the last 2 user-exchange groups before we modify anything.
-        List<JsonNode> tailExchanges = ExtractTailExchanges(conversation.ChatCompletionsState, 2);
-
-        // Append the compaction prompt as a coalesced user message (preserves prompt cache).
-        bundle.OnUserMessage(null!, _settings.Settings.CompactionPrompt);
-
-        // Single-shot: stop as soon as the model responds once.
         _transport.Status("[Compaction] Started.");
-        using (CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_turnCts?.Token ?? default, _cancellationTokenSource.Token))
+        string? summary = await session.SummarizeAsync(service, _settings.Settings.CompactionPrompt, _cancellationTokenSource.Token);
+
+        if (string.IsNullOrWhiteSpace(summary))
         {
-            LlmResult result = await service.RunToCompletionAsync(conversation, bundle, Array.Empty<Tool>(), 0, _transport, () => null, linkedCts.Token);
-
-            string? summary = bundle.GetLastAssistantText();
-
-            if (result.ExitReason == LlmExitReason.Completed && !string.IsNullOrWhiteSpace(summary))
-            {
-                // Save the old session before we switch away from it.
-                SessionService.Save(conversation);
-
-                // Build the new session: derived id, incremented display name, same role/model.
-                string newDisplayName = BeastSession.IncrementDisplayName(conversation.DisplayName);
-                string newSessionId = IncrementSessionId(conversation.Id);
-                BeastSession fresh = BeastSession.CreateNew(newSessionId, conversation.Role, newDisplayName);
-                fresh.Model = conversation.Model;
-                fresh.Ephemeral = conversation.Ephemeral;
-                ListenerBundle freshBundle = BuildBundle(fresh);
-
-                // System prompt first.
-                if (!string.IsNullOrEmpty(role.SystemPrompt))
-                    freshBundle.OnSystemMessage(null!, role.SystemPrompt);
-
-                // Summary becomes the first user message in the new session.
-                freshBundle.OnUserMessage(null!, summary);
-
-                // Replay the captured tail exchanges directly into the new session's ChatCompletions state
-                // so all protocol listeners reflect the same exchanges via the semantic fan-out path.
-                foreach (JsonNode tailNode in tailExchanges)
-                {
-                    string nodeRole = tailNode["role"]?.GetValue<string>() ?? string.Empty;
-                    string content = tailNode["content"]?.GetValue<string>() ?? string.Empty;
-
-                    if (nodeRole == "user")
-                    {
-                        freshBundle.OnUserMessage(null!, content);
-                    }
-                    else if (nodeRole == "assistant")
-                    {
-                        List<SemanticToolCall> toolCalls = new List<SemanticToolCall>();
-                        JsonArray? tcs = tailNode["tool_calls"]?.AsArray();
-                        if (tcs != null)
-                        {
-                            foreach (JsonNode? tc in tcs)
-                            {
-                                if (tc == null)
-                                    continue;
-                                toolCalls.Add(new SemanticToolCall
-                                {
-                                    Id = tc["id"]?.GetValue<string>() ?? string.Empty,
-                                    Name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty,
-                                    ArgumentsJson = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty
-                                });
-                            }
-                        }
-                        string thinking = tailNode["reasoning_content"]?.GetValue<string>() ?? string.Empty;
-                        freshBundle.OnAssistantTurn(null!, content, thinking, toolCalls);
-                    }
-                    else if (nodeRole == "tool")
-                    {
-                        string toolCallId = tailNode["tool_call_id"]?.GetValue<string>() ?? string.Empty;
-                        // Reconstruct ToolResult from stored content: treat stored data as successful output
-                        ToolResult toolResult = new ToolResult(content, string.Empty, 0);
-                        freshBundle.OnToolResult(null!, toolCallId, toolResult);
-                    }
-                }
-
-                if (!fresh.Ephemeral)
-                {
-                    SessionService.Save(fresh);
-                }
-                _cachedSessions = SessionService.List();
-
-                _transport.Status("[Compaction] Complete.");
-                return (result, fresh, freshBundle);
-            }
-
-            // One way or another, either we are still at context full, we were interrupted, or the call failed.
-            conversation.RestoreSnapshot(snapshot);
             _transport.Status("[Compaction] Failed.");
-            return (result, conversation, bundle);
+            return null;
         }
+
+        SessionService.Save(session.Data);
+
+        string newDisplayName = BeastSession.IncrementDisplayName(session.Data.DisplayName);
+        string newSessionId = IncrementSessionId(session.Data.Id);
+
+        // Compaction creates a fresh session (no history), not a Fork.
+        // Fork = deep copy from a branch point; compaction = clean slate seeded with the summary.
+        BeastSession freshData = BeastSession.CreateNew(newSessionId, session.Data.Role, newDisplayName);
+        freshData.Model = session.Data.Model;
+        freshData.Ephemeral = session.Data.Ephemeral;
+        freshData.Workflow = session.Data.Workflow;
+        freshData.WorkflowState = session.Data.WorkflowState;
+        Session fresh = new Session(freshData, _transport);
+
+        if (!string.IsNullOrEmpty(role.SystemPrompt))
+            fresh.SetSystemPrompt(role.SystemPrompt);
+
+        fresh.AddUserMessage(summary);
+        fresh.FlushPendingMessages();
+        fresh.ReplayExchanges(tailExchanges);
+
+        if (!fresh.Data.Ephemeral)
+            SessionService.Save(fresh.Data);
+
+        _cachedSessions = SessionService.List();
+        _transport.Status("[Compaction] Complete.");
+        return fresh;
     }
 
     // ---- Input processing ----
 
     // Drains all queued input lines. Commands are dispatched immediately; plain text is accumulated.
     // Returns null for accumulatedText if the queue was empty; empty string if only commands ran.
-    private async Task<(string? accumulatedText, BeastSession conversation, ListenerBundle bundle)> DrainInputAsync(
+    private async Task<(string? accumulatedText, Session session)> DrainInputAsync(
         ConcurrentQueue<string> inputQueue,
-        BeastSession conversation,
-        ListenerBundle bundle,
+        Session session,
         LlmService? service,
         LLMRole? role)
     {
         if (!inputQueue.TryPeek(out _))
-            return (null, conversation, bundle);
+            return (null, session);
 
         string accumulatedText = string.Empty;
 
         while (inputQueue.TryDequeue(out string? line))
         {
             string? text;
-            (text, conversation, bundle) = await HandleInputLineAsync(line, conversation, bundle, service, role);
+            (text, session) = await HandleInputLineAsync(line, session, service, role);
             if (text != null)
                 accumulatedText = string.IsNullOrEmpty(accumulatedText) ? text : accumulatedText + "\n" + text;
         }
 
-        return (accumulatedText, conversation, bundle);
+        return (accumulatedText, session);
     }
 
     // Dispatches a single input line. Returns the line as plain text if it is not a command, null otherwise.
-    private async Task<(string? text, BeastSession conversation, ListenerBundle bundle)> HandleInputLineAsync(
+    private async Task<(string? text, Session session)> HandleInputLineAsync(
         string line,
-        BeastSession conversation,
-        ListenerBundle bundle,
+        Session session,
         LlmService? service,
         LLMRole? role)
     {
         if (!line.StartsWith("/"))
-            return (line, conversation, bundle);
+            return (line, session);
 
         string trimmed = line.TrimStart('/').Trim();
         string verb;
@@ -490,22 +374,23 @@ public class AgentOrchestrator
             case "session":
                 if (args == "new")
                 {
-                    SessionService.Save(conversation);
-                    conversation = CreateFreshConversation(conversation.Role, out bundle);
+                    SessionService.Save(session.Data);
+                    session = CreateFreshSession(session.Data.Role);
+                    _activeSession = session;
                     _cachedSessions = SessionService.List();
                     _transport.Status("New session started.");
                 }
                 else if (args == "none")
                 {
-                    SessionService.Save(conversation);
-                    conversation = CreateFreshConversation(conversation.Role, out bundle);
-                    conversation.Ephemeral = true;
+                    SessionService.Save(session.Data);
+                    session = CreateFreshSession(session.Data.Role);
+                    session.Data.Ephemeral = true;
+                    _activeSession = session;
                     _cachedSessions = SessionService.List();
                     _transport.Status("Ephemeral session started (not saved).");
                 }
                 else if (args != null)
                 {
-                    // Accept either the display name or the raw id.
                     string resolvedId = args;
                     foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
                     {
@@ -519,9 +404,9 @@ public class AgentOrchestrator
                     BeastSession? loaded = SessionService.Load(resolvedId);
                     if (loaded != null)
                     {
-                        SessionService.Save(conversation);
-                        conversation = loaded;
-                        bundle = BuildBundle(conversation);
+                        SessionService.Save(session.Data);
+                        session = new Session(loaded, _transport);
+                        _activeSession = session;
                         _cachedSessions = SessionService.List();
                         _transport.Status("Switched to session: " + loaded.DisplayName);
                     }
@@ -532,42 +417,70 @@ public class AgentOrchestrator
                 }
                 break;
             case "clear":
-                bundle.OnClear();
+                session.Clear();
                 _registry.ResetAllAvailability();
                 _transport.Status("Session cleared.");
                 break;
             case "reload":
                 ReloadRegistry();
                 _registry.ResetAllAvailability();
-                _transport.Status("Config files reloaded.");
+                _transport.Status("Config files reloaded. Workflows reloaded.");
+                break;
+            case "workflow":
+                if (args != null)
+                {
+                    Workflow? targetWorkflow = _workflowService.GetWorkflow(args);
+                    if (targetWorkflow == null)
+                        _transport.Error($"Unknown workflow: {args}");
+                    else
+                    {
+                        session.Data.Workflow = args;
+                        session.Data.WorkflowState = targetWorkflow.GetFirstState()?.Name ?? string.Empty;
+                        _transport.Status($"Workflow set to {args}, state: {session.Data.WorkflowState}");
+                    }
+                }
+                break;
+            case "state":
+                if (args != null)
+                {
+                    string wfName = string.IsNullOrEmpty(session.Data.Workflow) ? "default" : session.Data.Workflow;
+                    Workflow? stateWorkflow = _workflowService.GetWorkflow(wfName);
+                    if (stateWorkflow == null)
+                        _transport.Error($"Current workflow '{wfName}' not found");
+                    else if (stateWorkflow.GetState(args) == null)
+                        _transport.Error($"State '{args}' not found in workflow '{wfName}'");
+                    else
+                    {
+                        session.Data.WorkflowState = args;
+                        _transport.Status($"Workflow state set to {args}");
+                    }
+                }
                 break;
             case "role":
                 if (args != null)
                 {
-                    conversation.Role = args;
+                    session.Data.Role = args;
                     _transport.Status($"Role set to {args}");
                 }
                 break;
             case "model":
                 if (args != null)
                 {
-                    LLMRole? modelRole = _roleService.GetRole(conversation.Role);
-                    LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, conversation.GetContextLength()+_settings.Settings.CompactionReserveTokens) : null;
+                    LLMRole? modelRole = ResolveRole(session.Data);
+                    LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens) : null;
                     if (modelService == null)
-                    {
                         _transport.Error($"Unknown model: {args}");
-                    }
                     else
                     {
-                        conversation.Model = args;
+                        session.Data.Model = args;
                         _registry.ResetAvailability(args);
-                        bundle.InvalidateProtocol();
+                        session.InvalidateProtocol();
                         _transport.Status($"Model set to {args}");
                     }
                 }
                 break;
             case "help":
-                _transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
+                _transport.Output("Commands: /compact, /clear, /reload, /workflow <name>, /state <name>, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
                 break;
             case "test":
                 await RunTestsAsync(args);
@@ -577,40 +490,45 @@ public class AgentOrchestrator
                 break;
         }
 
-        return (null, conversation, bundle);
+        return (null, session);
     }
 
-    // Returns all completable tokens: slash commands and session ids.
-    private List<string> BuildCompletionCandidates(BeastSession conversation)
+    // Returns all completable tokens: slash commands, workflow/state names, and session ids.
+    private List<string> BuildCompletionCandidates(BeastSession data)
     {
         List<string> candidates = new List<string>
         {
-            "/compact",
-                "/clear",
-                "/reload",
-                "/role",
-                "/model",
-                "/session",
-                "/help",
-                "/test"
+            "/compact", "/clear", "/reload", "/role", "/model",
+            "/workflow", "/state", "/session", "/help", "/test"
         };
 
-        LLMRole? activeRole = string.IsNullOrEmpty(conversation.Role) ? null : _roleService.GetRole(conversation.Role);
-        LlmService? activeService = null;
-        if (activeRole != null)
-        {
-            // This will filter out any models whose context window is too small to run this conversation, automatically
-            activeService = _registry.GetServiceForRole(activeRole, conversation.Model, conversation.GetContextLength() + _settings.Settings.CompactionReserveTokens);
-        }
+        LLMRole? activeRole = ResolveRole(data);
+        LlmService? activeService = activeRole != null
+            ? _registry.GetServiceForRole(activeRole, data.Model, data.GetContextLength() + _settings.Settings.CompactionReserveTokens)
+            : null;
 
-        string currentRoleName = activeRole != null ? activeRole.Name : conversation.Role;
+        string currentRoleName = activeRole != null ? activeRole.Name : data.Role;
         AddCurrentFirst(candidates, "/role ", currentRoleName, _roleService.Roles.Keys);
 
         if (activeRole != null)
         {
-            string currentModelId = activeService != null ? activeService.Model.ConfigId : conversation.Model + " (not available)";
+            string currentModelId = activeService != null ? activeService.Model.ConfigId : data.Model + " (not available)";
             List<string> enabledModels = _registry.GetEnabledModelsForRole(activeRole);
             AddCurrentFirst(candidates, "/model ", currentModelId, enabledModels);
+        }
+
+        string currentWorkflow = string.IsNullOrEmpty(data.Workflow) ? "default" : data.Workflow;
+        List<string> workflowNames = new List<string>(_workflowService.Workflows.Keys);
+        AddCurrentFirst(candidates, "/workflow ", currentWorkflow, workflowNames);
+
+        Workflow? activeWorkflow = _workflowService.GetWorkflow(currentWorkflow);
+        if (activeWorkflow != null)
+        {
+            string currentState = string.IsNullOrEmpty(data.WorkflowState) ? "default" : data.WorkflowState;
+            List<string> stateNames = new List<string>();
+            foreach (WorkflowState ws in activeWorkflow.States)
+                stateNames.Add(ws.Name);
+            AddCurrentFirst(candidates, "/state ", currentState, stateNames);
         }
 
         candidates.Add("/session new");
@@ -629,14 +547,10 @@ public class AgentOrchestrator
     private static void AddCurrentFirst(List<string> candidates, string prefix, string currentValue, ICollection<string> values)
     {
         if (!string.IsNullOrEmpty(currentValue) && values.Contains(currentValue))
-        {
             candidates.Add(prefix + currentValue);
-        }
-
         foreach (string value in values)
         {
-            if (value == currentValue)
-                continue;
+            if (value == currentValue) continue;
             candidates.Add(prefix + value);
         }
     }
@@ -646,10 +560,10 @@ public class AgentOrchestrator
     private async Task RunTestsAsync(string? filter)
     {
         _transport.Status("Running tests...");
-
         TestContext ctx = new TestContext(_transport);
 
         LlmServiceTests.Test(ctx);
+        WorkflowTests.Test(ctx);
         await FileToolsTests.TestAsync(ctx);
         ShellToolsTests.Test(ctx);
         await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
@@ -661,19 +575,192 @@ public class AgentOrchestrator
 
     // ---- Helpers ----
 
+    // Called after a completed worker turn. Summarizes the session, presents the state's Query
+    // to the StateEvaluator with only the Answer tool, then creates a fresh session for the next
+    // state seeded with the summary. Returns null to stay in the current session unchanged.
+    //
+    // Null/empty transitions wait for user input (summary not injected — session is idle).
+    // Non-null transitions inject the summary as the first user message so the agent auto-continues.
+    private async Task<Session?> AdvanceWorkflowAsync(Session session, LlmService service, LLMRole currentRole, CancellationToken ct)
+    {
+        string workflowName = string.IsNullOrEmpty(session.Data.Workflow) ? "default" : session.Data.Workflow;
+        string stateName = string.IsNullOrEmpty(session.Data.WorkflowState) ? "default" : session.Data.WorkflowState;
+        Workflow? workflow = _workflowService.GetWorkflow(workflowName);
+        WorkflowState? state = workflow?.GetState(stateName);
+
+        if (state == null || string.IsNullOrEmpty(state.Query) || state.Truths.Count == 0)
+            return null;
+
+        string? evaluatorRoleName = workflow!.StateEvaluatorRole;
+        if (string.IsNullOrEmpty(evaluatorRoleName))
+            return null;
+
+        LLMRole? evaluatorRole = _roleService.GetRole(evaluatorRoleName);
+        if (evaluatorRole == null)
+        {
+            _transport.Error($"StateEvaluator role '{evaluatorRoleName}' not found");
+            return null;
+        }
+
+        LlmService? evaluatorService = _registry.GetServiceForRole(evaluatorRole, string.Empty, 0);
+        if (evaluatorService == null)
+        {
+            _transport.Status("StateEvaluator: no available model");
+            return null;
+        }
+
+        // 1. Summarize the completed worker turn (non-mutating — runs in a temp Fork).
+        _transport.Status("[Workflow] Summarizing turn...");
+        const string summaryPrompt = "Provide a concise summary of everything accomplished this session: decisions made, actions taken, results, and any context needed to continue the work.";
+        string? summary = await session.SummarizeAsync(service, summaryPrompt, ct);
+        if (string.IsNullOrEmpty(summary))
+        {
+            _transport.Error("[Workflow] Summary failed; staying in current state.");
+            return null;
+        }
+
+        // 2. Build the evaluator prompt: summary + query + truth options.
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine(summary);
+        sb.AppendLine();
+        sb.AppendLine(state.Query);
+        sb.AppendLine();
+        sb.AppendLine("Call the Answer tool with one of these statements verbatim:");
+        foreach (string truth in state.Truths.Keys)
+            sb.AppendLine($"- {truth}");
+
+        // 3. Run the evaluator with only the Answer tool (no other tools).
+        string? selectedTruth = null;
+        Tool answerTool = BuildAnswerTool(state.Truths.Keys, t => selectedTruth = t);
+
+        Session evalSession = CreateFreshSession(evaluatorRole.Name);
+        evalSession.Data.Ephemeral = true;
+        if (!string.IsNullOrEmpty(evaluatorRole.SystemPrompt))
+            evalSession.SetSystemPrompt(evaluatorRole.SystemPrompt);
+        evalSession.AddUserMessage(sb.ToString());
+
+        _transport.Status($"[Workflow] Evaluating: {state.Query}");
+        LlmResult evalResult = await evalSession.RunTurnAsync(evaluatorService, new Tool[] { answerTool }, 0, ct);
+
+        if (evalResult.ExitReason != LlmExitReason.Completed || string.IsNullOrEmpty(selectedTruth))
+        {
+            _transport.Error("[Workflow] Evaluator did not call Answer; staying in current state.");
+            return null;
+        }
+
+        // 4. Map the selected truth to the next state name (case-insensitive).
+        string? nextStateName = null;
+        bool foundTruth = false;
+        foreach (KeyValuePair<string, string> kvp in state.Truths)
+        {
+            if (string.Equals(kvp.Key, selectedTruth, StringComparison.OrdinalIgnoreCase))
+            {
+                nextStateName = kvp.Value;
+                foundTruth = true;
+                break;
+            }
+        }
+        if (!foundTruth)
+        {
+            _transport.Error($"[Workflow] Answer '{selectedTruth}' not in truths; staying in current state.");
+            return null;
+        }
+
+        // 5. Resolve the role for the new session.
+        bool isNullTransition = string.IsNullOrEmpty(nextStateName);
+        string resolvedStateName = isNullTransition ? stateName : nextStateName!;
+        WorkflowState? nextState = workflow.GetState(resolvedStateName);
+        string nextRoleName = nextState?.Role ?? currentRole.Name;
+        LLMRole nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
+
+        // 6. Save the old session and build the fresh one.
+        if (!session.Data.Ephemeral)
+            SessionService.Save(session.Data);
+
+        BeastSession freshData = BeastSession.CreateNew(Guid.NewGuid().ToString(), nextRole.Name, session.Data.DisplayName);
+        freshData.Model = session.Data.Model;
+        freshData.Ephemeral = session.Data.Ephemeral;
+        freshData.Workflow = session.Data.Workflow;
+        freshData.WorkflowState = resolvedStateName;
+        Session next = new Session(freshData, _transport);
+
+        if (!string.IsNullOrEmpty(nextRole.SystemPrompt))
+            next.SetSystemPrompt(nextRole.SystemPrompt);
+
+        // Non-null transitions inject the summary so the new session auto-continues.
+        // Null transitions leave the session idle, waiting for the user's next message.
+        if (!isNullTransition)
+            next.AddUserMessage(summary);
+
+        _transport.Status($"[Workflow] {selectedTruth} → {resolvedStateName}");
+        return next;
+    }
+
+    // Builds a one-shot Answer tool that captures the evaluator's truth selection via a closure.
+    // The evaluator is given only this tool, forcing a structured decision.
+    private static Tool BuildAnswerTool(IEnumerable<string> truthLabels, Action<string> onAnswer)
+    {
+        string optionList = string.Join("; ", truthLabels);
+
+        JsonObject truthProp = new JsonObject();
+        truthProp["type"] = "string";
+        truthProp["description"] = $"One of the provided truth statements verbatim. Options: {optionList}";
+
+        JsonObject properties = new JsonObject();
+        properties["truth"] = truthProp;
+
+        JsonArray required = new JsonArray();
+        required.Add(JsonValue.Create("truth"));
+
+        JsonObject parameters = new JsonObject();
+        parameters["type"] = "object";
+        parameters["properties"] = properties;
+        parameters["required"] = required;
+
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Function = new FunctionDefinition
+                {
+                    Name = "Answer",
+                    Description = "Submit your determination. Call once with exactly one of the provided statements verbatim.",
+                    Parameters = parameters
+                }
+            },
+            Handler = (JsonObject args, CancellationToken ct, ITransportServer transport) =>
+            {
+                string? truth = args["truth"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(truth))
+                    onAnswer(truth);
+                return Task.FromResult(new ToolResult("Answer recorded.", string.Empty, 0));
+            }
+        };
+    }
+
+    // Resolves the active LLMRole from the session's workflow state.
+    // Falls back to data.Role when the workflow or state is not found.
+    private LLMRole? ResolveRole(BeastSession data)
+    {
+        string workflowName = string.IsNullOrEmpty(data.Workflow) ? "default" : data.Workflow;
+        string stateName = string.IsNullOrEmpty(data.WorkflowState) ? "default" : data.WorkflowState;
+        string? roleName = _workflowService.GetRoleForState(workflowName, stateName);
+        if (string.IsNullOrEmpty(roleName))
+            roleName = data.Role;
+        return _roleService.GetRole(roleName);
+    }
+
     private void ReloadRegistry()
     {
         _roleService.Reload();
         _settings.LoadSettings();
         _registry.LoadFromConfigs(_settings, _roleService);
+        _workflowService.Reload();
     }
 
-    // Returns the last `count` user-exchange groups from the ChatCompletions state.
-    // Each group is: the user message node followed by all assistant/tool nodes that follow it
-    // up to (but not including) the next user message. The result is ordered oldest-first.
+    // Returns the last `count` user-exchange groups from the ChatCompletions state, oldest-first.
     private static List<JsonNode> ExtractTailExchanges(JsonArray state, int count)
     {
-        // Locate the start indices of each user message.
         List<int> userStarts = new List<int>();
         for (int i = 0; i < state.Count; i++)
         {
@@ -699,7 +786,6 @@ public class AgentOrchestrator
     }
 
     // Generates a new session ID from an existing one by incrementing the numeric suffix.
-    // Examples: "abc" -> "abc_2", "abc_2" -> "abc_3", "abc_5" -> "abc_6"
     private static string IncrementSessionId(string sessionId)
     {
         int lastUnderscore = sessionId.LastIndexOf('_');
@@ -707,87 +793,22 @@ public class AgentOrchestrator
         {
             string suffix = sessionId.Substring(lastUnderscore + 1);
             if (int.TryParse(suffix, out int number))
-            {
-                string basePart = sessionId.Substring(0, lastUnderscore);
-                return $"{basePart}_{number + 1}";
-            }
+                return $"{sessionId.Substring(0, lastUnderscore)}_{number + 1}";
         }
-
         return $"{sessionId}_2";
     }
 
-    // Sends a Stats frame to Beast with model, token counts, total cost, and context window.
-    private void SendStats(BeastSession conversation, int maxContext)
+    private void SendStats(BeastSession data, int maxContext)
     {
-        int prompt = conversation.CumulativeInputTokens;
-        int completion = conversation.CumulativeOutputTokens;
-        int contextTokens = conversation.GetContextLength();
         string json = JsonSerializer.Serialize(new
         {
-            model = conversation.Model,
-            promptTokens = prompt,
-            completionTokens = completion,
-            totalCost = conversation.TotalCost,
+            model = data.Model,
+            promptTokens = data.CumulativeInputTokens,
+            completionTokens = data.CumulativeOutputTokens,
+            totalCost = data.TotalCost,
             maxContext,
-            contextTokens
+            contextTokens = data.GetContextLength()
         });
         _transport.Stats(json);
-    }
-
-    // Replays the committed conversation history to the transport so a freshly connected Beast
-    // client can reconstruct its display. Skips streaming scaffolds; sends everything else.
-    private void ReplayHistory(BeastSession conversation)
-    {
-        foreach (JsonNode? node in conversation.ChatCompletionsState)
-        {
-            if (node == null)
-                continue;
-            string role = node["role"]?.GetValue<string>() ?? string.Empty;
-            string content = node["content"]?.GetValue<string>() ?? string.Empty;
-
-            if (role == "system")
-            {
-                if (!string.IsNullOrEmpty(content))
-                    _transport.System(content);
-            }
-            else if (role == "user")
-            {
-                if (!string.IsNullOrEmpty(content))
-                    _transport.User(content);
-            }
-            else if (role == "assistant")
-            {
-                string thinking = node["reasoning_content"]?.GetValue<string>() ?? string.Empty;
-                if (!string.IsNullOrEmpty(thinking))
-                    _transport.Thinking(thinking);
-
-                if (!string.IsNullOrEmpty(content))
-                    _transport.Output(content);
-
-                JsonArray? toolCalls = node["tool_calls"]?.AsArray();
-                if (toolCalls != null)
-                {
-                    foreach (JsonNode? tc in toolCalls)
-                    {
-                        if (tc == null)
-                            continue;
-                        string name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty;
-                        string args = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
-                        string tcId = tc["id"]?.GetValue<string>() ?? string.Empty;
-                        _transport.ToolCallWithId(tcId, $"{name}({args})");
-                    }
-                }
-            }
-            else if (role == "tool")
-            {
-                if (!string.IsNullOrEmpty(content))
-                {
-                    string toolCallId = node["tool_call_id"]?.GetValue<string>() ?? string.Empty;
-                    // Reconstruct ToolResult from stored content: treat as successful output
-                    ToolResult toolResult = new ToolResult(content, string.Empty, 0);
-                    _transport.ToolResponseWithId(toolCallId, toolResult);
-                }
-            }
-        }
     }
 }
