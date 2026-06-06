@@ -61,7 +61,7 @@ public class LlmRegistry
 			}
 		}
 
-		foreach (LLMRole role in roles.Roles.Values)
+		foreach (Role role in roles.Roles.Values)
 		{
 			_toolsByRole[role.Name] = BuildToolsForRole(role);
 		}
@@ -69,7 +69,7 @@ public class LlmRegistry
 
 	// Finds the first available service from the role's preferred model list, in order.
 	// Skips models that are unavailable or whose context window is too small for minContextRequired.
-	public LlmService? GetServiceForRole(LLMRole? role, string configId, int minContextRequired)
+	public LlmService? GetServiceForRole(Role? role, string configId, int minContextRequired)
 	{
 		LlmService? service = null;
 		if (role!=null)
@@ -108,7 +108,7 @@ public class LlmRegistry
 	}
 
 	// Returns the prebuilt Tool array for the given role.
-	public Tool[] GetToolsForRole(LLMRole role)
+	public Tool[] GetToolsForRole(Role role)
 	{
 		return _toolsByRole[role.Name];
 	}
@@ -121,7 +121,7 @@ public class LlmRegistry
 	// Returns the role's models filtered to those currently registered (enabled in settings),
 	// preserving the role's preference order. Disabled or unknown models are dropped so callers
 	// like the /model picker never offer a model the agent cannot actually use.
-	public List<string> GetEnabledModelsForRole(LLMRole role)
+	public List<string> GetEnabledModelsForRole(Role role)
 	{
 		List<string> enabled = new List<string>();
 		foreach (string configId in role.Models)
@@ -144,7 +144,7 @@ public class LlmRegistry
 	// Returns milliseconds until the earliest service in the role's model list becomes available.
 	// Returns 0 if at least one service is already available.
 	// Returns long.MaxValue if all services are permanently down.
-	public long GetMillisecondsUntilAvailable(LLMRole role)
+	public long GetMillisecondsUntilAvailable(Role role)
 	{
 		long earliest = long.MaxValue;
 		foreach (string cid in role.Models)
@@ -179,7 +179,7 @@ public class LlmRegistry
 		}
 	}
 
-	private Tool[] BuildToolsForRole(LLMRole role)
+	private Tool[] BuildToolsForRole(Role role)
 	{
 		List<Tool> allowed = new();
 

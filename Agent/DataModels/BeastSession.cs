@@ -15,12 +15,6 @@ public class BeastSession
     [JsonPropertyName("displayName")]
     public string DisplayName { get; set; } = string.Empty;
 
-    [JsonPropertyName("workflow")]
-    public string Workflow { get; set; } = string.Empty;
-
-    [JsonPropertyName("workflowState")]
-    public string WorkflowState { get; set; } = string.Empty;
-
     [JsonPropertyName("model")]
     public string Model { get; set; } = string.Empty;
 
@@ -119,8 +113,6 @@ public class BeastSession
     public BeastSession(
         string id,
         string displayName,
-        string workflow,
-        string workflowState,
         string model,
         string role,
         JsonArray chatCompletionsState,
@@ -132,8 +124,6 @@ public class BeastSession
     {
         Id = id;
         DisplayName = displayName;
-        Workflow = workflow;
-        WorkflowState = workflowState;
         Model = model;
         Role = role;
         ChatCompletionsState = chatCompletionsState ?? new JsonArray();
@@ -147,7 +137,7 @@ public class BeastSession
     public static BeastSession CreateNew(string id, string role, string displayName)
     {
         return new BeastSession(
-            id, displayName, "default", "default", string.Empty, role,
+            id, displayName, string.Empty, role,
             new JsonArray(), null, 0m, 0, 0, 0);
     }
 

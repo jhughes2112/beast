@@ -18,15 +18,13 @@ using System.Threading.Tasks;
 //   - /compact sets a flag; compaction runs at the top of the next iteration.
 //   - Sessions are loaded from disk on start (last session resumed by default)
 //     and saved after compaction, session switch, and on exit.
-//   - The active role is resolved through the workflow state machine via ResolveRole; model selection
-//     follows from the role's allowed list, preferring the session's current model when compatible.
+//   - Automatic role transitions are defined on the Role itself (query, evaluatorRole, truths).
 public class AgentOrchestrator
 {
     private readonly LlmRegistry _registry;
     private readonly RoleService _roleService;
     private readonly SettingsService _settings;
     private readonly ITransportServer _transport;
-    private readonly WorkflowService _workflowService;
     private readonly CancellationTokenSource _cancellationTokenSource;
 
     // Reference to the currently running session, so the reader task can call Interrupt().
@@ -43,14 +41,12 @@ public class AgentOrchestrator
         RoleService roleService,
         SettingsService settings,
         ITransportServer transport,
-        WorkflowService workflowService,
         CancellationTokenSource cancellationTokenSource)
     {
         _registry = registry;
         _roleService = roleService;
         _settings = settings;
         _transport = transport;
-        _workflowService = workflowService;
         _cancellationTokenSource = cancellationTokenSource;
         ReloadRegistry();
     }
@@ -76,7 +72,7 @@ public class AgentOrchestrator
         ConcurrentQueue<string> inputQueue = new ConcurrentQueue<string>();
 
         // Send initial stats so the client sees token counts and cost immediately.
-        LLMRole? initialRole = ResolveRole(session.Data);
+        Role? initialRole = _roleService.GetRole(session.Data.Role);
         LlmService? initialService = _registry.GetServiceForRole(initialRole, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
         SendStats(session.Data, initialService?.Model.Config.ContextWindow ?? 0);
 
@@ -109,8 +105,8 @@ public class AgentOrchestrator
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
-                // 1. Resolve role and service through the active workflow state.
-                LLMRole? role = ResolveRole(session.Data);
+                // 1. Resolve role and service.
+                Role? role = _roleService.GetRole(session.Data.Role);
                 LlmService? service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
 
                 // 2. Drain all pending input: run commands in order, accumulate text.
@@ -119,8 +115,8 @@ public class AgentOrchestrator
                 if (!inputQueue.IsEmpty)
                     (accumulatedText, session) = await DrainInputAsync(inputQueue, session, service, role);
 
-                // Re-resolve after commands so any role/model/workflow changes take effect immediately.
-                role = ResolveRole(session.Data);
+                // Re-resolve after commands so any role/model changes take effect immediately.
+                role = _roleService.GetRole(session.Data.Role);
                 service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
 
                 if (service != null)
@@ -198,7 +194,7 @@ public class AgentOrchestrator
                         }
                         else if (result.ExitReason == LlmExitReason.Completed)
                         {
-                            Session? advanced = await AdvanceWorkflowAsync(session, service, role, _cancellationTokenSource.Token);
+                            Session? advanced = await AdvanceRoleAsync(session, service, role, _cancellationTokenSource.Token);
                             if (advanced != null)
                             {
                                 session = advanced;
@@ -249,18 +245,10 @@ public class AgentOrchestrator
     {
         if (string.IsNullOrEmpty(roleName))
         {
-            string? wfRole = _workflowService.GetRoleForState("default", "default");
-            if (!string.IsNullOrEmpty(wfRole))
+            foreach (Role r in _roleService.Roles.Values)
             {
-                roleName = wfRole;
-            }
-            else
-            {
-                foreach (LLMRole r in _roleService.Roles.Values)
-                {
-                    roleName = r.Name;
-                    break;
-                }
+                roleName = r.Name;
+                break;
             }
         }
         BeastSession fresh = BeastSession.CreateNew(Guid.NewGuid().ToString(), roleName, string.Empty);
@@ -270,7 +258,7 @@ public class AgentOrchestrator
     // ---- Compaction ----
 
     // Summarizes the current session and returns a new compacted Session, or null on failure.
-    private async Task<Session?> RunCompactionAsync(Session session, LlmService service, LLMRole role)
+    private async Task<Session?> RunCompactionAsync(Session session, LlmService service, Role role)
     {
         List<JsonNode> tailExchanges = ExtractTailExchanges(session.Data.ChatCompletionsState, 2);
 
@@ -293,8 +281,6 @@ public class AgentOrchestrator
         BeastSession freshData = BeastSession.CreateNew(newSessionId, session.Data.Role, newDisplayName);
         freshData.Model = session.Data.Model;
         freshData.Ephemeral = session.Data.Ephemeral;
-        freshData.Workflow = session.Data.Workflow;
-        freshData.WorkflowState = session.Data.WorkflowState;
         Session fresh = new Session(freshData, _transport);
 
         if (!string.IsNullOrEmpty(role.SystemPrompt))
@@ -320,7 +306,7 @@ public class AgentOrchestrator
         ConcurrentQueue<string> inputQueue,
         Session session,
         LlmService? service,
-        LLMRole? role)
+        Role? role)
     {
         if (!inputQueue.TryPeek(out _))
             return (null, session);
@@ -343,7 +329,7 @@ public class AgentOrchestrator
         string line,
         Session session,
         LlmService? service,
-        LLMRole? role)
+        Role? role)
     {
         if (!line.StartsWith("/"))
             return (line, session);
@@ -424,37 +410,7 @@ public class AgentOrchestrator
             case "reload":
                 ReloadRegistry();
                 _registry.ResetAllAvailability();
-                _transport.Status("Config files reloaded. Workflows reloaded.");
-                break;
-            case "workflow":
-                if (args != null)
-                {
-                    Workflow? targetWorkflow = _workflowService.GetWorkflow(args);
-                    if (targetWorkflow == null)
-                        _transport.Error($"Unknown workflow: {args}");
-                    else
-                    {
-                        session.Data.Workflow = args;
-                        session.Data.WorkflowState = targetWorkflow.GetFirstState()?.Name ?? string.Empty;
-                        _transport.Status($"Workflow set to {args}, state: {session.Data.WorkflowState}");
-                    }
-                }
-                break;
-            case "state":
-                if (args != null)
-                {
-                    string wfName = string.IsNullOrEmpty(session.Data.Workflow) ? "default" : session.Data.Workflow;
-                    Workflow? stateWorkflow = _workflowService.GetWorkflow(wfName);
-                    if (stateWorkflow == null)
-                        _transport.Error($"Current workflow '{wfName}' not found");
-                    else if (stateWorkflow.GetState(args) == null)
-                        _transport.Error($"State '{args}' not found in workflow '{wfName}'");
-                    else
-                    {
-                        session.Data.WorkflowState = args;
-                        _transport.Status($"Workflow state set to {args}");
-                    }
-                }
+                _transport.Status("Config files reloaded.");
                 break;
             case "role":
                 if (args != null)
@@ -466,7 +422,7 @@ public class AgentOrchestrator
             case "model":
                 if (args != null)
                 {
-                    LLMRole? modelRole = ResolveRole(session.Data);
+                    Role? modelRole = _roleService.GetRole(session.Data.Role);
                     LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens) : null;
                     if (modelService == null)
                         _transport.Error($"Unknown model: {args}");
@@ -480,7 +436,7 @@ public class AgentOrchestrator
                 }
                 break;
             case "help":
-                _transport.Output("Commands: /compact, /clear, /reload, /workflow <name>, /state <name>, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
+                _transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
                 break;
             case "test":
                 await RunTestsAsync(args);
@@ -493,16 +449,16 @@ public class AgentOrchestrator
         return (null, session);
     }
 
-    // Returns all completable tokens: slash commands, workflow/state names, and session ids.
+    // Returns all completable tokens: slash commands, role names, model names, and session ids.
     private List<string> BuildCompletionCandidates(BeastSession data)
     {
         List<string> candidates = new List<string>
         {
             "/compact", "/clear", "/reload", "/role", "/model",
-            "/workflow", "/state", "/session", "/help", "/test"
+            "/session", "/help", "/test"
         };
 
-        LLMRole? activeRole = ResolveRole(data);
+        Role? activeRole = _roleService.GetRole(data.Role);
         LlmService? activeService = activeRole != null
             ? _registry.GetServiceForRole(activeRole, data.Model, data.GetContextLength() + _settings.Settings.CompactionReserveTokens)
             : null;
@@ -515,20 +471,6 @@ public class AgentOrchestrator
             string currentModelId = activeService != null ? activeService.Model.ConfigId : data.Model + " (not available)";
             List<string> enabledModels = _registry.GetEnabledModelsForRole(activeRole);
             AddCurrentFirst(candidates, "/model ", currentModelId, enabledModels);
-        }
-
-        string currentWorkflow = string.IsNullOrEmpty(data.Workflow) ? "default" : data.Workflow;
-        List<string> workflowNames = new List<string>(_workflowService.Workflows.Keys);
-        AddCurrentFirst(candidates, "/workflow ", currentWorkflow, workflowNames);
-
-        Workflow? activeWorkflow = _workflowService.GetWorkflow(currentWorkflow);
-        if (activeWorkflow != null)
-        {
-            string currentState = string.IsNullOrEmpty(data.WorkflowState) ? "default" : data.WorkflowState;
-            List<string> stateNames = new List<string>();
-            foreach (WorkflowState ws in activeWorkflow.States)
-                stateNames.Add(ws.Name);
-            AddCurrentFirst(candidates, "/state ", currentState, stateNames);
         }
 
         candidates.Add("/session new");
@@ -563,7 +505,6 @@ public class AgentOrchestrator
         TestContext ctx = new TestContext(_transport);
 
         LlmServiceTests.Test(ctx);
-        WorkflowTests.Test(ctx);
         await FileToolsTests.TestAsync(ctx);
         ShellToolsTests.Test(ctx);
         await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
@@ -573,65 +514,41 @@ public class AgentOrchestrator
         _transport.Output($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
     }
 
-    // ---- Helpers ----
+    // ---- Role transition ----
 
-    // Called after a completed worker turn. Summarizes the session, presents the state's Query
-    // to the StateEvaluator with only the Answer tool, then creates a fresh session for the next
-    // state seeded with the summary. Returns null to stay in the current session unchanged.
+    // Called after a completed worker turn. If the current role defines a query + truths,
+    // runs the evaluator role and transitions to the next role. Returns null to stay unchanged.
     //
-    // Null/empty transitions wait for user input (summary not injected — session is idle).
-    // Non-null transitions inject the summary as the first user message so the agent auto-continues.
-    private async Task<Session?> AdvanceWorkflowAsync(Session session, LlmService service, LLMRole currentRole, CancellationToken ct)
+    // Null/empty truths values wait for user input (summary not injected — session is idle).
+    // Non-null truths values inject the summary so the agent auto-continues in the new role.
+    private async Task<Session?> AdvanceRoleAsync(Session session, LlmService service, Role currentRole, CancellationToken ct)
     {
-        string workflowName = string.IsNullOrEmpty(session.Data.Workflow) ? "default" : session.Data.Workflow;
-        string stateName = string.IsNullOrEmpty(session.Data.WorkflowState) ? "default" : session.Data.WorkflowState;
-        Workflow? workflow = _workflowService.GetWorkflow(workflowName);
-        WorkflowState? state = workflow?.GetState(stateName);
-
-        if (state == null || string.IsNullOrEmpty(state.Query) || state.Truths.Count == 0)
+        if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths == null || currentRole.Truths.Count == 0)
             return null;
-
-        string? evaluatorRoleName = workflow!.StateEvaluatorRole;
-        if (string.IsNullOrEmpty(evaluatorRoleName))
-            return null;
-
-        LLMRole? evaluatorRole = _roleService.GetRole(evaluatorRoleName);
-        if (evaluatorRole == null)
-        {
-            _transport.Error($"StateEvaluator role '{evaluatorRoleName}' not found");
-            return null;
-        }
-
-        LlmService? evaluatorService = _registry.GetServiceForRole(evaluatorRole, string.Empty, 0);
-        if (evaluatorService == null)
-        {
-            _transport.Status("StateEvaluator: no available model");
-            return null;
-        }
 
         // 1. Summarize the completed worker turn (non-mutating — runs in a temp Fork).
-        _transport.Status("[Workflow] Summarizing turn...");
+        _transport.Status("[Role] Summarizing turn...");
         const string summaryPrompt = "Provide a concise summary of everything accomplished this session: decisions made, actions taken, results, and any context needed to continue the work.";
         string? summary = await session.SummarizeAsync(service, summaryPrompt, ct);
         if (string.IsNullOrEmpty(summary))
         {
-            _transport.Error("[Workflow] Summary failed; staying in current state.");
+            _transport.Error("[Role] Summary failed; staying in current role.");
             return null;
         }
 
-        // 2. Build the evaluator prompt: summary + query + truth options.
+        // 2. Build evaluator prompt: summary + query + truth options.
         StringBuilder sb = new StringBuilder();
         sb.AppendLine(summary);
         sb.AppendLine();
-        sb.AppendLine(state.Query);
+        sb.AppendLine(currentRole.EndOfTurnPrompt);
         sb.AppendLine();
         sb.AppendLine("Call the Answer tool with one of these statements verbatim:");
-        foreach (string truth in state.Truths.Keys)
+        foreach (string truth in currentRole.Truths.Keys)
             sb.AppendLine($"- {truth}");
 
-        // 3. Run the evaluator with only the Answer tool (no other tools).
+        // 3. Run the evaluator with only the Answer tool.
         string? selectedTruth = null;
-        Tool answerTool = BuildAnswerTool(state.Truths.Keys, t => selectedTruth = t);
+        Tool answerTool = BuildAnswerTool(currentRole.Truths.Keys, t => selectedTruth = t);
 
         Session evalSession = CreateFreshSession(evaluatorRole.Name);
         evalSession.Data.Ephemeral = true;
@@ -639,39 +556,36 @@ public class AgentOrchestrator
             evalSession.SetSystemPrompt(evaluatorRole.SystemPrompt);
         evalSession.AddUserMessage(sb.ToString());
 
-        _transport.Status($"[Workflow] Evaluating: {state.Query}");
+        _transport.Status($"[Role] Evaluating: {currentRole.EndOfTurnPrompt}");
         LlmResult evalResult = await evalSession.RunTurnAsync(evaluatorService, new Tool[] { answerTool }, 0, ct);
 
         if (evalResult.ExitReason != LlmExitReason.Completed || string.IsNullOrEmpty(selectedTruth))
         {
-            _transport.Error("[Workflow] Evaluator did not call Answer; staying in current state.");
+            _transport.Error("[Role] Evaluator did not call Answer; staying in current role.");
             return null;
         }
 
-        // 4. Map the selected truth to the next state name (case-insensitive).
-        string? nextStateName = null;
+        // 4. Map the selected truth to the next role name (case-insensitive).
+        string? nextRoleName = null;
         bool foundTruth = false;
-        foreach (KeyValuePair<string, string> kvp in state.Truths)
+        foreach (KeyValuePair<string, string> kvp in currentRole.Truths)
         {
             if (string.Equals(kvp.Key, selectedTruth, StringComparison.OrdinalIgnoreCase))
             {
-                nextStateName = kvp.Value;
+                nextRoleName = kvp.Value;
                 foundTruth = true;
                 break;
             }
         }
         if (!foundTruth)
         {
-            _transport.Error($"[Workflow] Answer '{selectedTruth}' not in truths; staying in current state.");
+            _transport.Error($"[Role] Answer '{selectedTruth}' not in truths; staying in current role.");
             return null;
         }
 
-        // 5. Resolve the role for the new session.
-        bool isNullTransition = string.IsNullOrEmpty(nextStateName);
-        string resolvedStateName = isNullTransition ? stateName : nextStateName!;
-        WorkflowState? nextState = workflow.GetState(resolvedStateName);
-        string nextRoleName = nextState?.Role ?? currentRole.Name;
-        LLMRole nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
+        // 5. Resolve the next role; stay on current if empty or not found.
+        bool isNullTransition = string.IsNullOrEmpty(nextRoleName);
+        Role nextRole = (!isNullTransition ? _roleService.GetRole(nextRoleName!) : null) ?? currentRole;
 
         // 6. Save the old session and build the fresh one.
         if (!session.Data.Ephemeral)
@@ -680,8 +594,6 @@ public class AgentOrchestrator
         BeastSession freshData = BeastSession.CreateNew(Guid.NewGuid().ToString(), nextRole.Name, session.Data.DisplayName);
         freshData.Model = session.Data.Model;
         freshData.Ephemeral = session.Data.Ephemeral;
-        freshData.Workflow = session.Data.Workflow;
-        freshData.WorkflowState = resolvedStateName;
         Session next = new Session(freshData, _transport);
 
         if (!string.IsNullOrEmpty(nextRole.SystemPrompt))
@@ -692,7 +604,7 @@ public class AgentOrchestrator
         if (!isNullTransition)
             next.AddUserMessage(summary);
 
-        _transport.Status($"[Workflow] {selectedTruth} → {resolvedStateName}");
+        _transport.Status($"[Role] {selectedTruth} → {nextRole.Name}");
         return next;
     }
 
@@ -738,24 +650,13 @@ public class AgentOrchestrator
         };
     }
 
-    // Resolves the active LLMRole from the session's workflow state.
-    // Falls back to data.Role when the workflow or state is not found.
-    private LLMRole? ResolveRole(BeastSession data)
-    {
-        string workflowName = string.IsNullOrEmpty(data.Workflow) ? "default" : data.Workflow;
-        string stateName = string.IsNullOrEmpty(data.WorkflowState) ? "default" : data.WorkflowState;
-        string? roleName = _workflowService.GetRoleForState(workflowName, stateName);
-        if (string.IsNullOrEmpty(roleName))
-            roleName = data.Role;
-        return _roleService.GetRole(roleName);
-    }
+    // ---- Helpers ----
 
     private void ReloadRegistry()
     {
         _roleService.Reload();
         _settings.LoadSettings();
         _registry.LoadFromConfigs(_settings, _roleService);
-        _workflowService.Reload();
     }
 
     // Returns the last `count` user-exchange groups from the ChatCompletions state, oldest-first.

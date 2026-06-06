@@ -6,7 +6,7 @@ using System.Text.Json;
 // Loads and provides LLMRole definitions from disk with merging: user profile as base, project as overrides.
 public class RoleService
 {
-    public Dictionary<string, LLMRole> Roles { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, Role> Roles { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly string _projectRolesPath;
     private readonly string _userRolesPath;
@@ -21,9 +21,9 @@ public class RoleService
         LoadRoles();
     }
 
-    public LLMRole? GetRole(string name)
+    public Role? GetRole(string name)
     {
-        Roles.TryGetValue(name, out LLMRole? role);
+        Roles.TryGetValue(name, out Role? role);
         return role;
     }
 
@@ -36,43 +36,43 @@ public class RoleService
     {
         Roles.Clear();
 
-        Dictionary<string, LLMRole>? userRoles = LoadRolesFromFile(_userRolesPath);
+        Dictionary<string, Role>? userRoles = LoadRolesFromFile(_userRolesPath);
         if (userRoles == null)
         {
             userRoles = CreateDefaultRoles();
             WriteRoles(_userRolesPath, userRoles.Values);
         }
 
-        Dictionary<string, LLMRole>? projectRoles = LoadRolesFromFile(_projectRolesPath);
+        Dictionary<string, Role>? projectRoles = LoadRolesFromFile(_projectRolesPath);
         if (projectRoles == null)
         {
-            projectRoles = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
+            projectRoles = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
             WriteRoles(_projectRolesPath, projectRoles.Values);
         }
 
-        foreach (KeyValuePair<string, LLMRole> kv in userRoles)
+        foreach (KeyValuePair<string, Role> kv in userRoles)
         {
             Roles[kv.Key] = kv.Value;
         }
 
-        foreach (KeyValuePair<string, LLMRole> kv in projectRoles)
+        foreach (KeyValuePair<string, Role> kv in projectRoles)
         {
             Roles[kv.Key] = kv.Value;
         }
     }
 
-    private Dictionary<string, LLMRole>? LoadRolesFromFile(string path)
+    private Dictionary<string, Role>? LoadRolesFromFile(string path)
     {
         if (!File.Exists(path)) return null;
 
         try
         {
             string json = File.ReadAllText(path);
-            List<LLMRole>? roleList = JsonSerializer.Deserialize<List<LLMRole>>(json);
+            List<Role>? roleList = JsonSerializer.Deserialize<List<Role>>(json);
             if (roleList != null)
             {
-                Dictionary<string, LLMRole> dict = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
-                foreach (LLMRole role in roleList)
+                Dictionary<string, Role> dict = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
+                foreach (Role role in roleList)
                 {
                     dict[role.Name] = role;
                 }
@@ -100,23 +100,23 @@ public class RoleService
         return null;
     }
 
-    private Dictionary<string, LLMRole> CreateDefaultRoles()
+    private Dictionary<string, Role> CreateDefaultRoles()
     {
         Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch);
         List<string> toolNames = new List<string>(tools.Keys);
 
-        LLMRole defaultRole = LLMRole.DefaultRole(toolNames);
-        Dictionary<string, LLMRole> dict = new Dictionary<string, LLMRole>(StringComparer.OrdinalIgnoreCase);
+        Role defaultRole = Role.DefaultRole(toolNames);
+        Dictionary<string, Role> dict = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
         dict[defaultRole.Name] = defaultRole;
         return dict;
     }
 
-    private void WriteRoles(string path, IEnumerable<LLMRole> roles)
+    private void WriteRoles(string path, IEnumerable<Role> roles)
     {
         try
         {
             JsonSerializerOptions options = new JsonSerializerOptions() { WriteIndented = true };
-            string json = JsonSerializer.Serialize(new List<LLMRole>(roles), options);
+            string json = JsonSerializer.Serialize(new List<Role>(roles), options);
 
             string? dir = Path.GetDirectoryName(path);
             if (dir != null)

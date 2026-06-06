@@ -217,8 +217,6 @@ public class Session
         BeastSession forked = new BeastSession(
             newId,
             newDisplayName,
-            _data.Workflow,
-            _data.WorkflowState,
             _data.Model,
             _data.Role,
             (JsonArray)_data.ChatCompletionsState.DeepClone(),

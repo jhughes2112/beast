@@ -12,20 +12,20 @@ public static class PerModelLlmTests
     {
         ctx.Log("  PerModelLlmTests");
 
-        List<LLMRole> roles = new List<LLMRole>(roleService.Roles.Values);
+        List<Role> roles = new List<Role>(roleService.Roles.Values);
         if (roles.Count == 0)
         {
             ctx.Log("    SKIP: no roles configured");
             return;
         }
 
-        foreach (LLMRole role in roles)
+        foreach (Role role in roles)
         {
             await RunRoleTestsAsync(ctx, registry, settings, role, cancellationToken);
         }
     }
 
-    private static async Task RunRoleTestsAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role, CancellationToken cancellationToken)
+    private static async Task RunRoleTestsAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, Role role, CancellationToken cancellationToken)
     {
         ctx.Log($"    Role: {role.Name}");
 
@@ -41,7 +41,7 @@ public static class PerModelLlmTests
         }
     }
 
-    private static async Task RunSingleModelTestAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, LLMRole role, string modelId, CancellationToken cancellationToken)
+    private static async Task RunSingleModelTestAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, Role role, string modelId, CancellationToken cancellationToken)
     {
         ctx.Log($"      Model: {modelId}");
 

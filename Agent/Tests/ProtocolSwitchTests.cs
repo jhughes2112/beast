@@ -19,7 +19,7 @@ public static class ProtocolSwitchTests
 	{
 		ctx.Log("  ProtocolSwitchTests");
 
-		List<LLMRole> roles = new List<LLMRole>(roleService.Roles.Values);
+		List<Role> roles = new List<Role>(roleService.Roles.Values);
 		if (roles.Count == 0)
 		{
 			ctx.Log("    SKIP: no roles configured");
@@ -27,8 +27,8 @@ public static class ProtocolSwitchTests
 		}
 
 		// Use the first role that has at least one available model.
-		LLMRole? testRole = null;
-		foreach (LLMRole r in roles)
+		Role? testRole = null;
+		foreach (Role r in roles)
 		{
 			foreach (string mid in r.Models)
 			{
@@ -72,7 +72,7 @@ public static class ProtocolSwitchTests
 	}
 
 	// Turn 1: send "hello" to every available model and verify a non-empty reply arrives.
-	private static async Task RunFreshSessionTestsAsync(TestContext ctx, LLMRole role, LlmRegistry registry,
+	private static async Task RunFreshSessionTestsAsync(TestContext ctx, Role role, LlmRegistry registry,
 		List<LlmService> anthropicServices, List<LlmService> openAiStyleServices, CancellationToken cancellationToken)
 	{
 		ctx.Log("    FreshSession");
@@ -133,7 +133,7 @@ public static class ProtocolSwitchTests
 
 	// Turn 1 on serviceA → "PING", turn 2 on serviceB (same protocol family) → "PONG".
 	// The canonical history must grow after each turn so the second model sees context.
-	private static async Task RunSameProtocolSwitchTestAsync(TestContext ctx, LLMRole role, LlmRegistry registry,
+	private static async Task RunSameProtocolSwitchTestAsync(TestContext ctx, Role role, LlmRegistry registry,
 		List<LlmService> anthropicServices, List<LlmService> openAiStyleServices, CancellationToken cancellationToken)
 	{
 		ctx.Log("    SameProtocolSwitch");
@@ -210,7 +210,7 @@ public static class ProtocolSwitchTests
 	// Continues the same session with a model from the opposite protocol family → "BOOMERANG".
 	// The new ProtocolProxy detects a different wire format, installs it, and rehydrates from
 	// the full canonical history so the cross-protocol model has the entire context.
-	private static async Task RunCrossProtocolSwitchTestAsync(TestContext ctx, LLMRole role, LlmRegistry registry,
+	private static async Task RunCrossProtocolSwitchTestAsync(TestContext ctx, Role role, LlmRegistry registry,
 		List<LlmService> anthropicServices, List<LlmService> openAiStyleServices, CancellationToken cancellationToken)
 	{
 		ctx.Log("    CrossProtocolSwitch");

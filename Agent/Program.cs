@@ -27,11 +27,10 @@ public class Program
 
 		RoleService roleService = new RoleService(Environment.CurrentDirectory, settingsService.Settings);
 		LlmRegistry registry = new LlmRegistry();
-		WorkflowService workflowService = new WorkflowService(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
 		ITransportServer transport = wsServer;
-		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, workflowService, cts);
+		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts);
 
 		try
 		{
