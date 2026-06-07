@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Collections;
 using System.Text.Json.Nodes;
 
 
@@ -75,10 +74,11 @@ public static class ProtocolSwitchTests
 		ctx.AssertEqual(countAfterTurn2, NativeCount(cc2, "_native"), "CrossProtocol: new CC rehydrated with full history");
 	}
 
-	// Returns the Count of the named ICollection field via reflection.
+	// Returns the Count of the named collection field via reflection.
+	// Works for both JsonArray (ICollection<T> only) and List<T> (ICollection + ICollection<T>).
 	private static int NativeCount(object target, string fieldName)
 	{
-		ICollection native = (ICollection)Reflect.GetField(target, fieldName)!;
-		return native.Count;
+		object native = Reflect.GetField(target, fieldName)!;
+		return (int)native.GetType().GetProperty("Count")!.GetValue(native)!;
 	}
 }

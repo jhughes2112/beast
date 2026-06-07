@@ -88,9 +88,9 @@ public static class FileToolsTests
 		// Single-line replace: replace second line
 		using CancellationTokenSource cts1 = new CancellationTokenSource();
 		ToolResult rep1 = await FileTools.EditFileReplaceAsync(path, anchor2, anchor2, "SECOND LINE", cts1.Token);
-		ctx.Assert(rep1.StdOut.Contains("OK"), "Edit replace single: OK");
+		ctx.AssertContains(rep1.StdOut, "OK", $"Edit replace single: OK (err: {rep1.StdErr})");
 		string after1 = File.ReadAllText(path);
-		ctx.Assert(after1.Contains("SECOND LINE"), "Edit replace single: content updated");
+		ctx.AssertContains(after1, "SECOND LINE", "Edit replace single: content updated");
 
 		// Multi-line replace: replace lines 2-3
 		using CancellationTokenSource cts2 = new CancellationTokenSource();
@@ -100,9 +100,10 @@ public static class FileToolsTests
 		anchor3 = ExtractAnchor(lines[2]);
 		using CancellationTokenSource cts3 = new CancellationTokenSource();
 		ToolResult rep2 = await FileTools.EditFileReplaceAsync(path, anchor2, anchor3, "replaced A\nreplaced B", cts3.Token);
-		ctx.Assert(rep2.StdOut.Contains("OK"), "Edit replace multi: OK");
+		ctx.AssertContains(rep2.StdOut, "OK", $"Edit replace multi: OK (err: {rep2.StdErr})");
 		string after2 = File.ReadAllText(path);
-		ctx.Assert(after2.Contains("replaced A") && after2.Contains("replaced B"), "Edit replace multi: content updated");
+		ctx.AssertContains(after2, "replaced A", "Edit replace multi: content has replaced A");
+		ctx.AssertContains(after2, "replaced B", "Edit replace multi: content has replaced B");
 
 		// Insert after: insert after line 1
 		using CancellationTokenSource cts4 = new CancellationTokenSource();
@@ -111,9 +112,9 @@ public static class FileToolsTests
 		anchor1 = ExtractAnchor(lines[0]);
 		using CancellationTokenSource cts5 = new CancellationTokenSource();
 		ToolResult ins1 = await FileTools.EditFileInsertAsync(path, anchor1, "inserted line", cts5.Token);
-		ctx.Assert(ins1.StdOut.Contains("OK"), "Edit insert after: OK");
+		ctx.AssertContains(ins1.StdOut, "OK", $"Edit insert after: OK (err: {ins1.StdErr})");
 		string after3 = File.ReadAllText(path);
-		ctx.Assert(after3.Contains("inserted line"), "Edit insert after: content updated");
+		ctx.AssertContains(after3, "inserted line", "Edit insert after: content updated");
 
 		// Combined operations: call replace and insert separately
 		using CancellationTokenSource cts6 = new CancellationTokenSource();
@@ -124,7 +125,7 @@ public static class FileToolsTests
 
 		using CancellationTokenSource cts7 = new CancellationTokenSource();
 		ToolResult rep3 = await FileTools.EditFileReplaceAsync(path, anchor1, anchor1, "FIRST-UPDATED", cts7.Token);
-		ctx.Assert(rep3.StdOut.Contains("OK"), "Edit combined ops replace: OK");
+		ctx.AssertContains(rep3.StdOut, "OK", $"Edit combined ops replace: OK (err: {rep3.StdErr})");
 
 		using CancellationTokenSource cts7b = new CancellationTokenSource();
 		read = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts7b.Token);
@@ -133,10 +134,11 @@ public static class FileToolsTests
 
 		using CancellationTokenSource cts7c = new CancellationTokenSource();
 		ToolResult ins2 = await FileTools.EditFileInsertAsync(path, anchor4, "ADDED-AT-END", cts7c.Token);
-		ctx.Assert(ins2.StdOut.Contains("OK"), "Edit combined ops insert: OK");
+		ctx.AssertContains(ins2.StdOut, "OK", $"Edit combined ops insert: OK (err: {ins2.StdErr})");
 
 		string after4 = File.ReadAllText(path);
-		ctx.Assert(after4.Contains("FIRST-UPDATED") && after4.Contains("ADDED-AT-END"), "Edit combined ops: content updated");
+		ctx.AssertContains(after4, "FIRST-UPDATED", "Edit combined ops: content has FIRST-UPDATED");
+		ctx.AssertContains(after4, "ADDED-AT-END", "Edit combined ops: content has ADDED-AT-END");
 
 		// Mismatch scenario: attempt to replace using stale anchor should error and not apply
 			// Use the original anchor2 which is now stale

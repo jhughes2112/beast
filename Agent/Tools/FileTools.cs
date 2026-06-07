@@ -50,6 +50,7 @@ public static class FileTools
 		hashByte = 0;
 		hexString = string.Empty;
 
+		anchor = anchor.Trim();
 		if (!string.IsNullOrEmpty(anchor))
 		{
 			int colon = anchor.IndexOf(':');

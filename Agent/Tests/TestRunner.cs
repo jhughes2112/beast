@@ -51,6 +51,11 @@ public class TestContext
 	{
 		Assert(value != null, $"{testName} — expected non-null");
 	}
+
+	public void AssertContains(string haystack, string needle, string testName)
+	{
+		Assert(haystack.Contains(needle), $"{testName} — expected '{needle}' in: {haystack}");
+	}
 }
 
 // Reflection helper to invoke private methods without modifying the target classes.
