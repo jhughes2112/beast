@@ -32,8 +32,8 @@ public static class ProtocolSwitchTests
 		{
 			foreach (string mid in r.Models)
 			{
-				LlmService? svc = registry.GetServiceById(mid);
-				if (svc != null && svc.IsAvailable && !string.IsNullOrEmpty(svc.Model.ApiKey))
+				LlmService? svc = registry.GetServiceById(mid, 0);
+				if (svc != null && !svc.IsDown && !string.IsNullOrEmpty(svc.Model.ApiKey))
 				{
 					testRole = r;
 					break;
@@ -56,8 +56,8 @@ public static class ProtocolSwitchTests
 
 		foreach (string mid in testRole.Models)
 		{
-			LlmService? svc = registry.GetServiceById(mid);
-			if (svc == null || !svc.IsAvailable || string.IsNullOrEmpty(svc.Model.ApiKey))
+			LlmService? svc = registry.GetServiceById(mid, 0);
+			if (svc == null || svc.IsDown || string.IsNullOrEmpty(svc.Model.ApiKey))
 				continue;
 
 			if (svc.Model.Endpoint.IndexOf("anthropic.com", StringComparison.OrdinalIgnoreCase) >= 0)

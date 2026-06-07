@@ -34,8 +34,7 @@ public class LlmService
     private LlmModel _model;
     private DateTimeOffset _availableAt = DateTimeOffset.MinValue;
     public LlmModel Model => _model;
-    public bool IsAvailable => _availableAt != DateTimeOffset.MaxValue;  // available means it CAN be used, not that it is available RIGHT THIS SECOND.  If it fails IsAvailable for being delayed a few seconds, we constantly change models for nothing.
-    public DateTimeOffset AvailableAt => _availableAt;
+    public bool IsDown => _availableAt == DateTimeOffset.MaxValue;
 
     public LlmService(LlmModel model)
     {
@@ -58,21 +57,12 @@ public class LlmService
 
     public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, Func<string?> checkForUserInput, CancellationToken cancellationToken)
     {
-        if (!IsAvailable)
+        // Waits until the backoff timer expires. Returns false immediately if permanently down.
+        if (_availableAt == DateTimeOffset.MaxValue)
         {
-            if (_availableAt == DateTimeOffset.MaxValue)
-            {
-                return new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is permanently down");
-            }
-
-            return new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is unavailable until {_availableAt:u}");
+            return new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is permanently down");
         }
 
-        return await ExecuteConversationAsync(conversation, bundle, tools, reserveTokens, transport, checkForUserInput, cancellationToken);
-    }
-
-    private async Task<LlmResult> ExecuteConversationAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, Func<string?> checkForUserInput, CancellationToken cancellationToken)
-    {
         LlmModel model = _model;
         LlmResult finalResult = new LlmResult(LlmExitReason.Completed, "");
 
@@ -91,6 +81,24 @@ public class LlmService
 
             for (; ; )
             {
+                if (rateLimitRetries <= kMaxRateLimitRetries)
+                {
+                    TimeSpan delay = _availableAt - DateTimeOffset.UtcNow;
+                    if (delay > TimeSpan.Zero)
+                    {
+                        if (rateLimitRetries>0)
+                        {
+                            transport.Status($"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
+                        }
+                        await Task.Delay(delay, cancellationToken);
+                    }
+                }
+                else
+                {
+                    finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availableAt:u}");
+                    break;
+                }
+
                 if (conversation.GetContextLength() + reserveTokens > model.Config.ContextWindow)
                 {
                     finalResult = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
@@ -163,21 +171,8 @@ public class LlmService
                 else if (callResult.Outcome == ProtocolCallOutcome.RateLimited)
                 {
                     rateLimitRetries++;
-                    DateTimeOffset retryAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
-
-                    if (rateLimitRetries <= kMaxRateLimitRetries)
-                    {
-                        TimeSpan delay = retryAt - DateTimeOffset.UtcNow;
-                        transport.Status($"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
-                        if (delay > TimeSpan.Zero)
-                            await Task.Delay(delay, cancellationToken);
-                    }
-                    else
-                    {
-                        _availableAt = retryAt;
-                        finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availableAt:u}");
-                        break;
-                    }
+                    _availableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
+                    // loop and retry
                 }
                 else if (callResult.Outcome == ProtocolCallOutcome.Transient)
                 {

@@ -48,16 +48,16 @@ public static class PerModelLlmTests
         LlmService? service = null;
         try
         {
-            service = registry.GetServiceById(modelId);
+            service = registry.GetServiceById(modelId, 0);
             if (service == null)
             {
                 ctx.Log($"        SKIP: model '{modelId}' service not found");
                 return;
             }
 
-            if (!service.IsAvailable)
+            if (service.IsDown)
             {
-                ctx.Log($"        SKIP: model '{modelId}' is currently unavailable");
+                ctx.Log($"        SKIP: model '{modelId}' is permanently down");
                 return;
             }
 

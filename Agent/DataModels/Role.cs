@@ -9,7 +9,7 @@ public class Role
 	[JsonPropertyName("name")]
 	public string Name { get; }
 
-    // One special note about the list of models is '*' means any model is allowed.  Order is still respected, so you can put * last in the list and set preferences higher.
+    // '*' expands at load time to all enabled model IDs at that position. Order is still respected.
 	[JsonPropertyName("models")]
 	public List<string> Models { get; }
 

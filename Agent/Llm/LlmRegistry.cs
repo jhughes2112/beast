@@ -61,6 +61,22 @@ public class LlmRegistry
 			}
 		}
 
+		// Expand '*' in role model lists to all enabled model IDs at that position.
+		List<string> allModelIds = new List<string>(_models.Keys);
+		foreach (Role role in roles.Roles.Values)
+		{
+			int starIdx = role.Models.IndexOf("*");
+			if (starIdx >= 0)
+			{
+				role.Models.RemoveAt(starIdx);
+				foreach (string id in allModelIds)
+				{
+					if (!role.Models.Contains(id))
+						role.Models.Insert(starIdx++, id);
+				}
+			}
+		}
+
 		foreach (Role role in roles.Roles.Values)
 		{
 			_toolsByRole[role.Name] = BuildToolsForRole(role);
@@ -76,16 +92,16 @@ public class LlmRegistry
 		{
 			if (role.Models.Contains(preferredModelId))  // if the current model is in the list, continue using it
 			{
-				if (_services.TryGetValue(preferredModelId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
+				if (_services.TryGetValue(preferredModelId, out LlmService? svc) && !svc.IsDown && svc.Model.Config.ContextWindow > minContextRequired)
 				{
 					service = svc;
 				}
 			}
 			if (service == null)
 			{
-				foreach (string cid in role.Models)  // nope, try them in order
+				foreach (string modelId in role.Models)  // nope, try them in order
 				{
-                    service = GetServiceById(cid, minContextRequired);
+                    service = GetServiceById(modelId, minContextRequired);
                     if (service!=null)
                         break;
                 }
@@ -119,42 +135,23 @@ public class LlmRegistry
 	// Returns the live service for a specific model ID, or null if not registered.
 	public LlmService? GetServiceById(string modelId, int minContextRequired)
 	{
-		if (_services.TryGetValue(modelId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
-		{
+		if (_services.TryGetValue(modelId, out LlmService? svc) && !svc.IsDown && svc.Model.Config.ContextWindow > minContextRequired)
 			return svc;
-		}
-        if (modelId == "*")  // wildcard means "use any available model" so we have to run through all the models to see if any are valid, even if the wildcard is not first in the list
-        {
-            foreach (LlmService svc2 in _services.Values)
-            {
-                if (svc2.IsAvailable && svc2.Model.Config.ContextWindow > minContextRequired)
-                {
-                    return svc2;
-                }
-            }
-        }
 
 		return null;
 	}
 
-	// Returns milliseconds until the earliest service in the role's model list becomes available.
-	// Returns 0 if at least one service is already available.
-	// Returns long.MaxValue if all services are permanently down.
+	// Returns 0 if any service for the role is not permanently down; MaxValue if all are.
+	// Timed backoffs are resolved inside WaitUntilReady — callers use this only to decide
+	// how long to idle before retrying when no service is usable at all.
 	public long GetMillisecondsUntilAvailable(Role role)
 	{
-		long earliest = long.MaxValue;
 		foreach (string cid in role.Models)
 		{
-			if (_services.TryGetValue(cid, out LlmService? svc))
-			{
-				if (svc.IsAvailable) 
-                    return 0;
-				long ms = (long)Math.Ceiling((svc.AvailableAt - DateTimeOffset.UtcNow).TotalMilliseconds);
-				if (ms < earliest) 
-                    earliest = ms;
-			}
+			if (_services.TryGetValue(cid, out LlmService? svc) && !svc.IsDown)
+				return 0;
 		}
-		return earliest;
+		return long.MaxValue;
 	}
 
 

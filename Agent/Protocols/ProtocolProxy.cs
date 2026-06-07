@@ -75,6 +75,42 @@ public class ProtocolProxy
                     {
                         _detected = DetectedProtocol.ChatCompletions;
                     }
+                    else if (endpoint.Contains("host.docker.internal", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Fallback for debug mode: retry with localhost instead of host.docker.internal
+                        string fallbackEndpoint = endpoint.Replace("host.docker.internal", "localhost", System.StringComparison.OrdinalIgnoreCase);
+                        string debugLine = $"[probe] All protocols failed for {endpoint}; retrying with {fallbackEndpoint}";
+                        ProtocolChatCompletions.Log(debugLine);
+                        transport.Debug(debugLine);
+
+                        ProbeResult anthropicFallback = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, fallbackEndpoint);
+                        LogProbe(transport, "Anthropic (fallback)", anthropicFallback);
+                        if (anthropicFallback.Outcome == ProbeOutcome.Supported)
+                        {
+                            _detected = DetectedProtocol.Anthropic;
+                            endpoint = fallbackEndpoint;
+                        }
+                        else
+                        {
+                            ProbeResult responsesFallback = await ProtocolResponses.ProbeAsync(_model.ApiKey, fallbackEndpoint);
+                            LogProbe(transport, "Responses (fallback)", responsesFallback);
+                            if (responsesFallback.Outcome == ProbeOutcome.Supported)
+                            {
+                                _detected = DetectedProtocol.Responses;
+                                endpoint = fallbackEndpoint;
+                            }
+                            else
+                            {
+                                ProbeResult chatFallback = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, fallbackEndpoint);
+                                LogProbe(transport, "ChatCompletions (fallback)", chatFallback);
+                                if (chatFallback.Outcome == ProbeOutcome.Supported)
+                                {
+                                    _detected = DetectedProtocol.ChatCompletions;
+                                    endpoint = fallbackEndpoint;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
