@@ -76,6 +76,13 @@ public static class Reflect
 			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}");
 		field.SetValue(target, value);
 	}
+
+	public static object? GetField(object target, string fieldName)
+	{
+		FieldInfo field = target.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}");
+		return field.GetValue(target);
+	}
 }
 
 

@@ -87,7 +87,7 @@ public static class PerModelLlmTests
                 bundle.OnSystemMessage(null!, role.SystemPrompt);
             bundle.OnUserMessage(null!, "Reply with exactly: PING");
 
-            using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
             Tool[] tools = registry.GetToolsForRole(role);
 

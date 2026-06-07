@@ -1,312 +1,84 @@
-using System;
 using System.Collections.Generic;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Collections;
+using System.Text.Json.Nodes;
 
 
-// Integration tests that verify multi-turn protocol switching within a single session.
-// Three scenarios are covered:
-//   1. Fresh single-turn hello on every available model (smoke test for basic connectivity).
-//   2. Same-protocol model switch: turn 1 on model A, turn 2 on model B (same wire format),
-//      verify the reply contains "PONG" and the canonical history grew.
-//   3. Cross-protocol switch: an additional turn on a model whose wire format differs from the
-//      first two, verify the reply contains "BOOMERANG" and history grew again.
-//
-// Tests skip gracefully when fewer than the required distinct models are available.
+// Unit tests for ListenerBundle protocol switching. Verifies that switching between
+// protocol types correctly creates a new instance and rehydrates it from canonical
+// state, without making any real API calls.
 public static class ProtocolSwitchTests
 {
-	public static async Task TestAsync(TestContext ctx, LlmRegistry registry, RoleService roleService, CancellationToken cancellationToken)
+	public static void Test(TestContext ctx)
 	{
 		ctx.Log("  ProtocolSwitchTests");
-
-		List<Role> roles = new List<Role>(roleService.Roles.Values);
-		if (roles.Count == 0)
-		{
-			ctx.Log("    SKIP: no roles configured");
-			return;
-		}
-
-		// Use the first role that has at least one available model.
-		Role? testRole = null;
-		foreach (Role r in roles)
-		{
-			foreach (string mid in r.Models)
-			{
-				LlmService? svc = registry.GetServiceById(mid, 0);
-				if (svc != null && !svc.IsDown && !string.IsNullOrEmpty(svc.Model.ApiKey))
-				{
-					testRole = r;
-					break;
-				}
-			}
-			if (testRole != null) break;
-		}
-
-		if (testRole == null)
-		{
-			ctx.Log("    SKIP: no role with an available model found");
-			return;
-		}
-
-		// Partition available services into two endpoint families so we can exercise same-
-		// protocol and cross-protocol switching. Anthropic endpoints are one family;
-		// everything else (OpenAI-style ChatCompletions or Responses) is the other.
-		List<LlmService> anthropicServices = new List<LlmService>();
-		List<LlmService> openAiStyleServices = new List<LlmService>();
-
-		foreach (string mid in testRole.Models)
-		{
-			LlmService? svc = registry.GetServiceById(mid, 0);
-			if (svc == null || svc.IsDown || string.IsNullOrEmpty(svc.Model.ApiKey))
-				continue;
-
-			if (svc.Model.Endpoint.IndexOf("anthropic.com", StringComparison.OrdinalIgnoreCase) >= 0)
-				anthropicServices.Add(svc);
-			else
-				openAiStyleServices.Add(svc);
-		}
-
-		await RunFreshSessionTestsAsync(ctx, testRole, registry, anthropicServices, openAiStyleServices, cancellationToken);
-		await RunSameProtocolSwitchTestAsync(ctx, testRole, registry, anthropicServices, openAiStyleServices, cancellationToken);
-		await RunCrossProtocolSwitchTestAsync(ctx, testRole, registry, anthropicServices, openAiStyleServices, cancellationToken);
+		TestSameProtocolSwitch(ctx);
+		TestCrossProtocolSwitch(ctx);
 	}
 
-	// Turn 1: send "hello" to every available model and verify a non-empty reply arrives.
-	private static async Task RunFreshSessionTestsAsync(TestContext ctx, Role role, LlmRegistry registry,
-		List<LlmService> anthropicServices, List<LlmService> openAiStyleServices, CancellationToken cancellationToken)
-	{
-		ctx.Log("    FreshSession");
-
-		List<LlmService> all = new List<LlmService>(anthropicServices);
-		all.AddRange(openAiStyleServices);
-
-		if (all.Count == 0)
-		{
-			ctx.Log("      SKIP: no available services");
-			return;
-		}
-
-		Tool[] tools = registry.GetToolsForRole(role);
-
-		foreach (LlmService service in all)
-		{
-			string modelId = service.Model.ConfigId;
-			ctx.Log($"      Model: {modelId}");
-			try
-			{
-				TestCaptureTransport transport = new TestCaptureTransport();
-				BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, $"proto-fresh-{modelId}");
-
-				ListenerBundle bundle = new ListenerBundle(
-					new ListenerChatCompletions(session.ChatCompletionsState),
-					new ListenerTransport(transport));
-
-				if (!string.IsNullOrEmpty(role.SystemPrompt))
-					bundle.OnSystemMessage(null!, role.SystemPrompt);
-				bundle.OnUserMessage(null!, "Say exactly: HELLO");
-
-				using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-				cts.CancelAfter(TimeSpan.FromSeconds(30));
-
-				LlmResult result = await service.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
-
-				if (result.ExitReason != LlmExitReason.Completed)
-				{
-					ctx.Log($"        SKIP [{modelId}]: {result.ErrorMessage}");
-					continue;
-				}
-
-				bool gotHello = ResponseContains(transport, "HELLO");
-				ctx.Assert(gotHello, $"FreshSession [{modelId}]: response contains HELLO");
-				ctx.Log($"        {(gotHello ? "PASS" : "FAIL")} [{modelId}]");
-			}
-			catch (OperationCanceledException)
-			{
-				ctx.Log($"        TIMEOUT [{modelId}]");
-			}
-			catch (Exception ex)
-			{
-				ctx.Log($"        ERROR [{modelId}]: {ex.Message}");
-			}
-		}
-	}
-
-	// Turn 1 on serviceA → "PING", turn 2 on serviceB (same protocol family) → "PONG".
-	// The canonical history must grow after each turn so the second model sees context.
-	private static async Task RunSameProtocolSwitchTestAsync(TestContext ctx, Role role, LlmRegistry registry,
-		List<LlmService> anthropicServices, List<LlmService> openAiStyleServices, CancellationToken cancellationToken)
+	// Invalidating and re-ensuring the same protocol creates a fresh instance
+	// rehydrated from canonical — verifying the bundle correctly resets the slot.
+	private static void TestSameProtocolSwitch(TestContext ctx)
 	{
 		ctx.Log("    SameProtocolSwitch");
 
-		// Need two distinct models from the same family; prefer the larger list.
-		List<LlmService> family = openAiStyleServices.Count >= 2 ? openAiStyleServices : anthropicServices;
-		if (family.Count < 2)
-		{
-			ctx.Log("      SKIP: need at least 2 models of the same protocol family");
-			return;
-		}
+		JsonArray state = new JsonArray();
+		ListenerBundle bundle = new ListenerBundle(new ListenerChatCompletions(state), null);
 
-		LlmService serviceA = family[0];
-		LlmService serviceB = family[1];
-		Tool[] tools = registry.GetToolsForRole(role);
+		bundle.OnUserMessage(null!, "hello");
+		bundle.OnAssistantTurn(null!, "world", "", new List<SemanticToolCall>());
 
-		ctx.Log($"      ModelA: {serviceA.Model.ConfigId}  ModelB: {serviceB.Model.ConfigId}");
+		ctx.AssertEqual(2, state.Count, "SameProtocol: canonical has 2 messages");
 
-		try
-		{
-			TestCaptureTransport transport = new TestCaptureTransport();
-			BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, "proto-same-switch");
+		ProtocolChatCompletions first = bundle.EnsureProtocolChatCompletions();
+		int firstCount = NativeCount(first, "_native");
+		ctx.AssertEqual(2, firstCount, "SameProtocol: first instance rehydrated from canonical");
 
-			ListenerBundle bundle = new ListenerBundle(
-				new ListenerChatCompletions(session.ChatCompletionsState),
-				new ListenerTransport(transport));
+		bundle.InvalidateProtocol();
+		ProtocolChatCompletions second = bundle.EnsureProtocolChatCompletions();
 
-			if (!string.IsNullOrEmpty(role.SystemPrompt))
-				bundle.OnSystemMessage(null!, role.SystemPrompt);
-			bundle.OnUserMessage(null!, "Say exactly: PING");
-
-			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-			cts.CancelAfter(TimeSpan.FromSeconds(60));
-
-			// Turn 1 — model A.
-			LlmResult result1 = await serviceA.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
-			if (result1.ExitReason != LlmExitReason.Completed)
-			{
-				ctx.Log($"      SKIP: turn 1 failed — {result1.ErrorMessage}");
-				return;
-			}
-
-			int canonicalAfterTurn1 = session.ChatCompletionsState.Count;
-
-			// Turn 2 — model B (same protocol). ProtocolProxy on serviceB will detect, install,
-			// and rehydrate from the canonical state that already holds the prior exchange.
-			bundle.OnUserMessage(null!, "Now say exactly: PONG");
-			LlmResult result2 = await serviceB.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
-			if (result2.ExitReason != LlmExitReason.Completed)
-			{
-				ctx.Log($"      SKIP: turn 2 failed — {result2.ErrorMessage}");
-				return;
-			}
-
-			int canonicalAfterTurn2 = session.ChatCompletionsState.Count;
-
-			bool gotPong = ResponseContains(transport, "PONG");
-			bool historyGrew = canonicalAfterTurn2 > canonicalAfterTurn1;
-
-			ctx.Assert(gotPong, $"SameProtocolSwitch: turn 2 response contains PONG");
-			ctx.Assert(historyGrew, $"SameProtocolSwitch: canonical history grew after turn 2 ({canonicalAfterTurn1} -> {canonicalAfterTurn2})");
-			ctx.Log($"      {(gotPong && historyGrew ? "PASS" : "FAIL")}");
-		}
-		catch (OperationCanceledException)
-		{
-			ctx.Log("      TIMEOUT");
-		}
-		catch (Exception ex)
-		{
-			ctx.Log($"      ERROR: {ex.Message}");
-		}
+		ctx.Assert(!ReferenceEquals(first, second), "SameProtocol: invalidate yields new instance");
+		ctx.AssertEqual(2, NativeCount(second, "_native"), "SameProtocol: new instance rehydrated with same history");
+		ctx.AssertEqual(2, state.Count, "SameProtocol: canonical unchanged through switch");
 	}
 
-	// Continues the same session with a model from the opposite protocol family → "BOOMERANG".
-	// The new ProtocolProxy detects a different wire format, installs it, and rehydrates from
-	// the full canonical history so the cross-protocol model has the entire context.
-	private static async Task RunCrossProtocolSwitchTestAsync(TestContext ctx, Role role, LlmRegistry registry,
-		List<LlmService> anthropicServices, List<LlmService> openAiStyleServices, CancellationToken cancellationToken)
+	// Switching from ChatCompletions to Anthropic rehydrates Anthropic from canonical
+	// and nulls the ChatCompletions slot. Switching back creates a new ChatCompletions
+	// instance containing the full accumulated history.
+	private static void TestCrossProtocolSwitch(TestContext ctx)
 	{
 		ctx.Log("    CrossProtocolSwitch");
 
-		if (anthropicServices.Count == 0 || openAiStyleServices.Count == 0)
-		{
-			ctx.Log("      SKIP: need at least one model in each protocol family (Anthropic and OpenAI-style)");
-			return;
-		}
+		JsonArray state = new JsonArray();
+		ListenerBundle bundle = new ListenerBundle(new ListenerChatCompletions(state), null);
 
-		LlmService openAiService = openAiStyleServices[0];
-		LlmService anthropicService = anthropicServices[0];
-		Tool[] tools = registry.GetToolsForRole(role);
+		bundle.OnUserMessage(null!, "first");
+		bundle.OnAssistantTurn(null!, "reply1", "", new List<SemanticToolCall>());
+		int countAfterTurn1 = state.Count;  // 2
 
-		ctx.Log($"      OpenAI-style: {openAiService.Model.ConfigId}  Anthropic: {anthropicService.Model.ConfigId}");
+		ProtocolChatCompletions cc1 = bundle.EnsureProtocolChatCompletions();
+		ctx.AssertEqual(countAfterTurn1, NativeCount(cc1, "_native"), "CrossProtocol: ChatCompletions rehydrated");
 
-		try
-		{
-			TestCaptureTransport transport = new TestCaptureTransport();
-			BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, "proto-cross-switch");
+		// Switch to Anthropic — cc1 slot should be nulled, Anthropic rehydrated.
+		ProtocolAnthropic anthropic = bundle.EnsureProtocolAnthropic();
+		ctx.Assert(NativeCount(anthropic, "_native") > 0, "CrossProtocol: Anthropic rehydrated from canonical");
 
-			ListenerBundle bundle = new ListenerBundle(
-				new ListenerChatCompletions(session.ChatCompletionsState),
-				new ListenerTransport(transport));
+		// Events after the switch accumulate into canonical and the active Anthropic native state.
+		bundle.OnUserMessage(null!, "second");
+		bundle.OnAssistantTurn(null!, "reply2", "", new List<SemanticToolCall>());
+		int countAfterTurn2 = state.Count;
 
-			if (!string.IsNullOrEmpty(role.SystemPrompt))
-				bundle.OnSystemMessage(null!, role.SystemPrompt);
-			bundle.OnUserMessage(null!, "Say exactly: PING");
+		ctx.Assert(countAfterTurn2 > countAfterTurn1, "CrossProtocol: canonical grew after protocol switch");
 
-			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-			cts.CancelAfter(TimeSpan.FromSeconds(90));
-
-			// Turn 1 — OpenAI-style model.
-			LlmResult result1 = await openAiService.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
-			if (result1.ExitReason != LlmExitReason.Completed)
-			{
-				ctx.Log($"      SKIP: turn 1 (OpenAI-style) failed — {result1.ErrorMessage}");
-				return;
-			}
-
-			int canonicalAfterTurn1 = session.ChatCompletionsState.Count;
-
-			// Turn 2 — same OpenAI-style model, ask for PONG.
-			bundle.OnUserMessage(null!, "Now say exactly: PONG");
-			LlmResult result2 = await openAiService.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
-			if (result2.ExitReason != LlmExitReason.Completed)
-			{
-				ctx.Log($"      SKIP: turn 2 (OpenAI-style) failed — {result2.ErrorMessage}");
-				return;
-			}
-
-			int canonicalAfterTurn2 = session.ChatCompletionsState.Count;
-
-			// Turn 3 — Anthropic model (cross-protocol). ProtocolProxy detects Anthropic,
-			// installs ProtocolAnthropic, and rehydrates from the accumulated canonical state.
-			bundle.OnUserMessage(null!, "Now say exactly: BOOMERANG");
-			LlmResult result3 = await anthropicService.RunToCompletionAsync(session, bundle, tools, 0, transport, () => null, cts.Token);
-			if (result3.ExitReason != LlmExitReason.Completed)
-			{
-				ctx.Log($"      SKIP: turn 3 (Anthropic) failed — {result3.ErrorMessage}");
-				return;
-			}
-
-			int canonicalAfterTurn3 = session.ChatCompletionsState.Count;
-
-			bool gotPong = ResponseContains(transport, "PONG");
-			bool gotBoomerang = ResponseContains(transport, "BOOMERANG");
-			bool historyGrewTurn2 = canonicalAfterTurn2 > canonicalAfterTurn1;
-			bool historyGrewTurn3 = canonicalAfterTurn3 > canonicalAfterTurn2;
-
-			ctx.Assert(gotPong, $"CrossProtocolSwitch: turn 2 response contains PONG");
-			ctx.Assert(gotBoomerang, $"CrossProtocolSwitch: turn 3 response contains BOOMERANG");
-			ctx.Assert(historyGrewTurn2, $"CrossProtocolSwitch: canonical grew after turn 2 ({canonicalAfterTurn1} -> {canonicalAfterTurn2})");
-			ctx.Assert(historyGrewTurn3, $"CrossProtocolSwitch: canonical grew after turn 3 ({canonicalAfterTurn2} -> {canonicalAfterTurn3})");
-
-			bool pass = gotPong && gotBoomerang && historyGrewTurn2 && historyGrewTurn3;
-			ctx.Log($"      {(pass ? "PASS" : "FAIL")}");
-		}
-		catch (OperationCanceledException)
-		{
-			ctx.Log("      TIMEOUT");
-		}
-		catch (Exception ex)
-		{
-			ctx.Log($"      ERROR: {ex.Message}");
-		}
+		// Switch back to ChatCompletions — must be a new instance with the full history.
+		ProtocolChatCompletions cc2 = bundle.EnsureProtocolChatCompletions();
+		ctx.Assert(!ReferenceEquals(cc1, cc2), "CrossProtocol: switch back yields new CC instance");
+		ctx.AssertEqual(countAfterTurn2, NativeCount(cc2, "_native"), "CrossProtocol: new CC rehydrated with full history");
 	}
 
-	// Returns true if any Output frame in the capture contains the expected substring.
-	private static bool ResponseContains(TestCaptureTransport transport, string expected)
+	// Returns the Count of the named ICollection field via reflection.
+	private static int NativeCount(object target, string fieldName)
 	{
-		foreach ((FrameType type, string text) in transport.Sent)
-		{
-			if (type == FrameType.Output && text.IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0)
-				return true;
-		}
-		return false;
+		ICollection native = (ICollection)Reflect.GetField(target, fieldName)!;
+		return native.Count;
 	}
 }

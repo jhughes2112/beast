@@ -509,7 +509,7 @@ public class AgentOrchestrator
         ShellToolsTests.Test(ctx);
         await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
         await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, _cancellationTokenSource.Token);
-        await ProtocolSwitchTests.TestAsync(ctx, _registry, _roleService, _cancellationTokenSource.Token);
+        ProtocolSwitchTests.Test(ctx);
 
         _transport.Output($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
     }
