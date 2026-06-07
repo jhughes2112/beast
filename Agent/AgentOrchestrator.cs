@@ -108,19 +108,12 @@ public class AgentOrchestrator
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
             {
-                // 1. Resolve role and service.
+                // 1. Drain all pending input: text → AddUserMessage, commands → dispatch.
+                session = await DrainInputAsync(inputQueue, session);
+
+                // 2. Resolve role and service after drain (commands may have changed role or model).
                 Role? role = _roleService.GetRole(session.Data.Role);
                 LlmService? service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
-
-                // 2. Drain all pending input: run commands in order, accumulate text.
-                // Returns null accumulatedText if nothing was dequeued; empty string if only commands ran.
-                string? accumulatedText = null;
-                if (!inputQueue.IsEmpty)
-                    (accumulatedText, session) = await DrainInputAsync(inputQueue, session, service, role);
-
-                // Re-resolve after commands so any role/model changes take effect immediately.
-                role = _roleService.GetRole(session.Data.Role);
-                service = _registry.GetServiceForRole(role, session.Data.Model, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens);
 
                 if (service != null)
                 {
@@ -173,18 +166,30 @@ public class AgentOrchestrator
                     }
                 }
 
-                // Queue the accumulated user text; RunTurnAsync will flush it before calling the LLM.
-                if (!string.IsNullOrEmpty(accumulatedText))
-                    session.AddUserMessage(accumulatedText);
-
-                // 3. Run the LLM whenever the session has work; yield briefly if there is nothing to do.
+                // 3. Run the LLM whenever the session has work.
+                // NeedsAttention() returns false after an interrupt until AddUserMessage() is called.
                 if (session.NeedsAttention() && service != null && role != null)
                 {
                     IncrementBusy();
                     try
                     {
                         Tool[] tools = _registry.GetToolsForRole(role);
-                        LlmResult result = await session.RunTurnAsync(service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
+                        // Mid-turn: move text from the input queue into the session so the LLM can see
+                        // it between tool calls. Commands stay queued and are processed next iteration.
+                        Action midTurnDrain = () =>
+                        {
+                            List<string> deferred = new List<string>();
+                            while (inputQueue.TryDequeue(out string? item))
+                            {
+                                if (item.StartsWith("/"))
+                                    deferred.Add(item);
+                                else
+                                    session.AddUserMessage(item);
+                            }
+                            foreach (string cmd in deferred)
+                                inputQueue.Enqueue(cmd);
+                        };
+                        LlmResult result = await session.RunTurnAsync(service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token, midTurnDrain);
                         SendStats(session.Data, service.Model.Config.ContextWindow);
 
                         if (result.ExitReason == LlmExitReason.ContextFull)
@@ -204,6 +209,8 @@ public class AgentOrchestrator
                                 _activeSession = session;
                             }
                         }
+                        // Interrupted: session._interruptedAndWaiting is set in RunTurnAsync;
+                        // NeedsAttention() returns false until AddUserMessage() is called with new input.
                     }
                     finally
                     {
@@ -303,153 +310,132 @@ public class AgentOrchestrator
 
     // ---- Input processing ----
 
-    // Drains all queued input lines. Commands are dispatched immediately; plain text is accumulated.
-    // Returns null for accumulatedText if the queue was empty; empty string if only commands ran.
-    private async Task<(string? accumulatedText, Session session)> DrainInputAsync(
-        ConcurrentQueue<string> inputQueue,
-        Session session,
-        LlmService? service,
-        Role? role)
+    // Drains all queued input in arrival order: plain text becomes user messages; slash commands
+    // are dispatched. This preserves ordering (text, /cmd, text stays text → action → text).
+    private async Task<Session> DrainInputAsync(ConcurrentQueue<string> inputQueue, Session session)
     {
-        if (!inputQueue.TryPeek(out _))
-            return (null, session);
-
-        string accumulatedText = string.Empty;
-
         while (inputQueue.TryDequeue(out string? line))
         {
-            string? text;
-            (text, session) = await HandleInputLineAsync(line, session, service, role);
-            if (text != null)
-                accumulatedText = string.IsNullOrEmpty(accumulatedText) ? text : accumulatedText + "\n" + text;
-        }
+            if (!line.StartsWith("/"))
+            {
+                session.AddUserMessage(line);
+                continue;
+            }
 
-        return (accumulatedText, session);
-    }
+            string trimmed = line.TrimStart('/').Trim();
+            string verb;
+            string? args = null;
 
-    // Dispatches a single input line. Returns the line as plain text if it is not a command, null otherwise.
-    private async Task<(string? text, Session session)> HandleInputLineAsync(
-        string line,
-        Session session,
-        LlmService? service,
-        Role? role)
-    {
-        if (!line.StartsWith("/"))
-            return (line, session);
+            int spaceIdx = trimmed.IndexOf(' ');
+            if (spaceIdx >= 0)
+            {
+                verb = trimmed.Substring(0, spaceIdx).ToLowerInvariant();
+                args = trimmed.Substring(spaceIdx + 1).Trim();
+            }
+            else
+            {
+                verb = trimmed.ToLowerInvariant();
+            }
 
-        string trimmed = line.TrimStart('/').Trim();
-        string verb;
-        string? args = null;
-
-        int spaceIdx = trimmed.IndexOf(' ');
-        if (spaceIdx >= 0)
-        {
-            verb = trimmed.Substring(0, spaceIdx).ToLowerInvariant();
-            args = trimmed.Substring(spaceIdx + 1).Trim();
-        }
-        else
-        {
-            verb = trimmed.ToLowerInvariant();
-        }
-
-        switch (verb)
-        {
-            case "quit":
-                _cancellationTokenSource.Cancel();
-                break;
-            case "compact":
-                _wantsCompact = true;
-                break;
-            case "session":
-                if (args == "new")
-                {
-                    SessionService.Save(session.Data);
-                    session = CreateFreshSession(session.Data.Role);
-                    _activeSession = session;
-                    _cachedSessions = SessionService.List();
-                    _transport.Status("New session started.");
-                }
-                else if (args == "none")
-                {
-                    SessionService.Save(session.Data);
-                    session = CreateFreshSession(session.Data.Role);
-                    session.Data.Ephemeral = true;
-                    _activeSession = session;
-                    _cachedSessions = SessionService.List();
-                    _transport.Status("Ephemeral session started (not saved).");
-                }
-                else if (args != null)
-                {
-                    string resolvedId = args;
-                    foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
-                    {
-                        if (string.Equals(s.displayName, args, StringComparison.Ordinal) ||
-                            string.Equals(s.id, args, StringComparison.Ordinal))
-                        {
-                            resolvedId = s.id;
-                            break;
-                        }
-                    }
-                    BeastSession? loaded = SessionService.Load(resolvedId);
-                    if (loaded != null)
+            switch (verb)
+            {
+                case "quit":
+                    _cancellationTokenSource.Cancel();
+                    break;
+                case "compact":
+                    _wantsCompact = true;
+                    break;
+                case "session":
+                    if (args == "new")
                     {
                         SessionService.Save(session.Data);
-                        session = new Session(loaded, _transport);
+                        session = CreateFreshSession(session.Data.Role);
                         _activeSession = session;
                         _cachedSessions = SessionService.List();
-                        _transport.Status("Switched to session: " + loaded.DisplayName);
+                        _transport.Status("New session started.");
                     }
-                    else
+                    else if (args == "none")
                     {
-                        _transport.Error("Session not found: " + args);
+                        SessionService.Save(session.Data);
+                        session = CreateFreshSession(session.Data.Role);
+                        session.Data.Ephemeral = true;
+                        _activeSession = session;
+                        _cachedSessions = SessionService.List();
+                        _transport.Status("Ephemeral session started (not saved).");
                     }
-                }
-                break;
-            case "clear":
-                session.Clear();
-                _registry.ResetAllAvailability();
-                _transport.Status("Session cleared.");
-                break;
-            case "reload":
-                ReloadRegistry();
-                _registry.ResetAllAvailability();
-                _transport.Status("Config files reloaded.");
-                break;
-            case "role":
-                if (args != null)
-                {
-                    session.Data.Role = args;
-                    _transport.Status($"Role set to {args}");
-                }
-                break;
-            case "model":
-                if (args != null)
-                {
-                    Role? modelRole = _roleService.GetRole(session.Data.Role);
-                    LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens) : null;
-                    if (modelService == null)
-                        _transport.Error($"Unknown model: {args}");
-                    else
+                    else if (args != null)
                     {
-                        session.Data.Model = args;
-                        _registry.ResetAvailability(args);
-                        session.InvalidateProtocol();
-                        _transport.Status($"Model set to {args}");
+                        string resolvedId = args;
+                        foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
+                        {
+                            if (string.Equals(s.displayName, args, StringComparison.Ordinal) ||
+                                string.Equals(s.id, args, StringComparison.Ordinal))
+                            {
+                                resolvedId = s.id;
+                                break;
+                            }
+                        }
+                        BeastSession? loaded = SessionService.Load(resolvedId);
+                        if (loaded != null)
+                        {
+                            SessionService.Save(session.Data);
+                            session = new Session(loaded, _transport);
+                            _activeSession = session;
+                            _cachedSessions = SessionService.List();
+                            _transport.Status("Switched to session: " + loaded.DisplayName);
+                        }
+                        else
+                        {
+                            _transport.Error("Session not found: " + args);
+                        }
                     }
-                }
-                break;
-            case "help":
-                _transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
-                break;
-            case "test":
-                await RunTestsAsync(args);
-                break;
-            default:
-                _transport.Error($"Unknown command reached agent: /{verb}");
-                break;
+                    break;
+                case "clear":
+                    session.Clear();
+                    _registry.ResetAllAvailability();
+                    _transport.Status("Session cleared.");
+                    break;
+                case "reload":
+                    ReloadRegistry();
+                    _registry.ResetAllAvailability();
+                    _transport.Status("Config files reloaded.");
+                    break;
+                case "role":
+                    if (args != null)
+                    {
+                        session.Data.Role = args;
+                        _transport.Status($"Role set to {args}");
+                    }
+                    break;
+                case "model":
+                    if (args != null)
+                    {
+                        Role? modelRole = _roleService.GetRole(session.Data.Role);
+                        LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, session.Data.GetContextLength() + _settings.Settings.CompactionReserveTokens) : null;
+                        if (modelService == null)
+                            _transport.Error($"Unknown model: {args}");
+                        else
+                        {
+                            session.Data.Model = args;
+                            _registry.ResetAvailability(args);
+                            session.InvalidateProtocol();
+                            _transport.Status($"Model set to {args}");
+                        }
+                    }
+                    break;
+                case "help":
+                    _transport.Output("Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
+                    break;
+                case "test":
+                    await RunTestsAsync(args);
+                    break;
+                default:
+                    _transport.Error($"Unknown command reached agent: /{verb}");
+                    break;
+            }
         }
 
-        return (null, session);
+        return session;
     }
 
     // Returns all completable tokens: slash commands, role names, model names, and session ids.
@@ -458,7 +444,7 @@ public class AgentOrchestrator
         List<string> candidates = new List<string>
         {
             "/compact", "/clear", "/reload", "/role", "/model",
-            "/session", "/help", "/test"
+            "/session", "/help"
         };
 
         Role? activeRole = _roleService.GetRole(data.Role);
@@ -508,6 +494,7 @@ public class AgentOrchestrator
         TestContext ctx = new TestContext(_transport);
 
         LlmServiceTests.Test(ctx);
+        FixJsonTests.Test(ctx);
         await FileToolsTests.TestAsync(ctx);
         ShellToolsTests.Test(ctx);
         await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
@@ -566,7 +553,7 @@ public class AgentOrchestrator
         _transport.Status($"[Role] Evaluating: {currentRole.EndOfTurnPrompt}");
         for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
         {
-            LlmResult evalResult = await evalSession.RunTurnAsync(service, new Tool[] { answerTool }, 0, ct);
+            LlmResult evalResult = await evalSession.RunTurnAsync(service, new Tool[] { answerTool }, 0, ct, null);
 
             if (evalResult.ExitReason != LlmExitReason.Completed)
                 break;

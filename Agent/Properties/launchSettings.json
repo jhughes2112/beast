@@ -1,8 +1,12 @@
 {
   "profiles": {
-    "Debug": {
+    "Tests": {
       "commandName": "Project",
       "commandLineArgs": "--test",
+      "workingDirectory": "D:\\Github\\beast"
+    },
+    "Run": {
+      "commandName": "Project",
       "workingDirectory": "D:\\Github\\beast"
     }
   }

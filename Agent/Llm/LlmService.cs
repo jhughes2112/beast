@@ -253,6 +253,8 @@ public class LlmService
 
     private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, ITransportServer transport, CancellationToken ct)
     {
+        Action<string> fixLog = msg => transport.Status(msg);
+
         Tool? matchedTool = null;
         foreach (Tool t in tools)
         {
@@ -263,24 +265,37 @@ public class LlmService
             }
         }
 
+        // Stage 3: fuzzy name correction when exact match fails
+        if (matchedTool == null)
+        {
+            string[] knownNames = new string[tools.Length];
+            for (int i = 0; i < tools.Length; i++)
+                knownNames[i] = tools[i].Definition.Function.Name;
+
+            string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, fixLog);
+            if (correctedName != null)
+            {
+                foreach (Tool t in tools)
+                {
+                    if (t.Definition.Function.Name == correctedName)
+                    {
+                        matchedTool = t;
+                        break;
+                    }
+                }
+            }
+        }
+
         if (matchedTool == null)
         {
             return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1);
         }
 
-        JsonObject? argsObj;
-        try
-        {
-            argsObj = JsonNode.Parse(toolCall.ArgumentsJson)?.AsObject();
-        }
-        catch (JsonException)
-        {
-            argsObj = null;
-        }
+        (JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, fixLog);
 
-        if (argsObj == null)
+        if (argsObj == null || argError != null)
         {
-            return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
+            return new ToolResult(string.Empty, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
         }
 
 // ToolCall framing is already emitted by the TransportListener when the assistant turn

@@ -28,14 +28,22 @@ public class Session
             new ListenerTransport(transport));
     }
 
-    public bool NeedsAttention() => _data.NeedsLlmAttention() || !_inputQueue.IsEmpty;
+    // Set when a turn is interrupted; cleared when new user text arrives via AddUserMessage.
+    // NeedsAttention() returns false while set so the loop waits instead of re-running immediately.
+    private bool _interruptedAndWaiting = false;
+
+    public bool NeedsAttention() => !_interruptedAndWaiting && (_data.NeedsLlmAttention() || !_inputQueue.IsEmpty);
 
     public string? GetLastAssistantText() => _bundle.GetLastAssistantText();
 
-    // Queues a plain-text user message for injection at the next turn boundary.
-    // Thread-safe: the reader task may call this while a turn is running.
-    // Mid-turn: LlmService polls the queue between tool calls via the checkForInput callback.
-    public void AddUserMessage(string text) => _inputQueue.Enqueue(text);
+    // Queues a plain-text user message. Clears the interrupted-wait state so NeedsAttention()
+    // becomes true again and the loop resumes. Thread-safe: the mid-turn drain callback may call
+    // this while a turn is running, injecting text between tool calls via the checkForInput callback.
+    public void AddUserMessage(string text)
+    {
+        _interruptedAndWaiting = false;
+        _inputQueue.Enqueue(text);
+    }
 
     // Applies a system prompt immediately (never queued — only called between turns).
     public void SetSystemPrompt(string prompt) => _bundle.OnSystemMessage(null!, prompt);
@@ -49,7 +57,11 @@ public class Session
     }
 
     // Clears the conversation history and resets availability.
-    public void Clear() => _bundle.OnClear();
+    public void Clear()
+    {
+        _interruptedAndWaiting = false;
+        _bundle.OnClear();
+    }
 
     // Signals the bundle that the active protocol should be discarded on next turn.
     public void InvalidateProtocol() => _bundle.InvalidateProtocol();
@@ -148,7 +160,10 @@ public class Session
     // Returns Completed, ContextFull, Failed, or Interrupted.
     // Re-throws OperationCanceledException only when appToken fires (process shutdown).
     // Interrupt() cancels the per-turn token; that case is absorbed and returned as Interrupted.
-    public async Task<LlmResult> RunTurnAsync(LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken)
+    // midTurnDrain: called between tool calls to move text from the orchestrator's input queue into
+    // this session's _inputQueue, where checkForInput picks it up for immediate LLM injection.
+    // Commands in the orchestrator queue are left in place and processed at the next loop iteration.
+    public async Task<LlmResult> RunTurnAsync(LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken, Action? midTurnDrain)
     {
         _data.Model = service.Model.ConfigId;
 
@@ -165,9 +180,10 @@ public class Session
         // Flush any messages queued before this turn starts.
         FlushPendingMessages();
 
-        // Poll the queue between LLM tool calls so parallel callers can inject messages mid-turn.
+        // Between tool calls: drain external input into the session queue, then return accumulated text.
         Func<string?> checkForInput = () =>
         {
+            midTurnDrain?.Invoke();
             if (_inputQueue.IsEmpty) return null;
             string accumulated = string.Empty;
             while (_inputQueue.TryDequeue(out string? line))
@@ -185,7 +201,9 @@ public class Session
             }
             catch (OperationCanceledException) when (_turnCts.IsCancellationRequested && !appToken.IsCancellationRequested)
             {
-                // Interrupt() was called (user /cancel) — absorb and return Interrupted.
+                // Interrupt() was called — mark as waiting for user so NeedsAttention() returns false
+                // until AddUserMessage() is called with new input.
+                _interruptedAndWaiting = true;
                 return new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
             }
         }
@@ -204,7 +222,7 @@ public class Session
         Session temp = Fork($"{_data.Id}_sum", string.Empty);
         temp.Data.Ephemeral = true;
         temp.AddUserMessage(prompt);
-        LlmResult result = await temp.RunTurnAsync(service, tools, 0, appToken);
+        LlmResult result = await temp.RunTurnAsync(service, tools, 0, appToken, null);
         if (result.ExitReason == LlmExitReason.Completed)
             return temp.GetLastAssistantText();
         return null;

@@ -14,6 +14,19 @@ public class Program
 			cts.Cancel();
 		};
 
+		// --test: run unit tests using the console transport and exit without starting the WebSocket server.
+		if (args.Length > 0 && args[0] == "--test")
+		{
+			ITransportServer consoleTransport = new TransportConsoleDebug();
+			TestContext ctx = new TestContext(consoleTransport);
+			LlmServiceTests.Test(ctx);
+			FixJsonTests.Test(ctx);
+			await FileToolsTests.TestAsync(ctx);
+			ShellToolsTests.Test(ctx);
+			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
+			return ctx.Failed > 0 ? 1 : 0;
+		}
+
 		SettingsService settingsService;
 		try
 		{
