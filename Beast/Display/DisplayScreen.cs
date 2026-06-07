@@ -1606,6 +1606,22 @@ public class DisplayScreen : IDisplay
 
             if (key.Key == ConsoleKey.Enter && !shift && !alt)
             {
+                // If a completion popup is active, accept the highlighted entry first.
+                bool popupActive;
+                string? accept = null;
+                lock (_consoleLock)
+                {
+                    popupActive = _completionActive && _completionMatches.Count > 0;
+                    if (popupActive) accept = _completionMatches[_completionIndex];
+                }
+                if (popupActive && accept != null)
+                {
+                    inputBuffer.Clear();
+                    inputBuffer.Append(accept);
+                    cursorPos = inputBuffer.Length;
+                    inCompletion = false;
+                }
+
                 string text = inputBuffer.ToString().TrimEnd('\n');
                 foreach ((string placeholder, string content) in pasteBuffers)
                 {
