@@ -33,11 +33,10 @@ public class ProtocolProxy
     private const string OpenRouterTitle = "Beast";
     private const string OpenRouterCategories = "cli-agent";
 
-    private readonly LlmModel _model;
+    private LlmModel _model;
 
-    // The endpoint cannot change for the life of this proxy, so the protocol only needs
-    // to be detected once. After the first successful probe the result is cached here and
-    // every later call routes directly to it without re-probing.
+    // The detected protocol is cached after the first successful probe.
+    // _model.Endpoint may be rewritten once if the localhost fallback fires.
     private DetectedProtocol _detected;
 
     public ProtocolProxy(LlmModel model)
@@ -88,7 +87,7 @@ public class ProtocolProxy
                         if (anthropicFallback.Outcome == ProbeOutcome.Supported)
                         {
                             _detected = DetectedProtocol.Anthropic;
-                            endpoint = fallbackEndpoint;
+                            _model = new LlmModel(_model.ConfigId, fallbackEndpoint, _model.ApiKey, _model.Extras, _model.Config);
                         }
                         else
                         {
@@ -97,7 +96,7 @@ public class ProtocolProxy
                             if (responsesFallback.Outcome == ProbeOutcome.Supported)
                             {
                                 _detected = DetectedProtocol.Responses;
-                                endpoint = fallbackEndpoint;
+                                _model = new LlmModel(_model.ConfigId, fallbackEndpoint, _model.ApiKey, _model.Extras, _model.Config);
                             }
                             else
                             {
@@ -106,7 +105,7 @@ public class ProtocolProxy
                                 if (chatFallback.Outcome == ProbeOutcome.Supported)
                                 {
                                     _detected = DetectedProtocol.ChatCompletions;
-                                    endpoint = fallbackEndpoint;
+                                    _model = new LlmModel(_model.ConfigId, fallbackEndpoint, _model.ApiKey, _model.Extras, _model.Config);
                                 }
                             }
                         }
