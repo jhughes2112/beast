@@ -14,12 +14,6 @@ public class BeastSettings
     [JsonPropertyName("webSearch")]
     public WebSearchConfig? WebSearch { get; set; }
 
-    [JsonPropertyName("compactionPrompt")]
-    public string CompactionPrompt { get; set; } = string.Empty;
-
-    [JsonPropertyName("continueMessage")]
-    public string ContinueMessage { get; set; } = string.Empty;
-
     [JsonPropertyName("idleSoundFile")]
     public string IdleSoundFile { get; set; } = string.Empty;
 

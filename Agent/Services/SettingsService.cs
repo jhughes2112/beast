@@ -11,9 +11,6 @@ public class SettingsService
     private readonly string _workDirSettingsPath;
     private readonly string _homeDirSettingsPath;
 
-    private static string kCompactionPrompt = "Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.";
-    private static string kContinueMessage = "Are you done? If finished, respond accordingly.";
-
     // The merged settings (user + local overrides)
     public BeastSettings Settings { get; private set; }
 
@@ -85,12 +82,6 @@ public class SettingsService
     private void MergeSettings(BeastSettings local)
     {
         // Apply local overrides to the Settings object, which is pre-loaded with user settings.
-        if (!string.IsNullOrWhiteSpace(local.CompactionPrompt))
-            Settings.CompactionPrompt = local.CompactionPrompt;
-
-        if (!string.IsNullOrWhiteSpace(local.ContinueMessage))
-            Settings.ContinueMessage = local.ContinueMessage;
-
         if (!string.IsNullOrWhiteSpace(local.IdleSoundFile))
             Settings.IdleSoundFile = local.IdleSoundFile;
 
@@ -136,9 +127,8 @@ public class SettingsService
     {
         return new BeastSettings
         {
-            CompactionPrompt = kCompactionPrompt,
-            ContinueMessage = kContinueMessage,
             IdleSoundFile = "C:/Windows/media/Windows Background.wav",
+            CompactionReserveTokens = 4096,
             Providers = new List<ProviderConfig>
             {
                 // OpenRouter — multi-model gateway

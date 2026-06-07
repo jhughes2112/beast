@@ -263,7 +263,7 @@ public class AgentOrchestrator
         List<JsonNode> tailExchanges = ExtractTailExchanges(session.Data.ChatCompletionsState, 2);
 
         _transport.Status("[Compaction] Started.");
-        string? summary = await session.SummarizeAsync(service, _settings.Settings.CompactionPrompt, Array.Empty<Tool>(), _cancellationTokenSource.Token);
+        string? summary = await session.SummarizeAsync(service, role.SummaryPrompt, Array.Empty<Tool>(), _cancellationTokenSource.Token);
 
         if (string.IsNullOrWhiteSpace(summary))
         {
@@ -529,9 +529,7 @@ public class AgentOrchestrator
 
         // 1. Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
         Tool[] roleTools = _registry.GetToolsForRole(currentRole);
-        string summaryPrompt = string.IsNullOrEmpty(currentRole.SummaryPrompt)
-            ? _settings.Settings.CompactionPrompt
-            : currentRole.SummaryPrompt;
+        string summaryPrompt = currentRole.SummaryPrompt;
 
         _transport.Status("[Role] Running end-of-turn summary...");
         string? summary = await session.SummarizeAsync(service, summaryPrompt, roleTools, ct);
