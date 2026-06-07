@@ -59,6 +59,23 @@ public class RoleService
         {
             Roles[kv.Key] = kv.Value;
         }
+
+        ValidateTruths();
+    }
+
+    // Warns at startup if any truth value references a role that doesn't exist.
+    private void ValidateTruths()
+    {
+        foreach (Role role in Roles.Values)
+        {
+            foreach (KeyValuePair<string, string> truth in role.Truths)
+            {
+                if (!string.IsNullOrEmpty(truth.Value) && !Roles.ContainsKey(truth.Value))
+                {
+                    Console.Error.WriteLine($"WARNING: Role '{role.Name}' truth '{truth.Key}' references unknown role '{truth.Value}'");
+                }
+            }
+        }
     }
 
     private Dictionary<string, Role>? LoadRolesFromFile(string path)

@@ -41,7 +41,7 @@ public class LlmRegistry
 				Dictionary<string, JsonNode?> extras = new(provider.Extras);
 				foreach (KeyValuePair<string, JsonNode?> kv in modelConfig.Extras)
 				{
-					extras[kv.Key] = kv.Value?.DeepClone();
+					extras[kv.Key] = kv.Value;
 				}
 				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, extras, modelConfig);
 				_models[modelConfig.Id] = model;
@@ -69,14 +69,14 @@ public class LlmRegistry
 
 	// Finds the first available service from the role's preferred model list, in order.
 	// Skips models that are unavailable or whose context window is too small for minContextRequired.
-	public LlmService? GetServiceForRole(Role? role, string configId, int minContextRequired)
+	public LlmService? GetServiceForRole(Role? role, string preferredModelId, int minContextRequired)
 	{
 		LlmService? service = null;
 		if (role!=null)
 		{
-			if (role.Models.Contains(configId))  // if the current model is in the list, continue using it
+			if (role.Models.Contains(preferredModelId))  // if the current model is in the list, continue using it
 			{
-				if (_services.TryGetValue(configId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
+				if (_services.TryGetValue(preferredModelId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
 				{
 					service = svc;
 				}
@@ -85,22 +85,9 @@ public class LlmRegistry
 			{
 				foreach (string cid in role.Models)  // nope, try them in order
 				{
-					if (_services.TryGetValue(cid, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
-					{
-						service = svc;
-						break;
-					}
-                    if (cid == "*")  // wildcard means "use any available model" so we have to run through all the models to see if any are valid, even if the wildcard is not first in the list
-                    {
-                        foreach (LlmService svc2 in _services.Values)
-                        {
-                            if (svc2.IsAvailable && svc2.Model.Config.ContextWindow > minContextRequired)
-                            {
-                                service = svc2;
-                                break;
-                            }
-                        }
-                    }
+                    service = GetServiceById(cid, minContextRequired);
+                    if (service!=null)
+                        break;
                 }
 			}
 		}
@@ -111,11 +98,6 @@ public class LlmRegistry
 	public Tool[] GetToolsForRole(Role role)
 	{
 		return _toolsByRole[role.Name];
-	}
-
-	public bool HasModel(string configId)
-	{
-		return _models.ContainsKey(configId);
 	}
 
 	// Returns the role's models filtered to those currently registered (enabled in settings),
@@ -135,10 +117,24 @@ public class LlmRegistry
 	}
 
 	// Returns the live service for a specific model ID, or null if not registered.
-	public LlmService? GetServiceById(string configId)
+	public LlmService? GetServiceById(string modelId, int minContextRequired)
 	{
-		_services.TryGetValue(configId, out LlmService? svc);
-		return svc;
+		if (_services.TryGetValue(modelId, out LlmService? svc) && svc.IsAvailable && svc.Model.Config.ContextWindow > minContextRequired)
+		{
+			return svc;
+		}
+        if (modelId == "*")  // wildcard means "use any available model" so we have to run through all the models to see if any are valid, even if the wildcard is not first in the list
+        {
+            foreach (LlmService svc2 in _services.Values)
+            {
+                if (svc2.IsAvailable && svc2.Model.Config.ContextWindow > minContextRequired)
+                {
+                    return svc2;
+                }
+            }
+        }
+
+		return null;
 	}
 
 	// Returns milliseconds until the earliest service in the role's model list becomes available.
@@ -151,9 +147,11 @@ public class LlmRegistry
 		{
 			if (_services.TryGetValue(cid, out LlmService? svc))
 			{
-				if (svc.IsAvailable) return 0;
+				if (svc.IsAvailable) 
+                    return 0;
 				long ms = (long)Math.Ceiling((svc.AvailableAt - DateTimeOffset.UtcNow).TotalMilliseconds);
-				if (ms < earliest) earliest = ms;
+				if (ms < earliest) 
+                    earliest = ms;
 			}
 		}
 		return earliest;

@@ -40,13 +40,13 @@ public class Role
 		string endOfTurnPrompt,
 		Dictionary<string, string> truths)
 	{
-		Name = name;
-		Models = models;
-		Tools = tools;
-		SystemPrompt = systemPrompt;
-		SummaryPrompt = summaryPrompt;
-		EndOfTurnPrompt = endOfTurnPrompt;
-		Truths = truths;
+		Name = name ?? string.Empty;
+		Models = models ?? new List<string>();
+		Tools = tools ?? new List<string>();
+		SystemPrompt = systemPrompt ?? string.Empty;
+		SummaryPrompt = summaryPrompt ?? string.Empty;
+		EndOfTurnPrompt = endOfTurnPrompt ?? string.Empty;
+		Truths = truths ?? new Dictionary<string, string>();
 	}
 
 	public static Role DefaultRole(List<string> toolNames)

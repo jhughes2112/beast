@@ -199,12 +199,12 @@ public class Session
     // Runs a summarization call in a temporary copy of this session and returns the assistant text.
     // This session is never modified — the temp copy is discarded after the call.
     // Returns null if the call fails or is interrupted.
-    public async Task<string?> SummarizeAsync(LlmService service, string prompt, CancellationToken appToken)
+    public async Task<string?> SummarizeAsync(LlmService service, string prompt, Tool[] tools, CancellationToken appToken)
     {
         Session temp = Fork($"{_data.Id}_sum", string.Empty);
         temp.Data.Ephemeral = true;
         temp.AddUserMessage(prompt);
-        LlmResult result = await temp.RunTurnAsync(service, Array.Empty<Tool>(), 0, appToken);
+        LlmResult result = await temp.RunTurnAsync(service, tools, 0, appToken);
         if (result.ExitReason == LlmExitReason.Completed)
             return temp.GetLastAssistantText();
         return null;

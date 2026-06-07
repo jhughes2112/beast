@@ -34,7 +34,7 @@ public class LlmService
     private LlmModel _model;
     private DateTimeOffset _availableAt = DateTimeOffset.MinValue;
     public LlmModel Model => _model;
-    public bool IsAvailable => DateTimeOffset.UtcNow >= _availableAt;
+    public bool IsAvailable => _availableAt != DateTimeOffset.MaxValue;  // available means it CAN be used, not that it is available RIGHT THIS SECOND.  If it fails IsAvailable for being delayed a few seconds, we constantly change models for nothing.
     public DateTimeOffset AvailableAt => _availableAt;
 
     public LlmService(LlmModel model)

@@ -48,13 +48,6 @@ public static class PerModelLlmTests
         LlmService? service = null;
         try
         {
-            // Check if the model is registered and has an API key.
-            if (!registry.HasModel(modelId))
-            {
-                ctx.Log($"        SKIP: model '{modelId}' not in registry (no config or API key?)");
-                return;
-            }
-
             service = registry.GetServiceById(modelId);
             if (service == null)
             {

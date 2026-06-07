@@ -263,7 +263,7 @@ public class AgentOrchestrator
         List<JsonNode> tailExchanges = ExtractTailExchanges(session.Data.ChatCompletionsState, 2);
 
         _transport.Status("[Compaction] Started.");
-        string? summary = await session.SummarizeAsync(service, _settings.Settings.CompactionPrompt, _cancellationTokenSource.Token);
+        string? summary = await session.SummarizeAsync(service, _settings.Settings.CompactionPrompt, Array.Empty<Tool>(), _cancellationTokenSource.Token);
 
         if (string.IsNullOrWhiteSpace(summary))
         {
@@ -516,56 +516,74 @@ public class AgentOrchestrator
 
     // ---- Role transition ----
 
-    // Called after a completed worker turn. If the current role defines a query + truths,
-    // runs the evaluator role and transitions to the next role. Returns null to stay unchanged.
-    //
-    // Null/empty truths values wait for user input (summary not injected — session is idle).
-    // Non-null truths values inject the summary so the agent auto-continues in the new role.
+    // Called after a completed worker turn. If the role defines EndOfTurnPrompt + Truths:
+    //   1. Runs SummaryPrompt in a fork (with full tools) to let the model do bookkeeping.
+    //   2. Runs EndOfTurnPrompt in a fresh ephemeral session with only the Answer tool.
+    //      Retries up to MaxEvalAttempts times if the model fails to call the tool.
+    //   3. Maps the selected truth label to the next role name.
+    //      Empty next-role = stop and return to user; non-empty = start fresh session.
     private async Task<Session?> AdvanceRoleAsync(Session session, LlmService service, Role currentRole, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths == null || currentRole.Truths.Count == 0)
+        if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths.Count == 0)
             return null;
 
-        // 1. Summarize the completed worker turn (non-mutating — runs in a temp Fork).
-        _transport.Status("[Role] Summarizing turn...");
-        const string summaryPrompt = "Provide a concise summary of everything accomplished this session: decisions made, actions taken, results, and any context needed to continue the work.";
-        string? summary = await session.SummarizeAsync(service, summaryPrompt, ct);
+        // 1. Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
+        Tool[] roleTools = _registry.GetToolsForRole(currentRole);
+        string summaryPrompt = string.IsNullOrEmpty(currentRole.SummaryPrompt)
+            ? _settings.Settings.CompactionPrompt
+            : currentRole.SummaryPrompt;
+
+        _transport.Status("[Role] Running end-of-turn summary...");
+        string? summary = await session.SummarizeAsync(service, summaryPrompt, roleTools, ct);
         if (string.IsNullOrEmpty(summary))
         {
             _transport.Error("[Role] Summary failed; staying in current role.");
             return null;
         }
 
-        // 2. Build evaluator prompt: summary + query + truth options.
+        // 2. Build the evaluation message: summary context + end-of-turn question + truth options.
         StringBuilder sb = new StringBuilder();
         sb.AppendLine(summary);
         sb.AppendLine();
         sb.AppendLine(currentRole.EndOfTurnPrompt);
         sb.AppendLine();
-        sb.AppendLine("Call the Answer tool with one of these statements verbatim:");
+        sb.AppendLine("You must call the Answer tool with exactly one of these statements verbatim:");
         foreach (string truth in currentRole.Truths.Keys)
             sb.AppendLine($"- {truth}");
 
-        // 3. Run the evaluator with only the Answer tool.
+        // 3. Run the evaluation on the current model with only the Answer tool.
+        const int MaxEvalAttempts = 3;
         string? selectedTruth = null;
         Tool answerTool = BuildAnswerTool(currentRole.Truths.Keys, t => selectedTruth = t);
 
-        Session evalSession = CreateFreshSession(evaluatorRole.Name);
+        Session evalSession = CreateFreshSession(currentRole.Name);
         evalSession.Data.Ephemeral = true;
-        if (!string.IsNullOrEmpty(evaluatorRole.SystemPrompt))
-            evalSession.SetSystemPrompt(evaluatorRole.SystemPrompt);
+        if (!string.IsNullOrEmpty(currentRole.SystemPrompt))
+            evalSession.SetSystemPrompt(currentRole.SystemPrompt);
         evalSession.AddUserMessage(sb.ToString());
 
         _transport.Status($"[Role] Evaluating: {currentRole.EndOfTurnPrompt}");
-        LlmResult evalResult = await evalSession.RunTurnAsync(evaluatorService, new Tool[] { answerTool }, 0, ct);
-
-        if (evalResult.ExitReason != LlmExitReason.Completed || string.IsNullOrEmpty(selectedTruth))
+        for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
         {
-            _transport.Error("[Role] Evaluator did not call Answer; staying in current role.");
+            LlmResult evalResult = await evalSession.RunTurnAsync(service, new Tool[] { answerTool }, 0, ct);
+
+            if (evalResult.ExitReason != LlmExitReason.Completed)
+                break;
+
+            if (selectedTruth != null)
+                break;
+
+            if (attempt < MaxEvalAttempts - 1)
+                evalSession.AddUserMessage("You must call the Answer tool. Please call it now with one of the listed truth statements.");
+        }
+
+        if (selectedTruth == null)
+        {
+            _transport.Error("[Role] Evaluation failed; staying in current role.");
             return null;
         }
 
-        // 4. Map the selected truth to the next role name (case-insensitive).
+        // 4. Map the selected truth label to the next role name (case-insensitive).
         string? nextRoleName = null;
         bool foundTruth = false;
         foreach (KeyValuePair<string, string> kvp in currentRole.Truths)
@@ -583,11 +601,16 @@ public class AgentOrchestrator
             return null;
         }
 
-        // 5. Resolve the next role; stay on current if empty or not found.
-        bool isNullTransition = string.IsNullOrEmpty(nextRoleName);
-        Role nextRole = (!isNullTransition ? _roleService.GetRole(nextRoleName!) : null) ?? currentRole;
+        // 5. Empty next role = task finished; return control to the user.
+        if (string.IsNullOrEmpty(nextRoleName))
+        {
+            _transport.Status($"[Role] {selectedTruth} → done.");
+            return null;
+        }
 
-        // 6. Save the old session and build the fresh one.
+        // 6. Transition: save current session and start a fresh one seeded with the summary.
+        Role nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
+
         if (!session.Data.Ephemeral)
             SessionService.Save(session.Data);
 
@@ -599,10 +622,7 @@ public class AgentOrchestrator
         if (!string.IsNullOrEmpty(nextRole.SystemPrompt))
             next.SetSystemPrompt(nextRole.SystemPrompt);
 
-        // Non-null transitions inject the summary so the new session auto-continues.
-        // Null transitions leave the session idle, waiting for the user's next message.
-        if (!isNullTransition)
-            next.AddUserMessage(summary);
+        next.AddUserMessage(summary);
 
         _transport.Status($"[Role] {selectedTruth} → {nextRole.Name}");
         return next;
@@ -681,7 +701,7 @@ public class AgentOrchestrator
         {
             JsonNode? n = state[i];
             if (n != null)
-                result.Add((JsonNode)n.DeepClone());
+                result.Add(n);
         }
         return result;
     }
