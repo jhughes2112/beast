@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Threading.Tasks;
-using System.Text.Json.Nodes;
 using System.Threading;
 
 
@@ -18,8 +17,10 @@ public static class FileToolsTests
 		{
 			TestWriteAndRead(ctx, tempDir);
 			TestAppend(ctx, tempDir);
-			TestEdit(ctx, tempDir);
-			await TestEditOperationsAsync(ctx, tempDir);
+			await TestReadAsync(ctx, tempDir);
+			await TestEditExactAsync(ctx, tempDir);
+			await TestEditFuzzyAsync(ctx, tempDir);
+			await TestEditNotFoundAsync(ctx, tempDir);
 			TestReadBinary(ctx, tempDir);
 			TestWriteBinary(ctx, tempDir);
 		}
@@ -46,108 +47,77 @@ public static class FileToolsTests
 		ctx.AssertEqual("first second", content, "Append: content matches");
 	}
 
-	private static void TestEdit(TestContext ctx, string tempDir)
+	private static async Task TestReadAsync(TestContext ctx, string tempDir)
 	{
-		string path = Path.Combine(tempDir, "edit.txt");
-		File.WriteAllText(path, "hello world");
-		// Simple edit test
-		string content = File.ReadAllText(path);
-		ctx.Assert(content.Contains("hello"), "Edit: original content present");
+		string path = Path.Combine(tempDir, "read.txt");
+		File.WriteAllText(path, "line one\nline two\nline three\n");
+
+		using CancellationTokenSource cts = new CancellationTokenSource();
+
+		// Full read returns raw content
+		ToolResult full = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts.Token);
+		ctx.Assert(full.ExitCode == 0, "Read full: success");
+		ctx.AssertContains(full.StdOut, "line one", "Read full: has line one");
+		ctx.AssertContains(full.StdOut, "line three", "Read full: has line three");
+		ctx.Assert(!full.StdOut.Contains(":"), "Read full: no hash anchors");
+
+		// Windowed read
+		ToolResult windowed = await FileTools.ReadFileAsync(path, "2", "1", cts.Token);
+		ctx.Assert(windowed.ExitCode == 0, "Read windowed: success");
+		ctx.AssertContains(windowed.StdOut, "line two", "Read windowed: has line two");
+		ctx.Assert(!windowed.StdOut.Contains("line one"), "Read windowed: no line one");
 	}
 
-	private static string ExtractAnchor(string numberedLine)
+	private static async Task TestEditExactAsync(TestContext ctx, string tempDir)
 	{
-		// numberedLine is in the format "<line>:<hh>\t<content>"
-		int colon = numberedLine.IndexOf(':');
-		if (colon < 0) return string.Empty;
-		int tab = numberedLine.IndexOf('\t');
-		string lineNum = tab > colon ? numberedLine.Substring(0, colon) : string.Empty;
-		if (string.IsNullOrEmpty(lineNum)) return string.Empty;
-		string hashPart = numberedLine.Substring(colon + 1, 2);
-		return lineNum + ":" + hashPart;
-	}
+		string path = Path.Combine(tempDir, "edit_exact.txt");
+		File.WriteAllText(path, "first line\nsecond line\nthird line\n");
 
-	private static async Task TestEditOperationsAsync(TestContext ctx, string tempDir)
-	{
-		string path = Path.Combine(tempDir, "edits.txt");
-		string initial = "first line\nsecond line\nthird line\nfourth line\n";
-		File.WriteAllText(path, initial);
+		using CancellationTokenSource cts = new CancellationTokenSource();
 
-		// Read file to get anchors
-		using CancellationTokenSource cts0 = new CancellationTokenSource();
-		ToolResult read = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts0.Token);
-		ctx.Assert(!read.StdOut.Contains("Error"), "Read anchors: no error");
-		string[] lines = read.StdOut.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+		// Single-line exact replacement
+		ToolResult rep = await FileTools.EditFileAsync(path, "second line", "SECOND LINE", cts.Token);
+		ctx.AssertContains(rep.StdOut, "OK", $"Edit exact single: OK (err: {rep.StdErr})");
+		string after = File.ReadAllText(path);
+		ctx.AssertContains(after, "SECOND LINE", "Edit exact single: updated");
+		ctx.Assert(!after.Contains("second line"), "Edit exact single: old text gone");
 
-		// Find anchors for lines 1..4
-		string anchor1 = ExtractAnchor(lines[0]);
-		string anchor2 = ExtractAnchor(lines[1]);
-		string anchor3 = ExtractAnchor(lines[2]);
-		string anchor4 = ExtractAnchor(lines[3]);
-
-		// Single-line replace: replace second line
-		using CancellationTokenSource cts1 = new CancellationTokenSource();
-		ToolResult rep1 = await FileTools.EditFileReplaceAsync(path, anchor2, anchor2, "SECOND LINE", cts1.Token);
-		ctx.AssertContains(rep1.StdOut, "OK", $"Edit replace single: OK (err: {rep1.StdErr})");
-		string after1 = File.ReadAllText(path);
-		ctx.AssertContains(after1, "SECOND LINE", "Edit replace single: content updated");
-
-		// Multi-line replace: replace lines 2-3
-		using CancellationTokenSource cts2 = new CancellationTokenSource();
-		read = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts2.Token);
-		lines = read.StdOut.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-		anchor2 = ExtractAnchor(lines[1]);
-		anchor3 = ExtractAnchor(lines[2]);
-		using CancellationTokenSource cts3 = new CancellationTokenSource();
-		ToolResult rep2 = await FileTools.EditFileReplaceAsync(path, anchor2, anchor3, "replaced A\nreplaced B", cts3.Token);
-		ctx.AssertContains(rep2.StdOut, "OK", $"Edit replace multi: OK (err: {rep2.StdErr})");
+		// Multi-line exact replacement
+		ToolResult rep2 = await FileTools.EditFileAsync(path, "SECOND LINE\nthird line", "replaced A\nreplaced B", cts.Token);
+		ctx.AssertContains(rep2.StdOut, "OK", $"Edit exact multi: OK (err: {rep2.StdErr})");
 		string after2 = File.ReadAllText(path);
-		ctx.AssertContains(after2, "replaced A", "Edit replace multi: content has replaced A");
-		ctx.AssertContains(after2, "replaced B", "Edit replace multi: content has replaced B");
+		ctx.AssertContains(after2, "replaced A", "Edit exact multi: has replaced A");
+		ctx.AssertContains(after2, "replaced B", "Edit exact multi: has replaced B");
+	}
 
-		// Insert after: insert after line 1
-		using CancellationTokenSource cts4 = new CancellationTokenSource();
-		read = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts4.Token);
-		lines = read.StdOut.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-		anchor1 = ExtractAnchor(lines[0]);
-		using CancellationTokenSource cts5 = new CancellationTokenSource();
-		ToolResult ins1 = await FileTools.EditFileInsertAsync(path, anchor1, "inserted line", cts5.Token);
-		ctx.AssertContains(ins1.StdOut, "OK", $"Edit insert after: OK (err: {ins1.StdErr})");
-		string after3 = File.ReadAllText(path);
-		ctx.AssertContains(after3, "inserted line", "Edit insert after: content updated");
+	private static async Task TestEditFuzzyAsync(TestContext ctx, string tempDir)
+	{
+		string path = Path.Combine(tempDir, "edit_fuzzy.txt");
+		File.WriteAllText(path, "    public void Foo()\n    {\n        return;\n    }\n");
 
-		// Combined operations: call replace and insert separately
-		using CancellationTokenSource cts6 = new CancellationTokenSource();
-		read = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts6.Token);
-		lines = read.StdOut.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-		anchor1 = ExtractAnchor(lines[0]);
-		anchor4 = ExtractAnchor(lines[lines.Length - 1]);
+		using CancellationTokenSource cts = new CancellationTokenSource();
 
-		using CancellationTokenSource cts7 = new CancellationTokenSource();
-		ToolResult rep3 = await FileTools.EditFileReplaceAsync(path, anchor1, anchor1, "FIRST-UPDATED", cts7.Token);
-		ctx.AssertContains(rep3.StdOut, "OK", $"Edit combined ops replace: OK (err: {rep3.StdErr})");
+		// old_text has different indentation — fuzzy match should still work
+		string oldText = "public void Foo()\n{\nreturn;\n}";
+		ToolResult rep = await FileTools.EditFileAsync(path, oldText, "public void Bar() { }", cts.Token);
+		ctx.AssertContains(rep.StdOut, "OK", $"Edit fuzzy: OK (err: {rep.StdErr})");
+		string after = File.ReadAllText(path);
+		ctx.AssertContains(after, "Bar", "Edit fuzzy: replacement applied");
+	}
 
-		using CancellationTokenSource cts7b = new CancellationTokenSource();
-		read = await FileTools.ReadFileAsync(path, string.Empty, string.Empty, cts7b.Token);
-		lines = read.StdOut.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
-		anchor4 = ExtractAnchor(lines[lines.Length - 1]);
+	private static async Task TestEditNotFoundAsync(TestContext ctx, string tempDir)
+	{
+		string path = Path.Combine(tempDir, "edit_notfound.txt");
+		File.WriteAllText(path, "some content here");
 
-		using CancellationTokenSource cts7c = new CancellationTokenSource();
-		ToolResult ins2 = await FileTools.EditFileInsertAsync(path, anchor4, "ADDED-AT-END", cts7c.Token);
-		ctx.AssertContains(ins2.StdOut, "OK", $"Edit combined ops insert: OK (err: {ins2.StdErr})");
+		using CancellationTokenSource cts = new CancellationTokenSource();
 
-		string after4 = File.ReadAllText(path);
-		ctx.AssertContains(after4, "FIRST-UPDATED", "Edit combined ops: content has FIRST-UPDATED");
-		ctx.AssertContains(after4, "ADDED-AT-END", "Edit combined ops: content has ADDED-AT-END");
-
-		// Mismatch scenario: attempt to replace using stale anchor should error and not apply
-			// Use the original anchor2 which is now stale
-			using CancellationTokenSource cts8 = new CancellationTokenSource();
-			ToolResult bad = await FileTools.EditFileReplaceAsync(path, anchor2, anchor2, "SHOULD-NOT-APPLY", cts8.Token);
-			ctx.Assert(bad.StdErr.Contains("Error") || bad.ExitCode != 0, "Edit mismatch: returns error");
-			string final = File.ReadAllText(path);
-			ctx.Assert(!final.Contains("SHOULD-NOT-APPLY"), "Edit mismatch: content unchanged");
-		}
+		ToolResult bad = await FileTools.EditFileAsync(path, "text that does not exist", "replacement", cts.Token);
+		ctx.Assert(bad.ExitCode != 0, "Edit not found: error exit code");
+		ctx.AssertContains(bad.StdErr, "Error", "Edit not found: error message");
+		string content = File.ReadAllText(path);
+		ctx.AssertContains(content, "some content here", "Edit not found: file unchanged");
+	}
 
 	private static void TestReadBinary(TestContext ctx, string tempDir)
 	{

@@ -88,7 +88,10 @@ public class AgentOrchestrator
                 {
                     _transport.Debug($"[orchestrator] Received: '{line}'");
                     if (line.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _transport.Debug("[orchestrator] /cancel received — interrupting active session");
                         _activeSession?.Interrupt();
+                    }
                     else
                         inputQueue.Enqueue(line);
                 }

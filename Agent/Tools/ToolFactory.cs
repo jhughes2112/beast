@@ -53,7 +53,7 @@ public static class ToolFactory
             });
 
         Register(tools, "read_file",
-            "Reads a file in modified cat -n format with hash anchors per line. CWD is /workspace/",
+            "Read a file and return its contents. CWD is /workspace/",
             Params(
                 Req("file_path", "string", "File path"),
                 Opt("offset", "string", "Starting line number (1 based)"),
@@ -78,34 +78,18 @@ public static class ToolFactory
                 return await FileTools.WriteFileAsync(filePath, content, ct);
             });
 
-        Register(tools, "edit_file_replace",
-            "Replace a block of text defined by the start and end line:hash anchors. CWD is /workspace/",
+        Register(tools, "edit_file",
+            "Replace old_text with new_text in a file. Tries exact match first; if not found, retries with all whitespace stripped from both old_text and the file to find the region, then replaces it. CWD is /workspace/",
             Params(
                 Req("file_path", "string", "File path"),
-                Req("start_anchor", "string", "Start anchor is only the line:hash"),
-                Req("end_anchor", "string", "End anchor is only the line:hash"),
+                Req("old_text", "string", "Text to find and replace"),
                 Req("new_text", "string", "Replacement text")),
             async (args, ct, transport) =>
             {
                 string filePath = Str(args, "file_path");
-                string startAnchor = Str(args, "start_anchor");
-                string endAnchor = Str(args, "end_anchor");
+                string oldText = Str(args, "old_text");
                 string newText = Str(args, "new_text");
-                return await FileTools.EditFileReplaceAsync(filePath, startAnchor, endAnchor, newText, ct);
-            });
-
-        Register(tools, "edit_file_insert",
-            "Insert a line of text AFTER the indicated line:hash anchor. CWD is /workspace/",
-            Params(
-                Req("file_path", "string", "File path"),
-                Req("anchor", "string", "Line anchor is only the line:hash"),
-                Req("new_text", "string", "Text to insert")),
-            async (args, ct, transport) =>
-            {
-                string filePath = Str(args, "file_path");
-                string anchor = Str(args, "anchor");
-                string newText = Str(args, "new_text");
-                return await FileTools.EditFileInsertAsync(filePath, anchor, newText, ct);
+                return await FileTools.EditFileAsync(filePath, oldText, newText, ct);
             });
 
         return tools;

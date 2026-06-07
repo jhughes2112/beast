@@ -1,7 +1,4 @@
-using System.ComponentModel;
 using System.Text;
-using System.Globalization;
-using System.Text.Json.Nodes;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -15,92 +12,10 @@ public static class FileTools
 	private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 	private static readonly SemaphoreSlim FileLock = new SemaphoreSlim(1, 1);
 
-	// Compute a simple non-cryptographic hash for a line after stripping all whitespace.
-	// Returns the low-order byte of an FNV-1a 32-bit hash as the anchor byte.
-	internal static byte ComputeLineHashByte(string? line)
-	{
-		byte result = 0;
-
-		if (line != null)
-		{
-			uint hash = 2166136261u;
-			for (int i = 0; i < line.Length; i++)
-			{
-				char c = line[i];
-				if (!char.IsWhiteSpace(c))
-				{
-					byte low = (byte)(c & 0xFF);
-					hash ^= low;
-					hash *= 16777619u;
-					byte high = (byte)(c >> 8);
-					hash ^= high;
-					hash *= 16777619u;
-				}
-			}
-			result = (byte)(hash & 0xFFu);
-		}
-
-		return result;
-	}
-
-	private static bool TryParseAnchor(string anchor, out int lineNumber, out byte hashByte, out string hexString)
-	{
-		bool result = false;
-		lineNumber = 0;
-		hashByte = 0;
-		hexString = string.Empty;
-
-		anchor = anchor.Trim();
-		if (!string.IsNullOrEmpty(anchor))
-		{
-			int colon = anchor.IndexOf(':');
-			if (colon > 0)
-			{
-				string linePart = anchor.Substring(0, colon);
-				string remaining = anchor.Substring(colon + 1);
-				// Skip any leading whitespace and take the next 2 hex digits
-				string hexPart = remaining.TrimStart();
-				if (hexPart.Length >= 2)
-				{
-					hexPart = hexPart.Substring(0, 2);
-					if (int.TryParse(linePart, NumberStyles.None, CultureInfo.InvariantCulture, out lineNumber))
-					{
-						if (byte.TryParse(hexPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out hashByte))
-						{
-							hexString = hexPart.ToLowerInvariant();
-							result = true;
-						}
-					}
-				}
-			}
-		}
-
-		return result;
-	}
-
-	private static string[] SplitLinesPreserveEmpty(string text)
-	{
-		string[] result;
-
-		if (text == null)
-		{
-			result = new string[0];
-		}
-		else
-		{
-			result = text.Replace("\r\n", "\n").Split('\n');
-		}
-
-		return result;
-	}
-
-	[Description("""
-		Reads a file in modified cat -n format with hash anchors per line. CWD is /workspace/
-		""")]
 	public static async Task<ToolResult> ReadFileAsync(
-		[Description("File path")] string filePath,
-		[Description("Starting line number (1 based)")] string offset,
-		[Description("Number of lines to read. Empty means to the end of the file.")] string lines,
+		string filePath,
+		string offset,
+		string lines,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -119,7 +34,6 @@ public static class FileTools
 				{
 					int offsetValue = 0;
 					bool offsetValid = string.IsNullOrWhiteSpace(offset) || int.TryParse(offset, out offsetValue);
-
 					int linesValue = 0;
 					bool linesValid = string.IsNullOrWhiteSpace(lines) || int.TryParse(lines, out linesValue);
 
@@ -131,71 +45,32 @@ public static class FileTools
 						await FileLock.WaitAsync(cts.Token);
 						try
 						{
-							using FileStream fs = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-							using StreamReader sr = new StreamReader(fs);
+							string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
 
-							// Offset is 1-based; 0 is treated as 1.
-							if (offsetValue <= 0)
+							if (offsetValue <= 1 && linesValue == 0)
 							{
-								offsetValue = 1;
-							}
-
-							int startLine = offsetValue;
-							int linesToRead = linesValue > 0 ? linesValue : int.MaxValue;
-
-							List<string> readLines = new List<string>();
-							int currentLine = 0;
-
-							for (; ; )
-							{
-								currentLine++;
-
-								string? line = await sr.ReadLineAsync(cts.Token);
-								if (line == null)
-								{
-									break;
-								}
-
-								if (currentLine >= startLine && readLines.Count < linesToRead)
-								{
-									readLines.Add(line);
-								}
-
-								if (readLines.Count >= linesToRead)
-								{
-									break;
-								}
-							}
-
-							if (readLines.Count > 0)
-							{
-								int endLine = startLine + readLines.Count - 1;
-								bool isWindowed = offsetValue > 1 || linesValue > 0;
-
-								StringBuilder sb = new StringBuilder();
-
-								if (isWindowed)
-								{
-									sb.AppendLine($"Showing lines {startLine}-{endLine}:");
-								}
-
-								for (int i = 0; i < readLines.Count; i++)
-								{
-									byte hash = ComputeLineHashByte(readLines[i]);
-									sb.AppendLine($"{startLine + i,6}:{hash:x2}\t{readLines[i]}");
-								}
-
-								result = new ToolResult(sb.ToString(), string.Empty, 0);
+								result = fileContent.Length == 0
+									? new ToolResult($"File is empty: {filePath}", string.Empty, 0)
+									: new ToolResult(fileContent, string.Empty, 0);
 							}
 							else
 							{
-								if (currentLine == 0)
+								// Windowed read: split, slice, rejoin
+								string[] allLines = fileContent.Replace("\r\n", "\n").Split('\n');
+								int startLine = offsetValue <= 0 ? 1 : offsetValue;
+								int startIdx = startLine - 1;
+
+								if (startIdx >= allLines.Length)
 								{
-									result = new ToolResult($"File is empty: {filePath}", string.Empty, 0);
+									result = new ToolResult(string.Empty, $"Offset {startLine} is beyond the end of the file (file has {allLines.Length} lines).", 1);
 								}
 								else
 								{
-									result = new ToolResult(string.Empty, $"Offset {startLine} is beyond the end of the file (file has {currentLine} lines).", 1);
+									int count = linesValue > 0 ? Math.Min(linesValue, allLines.Length - startIdx) : allLines.Length - startIdx;
+									string[] slice = new string[count];
+									Array.Copy(allLines, startIdx, slice, 0, count);
+									string windowed = string.Join(Environment.NewLine, slice);
+									result = new ToolResult(windowed, string.Empty, 0);
 								}
 							}
 						}
@@ -242,14 +117,10 @@ public static class FileTools
 		return result;
 	}
 
-	[Description("""
-		Replace a block of text defined by the start and end line:hash anchors. CWD is /workspace/
-		""")]
-	public static async Task<ToolResult> EditFileReplaceAsync(
-		[Description("File path")] string filePath,
-		[Description("Start anchor is only the line:hash")] string startAnchor,
-		[Description("End anchor is only the line:hash")] string endAnchor,
-		[Description("Replacement text")] string newText,
+	public static async Task<ToolResult> EditFileAsync(
+		string filePath,
+		string oldText,
+		string newText,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -258,136 +129,11 @@ public static class FileTools
 		{
 			result = new ToolResult(string.Empty, "Error: Path cannot be empty", 1);
 		}
-		else if (string.IsNullOrWhiteSpace(startAnchor))
+		else if (string.IsNullOrEmpty(oldText))
 		{
-			result = new ToolResult(string.Empty, "Error: start_anchor cannot be empty", 1);
-		}
-		else if (string.IsNullOrWhiteSpace(endAnchor))
-		{
-			result = new ToolResult(string.Empty, "Error: end_anchor cannot be empty", 1);
-		}
-		else if (TryParseAnchor(startAnchor, out int startLine, out byte startHash, out string startHex))
-		{
-			if (TryParseAnchor(endAnchor, out int endLine, out byte endHash, out string endHex))
-			{
-				string fullPath = Path.GetFullPath(filePath);
-
-				try
-				{
-					if (File.Exists(fullPath))
-					{
-						using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-						cts.CancelAfter(DefaultTimeout);
-
-						await FileLock.WaitAsync(cts.Token);
-						try
-						{
-							string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
-							bool trailingNewline = fileContent.EndsWith("\n");
-							string[] fileLines = SplitLinesPreserveEmpty(fileContent);
-							int lineCount = (trailingNewline && fileLines.Length > 0) ? fileLines.Length - 1 : fileLines.Length;
-							List<string> linesList = new List<string>(lineCount);
-							for (int li = 0; li < lineCount; li++)
-							{
-								linesList.Add(fileLines[li]);
-							}
-
-							if (startLine >= 1 && endLine >= startLine && endLine <= linesList.Count)
-							{
-								byte actualStart = ComputeLineHashByte(linesList[startLine - 1]);
-								byte actualEnd = ComputeLineHashByte(linesList[endLine - 1]);
-
-								if (actualStart == startHash && actualEnd == endHash)
-								{
-									int start = startLine - 1;
-									int removeCount = endLine - startLine + 1;
-									linesList.RemoveRange(start, removeCount);
-									if (!string.IsNullOrEmpty(newText))
-									{
-										string[] newLines = SplitLinesPreserveEmpty(newText);
-										linesList.InsertRange(start, newLines);
-									}
-
-									string newWorking = string.Join(Environment.NewLine, linesList);
-									if (trailingNewline && !newWorking.EndsWith("\n"))
-									{
-										newWorking += Environment.NewLine;
-									}
-									await File.WriteAllTextAsync(fullPath, newWorking, cts.Token);
-									result = new ToolResult("OK", string.Empty, 0);
-								}
-								else
-								{
-									StringBuilder sbErr = new StringBuilder();
-									sbErr.AppendLine("Error: One or more anchor hashes did not match. No edits were applied.");
-									if (actualStart != startHash)
-											{
-												sbErr.AppendLine($"{startLine,6}:{actualStart:x2}\t{linesList[startLine - 1]}");
-											}
-											if (actualEnd != endHash)
-											{
-												sbErr.AppendLine($"{endLine,6}:{actualEnd:x2}\t{linesList[endLine - 1]}");
-											}
-											result = new ToolResult(string.Empty, sbErr.ToString(), 1);
-										}
-									}
-									else
-									{
-										result = new ToolResult(string.Empty, "Error: Anchor line numbers out of range.", 1);
-									}
-						}
-						finally
-						{
-							FileLock.Release();
-						}
-					}
-					else
-					{
-						result = new ToolResult(string.Empty, $"Error: File not found: {filePath}", 1);
-					}
-				}
-				catch (OperationCanceledException)
-				{
-					result = new ToolResult(string.Empty, $"Error: Timed out or cancelled editing file: {filePath}", 1);
-				}
-				catch (Exception ex)
-				{
-					result = new ToolResult(string.Empty, $"Error: Failed to edit file: {ex.Message}", 1);
-				}
-			}
-			else
-			{
-				result = new ToolResult(string.Empty, $"Error: Invalid end_anchor format: {endAnchor}", 1);
-			}
+			result = new ToolResult(string.Empty, "Error: old_text cannot be empty", 1);
 		}
 		else
-		{
-			result = new ToolResult(string.Empty, $"Error: Invalid start_anchor format: {startAnchor}", 1);
-		}
-
-		return result;
-	}
-
-	[Description("""
-		Insert a line of text AFTER the indicated line:hash anchor. CWD is /workspace/
-		""")]
-	public static async Task<ToolResult> EditFileInsertAsync(
-		[Description("File path")] string filePath,
-		[Description("Line anchor is only the line:hash")] string anchor,
-		[Description("Text to insert")] string newText,
-		CancellationToken cancellationToken)
-	{
-		ToolResult result;
-
-		if (string.IsNullOrWhiteSpace(filePath))
-		{
-			result = new ToolResult(string.Empty, "Error: Path cannot be empty", 1);
-		}
-		else if (string.IsNullOrWhiteSpace(anchor))
-		{
-			result = new ToolResult(string.Empty, "Error: anchor cannot be empty", 1);
-		}
-		else if (TryParseAnchor(anchor, out int anchorLine, out byte anchorHash, out string anchorHex))
 		{
 			string fullPath = Path.GetFullPath(filePath);
 
@@ -402,47 +148,63 @@ public static class FileTools
 					try
 					{
 						string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
-						bool trailingNewline = fileContent.EndsWith("\n");
-						string[] fileLines = SplitLinesPreserveEmpty(fileContent);
-						int lineCount = (trailingNewline && fileLines.Length > 0) ? fileLines.Length - 1 : fileLines.Length;
-						List<string> linesList = new List<string>(lineCount);
-						for (int li = 0; li < lineCount; li++)
+						string replacement = newText ?? string.Empty;
+
+						// Exact match first
+						int exactIdx = fileContent.IndexOf(oldText, StringComparison.Ordinal);
+						if (exactIdx >= 0)
 						{
-							linesList.Add(fileLines[li]);
+							string newContent = fileContent.Substring(0, exactIdx) + replacement + fileContent.Substring(exactIdx + oldText.Length);
+							await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
+							result = new ToolResult("OK", string.Empty, 0);
 						}
-
-						if (anchorLine >= 1 && anchorLine <= linesList.Count)
+						else
 						{
-							byte actual = ComputeLineHashByte(linesList[anchorLine - 1]);
-							if (actual == anchorHash)
+							// Fuzzy match: strip all whitespace from old_text and file, find the span,
+							// map back to original positions and replace.
+							List<int> posMap = new List<int>(fileContent.Length);
+							StringBuilder strippedFileBuilder = new StringBuilder(fileContent.Length);
+							for (int i = 0; i < fileContent.Length; i++)
 							{
-								int insertIndex = anchorLine;
-								if (!string.IsNullOrEmpty(newText))
+								if (!char.IsWhiteSpace(fileContent[i]))
 								{
-									string[] newLines = SplitLinesPreserveEmpty(newText);
-									linesList.InsertRange(insertIndex, newLines);
+									posMap.Add(i);
+									strippedFileBuilder.Append(fileContent[i]);
 								}
-
-								string newWorking = string.Join(Environment.NewLine, linesList);
-								if (trailingNewline && !newWorking.EndsWith("\n"))
-								{
-									newWorking += Environment.NewLine;
-								}
-								await File.WriteAllTextAsync(fullPath, newWorking, cts.Token);
-								result = new ToolResult("OK", string.Empty, 0);
 							}
-								else
+							string strippedFile = strippedFileBuilder.ToString();
+
+							StringBuilder strippedOldBuilder = new StringBuilder(oldText.Length);
+							foreach (char c in oldText)
+							{
+								if (!char.IsWhiteSpace(c))
 								{
-									StringBuilder sbErr = new StringBuilder();
-									sbErr.AppendLine("Error: Anchor hash did not match. No edits were applied.");
-									sbErr.AppendLine($"{anchorLine,6}:{actual:x2}\t{linesList[anchorLine - 1]}");
-									result = new ToolResult(string.Empty, sbErr.ToString(), 1);
+									strippedOldBuilder.Append(c);
 								}
+							}
+							string strippedOld = strippedOldBuilder.ToString();
+
+							if (strippedOld.Length == 0)
+							{
+								result = new ToolResult(string.Empty, "Error: old_text contains only whitespace.", 1);
 							}
 							else
 							{
-								result = new ToolResult(string.Empty, "Error: Anchor line number out of range.", 1);
+								int matchIdx = strippedFile.IndexOf(strippedOld, StringComparison.Ordinal);
+								if (matchIdx >= 0)
+								{
+									int origStart = posMap[matchIdx];
+									int origEnd = posMap[matchIdx + strippedOld.Length - 1] + 1;
+									string newContent = fileContent.Substring(0, origStart) + replacement + fileContent.Substring(origEnd);
+									await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
+									result = new ToolResult("OK", string.Empty, 0);
+								}
+								else
+								{
+									result = new ToolResult(string.Empty, "Error: old_text not found in file (exact and whitespace-normalized search both failed).", 1);
+								}
 							}
+						}
 					}
 					finally
 					{
@@ -463,22 +225,13 @@ public static class FileTools
 				result = new ToolResult(string.Empty, $"Error: Failed to edit file: {ex.Message}", 1);
 			}
 		}
-		else
-		{
-			result = new ToolResult(string.Empty, $"Error: Invalid anchor format: {anchor}", 1);
-		}
 
 		return result;
 	}
 
-	[Description("""
-		Create a new file or overwrite an existing one.
-		If the file already exists, you must read_file first. Prefer edit_file for partial changes.
-		Only create files required by the task. Temporary files should go in /tmp/
-		""")]
 	public static async Task<ToolResult> WriteFileAsync(
-		[Description("File path")] string filePath,
-		[Description("Complete file contents")] string content,
+		string filePath,
+		string content,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -527,8 +280,3 @@ public static class FileTools
 		return result;
 	}
 }
-
-
-
-
-
