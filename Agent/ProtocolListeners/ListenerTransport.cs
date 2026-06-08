@@ -1,11 +1,8 @@
 using System.Collections.Generic;
-using System.Text.Json.Nodes;
 
-// Adapter that turns an ITransportServer into an IProtocolListener so the transport can sit
-// in the bundle alongside the protocol listeners. It never originates events, only renders
-// them — every method maps to the corresponding transport frame. Streaming pass-through is
-// straightforward; assistant turns are emitted as Thinking + Output committed frames.
-public class ListenerTransport : IProtocolListener
+// Adapter that renders semantic conversation events to the connected transport client.
+// It never originates events — every method maps to the corresponding transport frame.
+public class ListenerTransport
 {
     private readonly ITransportServer _transport;
 
@@ -14,17 +11,17 @@ public class ListenerTransport : IProtocolListener
         _transport = transport;
     }
 
-    public void OnSystemMessage(IProtocolListener sender, string text)
+    public void OnSystemMessage(string text)
     {
         _transport.System(text);
     }
 
-    public void OnUserMessage(IProtocolListener sender, string text)
+    public void OnUserMessage(string text)
     {
         _transport.User(text);
     }
 
-    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
     {
         if (!string.IsNullOrEmpty(thinking)) _transport.Thinking(thinking);
         if (!string.IsNullOrEmpty(text)) _transport.Output(text);
@@ -34,22 +31,22 @@ public class ListenerTransport : IProtocolListener
         }
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
+    public void OnToolResult(string toolCallId, ToolResult result)
     {
         _transport.ToolResponseWithId(toolCallId, result);
     }
 
-    public void OnStreamStart(IProtocolListener sender, string tag)
+    public void OnStreamStart(string tag)
     {
         _transport.StreamStart(tag);
     }
 
-    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk)
+    public void OnStreamChunk(string tag, string chunk)
     {
         _transport.StreamChunk(chunk);
     }
 
-    public void OnStreamEnd(IProtocolListener sender, string tag)
+    public void OnStreamEnd(string tag)
     {
         _transport.StreamEnd(tag);
     }
@@ -58,9 +55,4 @@ public class ListenerTransport : IProtocolListener
     {
         _transport.Clear();
     }
-
-    public void Rehydrate(JsonArray canonical) { }
-
-    public void RewriteLastAssistant(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls) { }
-    public string? PopLastUserMessage() { return null; }
 }

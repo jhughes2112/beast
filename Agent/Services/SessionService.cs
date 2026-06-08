@@ -17,7 +17,7 @@ public static class SessionService
     {
         if (data.Ephemeral)
             return;
-        if (data.IsEmpty)
+        if (string.IsNullOrEmpty(data.DisplayName))
             return;
         Directory.CreateDirectory(SessionsDir);
         string path = Path.Combine(SessionsDir, data.Id + ".json");
@@ -83,7 +83,7 @@ public static class SessionService
                 BeastSession? data = JsonSerializer.Deserialize<BeastSession>(json);
                 if (data == null)
                     continue;
-                results.Add((data.Id, data.DisplayName, data.ChatCompletionsState.Count));
+                results.Add((data.Id, data.DisplayName, data.Messages.Count));
             }
             catch (Exception ex)
             {

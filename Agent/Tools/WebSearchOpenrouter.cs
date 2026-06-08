@@ -32,10 +32,9 @@ public class WebSearchOpenrouter
 
         try
         {
-            BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), string.Empty, "websearch");
-
-            ListenerBundle bundle = new ListenerBundle(new ListenerChatCompletions(session.ChatCompletionsState), null);
-            bundle.OnUserMessage(null!, query);
+            List<CanonicalMessage> messages = new List<CanonicalMessage>();
+            ListenerBundle bundle = new ListenerBundle(new CanonicalConversation(messages), null);
+            bundle.OnUserMessage(query);
 
             int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
 

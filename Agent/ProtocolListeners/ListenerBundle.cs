@@ -1,171 +1,91 @@
 using System.Collections.Generic;
-using System.Text.Json.Nodes;
 
-// Holds the listeners for one session and fans every semantic call out to all populated
-// listeners except the sender. The bundle keeps an explicit nullable slot per protocol type
-// and ensures exactly one is active at a time. When the proxy detects which protocol an
-// endpoint needs, it calls the corresponding EnsureProtocol* method; the bundle creates the
-// instance if absent (or the wrong type is active), calls Rehydrate, and nulls the others.
-public class ListenerBundle : IProtocolListener
+// Holds the listeners for one session and fans every semantic call out to canonical,
+// the active protocol proxy, and transport. The proxy owns detection and protocol instance
+// lifecycle; it registers itself on the bundle at the start of each execute call.
+//
+// Protocols that generate events (streaming, completed assistant turns) call bundle.Canonical
+// and bundle.Transport directly to avoid routing back through the proxy.
+public class ListenerBundle
 {
     // Canonical persisted conversation store. Always present for the life of the bundle.
-    private readonly ListenerChatCompletions _canonical;
+    private readonly CanonicalConversation _canonical;
 
-    // Renders semantic events to the connected client. Null when no client is attached (e.g. internal tool calls).
+    // Renders semantic events to the connected client. Null when no client is attached.
     private readonly ListenerTransport? _transport;
 
-    // Exactly one of these is non-null at any time once the first model executes.
-    private ProtocolChatCompletions? _protocolChatCompletions;
-    private ProtocolResponses?       _protocolResponses;
-    private ProtocolAnthropic?       _protocolAnthropic;
+    // Set by ProtocolProxy.ExecuteAsync at the start of each turn. Null before the first
+    // turn runs or after InvalidateProtocol() clears it.
+    private ProtocolProxy? _activeProxy;
 
-    public ListenerBundle(ListenerChatCompletions canonical, ListenerTransport? transport)
+    public ListenerBundle(CanonicalConversation canonical, ListenerTransport? transport)
     {
         _canonical = canonical;
         _transport = transport;
     }
 
-    public ListenerChatCompletions Canonical => _canonical;
+    public CanonicalConversation Canonical => _canonical;
     public ListenerTransport? Transport => _transport;
 
-    // Returns the active ChatCompletions protocol, creating and rehydrating it if needed.
-    // Nulls the other protocol slots on a switch.
-    public ProtocolChatCompletions EnsureProtocolChatCompletions()
+    // Called by ProtocolProxy at the start of ExecuteAsync so the bundle routes fan-out
+    // events to the correct protocol instance for the duration of the session.
+    internal void SetActiveProxy(ProtocolProxy proxy)
     {
-        if (_protocolChatCompletions == null)
-        {
-            _protocolChatCompletions = new ProtocolChatCompletions();
-            _protocolChatCompletions.Rehydrate(_canonical.State);
-            _protocolResponses = null;
-            _protocolAnthropic = null;
-        }
-        return _protocolChatCompletions;
+        _activeProxy = proxy;
     }
 
-    // Returns the active Responses protocol, creating and rehydrating it if needed.
-    // Nulls the other protocol slots on a switch.
-    public ProtocolResponses EnsureProtocolResponses()
+    public void OnSystemMessage(string text)
     {
-        if (_protocolResponses == null)
-        {
-            _protocolResponses = new ProtocolResponses();
-            _protocolResponses.Rehydrate(_canonical.State);
-            _protocolChatCompletions = null;
-            _protocolAnthropic = null;
-        }
-        return _protocolResponses;
+        _canonical.OnSystemMessage(text);
+        _activeProxy?.OnSystemMessage(text);
+        _transport?.OnSystemMessage(text);
     }
 
-    // Returns the active Anthropic protocol, creating and rehydrating it if needed.
-    // Nulls the other protocol slots on a switch.
-    public ProtocolAnthropic EnsureProtocolAnthropic()
+    public void OnUserMessage(string text)
     {
-        if (_protocolAnthropic == null)
-        {
-            _protocolAnthropic = new ProtocolAnthropic();
-            _protocolAnthropic.Rehydrate(_canonical.State);
-            _protocolChatCompletions = null;
-            _protocolResponses = null;
-        }
-        return _protocolAnthropic;
+        _canonical.OnUserMessage(text);
+        _activeProxy?.OnUserMessage(text);
+        _transport?.OnUserMessage(text);
     }
 
-    private IProtocolListener? ActiveProtocol
+    public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
     {
-        get
-        {
-            if (_protocolChatCompletions != null) return _protocolChatCompletions;
-            if (_protocolResponses != null) return _protocolResponses;
-            return _protocolAnthropic;
-        }
+        _canonical.OnAssistantTurn(text, thinking, toolCalls);
+        _activeProxy?.OnAssistantTurn(text, thinking, toolCalls);
+        _transport?.OnAssistantTurn(text, thinking, toolCalls);
     }
 
-    // Forwards a call to every populated listener except the sender.
-    private void Each(IProtocolListener sender, System.Action<IProtocolListener> action)
+    public void OnToolResult(string toolCallId, ToolResult result)
     {
-        if (!ReferenceEquals(_canonical, sender)) action(_canonical);
-
-        IProtocolListener? protocol = ActiveProtocol;
-        if (protocol != null && !ReferenceEquals(protocol, sender)) action(protocol);
-
-        if (_transport != null && !ReferenceEquals(_transport, sender)) action(_transport);
-    }
-
-    public void OnSystemMessage(IProtocolListener sender, string text)
-    {
-        Each(sender, l => l.OnSystemMessage(sender, text));
-    }
-
-    public void OnUserMessage(IProtocolListener sender, string text)
-    {
-        Each(sender, l => l.OnUserMessage(sender, text));
-    }
-
-    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
-    {
-        Each(sender, l => l.OnAssistantTurn(sender, text, thinking, toolCalls));
-    }
-
-    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
-    {
-        Each(sender, l => l.OnToolResult(sender, toolCallId, result));
-    }
-
-    public void OnStreamStart(IProtocolListener sender, string tag)
-    {
-        Each(sender, l => l.OnStreamStart(sender, tag));
-    }
-
-    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk)
-    {
-        Each(sender, l => l.OnStreamChunk(sender, tag, chunk));
-    }
-
-    public void OnStreamEnd(IProtocolListener sender, string tag)
-    {
-        Each(sender, l => l.OnStreamEnd(sender, tag));
+        _canonical.OnToolResult(toolCallId, result);
+        _activeProxy?.OnToolResult(toolCallId, result);
+        _transport?.OnToolResult(toolCallId, result);
     }
 
     public void OnClear()
     {
-        // Clear reaches every populated listener including the sender-less caller.
         _canonical.OnClear();
-
-        IProtocolListener? protocol = ActiveProtocol;
-        if (protocol != null) protocol.OnClear();
-
-        if (_transport != null) _transport.OnClear();
+        _activeProxy?.OnClear();
+        _transport?.OnClear();
     }
 
-    public void Rehydrate(JsonArray canonical) { }
-
-    // Drops the active protocol instance so the next EnsureProtocol* call creates a fresh one
-    // and rehydrates from canonical. Call whenever the model changes so the new protocol starts
-    // clean rather than replaying stale per-endpoint state (e.g. old _previousResponseId).
+    // Resets the active proxy so the next turn re-probes and rehydrates from canonical.
+    // Call whenever the model changes so the new protocol starts clean.
     public void InvalidateProtocol()
     {
-        _protocolChatCompletions = null;
-        _protocolResponses = null;
-        _protocolAnthropic = null;
+        _activeProxy?.Invalidate();
+        _activeProxy = null;
     }
 
     // Returns the most recent assistant text from the canonical conversation, or null.
-    // Canonical is the single source of truth; protocol-native listeners are not consulted.
     public string? GetLastAssistantText()
     {
-        JsonArray state = _canonical.State;
-
-        string? text = null;
-        for (int i = state.Count - 1; i >= 0; i--)
+        IReadOnlyList<CanonicalMessage> messages = _canonical.Messages;
+        for (int i = messages.Count - 1; i >= 0; i--)
         {
-            JsonNode? n = state[i];
-            if (n != null && n["role"]?.GetValue<string>() == "assistant")
-            {
-                text = n["content"]?.GetValue<string>();
-                break;
-            }
+            if (messages[i] is AssistantMessage am)
+                return am.Text;
         }
-
-        return text;
+        return null;
     }
 }

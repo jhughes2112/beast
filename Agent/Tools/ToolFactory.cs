@@ -67,7 +67,7 @@ public static class ToolFactory
             });
 
         Register(tools, "write_file",
-            "Create a new file or overwrite an existing one. If the file already exists, you must read_file first. Prefer edit_file for partial changes. Only create files required by the task. Temporary files should go in /tmp/",
+            "Create a new file or overwrite an existing one. If the file already exists, you must read_file first. Prefer edit_file for partial changes. Only create files required by the task. CWD is /workspace/ but temporary files should go in /tmp/",
             Params(
                 Req("file_path", "string", "File path"),
                 Req("content", "string", "Complete file contents")),

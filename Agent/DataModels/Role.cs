@@ -54,14 +54,20 @@ public class Role
         const string systemPrompt = "You are a helpful assistant. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress.";
         const string summaryPrompt = """
             Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
-            Output only a summary of the conversation retaining the objective, current status, discovered context, and key next steps and exact details that would help perform them. 
+            Output only a summary of the conversation retaining the objective, current status, discovered context, and key next steps and exact details that would help perform them.
             """;
         const string endOfTurnPrompt = "Are you finished?";
         Dictionary<string, string> truths = new Dictionary<string, string>()
-            {  
+            {
                 { "This task is complete.", "" },
                 { "There is more work to do.", "Default" }
             };
         return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, truths);
 	}
+
+    public static Role ToolsRole(List<string> toolNames)
+    {
+        const string systemPrompt = "You are a focused tool executor. You receive a specific task with suggested tools and parameters. Use whatever tools are necessary to accomplish the stated goal, then respond concisely but completely with the information that satisfies it.";
+        return new Role("Tools", new List<string> { "*" }, toolNames, systemPrompt, string.Empty, string.Empty, new Dictionary<string, string>());
+    }
 }

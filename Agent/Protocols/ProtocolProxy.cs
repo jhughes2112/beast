@@ -5,6 +5,30 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
+
+public enum ProbeOutcome
+{
+    Supported,    // The endpoint speaks this protocol.
+    NotSupported, // The endpoint returned a definitive 404 or wrong-shaped body — not this protocol.
+    Unreachable   // The probe could not connect at all (network error, timeout).
+}
+
+public class ProbeResult
+{
+    public ProbeOutcome Outcome { get; }
+    public string       Detail  { get; }
+
+    private ProbeResult(ProbeOutcome outcome, string detail)
+    {
+        Outcome = outcome;
+        Detail = detail;
+    }
+
+    public static ProbeResult Supported()                    => new ProbeResult(ProbeOutcome.Supported, "");
+    public static ProbeResult NotSupported(string detail)    => new ProbeResult(ProbeOutcome.NotSupported, detail);
+    public static ProbeResult Unreachable(string detail)     => new ProbeResult(ProbeOutcome.Unreachable, detail);
+}
+
 // So it is clear, Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
 // The lifetime of a ProtocolProxy is tied to the LLMService it is created for.
 // The whole purpose of this class is to 1) detect the protocol by probing the endpoint for Anthropic, ChatCompletions, or Responses,
@@ -39,14 +63,67 @@ public class ProtocolProxy
     // _model.Endpoint may be rewritten once if the localhost fallback fires.
     private DetectedProtocol _detected;
 
+    // Exactly one of these is non-null once the first turn executes.
+    private ProtocolChatCompletions? _protocolChatCompletions;
+    private ProtocolResponses?       _protocolResponses;
+    private ProtocolAnthropic?       _protocolAnthropic;
+
     public ProtocolProxy(LlmModel model)
     {
         _model = model;
         _detected = DetectedProtocol.Unknown;
     }
 
+    // Resets detection and discards the protocol instance so the next ExecuteAsync re-probes
+    // and rehydrates from canonical. Called by ListenerBundle.InvalidateProtocol().
+    public void Invalidate()
+    {
+        _detected = DetectedProtocol.Unknown;
+        _protocolChatCompletions = null;
+        _protocolResponses = null;
+        _protocolAnthropic = null;
+    }
+
+    // Fan-out methods called by ListenerBundle for external events (user input, tool results,
+    // replayed turns). Routes to whichever protocol instance is currently active.
+    public void OnSystemMessage(string text)
+    {
+        _protocolChatCompletions?.OnSystemMessage(text);
+        _protocolResponses?.OnSystemMessage(text);
+        _protocolAnthropic?.OnSystemMessage(text);
+    }
+    public void OnUserMessage(string text)
+    {
+        _protocolChatCompletions?.OnUserMessage(text);
+        _protocolResponses?.OnUserMessage(text);
+        _protocolAnthropic?.OnUserMessage(text);
+    }
+
+    public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    {
+        _protocolChatCompletions?.OnAssistantTurn(text, thinking, toolCalls);
+        _protocolResponses?.OnAssistantTurn(text, thinking, toolCalls);
+        _protocolAnthropic?.OnAssistantTurn(text, thinking, toolCalls);
+    }
+
+    public void OnToolResult(string toolCallId, ToolResult result)
+    {
+        _protocolChatCompletions?.OnToolResult(toolCallId, result);
+        _protocolResponses?.OnToolResult(toolCallId, result);
+        _protocolAnthropic?.OnToolResult(toolCallId, result);
+    }
+
+    public void OnClear()
+    {
+        _protocolChatCompletions?.OnClear();
+        _protocolResponses?.OnClear();
+        _protocolAnthropic?.OnClear();
+    }
+
     public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
     {
+        bundle.SetActiveProxy(this);
+
         (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
         string endpoint = _model.Endpoint;
 
@@ -114,19 +191,57 @@ public class ProtocolProxy
             }
         }
 
+        IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
+
         if (_detected == DetectedProtocol.Anthropic)
-            return await bundle.EnsureProtocolAnthropic().ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
 
         if (_detected == DetectedProtocol.Responses)
-            return await bundle.EnsureProtocolResponses().ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
 
         if (_detected == DetectedProtocol.ChatCompletions)
-            return await bundle.EnsureProtocolChatCompletions().ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
 
         string failLine = $"[probe] No recognized protocol found for: {endpoint}";
         ProtocolChatCompletions.Log(failLine);
         transport.Debug(failLine);
         return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
+    }
+
+    internal ProtocolChatCompletions EnsureProtocolChatCompletions(IReadOnlyList<CanonicalMessage> canonical)
+    {
+        if (_protocolChatCompletions == null)
+        {
+            _protocolChatCompletions = new ProtocolChatCompletions();
+            _protocolChatCompletions.Rehydrate(canonical);
+            _protocolResponses = null;
+            _protocolAnthropic = null;
+        }
+        return _protocolChatCompletions;
+    }
+
+    internal ProtocolResponses EnsureProtocolResponses(IReadOnlyList<CanonicalMessage> canonical)
+    {
+        if (_protocolResponses == null)
+        {
+            _protocolResponses = new ProtocolResponses();
+            _protocolResponses.Rehydrate(canonical);
+            _protocolChatCompletions = null;
+            _protocolAnthropic = null;
+        }
+        return _protocolResponses;
+    }
+
+    internal ProtocolAnthropic EnsureProtocolAnthropic(IReadOnlyList<CanonicalMessage> canonical)
+    {
+        if (_protocolAnthropic == null)
+        {
+            _protocolAnthropic = new ProtocolAnthropic();
+            _protocolAnthropic.Rehydrate(canonical);
+            _protocolChatCompletions = null;
+            _protocolResponses = null;
+        }
+        return _protocolAnthropic;
     }
 
     // The protocol an endpoint speaks, resolved once by probing and then cached.

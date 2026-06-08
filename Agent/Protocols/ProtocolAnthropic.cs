@@ -9,6 +9,7 @@ using Anthropic.SDK;
 using Anthropic.SDK.Common;
 using Anthropic.SDK.Extensions;
 using Anthropic.SDK.Messaging;
+using AnthropicSystemMessage = Anthropic.SDK.Messaging.SystemMessage;
 
 // ── Anthropic Messages API (native SDK) ───────────────────────────────────────
 // This protocol talks to Claude exclusively through Anthropic.SDK. The SDK's own
@@ -27,7 +28,7 @@ using Anthropic.SDK.Messaging;
 //
 // ProbeAsync stays a raw-HTTP detection call; it only classifies the endpoint and never
 // participates in a real conversation.
-public class ProtocolAnthropic : IProtocolListener
+public class ProtocolAnthropic
 {
     private const string AnthropicVersion = "2023-06-01";
 
@@ -42,72 +43,65 @@ public class ProtocolAnthropic : IProtocolListener
     private string _system = string.Empty;
 
     // Rebuilds the native SDK message chain from canonical, stripping thinking and enforcing
-    // user/assistant alternation. Called by ListenerBundle right after creating or switching in.
-    public void Rehydrate(JsonArray canonical)
+    // user/assistant alternation. Called by ProtocolProxy right after creating or switching in.
+    public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
     {
         _native.Clear();
         _system = string.Empty;
 
-        foreach (JsonNode? n in canonical)
+        foreach (CanonicalMessage msg in messages)
         {
-            if (n == null) continue;
-            string role = n["role"]?.GetValue<string>() ?? string.Empty;
-
-            if (role == "system")
+            if (msg is SystemMessage sm)
             {
-                _system = n["content"]?.GetValue<string>() ?? string.Empty;
+                _system = sm.Text;
             }
-            else if (role == "user")
+            else if (msg is UserMessage um)
             {
-                AppendContent(RoleType.User, new TextContent { Text = n["content"]?.GetValue<string>() ?? string.Empty });
+                AppendContent(RoleType.User, new TextContent { Text = um.Text });
             }
-            else if (role == "tool")
+            else if (msg is ToolResultMessage tr)
             {
-                ToolResultContent result = new ToolResultContent
+                ToolResultContent toolResult = new ToolResultContent
                 {
-                    ToolUseId = n["tool_call_id"]?.GetValue<string>() ?? string.Empty,
-                    Content = new List<ContentBase> { new TextContent { Text = n["content"]?.GetValue<string>() ?? string.Empty } }
+                    ToolUseId = tr.ToolCallId,
+                    Content = new List<ContentBase> { new TextContent { Text = tr.Content } }
                 };
-                AppendContent(RoleType.User, result);
+                AppendContent(RoleType.User, toolResult);
             }
-            else if (role == "assistant")
+            else if (msg is AssistantMessage am)
             {
-                string text = n["content"]?.GetValue<string>() ?? string.Empty;
-                if (!string.IsNullOrEmpty(text))
+                if (!string.IsNullOrEmpty(am.Text))
+                    AppendContent(RoleType.Assistant, new TextContent { Text = am.Text });
+                foreach (SemanticToolCall tc in am.ToolCalls)
                 {
-                    AppendContent(RoleType.Assistant, new TextContent { Text = text });
-                }
-
-                JsonArray? toolCalls = n["tool_calls"]?.AsArray();
-                if (toolCalls != null)
-                {
-                    foreach (JsonNode? tc in toolCalls)
+                    ToolUseContent use = new ToolUseContent
                     {
-                        if (tc == null) continue;
-                        AppendContent(RoleType.Assistant, BuildToolUse(tc));
-                    }
+                        Id = tc.Id,
+                        Name = tc.Name,
+                        Input = ParseInput(tc.ArgumentsJson)
+                    };
+                    AppendContent(RoleType.Assistant, use);
                 }
+                // thinking is dropped — unsigned thinking cannot be replayed to Anthropic
             }
         }
     }
 
-    public void OnSystemMessage(IProtocolListener sender, string text)
+    public void OnSystemMessage(string text)
     {
         _system = text;
     }
 
-    public void OnUserMessage(IProtocolListener sender, string text)
+    public void OnUserMessage(string text)
     {
         AppendContent(RoleType.User, new TextContent { Text = text });
     }
 
-    // A completed assistant turn raised by another protocol (sender != this). We reconstruct a
-    // native assistant message without signature; thinking is intentionally dropped because an
+    // A completed assistant turn from replay or another protocol. We reconstruct a native
+    // assistant message without signature; thinking is intentionally dropped because an
     // unsigned thinking block cannot be replayed to Anthropic.
-    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
     {
-        if (ReferenceEquals(sender, this)) return;
-
         if (!string.IsNullOrEmpty(text))
         {
             AppendContent(RoleType.Assistant, new TextContent { Text = text });
@@ -125,7 +119,7 @@ public class ProtocolAnthropic : IProtocolListener
         }
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
+    public void OnToolResult(string toolCallId, ToolResult result)
     {
         string content = result.StdOut;
         if (!string.IsNullOrEmpty(result.StdErr))
@@ -139,10 +133,6 @@ public class ProtocolAnthropic : IProtocolListener
         };
         AppendContent(RoleType.User, toolResult);
     }
-
-    public void OnStreamStart(IProtocolListener sender, string tag) { }
-    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
-    public void OnStreamEnd(IProtocolListener sender, string tag) { }
 
     public void OnClear()
     {
@@ -195,7 +185,7 @@ public class ProtocolAnthropic : IProtocolListener
 
         if (!string.IsNullOrEmpty(_system))
         {
-            parameters.System = new List<SystemMessage> { new SystemMessage(_system) };
+            parameters.System = new List<AnthropicSystemMessage> { new AnthropicSystemMessage(_system) };
         }
 
         if (tools.Count > 0)
@@ -318,11 +308,13 @@ public class ProtocolAnthropic : IProtocolListener
                     streamedChars += assistantDelta.Length;
                     if (openStreamTag != StreamTag.Assistant)
                     {
-                        if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
-                        bundle.OnStreamStart(this, StreamTag.Assistant);
+                        if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                        bundle.Canonical.OnStreamStart(StreamTag.Assistant);
+                        bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                         openStreamTag = StreamTag.Assistant;
                     }
-                    bundle.OnStreamChunk(this, StreamTag.Assistant, assistantDelta);
+                    bundle.Canonical.OnStreamChunk(StreamTag.Assistant, assistantDelta);
+                    bundle.Transport?.OnStreamChunk(StreamTag.Assistant, assistantDelta);
                 }
 
                 string? thinkingDelta = res.Delta?.Thinking;
@@ -331,11 +323,13 @@ public class ProtocolAnthropic : IProtocolListener
                     streamedChars += thinkingDelta.Length;
                     if (openStreamTag != StreamTag.Thinking)
                     {
-                        if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
-                        bundle.OnStreamStart(this, StreamTag.Thinking);
+                        if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                        bundle.Canonical.OnStreamStart(StreamTag.Thinking);
+                        bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                         openStreamTag = StreamTag.Thinking;
                     }
-                    bundle.OnStreamChunk(this, StreamTag.Thinking, thinkingDelta);
+                    bundle.Canonical.OnStreamChunk(StreamTag.Thinking, thinkingDelta);
+                    bundle.Transport?.OnStreamChunk(StreamTag.Thinking, thinkingDelta);
                 }
 
                 // Anthropic only reports output tokens on the final message_delta, so during the body
@@ -365,13 +359,14 @@ public class ProtocolAnthropic : IProtocolListener
         }
         catch (Exception ex)
         {
-            if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
+            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
             return ClassifyException(ex);
         }
 
         if (openStreamTag != null)
         {
-            bundle.OnStreamEnd(this, openStreamTag);
+            bundle.Canonical.OnStreamEnd(openStreamTag);
+            bundle.Transport?.OnStreamEnd(openStreamTag);
         }
 
         if (outputs.Count == 0)
@@ -392,7 +387,8 @@ public class ProtocolAnthropic : IProtocolListener
         _native.Add(assistant);
 
         (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(assistant.Content);
-        bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
+        bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
+        bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
         int totalInputTokens = 0;
         int cacheCreationTokens = 0;
@@ -448,7 +444,8 @@ public class ProtocolAnthropic : IProtocolListener
         }
 
         (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(response.Content);
-        bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
+        bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
+        bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
         int totalInputTokens = response.Usage?.InputTokens ?? 0;
         int cacheCreationTokens = 0;
@@ -546,17 +543,6 @@ public class ProtocolAnthropic : IProtocolListener
             Content = new List<ContentBase> { block }
         };
         _native.Add(msg);
-    }
-
-    private static ToolUseContent BuildToolUse(JsonNode tc)
-    {
-        string argsJson = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
-        return new ToolUseContent
-        {
-            Id = tc["id"]?.GetValue<string>() ?? string.Empty,
-            Name = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty,
-            Input = ParseInput(argsJson)
-        };
     }
 
     private static JsonNode ParseInput(string argsJson)

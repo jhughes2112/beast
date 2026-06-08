@@ -11,6 +11,10 @@ public enum LlmExitReason
     Completed, ContextFull, Failed, Interrupted
 }
 
+// Reports running token counts and protocol-computed cost for the current in-flight assistant
+// turn while a response streams. Provisional; superseded at commit by the authoritative payload.
+public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost);
+
 // Result returned by LlmService after running a conversation to completion.
 public class LlmResult
 {
@@ -55,7 +59,7 @@ public class LlmService
         _availableAt = DateTimeOffset.MinValue;
     }
 
-    public async Task<LlmResult> RunToCompletionAsync(BeastSession conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, Func<string?> checkForUserInput, CancellationToken cancellationToken)
+    public async Task<LlmResult> RunToCompletionAsync(Session conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
     {
         // Waits until the backoff timer expires. Returns false immediately if permanently down.
         if (_availableAt == DateTimeOffset.MaxValue)
@@ -99,7 +103,7 @@ public class LlmService
                     break;
                 }
 
-                if (conversation.GetContextLength() + reserveTokens > model.Config.ContextWindow)
+                if (conversation.ContextLength + reserveTokens > model.Config.ContextWindow)
                 {
                     finalResult = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
                     break;
@@ -118,7 +122,7 @@ public class LlmService
                 // stays as the current context occupancy. These are superseded at commit by the
                 // authoritative cumulative values.
                 decimal costBaseline = conversation.TotalCost;
-                int contextBaseline = conversation.GetContextLength();
+                int contextBaseline = conversation.ContextLength;
                 int inputBaseline = conversation.CumulativeInputTokens;
                 int outputBaseline = conversation.CumulativeOutputTokens;
                 LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
@@ -135,23 +139,23 @@ public class LlmService
                 if (callResult.Outcome == ProtocolCallOutcome.Success)
                 {
                     ProtocolCallPayload payload = callResult.Payload!;
-                    conversation.AddTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
+                    conversation.RecordTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
 
                     SendCostUpdate(conversation, model.Config.ContextWindow, transport);
 
-                    (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, conversation, bundle, transport, cancellationToken);
+                    (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, bundle, transport, cancellationToken);
                     if (terminalResult != null)
                     {
                         finalResult = terminalResult;
                         break;
                     }
 
-                    // Check if new user input has arrived. If so, apply it and continue the turn
-                    // so the LLM can see and respond to it on the next iteration.
-                    string? newUserInput = checkForUserInput();
+                    // Check if new user input has arrived between tool calls; inject it so the
+                    // LLM can see and respond to it on the next iteration.
+                    string? newUserInput = conversation.TryGetPendingInput();
                     if (!string.IsNullOrEmpty(newUserInput))
                     {
-                        bundle.OnUserMessage(null!, newUserInput);
+                        bundle.OnUserMessage(newUserInput);
                     }
 
                     if (toolsDispatched)
@@ -205,7 +209,7 @@ public class LlmService
         return finalResult;
     }
 
-    private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, BeastSession conversation, ListenerBundle bundle, ITransportServer transport, CancellationToken ct)
+    private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ITransportServer transport, CancellationToken ct)
     {
         string text = (payload.AssistantText ?? string.Empty).Trim();
         bool hasToolCalls = payload.ToolCalls.Count > 0;
@@ -242,10 +246,7 @@ public class LlmService
         {
             ToolResult result = completedTools[i].toolResult;
 
-            // Sender is null so every listener (each protocol's native state and the transport)
-            // records the tool result. Listeners can inspect StdOut, StdErr, and ExitCode to
-            // decide how to handle the result.
-            bundle.OnToolResult(null!, toolCalls[i].Id, result);
+            bundle.OnToolResult(toolCalls[i].Id, result);
         }
 
         return (null, true);
@@ -313,9 +314,9 @@ public class LlmService
         return result;
     }
 
-    internal int? ComputeMaxCompletionTokens(BeastSession conversation, int contextLength, int reserveTokens)
+    internal int? ComputeMaxCompletionTokens(Session conversation, int contextLength, int reserveTokens)
     {
-        int usedTokens = conversation.GetContextLength();
+        int usedTokens = conversation.ContextLength;
         long available = contextLength - usedTokens - reserveTokens;
         if (available <= 0) return 0;
 
@@ -327,11 +328,11 @@ public class LlmService
     // Pushes a Stats frame to the client the moment the session cost changes so the displayed
     // total updates in realtime, rather than only at turn boundaries via the orchestrator. This
     // carries the authoritative committed totals and supersedes any provisional live frame.
-    private void SendCostUpdate(BeastSession conversation, int maxContext, ITransportServer transport)
+    private void SendCostUpdate(Session conversation, int maxContext, ITransportServer transport)
     {
         int prompt = conversation.CumulativeInputTokens;
         int completion = conversation.CumulativeOutputTokens;
-        int contextTokens = conversation.GetContextLength();
+        int contextTokens = conversation.ContextLength;
 
         string json = BuildStatsJson(conversation.Model, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
         transport.Stats(json);

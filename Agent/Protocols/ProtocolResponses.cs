@@ -22,7 +22,7 @@ using System.Threading.Tasks;
 // plus only the NEW input items appended since the last turn (never replaying the whole history).
 // previous_response_id is in-memory only and is never written into canonical state. On Rehydrate
 // (session load or protocol switch) the id is cleared so the next turn replays full history once.
-public class ProtocolResponses : IProtocolListener
+public class ProtocolResponses
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -49,29 +49,64 @@ public class ProtocolResponses : IProtocolListener
     }
 
     // Clears native chaining state so the next turn replays the full canonical history once.
-    public void Rehydrate(JsonArray canonical)
+    public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
     {
         _previousResponseId = null;
-        _rehydratedInput = BuildInputFromCanonical(canonical, 0);
         _deltaInput.Clear();
+
+        JsonArray input = new JsonArray();
+        foreach (CanonicalMessage msg in messages)
+        {
+            if (msg is SystemMessage sm)
+            {
+                input.Add(BuildMessageItem("system", "input_text", sm.Text));
+            }
+            else if (msg is UserMessage um)
+            {
+                input.Add(BuildMessageItem("user", "input_text", um.Text));
+            }
+            else if (msg is AssistantMessage am)
+            {
+                if (!string.IsNullOrEmpty(am.Text))
+                    input.Add(BuildMessageItem("assistant", "output_text", am.Text));
+
+                foreach (SemanticToolCall tc in am.ToolCalls)
+                {
+                    string id = ProtocolHelpers.NormalizeToolCallId(tc.Id);
+                    JsonObject item = new JsonObject();
+                    item["type"] = "function_call";
+                    item["id"] = id;
+                    item["call_id"] = id;
+                    item["name"] = tc.Name;
+                    item["arguments"] = tc.ArgumentsJson;
+                    input.Add(item);
+                }
+            }
+            else if (msg is ToolResultMessage tr)
+            {
+                JsonObject item = new JsonObject();
+                item["type"] = "function_call_output";
+                item["call_id"] = ProtocolHelpers.NormalizeToolCallId(tr.ToolCallId);
+                item["output"] = tr.Content;
+                input.Add(item);
+            }
+        }
+        _rehydratedInput = input;
     }
 
     // Track incremental changes to build deltas for chaining mode.
-    public void OnSystemMessage(IProtocolListener sender, string text)
+    public void OnSystemMessage(string text)
     {
-        if (sender == this) return;
         _deltaInput.Add(BuildMessageItem("system", "input_text", text));
     }
 
-    public void OnUserMessage(IProtocolListener sender, string text)
+    public void OnUserMessage(string text)
     {
-        if (sender == this) return;
         _deltaInput.Add(BuildMessageItem("user", "input_text", text));
     }
 
-    public void OnAssistantTurn(IProtocolListener sender, string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
+    public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
     {
-        if (sender == this) return;
         if (!string.IsNullOrEmpty(text))
         {
             _deltaInput.Add(BuildMessageItem("assistant", "output_text", text));
@@ -89,9 +124,8 @@ public class ProtocolResponses : IProtocolListener
         }
     }
 
-    public void OnToolResult(IProtocolListener sender, string toolCallId, ToolResult result)
+    public void OnToolResult(string toolCallId, ToolResult result)
     {
-        if (sender == this) return;
         JsonObject item = new JsonObject();
         item["type"] = "function_call_output";
         item["call_id"] = toolCallId;
@@ -103,9 +137,7 @@ public class ProtocolResponses : IProtocolListener
         item["output"] = output;
         _deltaInput.Add(item);
     }
-    public void OnStreamStart(IProtocolListener sender, string tag) { }
-    public void OnStreamChunk(IProtocolListener sender, string tag, string chunk) { }
-    public void OnStreamEnd(IProtocolListener sender, string tag) { }
+
     public void OnClear()
     {
         _previousResponseId = null;
@@ -233,61 +265,6 @@ public class ProtocolResponses : IProtocolListener
         return body;
     }
 
-    // Translates canonical ChatCompletions messages into Responses flat input items, starting
-    // from startIndex so chained turns only send what the server has not already received.
-    private static JsonArray BuildInputFromCanonical(JsonArray canonical, int startIndex)
-    {
-        JsonArray input = new JsonArray();
-
-        for (int i = startIndex; i < canonical.Count; i++)
-        {
-            JsonNode? n = canonical[i];
-            if (n == null) continue;
-            string role = n["role"]?.GetValue<string>() ?? string.Empty;
-
-            if (role == "system" || role == "user")
-            {
-                string text = n["content"]?.GetValue<string>() ?? string.Empty;
-                input.Add(BuildMessageItem(role, "input_text", text));
-            }
-            else if (role == "assistant")
-            {
-                string text = n["content"]?.GetValue<string>() ?? string.Empty;
-                if (!string.IsNullOrEmpty(text))
-                {
-                    input.Add(BuildMessageItem("assistant", "output_text", text));
-                }
-
-                JsonArray? toolCalls = n["tool_calls"]?.AsArray();
-                if (toolCalls != null)
-                {
-                    foreach (JsonNode? tc in toolCalls)
-                    {
-                        if (tc == null) continue;
-                        string id = ProtocolHelpers.NormalizeToolCallId(tc["id"]?.GetValue<string>() ?? string.Empty);
-                        JsonObject item = new JsonObject();
-                        item["type"] = "function_call";
-                        item["id"] = id;
-                        item["call_id"] = id;
-                        item["name"] = tc["function"]?["name"]?.GetValue<string>() ?? string.Empty;
-                        item["arguments"] = tc["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
-                        input.Add(item);
-                    }
-                }
-            }
-            else if (role == "tool")
-            {
-                JsonObject item = new JsonObject();
-                item["type"] = "function_call_output";
-                item["call_id"] = ProtocolHelpers.NormalizeToolCallId(n["tool_call_id"]?.GetValue<string>() ?? string.Empty);
-                item["output"] = n["content"]?.GetValue<string>() ?? string.Empty;
-                input.Add(item);
-            }
-        }
-
-        return input;
-    }
-
     private static JsonObject BuildMessageItem(string role, string blockType, string text)
     {
         JsonObject item = new JsonObject();
@@ -396,11 +373,13 @@ public class ProtocolResponses : IProtocolListener
                     {
                         if (openStreamTag != StreamTag.Assistant)
                         {
-                            if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
-                            bundle.OnStreamStart(this, StreamTag.Assistant);
+                            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                            bundle.Canonical.OnStreamStart(StreamTag.Assistant);
+                            bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                             openStreamTag = StreamTag.Assistant;
                         }
-                        bundle.OnStreamChunk(this, StreamTag.Assistant, delta);
+                        bundle.Canonical.OnStreamChunk(StreamTag.Assistant, delta);
+                        bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
                         EmitProgress(model, liveInputTokens, onProgress);
                     }
                 }
@@ -411,11 +390,13 @@ public class ProtocolResponses : IProtocolListener
                     {
                         if (openStreamTag != StreamTag.Thinking)
                         {
-                            if (openStreamTag != null) bundle.OnStreamEnd(this, openStreamTag);
-                            bundle.OnStreamStart(this, StreamTag.Thinking);
+                            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                            bundle.Canonical.OnStreamStart(StreamTag.Thinking);
+                            bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                             openStreamTag = StreamTag.Thinking;
                         }
-                        bundle.OnStreamChunk(this, StreamTag.Thinking, delta);
+                        bundle.Canonical.OnStreamChunk(StreamTag.Thinking, delta);
+                        bundle.Transport?.OnStreamChunk(StreamTag.Thinking, delta);
                         EmitProgress(model, liveInputTokens, onProgress);
                     }
                 }
@@ -429,7 +410,8 @@ public class ProtocolResponses : IProtocolListener
 
         if (openStreamTag != null)
         {
-            bundle.OnStreamEnd(this, openStreamTag);
+            bundle.Canonical.OnStreamEnd(openStreamTag);
+            bundle.Transport?.OnStreamEnd(openStreamTag);
         }
 
         if (finalResponseNode != null)
@@ -516,12 +498,11 @@ public class ProtocolResponses : IProtocolListener
         string assistantText = assistantTextBuilder.ToString();
         string thinking = thinkingBuilder.ToString();
 
-        // Fan out with this protocol as sender so the canonical store and transport record the
-        // turn while this protocol (whose listener members are no-ops) is skipped.
-        bundle.OnAssistantTurn(this, assistantText, thinking, toolCalls);
+        bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
+        bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
         // Capture the server response id for next-turn chaining, then clear rehydrated input
-        // and delta buffer so subsequent turns accumulate fresh deltas via IProtocolListener.
+        // and delta buffer so subsequent turns accumulate fresh deltas.
         // The id is in-memory only and never written into canonical state.
         _previousResponseId = responseRoot["id"]?.GetValue<string>();
         _rehydratedInput = null;

@@ -77,15 +77,9 @@ public static class PerModelLlmTests
         try
         {
             TestCaptureTransport localTransport = new TestCaptureTransport();
-            BeastSession session = BeastSession.CreateNew(Guid.NewGuid().ToString("N"), role.Name, $"test-{modelId}");
-
-            ListenerBundle bundle = new ListenerBundle(
-                new ListenerChatCompletions(session.ChatCompletionsState),
-                new ListenerTransport(localTransport));
-
-            if (!string.IsNullOrEmpty(role.SystemPrompt))
-                bundle.OnSystemMessage(null!, role.SystemPrompt);
-            bundle.OnUserMessage(null!, "Reply with exactly: PING");
+            BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+            Session session = new Session(data, role.SystemPrompt, localTransport);
+            session.AddUserMessage("Reply with exactly: PING");
 
             using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
@@ -100,7 +94,7 @@ public static class PerModelLlmTests
             LlmResult result;
             try
             {
-                result = await service.RunToCompletionAsync(session, bundle, tools, 0, localTransport, () => null, linkedCts.Token);
+                result = await session.RunTurnAsync(service, tools, 0, linkedCts.Token, null);
             }
             finally
             {
