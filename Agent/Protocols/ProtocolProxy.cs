@@ -120,7 +120,7 @@ public class ProtocolProxy
         _protocolAnthropic?.OnClear();
     }
 
-    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
+    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
         bundle.SetActiveProxy(this);
 
@@ -130,7 +130,7 @@ public class ProtocolProxy
         if (_detected == DetectedProtocol.Unknown)
         {
             ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, endpoint);
-            LogProbe(transport, "Anthropic", anthropic);
+            LogProbe(transport, sessionId, "Anthropic", anthropic);
             if (anthropic.Outcome == ProbeOutcome.Supported)
             {
                 _detected = DetectedProtocol.Anthropic;
@@ -138,7 +138,7 @@ public class ProtocolProxy
             else
             {
                 ProbeResult responses = await ProtocolResponses.ProbeAsync(_model.ApiKey, endpoint);
-                LogProbe(transport, "Responses", responses);
+                LogProbe(transport, sessionId, "Responses", responses);
                 if (responses.Outcome == ProbeOutcome.Supported)
                 {
                     _detected = DetectedProtocol.Responses;
@@ -146,7 +146,7 @@ public class ProtocolProxy
                 else
                 {
                     ProbeResult chat = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, endpoint);
-                    LogProbe(transport, "ChatCompletions", chat);
+                    LogProbe(transport, sessionId, "ChatCompletions", chat);
                     if (chat.Outcome == ProbeOutcome.Supported)
                     {
                         _detected = DetectedProtocol.ChatCompletions;
@@ -157,10 +157,10 @@ public class ProtocolProxy
                         string fallbackEndpoint = endpoint.Replace("host.docker.internal", "localhost", System.StringComparison.OrdinalIgnoreCase);
                         string debugLine = $"[probe] All protocols failed for {endpoint}; retrying with {fallbackEndpoint}";
                         ProtocolChatCompletions.Log(debugLine);
-                        transport.Debug(debugLine);
+                        transport.Debug(sessionId, debugLine);
 
                         ProbeResult anthropicFallback = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                        LogProbe(transport, "Anthropic (fallback)", anthropicFallback);
+                        LogProbe(transport, sessionId, "Anthropic (fallback)", anthropicFallback);
                         if (anthropicFallback.Outcome == ProbeOutcome.Supported)
                         {
                             _detected = DetectedProtocol.Anthropic;
@@ -169,7 +169,7 @@ public class ProtocolProxy
                         else
                         {
                             ProbeResult responsesFallback = await ProtocolResponses.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                            LogProbe(transport, "Responses (fallback)", responsesFallback);
+                            LogProbe(transport, sessionId, "Responses (fallback)", responsesFallback);
                             if (responsesFallback.Outcome == ProbeOutcome.Supported)
                             {
                                 _detected = DetectedProtocol.Responses;
@@ -178,7 +178,7 @@ public class ProtocolProxy
                             else
                             {
                                 ProbeResult chatFallback = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                                LogProbe(transport, "ChatCompletions (fallback)", chatFallback);
+                                LogProbe(transport, sessionId, "ChatCompletions (fallback)", chatFallback);
                                 if (chatFallback.Outcome == ProbeOutcome.Supported)
                                 {
                                     _detected = DetectedProtocol.ChatCompletions;
@@ -194,17 +194,17 @@ public class ProtocolProxy
         IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
         if (_detected == DetectedProtocol.Anthropic)
-            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, cancellationToken);
 
         if (_detected == DetectedProtocol.Responses)
-            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, cancellationToken);
 
         if (_detected == DetectedProtocol.ChatCompletions)
-            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, cancellationToken);
+            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, cancellationToken);
 
         string failLine = $"[probe] No recognized protocol found for: {endpoint}";
         ProtocolChatCompletions.Log(failLine);
-        transport.Debug(failLine);
+        transport.Debug(sessionId, failLine);
         return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
     }
 
@@ -253,11 +253,11 @@ public class ProtocolProxy
         ChatCompletions
     }
 
-    private static void LogProbe(ITransportServer transport, string name, ProbeResult result)
+    private static void LogProbe(ITransportServer transport, string sessionId, string name, ProbeResult result)
     {
         string line = $"[probe] {name}: {result.Outcome} — {result.Detail}";
         ProtocolChatCompletions.Log(line);
-        transport.Debug(line);
+        transport.Debug(sessionId, line);
     }
 
 

@@ -7,6 +7,7 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        Console.Title = "Beast";
         List<string> switches = new List<string>();
         string? prompt = null;
 

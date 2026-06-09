@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <PackageId>Beast</PackageId>
     <PublishSingleFile>true</PublishSingleFile>
+    <ApplicationIcon Condition="Exists('beast.ico')">beast.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

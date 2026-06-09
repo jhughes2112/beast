@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,9 +18,15 @@ public class Session
     private readonly BeastSession _data;
     private readonly ListenerBundle _bundle;
     private readonly ITransportServer _transport;
+
     private readonly ConcurrentQueue<string> _inputQueue = new ConcurrentQueue<string>();
+    private readonly ConcurrentQueue<string> _commandQueue = new ConcurrentQueue<string>();
     private CancellationTokenSource? _turnCts;
-    private Action? _midTurnDrain;
+    private bool _isSubagent;
+
+    private readonly ConcurrentDictionary<string, Session> _children = new ConcurrentDictionary<string, Session>();
+
+    public QueryLogger QueryLog { get; }
 
     // Set when a turn is interrupted; cleared when new user text arrives via AddUserMessage.
     // NeedsAttention() returns false while set so the loop waits instead of re-running immediately.
@@ -34,6 +41,7 @@ public class Session
     public string Model => _data.Model;
     public string Role => _data.Role;
     public bool Ephemeral => _data.Ephemeral;
+    public bool IsSubagent => _isSubagent;
     public bool IsEmpty => string.IsNullOrEmpty(_data.DisplayName);
     public int ContextLength => _data.CurrentContextSize;
     public TokenUsageInfo? LastTokenUsage => _data.LastTokenUsage;
@@ -41,15 +49,48 @@ public class Session
     public int CumulativeInputTokens => _data.CumulativeInputTokens;
     public int CumulativeOutputTokens => _data.CumulativeOutputTokens;
 
-    public Session(BeastSession data, string systemPrompt, ITransportServer transport)
+    public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
     {
         _data = data;
         _transport = transport;
+        _isSubagent = isSubagent;
+        QueryLog = new QueryLogger(data.Id);
         _bundle = new ListenerBundle(
             new CanonicalConversation(data.Messages),
-            new ListenerTransport(transport));
+            new ListenerTransport(_transport, data.Id));
         if (!string.IsNullOrEmpty(systemPrompt))
             _bundle.OnSystemMessage(systemPrompt);
+    }
+
+    // ---- Child ID allocation ----
+
+    // Allocates a unique child session ID rooted at this session's ID.
+    // IDs form a path: "parentId_N" where N increments from 1.
+    public string AllocateChildId() => $"{_data.Id}_{++_data.ChildCounter}";
+
+    // ---- Busy/Idle signaling ----
+
+    // Reference count: Busy fires on 0→1, Idle fires on 1→0.
+    // Safe for concurrent callers (parallel tool calls adding/removing children).
+    private int _busyCount;
+
+    public void SendBusy()
+    {
+        if (Interlocked.Increment(ref _busyCount) == 1)
+            _transport.Busy(_data.Id);
+    }
+
+    public void SendIdle()
+    {
+        if (Interlocked.Decrement(ref _busyCount) == 0)
+            _transport.Idle(_data.Id);
+    }
+
+    public void AnnounceToClient()
+    {
+        if (string.IsNullOrEmpty(_data.DisplayName)) return;
+        string json = JsonSerializer.Serialize(new { id = _data.Id, name = _data.DisplayName });
+        _transport.SessionAnnounce(_data.Id, json);
     }
 
     // ---- Mutation ----
@@ -76,15 +117,14 @@ public class Session
 
     // ---- Attention / input ----
 
-    public bool NeedsAttention() => !_interruptedAndWaiting && (NeedsLlmAttention() || !_inputQueue.IsEmpty);
+    public bool NeedsAttention() => !_commandQueue.IsEmpty || (!_interruptedAndWaiting && (NeedsLlmAttention() || !_inputQueue.IsEmpty));
 
     public string? GetLastAssistantText() => _bundle.GetLastAssistantText();
 
     // Called by LlmService between tool calls to pick up any user input that arrived mid-turn.
-    // Runs the mid-turn drain action first (if set) to move external queue items into _inputQueue.
+    // Input is delivered directly via Deliver(), so no drain action is needed here.
     public string? TryGetPendingInput()
     {
-        _midTurnDrain?.Invoke();
         if (_inputQueue.IsEmpty) return null;
         string accumulated = string.Empty;
         while (_inputQueue.TryDequeue(out string? line))
@@ -92,13 +132,42 @@ public class Session
         return string.IsNullOrEmpty(accumulated) ? null : accumulated;
     }
 
-    // Queues a plain-text user message. Clears the interrupted-wait state so NeedsAttention()
-    // becomes true again and the loop resumes. Thread-safe: the mid-turn drain callback may call
-    // this while a turn is running, injecting text between tool calls via the checkForInput callback.
+    // Dequeues one pending command from the command queue, or returns false if none.
+    public bool TryDequeueCommand(out string? command) => _commandQueue.TryDequeue(out command);
+
+    public void AddChild(Session child) => _children.TryAdd(child.Id, child);
+    public void RemoveChild(Session child) => _children.TryRemove(child.Id, out _);
+
+    // Delivers a user message to the session matching targetId, recursing into children.
+    // Parallel tool calls can produce multiple simultaneous children; all are searched.
+    public void Deliver(string targetId, string text)
+    {
+        if (targetId == _data.Id)
+        {
+            AddUserMessage(text);
+            return;
+        }
+        foreach (Session child in _children.Values)
+            child.Deliver(targetId, text);
+    }
+
+    // Queues input. Commands go to _commandQueue (or fire Interrupt for /cancel); text goes to
+    // _inputQueue and clears the interrupted-wait state. Thread-safe.
     public void AddUserMessage(string text)
     {
-        _interruptedAndWaiting = false;
-        _inputQueue.Enqueue(text);
+        if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+        {
+            Interrupt();
+        }
+        else if (text.StartsWith("/"))
+        {
+            _commandQueue.Enqueue(text);
+        }
+        else
+        {
+            _interruptedAndWaiting = false;
+            _inputQueue.Enqueue(text);
+        }
     }
 
     // Drains the pending message queue into the bundle.
@@ -136,45 +205,44 @@ public class Session
     // Sends the full conversation history to the transport (for display on client reconnect).
     public void ReplayToTransport()
     {
+        string id = _data.Id;
         foreach (CanonicalMessage msg in _data.Messages)
         {
             if (msg is SystemMessage sm)
             {
                 if (!string.IsNullOrEmpty(sm.Text))
-                    _transport.System(sm.Text);
+                    _transport.System(id, sm.Text);
             }
             else if (msg is UserMessage um)
             {
                 if (!string.IsNullOrEmpty(um.Text))
-                    _transport.User(um.Text);
+                    _transport.User(id, um.Text);
             }
             else if (msg is AssistantMessage am)
             {
                 if (!string.IsNullOrEmpty(am.Thinking))
-                    _transport.Thinking(am.Thinking);
+                    _transport.Thinking(id, am.Thinking);
                 if (!string.IsNullOrEmpty(am.Text))
-                    _transport.Output(am.Text);
+                    _transport.Output(id, am.Text);
                 foreach (SemanticToolCall tc in am.ToolCalls)
-                    _transport.ToolCallWithId(tc.Id, $"{tc.Name}({tc.ArgumentsJson})");
+                    _transport.ToolCallWithId(id, tc.Id, tc.Name + "(" + tc.ArgumentsJson + ")");
             }
             else if (msg is ToolResultMessage tr)
             {
                 if (!string.IsNullOrEmpty(tr.Content))
-                    _transport.ToolResponseWithId(tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
+                    _transport.ToolResponseWithId(id, tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
             }
         }
     }
 
     // ---- Turn execution ----
 
-    // Runs one LLM turn. Flushes pending messages first, then polls the queue mid-turn.
+    // Runs one LLM turn. Flushes pending messages first, then LlmService polls TryGetPendingInput
+    // between tool calls to pick up any input delivered via Deliver() during the turn.
     // Returns Completed, ContextFull, Failed, or Interrupted.
     // Re-throws OperationCanceledException only when appToken fires (process shutdown).
     // Interrupt() cancels the per-turn token; that case is absorbed and returned as Interrupted.
-    // midTurnDrain: called between tool calls to move text from the orchestrator's input queue into
-    // this session's _inputQueue, where checkForInput picks it up for immediate LLM injection.
-    // Commands in the orchestrator queue are left in place and processed at the next loop iteration.
-    public async Task<LlmResult> RunTurnAsync(LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken, Action? midTurnDrain)
+    public async Task<LlmResult> RunTurnAsync(LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken)
     {
         _data.Model = service.Model.ConfigId;
 
@@ -191,7 +259,6 @@ public class Session
         // Flush any messages queued before this turn starts.
         FlushPendingMessages();
 
-        _midTurnDrain = midTurnDrain;
         _turnCts = new CancellationTokenSource();
         try
         {
@@ -210,7 +277,6 @@ public class Session
         }
         finally
         {
-            _midTurnDrain = null;
             _turnCts.Dispose();
             _turnCts = null;
         }
@@ -223,7 +289,7 @@ public class Session
     {
         Session temp = Fork($"{_data.Id}_sum", string.Empty, true);
         temp.AddUserMessage(prompt);
-        LlmResult result = await temp.RunTurnAsync(service, tools, 0, appToken, null);
+        LlmResult result = await temp.RunTurnAsync(service, tools, 0, appToken);
         if (result.ExitReason == LlmExitReason.Completed)
             return temp.GetLastAssistantText();
         return null;
@@ -247,8 +313,9 @@ public class Session
             _data.CumulativeInputTokens,
             _data.CumulativeOutputTokens,
             _data.CurrentContextSize,
-            ephemeral);
-        return new Session(forked, string.Empty, _transport);
+            ephemeral,
+            0);
+        return new Session(forked, string.Empty, _transport, _isSubagent);
     }
 
     // Cancels the in-progress turn, if any.

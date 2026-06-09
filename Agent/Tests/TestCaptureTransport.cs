@@ -12,22 +12,33 @@ public class TestCaptureTransport : ITransportServer
 
     public IReadOnlyList<(FrameType Type, string Text)> Sent => _sent;
 
-    public void EnqueueRead(string text)
-    {
-        _pendingReads.Enqueue(text);
-    }
+    public void EnqueueRead(string text) => _pendingReads.Enqueue(text);
 
-    public void Send(FrameType type, string text)
-    {
-        _sent.Add((type, text));
-    }
+    private void Send(FrameType type, string sessionId, string text) => _sent.Add((type, text));
 
-    public Task<string?> ReadAsync(CancellationToken cancellationToken = default)
+    public void Output(string sessionId, string text)      => Send(FrameType.Output,      sessionId, text);
+    public void Error(string sessionId, string text)       => Send(FrameType.Error,        sessionId, text);
+    public void Status(string sessionId, string text)      => Send(FrameType.Status,       sessionId, text);
+    public void Thinking(string sessionId, string text)    => Send(FrameType.Thinking,     sessionId, text);
+    public void System(string sessionId, string text)      => Send(FrameType.System,       sessionId, text);
+    public void User(string sessionId, string text)        => Send(FrameType.User,         sessionId, text);
+    public void Debug(string sessionId, string text)       => Send(FrameType.Debug,        sessionId, text);
+    public void Stats(string sessionId, string json)       => Send(FrameType.Stats,        sessionId, json);
+    public void Completions(string sessionId, string json) => Send(FrameType.Completions,  sessionId, json);
+    public void Idle(string sessionId)                     => Send(FrameType.Idle,         sessionId, string.Empty);
+    public void Busy(string sessionId)                     => Send(FrameType.Busy,         sessionId, string.Empty);
+    public void Clear(string sessionId)                    => Send(FrameType.Clear,        sessionId, string.Empty);
+    public void ToolCallWithId(string sessionId, string callId, string text)           => Send(FrameType.ToolCall,     sessionId, text);
+    public void ToolResponseWithId(string sessionId, string callId, ToolResult result) => Send(FrameType.ToolResponse, sessionId, result.StdOut);
+    public void SessionAnnounce(string sessionId, string json) => Send(FrameType.SessionAnnounce, sessionId, json);
+    public void StreamStart(string sessionId, string tag)   => Send(FrameType.StreamStart, sessionId, tag);
+    public void StreamChunk(string sessionId, string chunk) => Send(FrameType.StreamChunk, sessionId, chunk);
+    public void StreamEnd(string sessionId, string tag)     => Send(FrameType.StreamEnd,   sessionId, tag);
+
+    public Task<string?> ReadAsync(CancellationToken cancellationToken)
     {
         if (_pendingReads.Count > 0)
-        {
             return Task.FromResult<string?>(_pendingReads.Dequeue());
-        }
         return Task.FromResult<string?>(null);
     }
 }

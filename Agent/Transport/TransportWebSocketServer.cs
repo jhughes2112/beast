@@ -19,7 +19,6 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
     private readonly Channel<string> _outbound = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
     private Task? _writeTask;
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
-    private bool? _lastBusyState;  // null = never sent; true = Busy sent; false = Idle sent
 
     public TransportWebSocketServer(int port)
     {
@@ -106,21 +105,35 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[ws-server] RecvLoop error: {ex.Message}");
-            try { Send(FrameType.Error, $"WebSocket receive error: {ex.Message}"); } catch { }
+            try { Error("", $"WebSocket receive error: {ex.Message}"); } catch { }
         }
         _frames.Writer.TryComplete();
     }
 
-    public void Send(FrameType type, string text)
+    private void Send(FrameType type, string sessionId, string text)
     {
-        if (type == FrameType.Busy || type == FrameType.Idle)
-        {
-            bool wantBusy = type == FrameType.Busy;
-            if (_lastBusyState == wantBusy) return;
-            _lastBusyState = wantBusy;
-        }
-        _outbound.Writer.TryWrite($"{(byte)type}|{text}");
+        // Wire format: N|sessionId|content (empty sessionId produces N||content for orchestrator frames).
+        _outbound.Writer.TryWrite($"{(byte)type}|{sessionId}|{text}");
     }
+
+    public void Output(string sessionId, string text)      => Send(FrameType.Output,      sessionId, text);
+    public void Error(string sessionId, string text)       => Send(FrameType.Error,        sessionId, text);
+    public void Status(string sessionId, string text)      => Send(FrameType.Status,       sessionId, text);
+    public void Thinking(string sessionId, string text)    => Send(FrameType.Thinking,     sessionId, text);
+    public void System(string sessionId, string text)      => Send(FrameType.System,       sessionId, text);
+    public void User(string sessionId, string text)        => Send(FrameType.User,         sessionId, text);
+    public void Debug(string sessionId, string text)       => Send(FrameType.Debug,        sessionId, text);
+    public void Stats(string sessionId, string json)       => Send(FrameType.Stats,        sessionId, json);
+    public void Completions(string sessionId, string json) => Send(FrameType.Completions,  sessionId, json);
+    public void Idle(string sessionId)                     => Send(FrameType.Idle,         sessionId, string.Empty);
+    public void Busy(string sessionId)                     => Send(FrameType.Busy,         sessionId, string.Empty);
+    public void Clear(string sessionId)                    => Send(FrameType.Clear,        sessionId, string.Empty);
+    public void ToolCallWithId(string sessionId, string callId, string text)  => Send(FrameType.ToolCall,     sessionId, callId + "\x01" + text);
+    public void ToolResponseWithId(string sessionId, string callId, ToolResult result) => Send(FrameType.ToolResponse, sessionId, callId + "\x01" + result.ExitCode + "\x01" + result.StdOut + "\x01" + result.StdErr);
+    public void SessionAnnounce(string sessionId, string json) => Send(FrameType.SessionAnnounce, sessionId, json);
+    public void StreamStart(string sessionId, string tag)  => Send(FrameType.StreamStart,  sessionId, tag);
+    public void StreamChunk(string sessionId, string chunk) => Send(FrameType.StreamChunk, sessionId, chunk);
+    public void StreamEnd(string sessionId, string tag)    => Send(FrameType.StreamEnd,    sessionId, tag);
 
     private async Task WriteLoop(CancellationToken token)
     {
@@ -143,7 +156,7 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         }
     }
 
-    public async Task<string?> ReadAsync(CancellationToken cancellationToken = default)
+    public async Task<string?> ReadAsync(CancellationToken cancellationToken)
     {
         try
         {

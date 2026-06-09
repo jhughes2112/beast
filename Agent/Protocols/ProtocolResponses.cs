@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -8,11 +8,11 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
-// ── OpenAI Responses API ──────────────────────────────────────────────────────
+// OpenAI Responses API 
 // Wire protocol is stateful by default: passing previous_response_id continues
 // a server-managed conversation thread, so do not also replay the full message
 // history or the context will be duplicated. Either use stateful chaining via
-// previous_response_id, or send the full history yourself — never both.
+// previous_response_id, or send the full history yourself - never both.
 // Mixing the two approaches within a session produces subtle, hard-to-debug
 // context corruption.
 //
@@ -29,7 +29,7 @@ public class ProtocolResponses
         WriteIndented = false
     };
 
-    // Pluggable logger — tests redirect this to ctx.Log; default is silent.
+    // Pluggable logger - tests redirect this to ctx.Log; default is silent.
     public static Action<string> Log = _ => { };
 
     private bool _streamingSupported = true;
@@ -154,11 +154,12 @@ public class ProtocolResponses
         Dictionary<string, JsonNode?> extraPayload,
         LiveUsageProgress onProgress,
         ITransportServer transport,
+        string sessionId,
         CancellationToken cancellationToken)
     {
         if (_streamingSupported)
         {
-            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, tools, maxCompletionTokens, extraPayload, extraHeaders, bundle, onProgress, transport, cancellationToken);
+            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, tools, maxCompletionTokens, extraPayload, extraHeaders, bundle, onProgress, transport, sessionId, cancellationToken);
             if (streamResult != null) return streamResult;
         }
 
@@ -166,8 +167,8 @@ public class ProtocolResponses
 
         string requestJson = body.ToJsonString();
         string postLine = $"[http] POST {model.Endpoint}";
-        Log(postLine); transport.Debug(postLine);
-        Log(requestJson); transport.Debug(requestJson);
+        Log(postLine); transport.Debug(sessionId,postLine);
+        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -184,8 +185,8 @@ public class ProtocolResponses
             httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
             responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             string rspLine = $"[http] RSP {(int)httpResponse.StatusCode}";
-            Log(rspLine); transport.Debug(rspLine);
-            Log(responseBody); transport.Debug(responseBody);
+            Log(rspLine); transport.Debug(sessionId,rspLine);
+            Log(responseBody); transport.Debug(sessionId,responseBody);
         }
         catch (OperationCanceledException)
         {
@@ -279,15 +280,15 @@ public class ProtocolResponses
         return item;
     }
 
-    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
         JsonObject streamBody = BuildBody(model, tools, maxCompletionTokens, extraPayload);
         streamBody["stream"] = true;
 
         string requestJson = streamBody.ToJsonString();
         string postLine = $"[http] POST {model.Endpoint} (streaming)";
-        Log(postLine); transport.Debug(postLine);
-        Log(requestJson); transport.Debug(requestJson);
+        Log(postLine); transport.Debug(sessionId,postLine);
+        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -317,8 +318,8 @@ public class ProtocolResponses
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
             string errLine = $"[http] RSP {statusCode} (streaming error)";
-            Log(errLine); transport.Debug(errLine);
-            Log(errorBody); transport.Debug(errorBody);
+            Log(errLine); transport.Debug(sessionId,errLine);
+            Log(errorBody); transport.Debug(sessionId,errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {
@@ -594,3 +595,4 @@ public class ProtocolResponses
         }
     }
 }
+

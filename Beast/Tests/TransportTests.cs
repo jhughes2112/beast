@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,6 +21,9 @@ file sealed class NullDisplay : IDisplay
     public void SetSendAsync(Func<string, Task> sendAsync) { }
     public void SetRequestExit(Action requestExit) { }
     public void SetFrameDrain(Action drain) { }
+    public void SetSessionCounts(int active, int total) { }
+    public void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
+    public void SetSessionSwitchCallback(Action<string> switchTo) { }
     public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
@@ -35,9 +40,11 @@ public static class TransportTests
         TestFrameToWire(ctx);
         TestParseFrameSingle(ctx);
         TestParseFrameAllTypes(ctx);
+        TestParseFrameWithSessionId(ctx);
         TestParseFrameUnicode(ctx);
         TestParseFrameEmpty(ctx);
         TestParseFramePipeInContent(ctx);
+        TestParseFrameBackwardCompat(ctx);
         TestConversationModelUpdate(ctx);
         TestConversationModelCollapseMode(ctx);
         TestAgentTransportProcessing(ctx);
@@ -45,34 +52,43 @@ public static class TransportTests
 
     // ---- Frame wire format ----
 
+    // Wire format: N|sessionId|content (sessionId may be empty for global frames).
     private static string MakeWireFrame(FrameType type, string content)
     {
-        return $"{(byte)type}|{content}";
+        return $"{(byte)type}||{content}";
+    }
+
+    private static string MakeWireFrameWithSession(FrameType type, string sessionId, string content)
+    {
+        return $"{(byte)type}|{sessionId}|{content}";
     }
 
     private static void TestFrameToWire(TestContext ctx)
     {
-        // Verify the expected wire format for a known frame.
         string wire = MakeWireFrame(FrameType.Output, "hello");
-        ctx.AssertEqual("0|hello", wire, "FrameToWire: Output frame wire format");
+        ctx.AssertEqual("0||hello", wire, "FrameToWire: Output frame wire format");
 
         string statusWire = MakeWireFrame(FrameType.Status, "ok");
-        ctx.AssertEqual("2|ok", statusWire, "FrameToWire: Status frame wire format");
+        ctx.AssertEqual("2||ok", statusWire, "FrameToWire: Status frame wire format");
+
+        string sessionWire = MakeWireFrameWithSession(FrameType.Output, "abc123", "hello");
+        ctx.AssertEqual("0|abc123|hello", sessionWire, "FrameToWire: session-scoped frame wire format");
     }
 
     // ---- ParseFrame (Beast-side, via BeastApp reflection) ----
 
-    private static (FrameType Type, string Content) ParseFrame(string wire)
+    private static (FrameType Type, string SessionId, string Content) ParseFrame(string wire)
     {
-        return (ValueTuple<FrameType, string>)Reflect.Static(typeof(BeastApp), "ParseFrame",
+        return (ValueTuple<FrameType, string, string>)Reflect.Static(typeof(BeastApp), "ParseFrame",
             new System.Type[] { typeof(string) },
             new object[] { wire })!;
     }
 
     private static void TestParseFrameSingle(TestContext ctx)
     {
-        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "hello"));
+        (FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "hello"));
         ctx.AssertEqual(FrameType.Output, type, "ParseFrame: output type");
+        ctx.AssertEqual("", sessionId, "ParseFrame: empty session ID for global frame");
         ctx.AssertEqual("hello", content, "ParseFrame: output content");
     }
 
@@ -95,33 +111,54 @@ public static class TransportTests
 
         foreach (FrameType t in types)
         {
-            (FrameType parsedType, string parsedContent) = ParseFrame(MakeWireFrame(t, "content"));
+            (FrameType parsedType, string parsedSessionId, string parsedContent) = ParseFrame(MakeWireFrame(t, "content"));
             ctx.AssertEqual(t, parsedType, $"ParseFrame: type {t} roundtrips");
+            ctx.AssertEqual("", parsedSessionId, $"ParseFrame: empty session ID for {t}");
             ctx.AssertEqual("content", parsedContent, $"ParseFrame: content for type {t}");
         }
+    }
+
+    private static void TestParseFrameWithSessionId(TestContext ctx)
+    {
+        (FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrameWithSession(FrameType.Output, "abc123", "hello"));
+        ctx.AssertEqual(FrameType.Output, type, "ParseFrame+session: output type");
+        ctx.AssertEqual("abc123", sessionId, "ParseFrame+session: session ID preserved");
+        ctx.AssertEqual("hello", content, "ParseFrame+session: content preserved");
     }
 
     private static void TestParseFrameUnicode(TestContext ctx)
     {
         string emoji = "Hello 🌍 éàć";
-        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, emoji));
+        (FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, emoji));
         ctx.AssertEqual(FrameType.Output, type, "ParseFrame: unicode type");
+        ctx.AssertEqual("", sessionId, "ParseFrame: empty session ID for unicode frame");
         ctx.AssertEqual(emoji, content, "ParseFrame: unicode content preserved");
     }
 
     private static void TestParseFrameEmpty(TestContext ctx)
     {
-        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, ""));
+        (FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, ""));
         ctx.AssertEqual(FrameType.Output, type, "ParseFrame: empty type");
+        ctx.AssertEqual("", sessionId, "ParseFrame: empty session ID for empty content frame");
         ctx.AssertEqual("", content, "ParseFrame: empty content preserved");
     }
 
     private static void TestParseFramePipeInContent(TestContext ctx)
     {
-        // Content that itself contains a pipe should not be split further.
-        (FrameType type, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "a|b|c"));
+        // Content that itself contains pipes should not be split further after the session ID segment.
+        (FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "a|b|c"));
         ctx.AssertEqual(FrameType.Output, type, "ParseFrame: pipe-in-content type");
+        ctx.AssertEqual("", sessionId, "ParseFrame: pipe-in-content empty session ID");
         ctx.AssertEqual("a|b|c", content, "ParseFrame: pipe-in-content preserved");
+    }
+
+    private static void TestParseFrameBackwardCompat(TestContext ctx)
+    {
+        // Old single-pipe format (from an older agent) is handled gracefully.
+        (FrameType type, string sessionId, string content) = ParseFrame("0|hello");
+        ctx.AssertEqual(FrameType.Output, type, "BackwardCompat: output type");
+        ctx.AssertEqual("", sessionId, "BackwardCompat: empty session ID");
+        ctx.AssertEqual("hello", content, "BackwardCompat: content preserved");
     }
 
     // ---- ConversationModel (Beast-side) ----
@@ -172,49 +209,59 @@ public static class TransportTests
 
     // ---- BeastApp frame processing ----
 
+    private static void ProcessFrame(BeastApp app, FrameType type, string sessionId, string content)
+    {
+        Reflect.Instance(app, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string), typeof(string) },
+            new object[] { type, sessionId, content });
+    }
+
+    // Retrieves the ConversationModel for a given session ID from BeastApp._sessions via reflection.
+    private static ConversationModel? GetSessionModel(BeastApp app, string sessionId)
+    {
+        object? sessions = Reflect.GetField(app, "_sessions");
+        if (sessions == null) return null;
+        IDictionary dict = (IDictionary)sessions;
+        object? state = dict[sessionId];
+        if (state == null) return null;
+        PropertyInfo? prop = state.GetType().GetProperty("Model");
+        return (ConversationModel?)prop?.GetValue(state);
+    }
+
     private static void TestAgentTransportProcessing(TestContext ctx)
     {
-        ConversationModel model = new ConversationModel();
-        BeastApp transport = new BeastApp(new LaunchDebug(), new List<string>(), new NullDisplay(), new Log(false));
-        Reflect.SetField(transport, "_model", model);
+        const string SID = "test-session";
+        BeastApp app = new BeastApp(new LaunchDebug(), new List<string>(), new NullDisplay(), new Log(false));
 
-        // Simulate a Status frame arriving — should not add to the model.
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.Status, "Agent ready" });
+        // Simulate a Status frame arriving — should not add to any session model.
+        ProcessFrame(app, FrameType.Status, "", "Agent ready");
+        ConversationModel? noModel = GetSessionModel(app, SID);
+        ctx.Assert(noModel == null, "BeastApp: Status does not create a session model");
 
-        ctx.AssertEqual(0, model.Messages.Count, "BeastApp: Status does not add to model");
+        // Completions frame also has no session scope.
+        ProcessFrame(app, FrameType.Completions, "", "[\"/help\",\"/quit\"]");
+        ctx.Assert(GetSessionModel(app, SID) == null, "BeastApp: Completions do not create a session model");
 
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.Completions, "[\"/help\",\"/quit\"]" });
-
-        ctx.AssertEqual(0, model.Messages.Count, "BeastApp: Completions do not add to model");
-
-        // Output frame adds a message.
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.Output, "Hello!" });
-
-        ctx.AssertEqual(1, model.Messages.Count, "BeastApp: Output frame adds message");
+        // Output frame with a session ID creates a model and adds a message.
+        ProcessFrame(app, FrameType.Output, SID, "Hello!");
+        ConversationModel? model = GetSessionModel(app, SID);
+        ctx.Assert(model != null, "BeastApp: Output frame creates session model");
+        ctx.AssertEqual(1, model!.Messages.Count, "BeastApp: Output frame adds message");
         ctx.AssertEqual("Hello!", model.Messages[0].Content, "BeastApp: Output content");
 
         // Streaming: start → chunk → chunk → end should accumulate in one slot.
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.StreamStart, StreamTag.Assistant });
+        ProcessFrame(app, FrameType.StreamStart, SID, StreamTag.Assistant);
         int slotAfterStart = model.Messages.Count - 1;
 
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.StreamChunk, "part1" });
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.StreamChunk, " part2" });
+        ProcessFrame(app, FrameType.StreamChunk, SID, "part1");
+        ProcessFrame(app, FrameType.StreamChunk, SID, " part2");
 
         ctx.AssertEqual("part1 part2", model.Messages[slotAfterStart].Content,
             "BeastApp: stream chunks accumulate");
 
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.StreamEnd, StreamTag.Assistant });
+        ProcessFrame(app, FrameType.StreamEnd, SID, StreamTag.Assistant);
 
         // After StreamEnd a committed Output frame arrives to finalize.
-        Reflect.Instance(transport, "ProcessFrame", new System.Type[] { typeof(FrameType), typeof(string) },
-            new object[] { FrameType.Output, "part1 part2" });
+        ProcessFrame(app, FrameType.Output, SID, "part1 part2");
 
         ctx.AssertEqual("part1 part2", model.Messages[slotAfterStart].Content,
             "BeastApp: committed frame after StreamEnd updates slot");

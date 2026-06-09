@@ -2,6 +2,24 @@ using System;
 using System.Collections.Generic;
 
 
+// Describes a session entry for display in the session tree overlay.
+public class SessionDisplayInfo
+{
+    public string Id { get; }
+    public string Name { get; }
+    public bool IsBusy { get; }
+    // Depth in the session hierarchy (0 = root, 1 = first-level child, etc.).
+    public int Depth { get; }
+
+    public SessionDisplayInfo(string id, string name, bool isBusy, int depth)
+    {
+        Id = id;
+        Name = name;
+        IsBusy = isBusy;
+        Depth = depth;
+    }
+}
+
 // Controls the initial collapse state applied to messages as they arrive.
 // Individual messages can always be toggled regardless of mode.
 public enum CollapseMode

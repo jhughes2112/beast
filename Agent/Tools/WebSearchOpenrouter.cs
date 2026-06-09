@@ -25,6 +25,7 @@ public class WebSearchOpenrouter
     public async Task<ToolResult> SearchWebAsync(
         [Description("The search query or natural language question to answer using the web.")] string query,
         ITransportServer transport,
+        string sessionId,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -39,7 +40,7 @@ public class WebSearchOpenrouter
             int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
 
             ProtocolProxy proxy = new ProtocolProxy(_model);
-            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, (i, o, c) => { }, transport, cancellationToken);
+            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, (i, o, c) => { }, transport, sessionId, cancellationToken);
 
             if (result.Outcome == ProtocolCallOutcome.Success)
             {

@@ -19,5 +19,11 @@ public interface IDisplay
     void SetSendAsync(Func<string, Task> sendAsync);
     void SetRequestExit(Action requestExit);
     void SetFrameDrain(Action drain);
+    // Sets the session counts shown in the status bar (active = busy, total = all known).
+    void SetSessionCounts(int active, int total);
+    // Updates the session list shown in the F10 overlay. activeId is the currently displayed session.
+    void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId);
+    // Wires up the callback invoked when the user selects a session in the overlay.
+    void SetSessionSwitchCallback(Action<string> switchTo);
     Task RunAsync(CancellationToken cancellationToken);
 }

@@ -1,3 +1,4 @@
+#define LOG_QUERIES
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -69,6 +70,7 @@ public class LlmService
 
         LlmModel model = _model;
         LlmResult finalResult = new LlmResult(LlmExitReason.Completed, "");
+        string sessionId = conversation.Id;
 
         try
         {
@@ -92,7 +94,7 @@ public class LlmService
                     {
                         if (rateLimitRetries>0)
                         {
-                            transport.Status($"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
+                            transport.Status(sessionId, $"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
                         }
                         await Task.Delay(delay, cancellationToken);
                     }
@@ -131,10 +133,13 @@ public class LlmService
                     int livePromptTokens = inputBaseline + inputTokens;
                     int liveCompletionTokens = outputBaseline + outputTokens;
                     string liveJson = BuildStatsJson(conversation.Model, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, model.Config.ContextWindow, liveContextTokens);
-                    transport.Stats(liveJson);
+                    transport.Stats(sessionId, liveJson);
                 };
 
-                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, maxCompletionTokens, onProgress, transport, cancellationToken);
+#if LOG_QUERIES
+                conversation.QueryLog.Write(model.Config.Name, bundle.Canonical.Messages, toolDefs);
+#endif
+                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, maxCompletionTokens, onProgress, transport, sessionId, cancellationToken);
 
                 if (callResult.Outcome == ProtocolCallOutcome.Success)
                 {
@@ -143,7 +148,7 @@ public class LlmService
 
                     SendCostUpdate(conversation, model.Config.ContextWindow, transport);
 
-                    (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, bundle, transport, cancellationToken);
+                    (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, bundle, transport, sessionId, cancellationToken);
                     if (terminalResult != null)
                     {
                         finalResult = terminalResult;
@@ -209,7 +214,7 @@ public class LlmService
         return finalResult;
     }
 
-    private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ITransportServer transport, CancellationToken ct)
+    private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ITransportServer transport, string sessionId, CancellationToken ct)
     {
         string text = (payload.AssistantText ?? string.Empty).Trim();
         bool hasToolCalls = payload.ToolCalls.Count > 0;
@@ -236,7 +241,7 @@ public class LlmService
         {
             int index = i;
             SemanticToolCall toolCall = toolCalls[index];
-            tasks[index] = ExecuteToolAsync(toolCall, tools, transport, ct)
+            tasks[index] = ExecuteToolAsync(toolCall, tools, transport, sessionId, ct)
                 .ContinueWith(t => completedTools[index] = (toolCall.Name, t.Result), ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
         }
 
@@ -252,9 +257,9 @@ public class LlmService
         return (null, true);
     }
 
-    private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, ITransportServer transport, CancellationToken ct)
+    private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, ITransportServer transport, string sessionId, CancellationToken ct)
     {
-        Action<string> fixLog = msg => transport.Status(msg);
+        Action<string> fixLog = msg => transport.Status(sessionId, msg);
 
         Tool? matchedTool = null;
         foreach (Tool t in tools)
@@ -305,7 +310,7 @@ public class LlmService
         ToolResult result;
         try
         {
-            result = await matchedTool.Handler(argsObj, ct, transport);
+            result = await matchedTool.Handler(argsObj, ct, transport, sessionId);
         }
         catch (Exception ex)
         {
@@ -335,7 +340,7 @@ public class LlmService
         int contextTokens = conversation.ContextLength;
 
         string json = BuildStatsJson(conversation.Model, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
-        transport.Stats(json);
+        transport.Stats(conversation.Id, json);
     }
 
     private static string BuildStatsJson(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)

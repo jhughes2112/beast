@@ -77,8 +77,8 @@ public static class PerModelLlmTests
         try
         {
             TestCaptureTransport localTransport = new TestCaptureTransport();
-            BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
-            Session session = new Session(data, role.SystemPrompt, localTransport);
+            BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true, 0);
+            Session session = new Session(data, role.SystemPrompt, localTransport, false);
             session.AddUserMessage("Reply with exactly: PING");
 
             using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -94,7 +94,7 @@ public static class PerModelLlmTests
             LlmResult result;
             try
             {
-                result = await session.RunTurnAsync(service, tools, 0, linkedCts.Token, null);
+                result = await session.RunTurnAsync(service, tools, 0, linkedCts.Token);
             }
             finally
             {

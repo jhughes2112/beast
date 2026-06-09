@@ -10,20 +10,21 @@ public enum FrameType : byte
     Error = 1,
     Status = 2,
     Tool = 3,
-    ToolCall = 11,      // agent is about to call a tool: content is "toolName(args)"
-    ToolResponse = 12,  // tool returned a result: content is the response text
+    ToolCall = 11,         // agent is about to call a tool: content is "toolName(args)"
+    ToolResponse = 12,     // tool returned a result: content is the response text
     Thinking = 4,
-    Completions = 5,  // JSON array of completion strings in response to /complete
-    System = 6,       // system prompt message
-    StreamStart = 7,  // begins a streaming response block; content is a type tag (see StreamTag)
-    StreamChunk = 8,  // one text delta belonging to the current open stream
-    StreamEnd = 9,    // closes the current stream block; content is the same type tag as StreamStart
-    Debug = 10,       // diagnostic output; suppressed unless Beast is running in verbose mode
-    Clear = 13,       // clears the client's mirrored conversation memory/display
-    User = 14,        // user message; used when replaying history to the client
-    Stats = 15,       // JSON stats payload: model, promptTokens, completionTokens, totalCost
-    Idle = 16,        // agent is waiting for user input (not processing anything)
-    Busy = 17         // agent is actively processing
+    Completions = 5,       // JSON array of completion strings in response to /complete
+    System = 6,            // system prompt message
+    StreamStart = 7,       // begins a streaming response block; content is a type tag (see StreamTag)
+    StreamChunk = 8,       // one text delta belonging to the current open stream
+    StreamEnd = 9,         // closes the current stream block; content is the same type tag as StreamStart
+    Debug = 10,            // diagnostic output; suppressed unless Beast is running in verbose mode
+    Clear = 13,            // clears the client's mirrored conversation memory/display
+    User = 14,             // user message; used when replaying history to the client
+    Stats = 15,            // JSON stats payload: model, promptTokens, completionTokens, totalCost
+    Idle = 16,             // agent is waiting for user input (not processing anything)
+    Busy = 17,             // agent is actively processing
+    SessionAnnounce = 18   // agent announces a session; content is JSON {id, name}
 }
 
 // Single-character tags that identify the type of a streaming block.
@@ -36,54 +37,37 @@ public static class StreamTag
     public const string System = "S";
 }
 
-// Scoped interface for streaming only — passed to protocol implementations so they cannot
-// touch the broader transport surface (output, errors, reads, etc.).
-// Use StreamTag constants for the tag argument.
-public interface IStreamingMessage
+// Framed communication between Agent and Beast.
+// Every outbound method takes a sessionId (empty string for orchestrator-level frames).
+// Frame routing and encoding are each transport's private concern; Send is not on this interface.
+public interface ITransportServer
 {
-    void StreamStart(string tag);
-    void StreamChunk(string chunk);
-    void StreamEnd(string tag);
-}
-
-// Abstraction for framed stdio communication.
-// Outbound: typed frames so the client can render with appropriate styling.
-// Inbound: plain text strings (framing is only an envelope; content is what matters).
-// Single-threaded: the caller reads in its own loop — no background threads or events.
-public interface ITransportServer : IStreamingMessage
-{
-    // Outbound: send a typed frame to the client.
-    void Send(FrameType type, string text);
-
-    void Output(string text) => Send(FrameType.Output, text);
-    void Error(string text) => Send(FrameType.Error, text);
-    void Status(string text) => Send(FrameType.Status, text);
+    void Output(string sessionId, string text);
+    void Error(string sessionId, string text);
+    void Status(string sessionId, string text);
+    void Thinking(string sessionId, string text);
+    void System(string sessionId, string text);
+    void User(string sessionId, string text);
+    void Debug(string sessionId, string text);
+    void Stats(string sessionId, string json);
+    void Completions(string sessionId, string json);
+    void Idle(string sessionId);
+    void Busy(string sessionId);
+    void Clear(string sessionId);
     // Frame content is "callId\x01text" so Beast can pair by identity.
-    void ToolCallWithId(string callId, string text) => Send(FrameType.ToolCall, callId + "\x01" + text);
+    void ToolCallWithId(string sessionId, string callId, string text);
     // Frame content is "callId\x01exitCode\x01stdout\x01stderr" so Beast can display results richly.
-    void ToolResponseWithId(string callId, ToolResult result) => Send(FrameType.ToolResponse, callId + "\x01" + result.ExitCode + "\x01" + result.StdOut + "\x01" + result.StdErr);
-    void Thinking(string text) => Send(FrameType.Thinking, text);
-    void Completions(string json) => Send(FrameType.Completions, json);
-    void System(string text) => Send(FrameType.System, text);
-    void Debug(string text) => Send(FrameType.Debug, text);
-    void User(string text) => Send(FrameType.User, text);
-    void Stats(string json) => Send(FrameType.Stats, json);
-    void Idle() => Send(FrameType.Idle, string.Empty);
-    void Busy() => Send(FrameType.Busy, string.Empty);
-    void Clear() => Send(FrameType.Clear, string.Empty);
-
+    void ToolResponseWithId(string sessionId, string callId, ToolResult result);
+    // Announces the session's ID and display name so Beast can show a human-readable label.
+    void SessionAnnounce(string sessionId, string json);
     // Streaming: bracket a sequence of incremental chunks with start/end frames.
-    // The client accumulates chunks for live display. After StreamEnd, the caller
-    // must immediately follow with the matching semantic call (Output, Thinking, etc.)
-    // which is the authoritative committed version — the client discards the stream and
-    // replaces it. Use StreamTag constants for the tag argument.
-    void IStreamingMessage.StreamStart(string tag) => Send(FrameType.StreamStart, tag);
-    void IStreamingMessage.StreamChunk(string chunk) => Send(FrameType.StreamChunk, chunk);
-    void IStreamingMessage.StreamEnd(string tag) => Send(FrameType.StreamEnd, tag);
+    // Use StreamTag constants for the tag argument.
+    void StreamStart(string sessionId, string tag);
+    void StreamChunk(string sessionId, string chunk);
+    void StreamEnd(string sessionId, string tag);
 
     // Inbound: read one frame. Returns the content string, or null on EOF.
-    // Call this from the orchestrator's own loop — no threading.
-    Task<string?> ReadAsync(CancellationToken cancellationToken = default);
+    Task<string?> ReadAsync(CancellationToken cancellationToken);
 
     // Non-blocking read: returns content if a frame arrived within timeoutMs, empty string on timeout, null on EOF.
     async Task<string?> TryReadAsync(int timeoutMs, CancellationToken cancellationToken)

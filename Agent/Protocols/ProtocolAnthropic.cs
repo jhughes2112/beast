@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
@@ -11,7 +11,7 @@ using Anthropic.SDK.Extensions;
 using Anthropic.SDK.Messaging;
 using AnthropicSystemMessage = Anthropic.SDK.Messaging.SystemMessage;
 
-// ── Anthropic Messages API (native SDK) ───────────────────────────────────────
+// -- Anthropic Messages API (native SDK) ---------------------------------------
 // This protocol talks to Claude exclusively through Anthropic.SDK. The SDK's own
 // List<Message> is the protocol-native runtime state: each completed assistant turn
 // is appended verbatim as res.Message, which preserves the signed ThinkingContent and
@@ -32,7 +32,7 @@ public class ProtocolAnthropic
 {
     private const string AnthropicVersion = "2023-06-01";
 
-    // Pluggable logger — tests redirect this to ctx.Log; default is silent.
+    // Pluggable logger - tests redirect this to ctx.Log; default is silent.
     public static Action<string> Log = _ => { };
 
     private bool _streamingSupported = true;
@@ -82,7 +82,7 @@ public class ProtocolAnthropic
                     };
                     AppendContent(RoleType.Assistant, use);
                 }
-                // thinking is dropped — unsigned thinking cannot be replayed to Anthropic
+                // thinking is dropped - unsigned thinking cannot be replayed to Anthropic
             }
         }
     }
@@ -149,6 +149,7 @@ public class ProtocolAnthropic
         Dictionary<string, JsonNode?> extraPayload,
         LiveUsageProgress onProgress,
         ITransportServer transport,
+        string sessionId,
         CancellationToken cancellationToken)
     {
         AnthropicClient client = BuildClient(model, extraHeaders);
@@ -158,12 +159,12 @@ public class ProtocolAnthropic
         if (_streamingSupported)
         {
             parameters.Stream = true;
-            result = await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, cancellationToken);
+            result = await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, sessionId, cancellationToken);
         }
         else
         {
             parameters.Stream = false;
-            result = await ExecuteBlockingAsync(client, parameters, model, bundle, transport, cancellationToken);
+            result = await ExecuteBlockingAsync(client, parameters, model, bundle, transport, sessionId, cancellationToken);
         }
 
         return result;
@@ -258,10 +259,10 @@ public class ProtocolAnthropic
         return new AnthropicClient(new APIAuthentication(model.ApiKey), httpClient);
     }
 
-    private async Task<ProtocolResult> ExecuteBlockingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<ProtocolResult> ExecuteBlockingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
         string postLine = $"[sdk] Messages {model.Endpoint}";
-        Log(postLine); transport.Debug(postLine);
+        Log(postLine); transport.Debug(sessionId, postLine);
 
         MessageResponse response;
         try
@@ -280,10 +281,10 @@ public class ProtocolAnthropic
         return CommitResponse(response, model, bundle);
     }
 
-    private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
         string postLine = $"[sdk] Messages {model.Endpoint} (streaming)";
-        Log(postLine); transport.Debug(postLine);
+        Log(postLine); transport.Debug(sessionId, postLine);
 
         List<MessageResponse> outputs = new List<MessageResponse>();
         string? openStreamTag = null;
@@ -614,3 +615,4 @@ public class ProtocolAnthropic
         }
     }
 }
+

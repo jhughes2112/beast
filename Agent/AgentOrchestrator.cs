@@ -1,24 +1,19 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-// Thin host: owns the input queue and one active SessionRunner.
-// Routes transport input to the runner; swaps in a successor runner on compaction.
+// Thin host: drives one SessionRunner at a time.
+// Starts a ReadInputAsync loop paired to each runner; cancels and awaits it before swapping.
 // All session execution logic lives in SessionRunner.
 public class AgentOrchestrator
 {
     private readonly ITransportServer _transport;
     private readonly CancellationTokenSource _cancellationTokenSource;
-    private readonly ConcurrentQueue<string> _inputQueue;
     private readonly LlmRegistry _registry;
     private readonly RoleService _roleService;
     private readonly SettingsService _settings;
-
-    // Volatile so ReadInputAsync (background task) can call Interrupt() on the current runner
-    // without a data race. Assignment is pointer-sized and atomic on all .NET platforms.
-    private volatile SessionRunner? _activeRunner;
 
     public AgentOrchestrator(
         LlmRegistry registry,
@@ -32,30 +27,36 @@ public class AgentOrchestrator
         _settings = settings;
         _transport = transport;
         _cancellationTokenSource = cancellationTokenSource;
-        _inputQueue = new ConcurrentQueue<string>();
     }
 
     public async Task RunAsync()
     {
         CancellationToken ct = _cancellationTokenSource.Token;
-        _ = ReadInputAsync(ct);
+
+        _roleService.Reload();
+        _settings.LoadSettings();
+        _registry.LoadFromConfigs(_settings, _roleService);
 
         SessionRunner runner = new SessionRunner(
-            _inputQueue, _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+            LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource);
 
         while (!ct.IsCancellationRequested)
         {
-            _activeRunner = runner;
+            using CancellationTokenSource inputCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Task inputTask = ReadInputAsync(runner, inputCts.Token);
+
             SessionRunnerExit exit = await runner.RunAsync(ct);
+
+            inputCts.Cancel();
+            await inputTask;
 
             if (exit == SessionRunnerExit.Cancelled)
                 break;
 
-            // ContextFull: compact and swap to the successor runner.
             SessionRunner? next = await runner.CompactAsync(ct);
             if (next == null)
             {
-                _transport.Error("[orchestrator] Compaction failed; runner cannot continue.");
+                _transport.Error(runner.ActiveSessionId, "[orchestrator] Compaction failed; runner cannot continue.");
                 break;
             }
 
@@ -63,26 +64,52 @@ public class AgentOrchestrator
         }
     }
 
-    private async Task ReadInputAsync(CancellationToken token)
+    private Session LoadOrCreateSession()
+    {
+        string? lastSessionId = SessionService.LoadLastSession();
+        BeastSession? lastData = SessionService.LoadBySessionId(lastSessionId);
+        if (lastData != null)
+        {
+            _transport.Status(lastData.Id, "Resumed session: " + lastData.DisplayName);
+            return new Session(lastData, string.Empty, _transport, false);
+        }
+
+        string roleName = string.Empty;
+        foreach (Role r in _roleService.Roles.Values)
+        {
+            roleName = r.Name;
+            break;
+        }
+        Role? role = _roleService.GetRole(roleName);
+        string systemPrompt = role?.SystemPrompt ?? string.Empty;
+        LlmService? service = role != null ? _registry.GetServiceForRole(role, string.Empty, 0) : null;
+        string model = service?.Model.ConfigId ?? string.Empty;
+        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, model, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, false, 0);
+        return new Session(fresh, systemPrompt, _transport, false);
+    }
+
+    private async Task ReadInputAsync(SessionRunner runner, CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
             string? line = await _transport.TryReadAsync(100, token);
             if (line == null)
                 break;
-            if (line.Length > 0)
-            {
-                _transport.Debug($"[orchestrator] Received: '{line}'");
-                if (line.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
-                {
-                    _transport.Debug("[orchestrator] /cancel received — interrupting active session");
-                    _activeRunner?.Interrupt();
-                }
-                else
-                {
-                    _inputQueue.Enqueue(line);
-                }
-            }
+            if (line.Length == 0)
+                continue;
+
+            // Inbound wire format: sessionId|content
+            // Falls back to the active session if no pipe is present (e.g. debug transport).
+            int pipe = line.IndexOf('|');
+            string sessionId = pipe >= 0 ? line.Substring(0, pipe) : string.Empty;
+            string content = pipe >= 0 ? line.Substring(pipe + 1) : line;
+            if (content.Length == 0)
+                continue;
+
+            if (string.IsNullOrEmpty(sessionId))
+                sessionId = runner.ActiveSessionId;
+
+            runner.Deliver(sessionId, content);
         }
     }
 }

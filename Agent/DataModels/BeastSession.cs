@@ -53,6 +53,11 @@ public class BeastSession
     [JsonIgnore]
     public bool Ephemeral { get; }
 
+    // Monotonically increasing counter used to assign unique child session IDs.
+    // Session.AllocateChildId() increments this and returns "{Id}_{ChildCounter}".
+    [JsonPropertyName("childCounter")]
+    public int ChildCounter { get; internal set; }
+
     [JsonConstructor]
     public BeastSession(
         string id,
@@ -65,7 +70,8 @@ public class BeastSession
         int cumulativeInputTokens,
         int cumulativeOutputTokens,
         int currentContextSize,
-        bool ephemeral)
+        bool ephemeral,
+        int childCounter)
     {
         Id = id;
         DisplayName = displayName;
@@ -78,5 +84,6 @@ public class BeastSession
         CumulativeOutputTokens = cumulativeOutputTokens;
         CurrentContextSize = currentContextSize;
         Ephemeral = ephemeral;
+        ChildCounter = childCounter;
     }
 }

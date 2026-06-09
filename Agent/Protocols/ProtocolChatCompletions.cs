@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -8,12 +8,12 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
-// ── OpenAI Chat Completions API ───────────────────────────────────────────────
-// Wire protocol requires strict user→assistant alternation; two consecutive
+// -- OpenAI Chat Completions API -----------------------------------------------
+// Wire protocol requires strict userâ†’assistant alternation; two consecutive
 // user messages will cause a 400 error. The system message, if present,
 // should be the first entry in the array. Tool call results must use the
 // "tool" role (not "user") and must immediately follow the assistant message
-// that issued the tool call — the ordering is load-bearing.
+// that issued the tool call - the ordering is load-bearing.
 //
 // This protocol maintains its own separate copy of messages (_native) that are sent to the
 // server each turn. It must never retain thinking blocks. The native state is rebuilt from
@@ -26,7 +26,7 @@ public class ProtocolChatCompletions
         WriteIndented = false
     };
 
-    // Pluggable logger — tests redirect this to ctx.Log; default is silent.
+    // Pluggable logger - tests redirect this to ctx.Log; default is silent.
     public static Action<string> Log = _ => { };
 
     private bool _parallelToolCallsSupported = true;
@@ -193,6 +193,7 @@ public class ProtocolChatCompletions
         Dictionary<string, JsonNode?> extraPayload,
         LiveUsageProgress onProgress,
         ITransportServer transport,
+        string sessionId,
         CancellationToken cancellationToken)
     {
         for (;;)
@@ -201,7 +202,7 @@ public class ProtocolChatCompletions
 
             if (_streamingSupported)
             {
-                ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, cancellationToken);
+                ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, cancellationToken);
                 if (streamResult != null) return streamResult;
                 // null means the provider rejected streaming; fall through to non-streaming
             }
@@ -210,11 +211,11 @@ public class ProtocolChatCompletions
             string responseBody;
             try
             {
-                httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, cancellationToken);
+                httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, sessionId, cancellationToken);
                 responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
                 string rspLine = $"[http] RSP {(int)httpResponse.StatusCode}";
-                Log(rspLine); transport.Debug(rspLine);
-                Log(responseBody); transport.Debug(responseBody);
+                Log(rspLine); transport.Debug(sessionId,rspLine);
+                Log(responseBody); transport.Debug(sessionId,responseBody);
             }
             catch (OperationCanceledException)
             {
@@ -363,7 +364,7 @@ public class ProtocolChatCompletions
         return body;
     }
 
-    private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
         string url = model.Endpoint;
 
@@ -375,8 +376,8 @@ public class ProtocolChatCompletions
 
         string requestJson = obj.ToJsonString();
         string postLine = $"[http] POST {url}";
-        Log(postLine); transport.Debug(postLine);
-        Log(requestJson); transport.Debug(requestJson);
+        Log(postLine); transport.Debug(sessionId,postLine);
+        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -398,6 +399,7 @@ public class ProtocolChatCompletions
         ListenerBundle bundle,
         LiveUsageProgress onProgress,
         ITransportServer transport,
+        string sessionId,
         CancellationToken cancellationToken)
     {
         string url = model.Endpoint;
@@ -413,8 +415,8 @@ public class ProtocolChatCompletions
 
         string requestJson = obj.ToJsonString();
         string postLine = $"[http] POST {url} (streaming)";
-        Log(postLine); transport.Debug(postLine);
-        Log(requestJson); transport.Debug(requestJson);
+        Log(postLine); transport.Debug(sessionId,postLine);
+        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -448,8 +450,8 @@ public class ProtocolChatCompletions
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
             string errLine = $"[http] RSP {statusCode} (streaming error)";
-            Log(errLine); transport.Debug(errLine);
-            Log(errorBody); transport.Debug(errorBody);
+            Log(errLine); transport.Debug(sessionId,errLine);
+            Log(errorBody); transport.Debug(sessionId,errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {
@@ -666,12 +668,12 @@ public class ProtocolChatCompletions
         return string.Empty;
     }
 
-    private static void EmitNonStreamingThinking(ITransportServer transport, JsonNode root)
+    private static void EmitNonStreamingThinking(ITransportServer transport, string sessionId, JsonNode root)
     {
         JsonNode? messageNode = root["choices"]?[0]?["message"];
         if (messageNode is not JsonObject messageObj) return;
         string thinking = ExtractThinking(messageObj);
-        if (!string.IsNullOrEmpty(thinking)) transport.Thinking(thinking);
+        if (!string.IsNullOrEmpty(thinking)) transport.Thinking(sessionId, thinking);
     }
 
     private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode root, LlmModel model)
@@ -737,3 +739,4 @@ public class ProtocolChatCompletions
         return false;
     }
 }
+

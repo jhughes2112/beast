@@ -20,7 +20,7 @@ public class TestContext
 	// Log an informational line (section headers, skip notices, etc.).
 	public void Log(string text)
 	{
-		_transport.Output(text);
+		_transport.Output("",text);
 	}
 
 	public void Assert(bool condition, string testName)
@@ -32,7 +32,7 @@ public class TestContext
 		else
 		{
 			_failed++;
-			_transport.Output($"  FAIL: {testName}");
+			_transport.Output("",$"  FAIL: {testName}");
 		}
 	}
 

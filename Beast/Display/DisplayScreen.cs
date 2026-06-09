@@ -2,24 +2,21 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TextCopy;
 
 
-// IDisplay implementation that mirrors DisplayAnsi's behavior but composes its frame using the Screen system:
-//   - Each conversation message becomes a BlockLayer with a 1-row collapsed Screen and an N-row expanded Screen.
-//   - StackLayout stacks blocks (plus trailing spacer rows) into one tall composite Screen.
-//   - ScreenView slices the visible window based on scroll offset.
-//   - Overlays (hover accent, scrollbar) and effects (BrightnessEffect on the hovered block) are composited
-//     on top non-destructively each frame.
-//   - Status bar, separator, and input area are separate Screens stamped onto a frame-sized target Screen.
-//   - ScreenAnsiWriter emits the final frame as 24-bit truecolor ANSI.
+// IDisplay implementation that builds a frame by compositing independent layer Screens:
+//   BlockRenderer   → per-message BlockLayers stacked via StackLayout / ScreenView
+//   SeparatorLayer  → the horizontal rule row with busy-animation overlay
+//   InputLayer      → multi-row input text area + slash-command completion popup
+//   StatusBarLayer  → left/center/right status bar
+//   SessionTreeLayer → F10 session tree overlay (optional, on top of everything else)
+// Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
     private const string HelpText     = "Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session <id>, /verbose, /test, /quit";
-    private const string PromptPrefix = "» ";
     private const int    MaxInputRows = 10;
 
     private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -27,7 +24,7 @@ public class DisplayScreen : IDisplay
         "compact", "clear", "reload", "role", "model", "session", "test", "quit", "cancel"
     };
 
-    private static class Palette
+    internal static class Palette
     {
         // RGB equivalents of the indexed colors used by DisplayAnsi.
         public static readonly Rgb InputFg       = new Rgb(238, 238, 238);  // 255
@@ -61,8 +58,8 @@ public class DisplayScreen : IDisplay
         // Pre-built SGR strings derived from the palette above.
         public static readonly string BodyAnsi      = $"\x1b[38;2;{FileBodyFg.R};{FileBodyFg.G};{FileBodyFg.B}m\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
         public static readonly string ErrBodyAnsi   = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
-        public static readonly string BodyBgAnsi    = $"\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";    // bg-only: used as syntax-highlight base
-        public static readonly string ErrBodyBgAnsi = $"\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";  // bg-only: error body highlight base
+        public static readonly string BodyBgAnsi    = $"\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
+        public static readonly string ErrBodyBgAnsi = $"\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
         public static readonly string FileNameAnsi  = "\x1b[38;5;226m";  // yellow filename highlight
         public static readonly string ResetAnsi     = "\x1b[39m";         // reset foreground only
     }
@@ -73,6 +70,16 @@ public class DisplayScreen : IDisplay
     private Action?                    _requestExit;
     private CancellationTokenSource?   _runCts;
     private Action?                    _frameDrain;
+    private Action<string>?            _sessionSwitchCallback;
+
+    // Session tree overlay state.
+    private bool _sessionTreeOpen = false;
+    private int  _sessionTreeSelected = 0;
+    private int  _sessionTreeScroll = 0;
+    private int  _sessionActive = 0;
+    private int  _sessionTotal = 0;
+    private readonly List<SessionDisplayInfo> _sessionList = new List<SessionDisplayInfo>();
+    private string _sessionActiveId = "";
 
     private readonly List<string> _completions = new List<string> { "/verbose" };
     private readonly object       _consoleLock = new object();
@@ -157,63 +164,11 @@ public class DisplayScreen : IDisplay
     private StreamWriter? _bufferedOut;
     private bool _needsErase = true;
 
-    // Agent busy animation: worm + rotating word on the left side of the separator.
+    // Agent busy animation: driven by SeparatorLayer. State fields wired up here; arrays live in SeparatorLayer.
     private bool _agentBusy = false;
     private long _busyStartTick = 0;
     // Incremented each time a new block type arrives (StreamStart or ToolCall) so the word changes per activity, not per clock tick.
     private int _busyWordIndex = 0;
-
-    private static readonly string[] BusyWords = new string[]
-    {
-        "Rampaging", "Burninating", "Mauling", "Howling", "Stampeding", "Pouncing",
-        "Ripping", "Devouring", "Chomping", "Gnashing", "Roaring", "Thundering",
-        "Smashing", "Wrecking", "Ravaging", "Preying", "Stalking", "Charging",
-        "Attacking", "Clawing", "Biting", "Tearing", "Feasting", "Unleashing",
-        "Slashing", "Goring", "Gnawing", "Lunging", "Trampling", "Swooping",
-        "Burrowing", "Rending", "Pulverizing", "Sprinting", "Prowling", "Hunting",
-        "Snarling", "Hissing", "Snapping", "Striking", "Swiping", "Thrashing",
-        "Galloping", "Bolting", "Skulking", "Slithering", "Lurking", "Scuttling",
-        "Grappling", "Pinning", "Tossing", "Hurling", "Screeching", "Shrieking",
-        "Crunching", "Grinding", "Butting", "Ramming", "Pecking", "Tracking",
-        "Scouring", "Foraging", "Scavenging", "Obliterating", "Annihilating",
-        "Flattening", "Demolishing", "Rupturing", "Piercing", "Impaling",
-        "Skewering", "Slicing", "Cleaving", "Hacking", "Hewing", "Bashing",
-        "Pummeling", "Flailing", "Surging", "Seething", "Churning", "Whirling",
-        "Splintering", "Shattering", "Bursting", "Exploding", "Blasting", "Torching",
-        "Toppling", "Crushing", "Crumbling", "Leveling", "Uprooting", "Devastating",
-        "Submerging", "Melting", "Vaporizing", "Disintegrating", "Decimating", "Quaking",
-        "Trembling", "Splitting", "Catapulting", "Launching", "Tumbling", "Crashing",
-        "Bombarding", "Engulfing", "Swallowing", "Drowning", "Smothering", "Singeing",
-        "Searing", "Scorching", "Incinerating", "Moltening", "Corking", "Plunging",
-        "Diving", "Scaling", "Ascending", "Descending", "Encroaching", "Invading"
-    };
-
-    // Busy animation frames.
-    private static readonly string[][] BusyAnimations = new string[][]
-    {
-        new[] { "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙" }, // Worm
-        new[] { "∙∙∙∙", "●∙∙∙", "●●∙∙", "●●●∙", "●●●●", "∙●●●", "∙∙●●", "∙∙∙●" }, // Growth
-        new[] { "⠋   ", " ⠙  ", "  ⠹ ", "   ⠸", "   ⠼", "  ⠴ ", " ⠦  ", "⠧   " }, // Braille chase
-        new[] { "←↖↑↗", "↖↑↗→", "↑↗→↘", "↗→↘↓", "→↘↓↙", "↘↓↙←", "↓↙←↖", "↙←↖↑" }, // Arrow wave
-        new[] { "    ", "▃   ", "▆▃  ", "█▆▃ ", "▇█▆▃", " ▇█▆", "  ▇█", "   ▇" }, // Pulse bar
-        new[] { "▖   ", " ▘  ", "  ▝ ", "   ▗", "  ▝ ", " ▘  " },             // Quadrant scan
-        new[] { "◢◣◤◥", "◣◤◥◢", "◤◥◢◣", "◥◢◣◤" },                         // Triangles
-        new[] { "||||", "////", "----", "\\\\\\\\" },                        // Rotating pipes (escaped)
-        new[] { "◇◇◇◇", "◈◇◇◇", "◆◈◇◇", "◈◆◈◇", "◇◈◆◈", "◇◇◈◆", "◇◇◇◈" },    // Diamond pulse
-        new[] { "○◔◑◕", "◔◑◕●", "◑◕●◕", "◕●◕◑", "●◕◑◔", "◕◑◔○" },           // Moon cycle
-        new[] { "▐░▒▓", "░▒▓█", "▒▓█▓", "▓█▓▒", "█▓▒░", "▓▒░▐" },           // Density wave
-        new[] { "⊶⊷⊶⊷", "⊷⊶⊷⊶" },                                         // Oscillation
-        new[] { "◜◠◝◞", "◠◝◞◡", "◝◞◡◟", "◞◡◟◜", "◡◟◜◠", "◟◜◠◝" },           // Arc flow
-        new[] { "⌞⌜⌝⌟", "⌜⌝⌟⌞", "⌝⌟⌞⌜", "⌟⌞⌜⌝" },                         // Corner spin
-        new[] { "[●  ]", "[ ● ]", "[  ●]", "[ ● ]" },                     // Scanner
-        new[] { "{  }", " { }", "{  }", " { }" },                         // Pulse brackets
-        new[] { "<  >", "<==>", " <  >", "  <  >" },                      // Jaws
-        new[] { "v   ", " v  ", "  v ", "   v", "  ^ ", " ^  " },          // Gravity bounce
-        new[] { "◰◱◲◳", "◱◲◳◰", "◲◳◰◱", "◳◰◱◲" },                         // Box corners
-        new[] { "◴◵◶◷", "◵◶◷◴", "◶◷◴◵", "◷◴◵◶" },                         // Clock rotate
-        new[] { "⠐⠠⢀⡀", "⠠⢀⡀⠐", "⢀⡀⠐⠠", "⡀⠐⠠⢀" },                   // Marquee
-        new[] { "⠁⠂⠄⡀", "⠂⠄⡀⠠", "⠄⡀⠠⠐", "⡀⠠⠐⠈" }                    // Staircase
-    };
 
     private int _currentAnimationIndex = 0;
 
@@ -224,9 +179,19 @@ public class DisplayScreen : IDisplay
 
     public void Attach(ConversationModel model)
     {
+        if (_model != null)
+            _model.MessageUpdated -= OnMessageUpdated;
         _model = model;
         _model.Mode = _initialMode;
         _model.MessageUpdated += OnMessageUpdated;
+        lock (_consoleLock)
+        {
+            _blockCache.Clear();
+            _historyScrollOffset = 0f;
+            _scrollTarget = 0f;
+            _needsErase = true;
+            if (_runCts != null) Redraw();
+        }
     }
 
     public void SetStatus(string text)
@@ -281,7 +246,7 @@ public class DisplayScreen : IDisplay
             {
                 _busyStartTick = Environment.TickCount64;
                 _agentBusy = true;
-                _currentAnimationIndex = Random.Shared.Next(BusyAnimations.Length);
+                _currentAnimationIndex = Random.Shared.Next(SeparatorLayer.AnimationCount);
             }
             else if (busy && _agentBusy)
             {
@@ -300,6 +265,32 @@ public class DisplayScreen : IDisplay
     public void SetSendAsync(Func<string, Task> sendAsync) { _sendAsync = sendAsync; }
     public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
     public void SetFrameDrain(Action drain) { _frameDrain = drain; }
+    public void SetSessionSwitchCallback(Action<string> switchTo) { _sessionSwitchCallback = switchTo; }
+
+    public void SetSessionCounts(int active, int total)
+    {
+        lock (_consoleLock)
+        {
+            _sessionActive = active;
+            _sessionTotal = total;
+            Redraw();
+        }
+    }
+
+    public void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId)
+    {
+        lock (_consoleLock)
+        {
+            _sessionList.Clear();
+            foreach (SessionDisplayInfo s in sessions)
+                _sessionList.Add(s);
+            _sessionActiveId = activeId;
+            // Clamp selection to valid range.
+            if (_sessionTreeSelected >= _sessionList.Count)
+                _sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
+            Redraw();
+        }
+    }
 
     public Task RunAsync(CancellationToken cancellationToken)
     {
@@ -394,7 +385,7 @@ public class DisplayScreen : IDisplay
             _needsErase = true;
         }
 
-        int rawInputRows = ComputeInputRows(_currentInputText, w);
+        int rawInputRows = InputLayer.ComputeInputRows(_currentInputText, w);
         int inputRows    = Math.Min(rawInputRows, Math.Min(MaxInputRows, Math.Max(1, h / 3)));
         int skip         = rawInputRows - inputRows;
 
@@ -483,9 +474,7 @@ public class DisplayScreen : IDisplay
         _lastView          = view;
         _lastHistoryHeight = historyH;
 
-        // 3. Hover effect: brightens the whole hovered-block rectangle. The foreground (text) gets a strong
-        //    boost so it visibly pops; the background gets a small nudge so the block reads as highlighted
-        //    without washing out the underlying color. Non-destructive: characters and style untouched.
+        // 3. Hover effect: brightens the whole hovered-block rectangle.
         if (_hoverSlot >= 0)
         {
             BlockPlacement? p = stack.PlacementOfSlot(_hoverSlot);
@@ -507,9 +496,7 @@ public class DisplayScreen : IDisplay
             }
         }
 
-        // 4. Scrollbar overlay (last two columns). Uses time-based opacity to fade in/out smoothly.
-        //    Tints the existing background toward thumb/track colors — never replaces cell characters.
-        //    Max strength is intentionally well below 1.0 so underlying text stays legible through the bar.
+        // 4. Scrollbar overlay (last two columns). Time-based opacity fades in/out.
         const float ScrollbarMaxOpacity = 0.5f;
         float scrollbarOpacity = ComputeScrollbarOpacity() * ScrollbarMaxOpacity;
         int thumbH = 0;
@@ -529,71 +516,49 @@ public class DisplayScreen : IDisplay
             }
         }
 
-        // 5. Build the full-frame target Screen and stamp history, separator, input, status onto it.
+        // 5. Composite all layers onto the full-frame Screen.
         Screen frame = new Screen(w, h, bgCell);
         frame.Blit(historyView, 0, 0, BlendMode.Normal, null);
 
-        // Separator row.
-        Screen sep = new Screen(w, 1, new Cell('─', Palette.BrightWhite, Palette.Background, CellStyle.None));
-        if (_agentBusy)
-        {
-            long elapsed = Environment.TickCount64 - _busyStartTick;
-            // Animations crawl at or around ~8 fps (125ms per frame).
-            string[] anim = BusyAnimations[_currentAnimationIndex % BusyAnimations.Length];
-            int frameIdx = (int)(elapsed / 125) % anim.Length;
-            string frames = anim[frameIdx];
-
-            // Word changes each time a new activity block arrives, not on a timer.
-            string word   = BusyWords[_busyWordIndex % BusyWords.Length];
-
-            TimeSpan ts   = TimeSpan.FromMilliseconds(elapsed);
-            string timeLabel = ts.TotalHours >= 1 
-                ? $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}" 
-                : ts.TotalMinutes >= 1 
-                    ? $"{ts.Minutes}:{ts.Seconds:D2}" 
-                    : $"{ts.TotalSeconds:F1}s";
-
-            string label  = $" {frames} {word} {timeLabel} ";
-            // Write the label in a calm cyan over the background so it reads as "active but not alarming".
-            Rgb busyFg = new Rgb(80, 200, 200);
-            AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, Palette.Background);
-        }
+        // Separator layer.
+        Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex);
         frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
 
-        // Input area (with optional ghost-text completion preview).
+        // Input layer.
         string ghostSuffix = ComputeGhostSuffix();
-        Screen inputScreen = BuildInputScreen(_currentInputText, w, inputRows, skip, ghostSuffix);
+        Screen inputScreen = InputLayer.Build(_currentInputText, w, inputRows, skip, ghostSuffix);
         frame.Blit(inputScreen, 0, inputStart, BlendMode.Normal, null);
 
-        // Completion popup, if active.
+        // Completion popup layer.
         if (popupRows > 0)
         {
-            Screen popupScreen = BuildCompletionPopup(w, popupRows, _completionMatches, _completionIndex);
+            Screen popupScreen = InputLayer.BuildCompletionPopup(w, popupRows, _completionMatches, _completionIndex);
             frame.Blit(popupScreen, 0, popupTop, BlendMode.Normal, null);
         }
 
-        // Status bar — current mode is always shown on the right alongside any stats text.
-        // If a transient status message has expired, fall back to the base (rooted client path).
+        // Status bar layer.
         if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
         {
             _transientStatusUntil = 0;
             _statusText = _baseStatusText;
         }
-
         string modeName = _model != null ? _model.Mode.ToString() : "";
-        // Left segment: path followed by the current view mode.
         string left = string.IsNullOrEmpty(modeName) ? _statusText : $"{_statusText}  {modeName}";
-        // Right segment: model name. The optimistic override (filled by /model <id>) wins until the agent
-        // sends a real stats frame back.
         string rightModel = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
-        // Center segment: token / cost metrics. Empty unless a stats frame has populated them.
+        string sessionHint = _sessionTotal > 0 ? $"F10({_sessionActive}/{_sessionTotal}) " : "";
+        string right = sessionHint + rightModel;
         string center = _statsMetrics;
-        Screen statusScreen = BuildStatusScreen(left, center, rightModel, w);
+        Screen statusScreen = StatusBarLayer.Build(left, center, right, w);
         frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
 
-        // Cursor glow: small radial brightening over the final frame at the last known mouse position.
-        // Applied last so it lifts every layer (history, separator, input, status) within a few cells of
-        // the cursor. Suppressed until the mouse has actually moved over the window.
+        // Session tree overlay layer (optional, drawn on top when F10 is active).
+        if (_sessionTreeOpen)
+        {
+            Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, w, historyH, _sessionActiveId);
+            frame.Blit(treeOverlay, 0, 0, BlendMode.Normal, null);
+        }
+
+        // Cursor glow layer (applied last so it lifts all underlying layers).
         if (_mouseRow >= 0 && _mouseCol >= 0)
         {
             int rad = (int)Math.Ceiling(CursorGlowRadius);
@@ -635,7 +600,7 @@ public class DisplayScreen : IDisplay
             BlockLayer layer;
             if (isStreaming || !_blockCache.TryGetValue(msg.Index, out BlockLayer? cached))
             {
-                layer = BuildBlockLayer(msg, w, plainText: isStreaming);
+                layer = BlockRenderer.Build(msg, w, isStreaming);
                 // Force streaming slots fully expanded so the user always sees content as it arrives.
                 // Once streaming ends the normal collapsed state takes over.
                 if (isStreaming)
@@ -661,270 +626,24 @@ public class DisplayScreen : IDisplay
         }
     }
 
-    private static BlockLayer BuildBlockLayer(DisplayMessage msg, int w, bool plainText)
-    {
-        bool isToolCall = msg.Type == FrameType.ToolCall;
-        // Only flag as error when the paired response is explicitly an error. A tool that finished
-        // successfully with no output (e.g. a quiet bash command) stays in the normal tool color.
-        bool isError   = isToolCall && msg.PairedResponseIsError;
-        (Rgb fg, Rgb? bg) = ColorsForType(msg.Type, isError);
-        // Trailing spacer is supplied by StackLayout's SpacerRows; blocks themselves contain no padding.
-        int spacer = 0;
-
-        // Collapsed view: summary line plus, for select tools, a short preview of the response body.
-        string prefix = PrefixTextForType(msg.Type);
-        string summary = isToolCall
-            ? FormatToolCallSummary(msg.Content, msg.PairedResponseContent)
-            : msg.Content.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
-
-        string toolName = string.Empty;
-        if (isToolCall)
-        {
-            int paren = msg.Content.IndexOf('(');
-            toolName = paren >= 0 ? msg.Content.Substring(0, paren).Trim() : msg.Content;
-        }
-
-        int availW = Math.Max(1, w - prefix.Length);
-        bool truncated = AnsiString.VisibleLength(summary) > availW - 1;
-
-        // Pick the body SGR for compact previews. read_file/write_file use a dark/dim blue body so file
-        // content reads as "this is the file"; errors use the duller red body underneath the bright-red
-        // first line; everything else uses the neutral gray body.
-        // Bg-only variants are passed to the syntax highlighter to preserve token foreground colors.
-        string respAnsi   = isError ? Palette.ErrBodyAnsi   : Palette.BodyAnsi;
-        string respBgAnsi = isError ? Palette.ErrBodyBgAnsi : Palette.BodyBgAnsi;
-        string fileLang = string.Empty;
-        if (!isError && (toolName == "read_file" || toolName == "write_file" 
-                      || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
-            fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
-
-        // Build collapsed preview rows (summary + a small body excerpt for select tools).
-        List<string> collapsedLines = new List<string>();
-        collapsedLines.Add(prefix + AnsiString.TruncateVisible(summary, availW));
-
-        // Multi-line collapsed previews for tools where a tiny excerpt is far more useful than the
-        // bare summary line alone. Bash shows the tail; read_file shows the head;
-        // write_file pulls from the call's own content argument (its response is just a status line).
-        if (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseContent))
-        {
-            string[] respLines = msg.PairedResponseContent!.Replace("\r\n", "\n").Split('\n');
-            if (toolName == "bash")
-            {
-                int start = Math.Max(0, respLines.Length - 5);
-                for (int i = start; i < respLines.Length; i++)
-                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), "bash", respBgAnsi));
-            }
-            else if (toolName == "read_file")
-            {
-                int end = Math.Min(respLines.Length, 5);
-                for (int i = 0; i < end; i++)
-                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), fileLang, respBgAnsi));
-            }
-        }
-        if (isToolCall && toolName == "write_file")
-        {
-            string writeContent = ExtractStringArg(msg.Content, "content");
-            if (!string.IsNullOrEmpty(writeContent))
-            {
-                string[] wlines = writeContent.Replace("\r\n", "\n").Split('\n');
-                int end = Math.Min(wlines.Length, 5);
-                for (int i = 0; i < end; i++)
-                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(wlines[i]), fileLang, respBgAnsi));
-            }
-        }
-
-        // Expanded view: render to ANSI lines then convert to Screen cells row-by-row.
-        List<string> ansiLines = plainText
-            ? RenderMessageRowsRaw(msg, w)
-            : (isToolCall ? RenderToolCallRows(msg, w) : RenderMessageRows(msg, w));
-
-        // Show the ellipsis only when expanding actually reveals more — either because the summary line
-        // was truncated, or because the expanded view has strictly more rows than the collapsed preview.
-        bool needsEllipsis = truncated || ansiLines.Count > collapsedLines.Count;
-        if (needsEllipsis)
-            collapsedLines[0] = prefix + AnsiString.TruncateVisible(summary, availW - 1) + "\u2026";
-
-        Cell rowBg = new Cell(' ', fg, bg, CellStyle.None);
-        Screen collapsed = new Screen(w, collapsedLines.Count + spacer, rowBg);
-        for (int r = 0; r < collapsedLines.Count; r++)
-        {
-            (int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, r, collapsedLines[r], fg, bg);
-            AnsiToScreen.PadRowBackground(collapsed, endX, r, cFg, cBg);
-        }
-
-        int expandedRows = Math.Max(1, ansiLines.Count);
-        Screen expanded = new Screen(w, expandedRows + spacer, rowBg);
-        for (int r = 0; r < ansiLines.Count; r++)
-        {
-            (int endCx, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], fg, bg);
-            AnsiToScreen.PadRowBackground(expanded, endCx, r, eFg, eBg);
-        }
-
-        // Right-justified duration tag on the first row of tool blocks. Only shown for tools that
-        // ran successfully (have a non-error, non-empty response) and that took long enough to matter.
-        if (isToolCall && !isError && msg.ToolDuration.HasValue && msg.ToolDuration.Value.TotalSeconds >= 0.1)
-        {
-            string tag = $"Took {msg.ToolDuration.Value.TotalSeconds:F1}s";
-            StampRightOnRow(collapsed, 0, tag, fg, bg);
-            StampRightOnRow(expanded,  0, tag, fg, bg);
-        }
-
-        // Thinking blocks render italic — bake the style bit into every cell of both screens.
-        if (msg.Type == FrameType.Thinking)
-        {
-            ApplyStyle(collapsed, CellStyle.Italic);
-            ApplyStyle(expanded,  CellStyle.Italic);
-        }
-
-        return new BlockLayer(msg.Index, collapsed, expanded, isExpanded: !msg.Collapsed);
-    }
-
-    // Writes `text` flush against the right edge of `row` on `s`, leaving at least one blank cell of
-    // separation from any existing content. No-op if `row` is out of range.
-    private static void StampRightOnRow(Screen s, int row, string text, Rgb fg, Rgb? bg)
-    {
-        if (row < 0 || row >= s.H) return;
-        int len = text.Length;
-        if (len + 1 > s.W) return;
-        int startCol = s.W - len;
-        for (int i = 0; i < len; i++)
-            s.Set(startCol + i, row, new Cell(text[i], fg, bg, CellStyle.None));
-    }
-
-    private static void ApplyStyle(Screen s, CellStyle add)
-    {
-        for (int y = 0; y < s.H; y++)
-        {
-            for (int x = 0; x < s.W; x++)
-            {
-                Cell c = s.Get(x, y);
-                s.Set(x, y, new Cell(c.Ch, c.Fg, c.Bg, c.Style | add));
-            }
-        }
-    }
-
-    private static (Rgb Fg, Rgb? Bg) ColorsForType(FrameType type, bool isError)
-    {
-        if (isError) return (Palette.ToolCallErrFg, Palette.ToolCallErrBg);
-        switch (type)
-        {
-            case FrameType.Output:       return (Palette.Silver,      null);
-            case FrameType.User:         return (Palette.BrightUser,  Palette.UserBg);
-            case FrameType.Error:        return (Palette.Red,         null);
-            case FrameType.Thinking:     return (Palette.ThinkingFg,  null);
-            case FrameType.Tool:         return (Palette.Blue,        null);
-            case FrameType.ToolCall:     return (Palette.ToolCallFg,  Palette.ToolCallBg);
-            case FrameType.ToolResponse: return (Palette.ToolRespFg,  Palette.ToolRespBg);
-            case FrameType.System:       return (Palette.Orange,      null);
-            case FrameType.Debug:        return (Palette.MedGrey,     null);
-            default:                     return (Palette.Silver,      null);
-        }
-    }
-
-    private static string PrefixTextForType(FrameType type)
-    {
-        switch (type)
-        {
-            case FrameType.Thinking:     return "";
-            case FrameType.Tool:         return "[tool] ";
-            case FrameType.ToolCall:     return "";
-            case FrameType.ToolResponse: return "";
-            case FrameType.Debug:        return "[debug] ";
-            case FrameType.System:       return "# ";
-            case FrameType.Error:        return "! ";
-            case FrameType.User:         return "» ";
-            default:                     return "";
-        }
-    }
-
     // ------------------------------------------------------------------------------------------------------
-    // Status / input Screens
+    // Input utilities (instance wrappers over InputLayer static methods)
     // ------------------------------------------------------------------------------------------------------
 
-    // Status bar layout: left segment flush-left, right segment flush-right, center segment centered
-    // in the full bar width and then clipped/shifted if it would collide with the side segments.
-    // All three segments share the same MedGrey foreground.
-    private static Screen BuildStatusScreen(string left, string center, string right, int w)
+    private (int Row, int Col) GetCursorScreenPos(int inputStartRow, int skip, int w)
     {
-        Screen s = new Screen(w, 1, new Cell(' ', Palette.MedGrey, null, CellStyle.None));
-
-        int leftLen   = AnsiString.VisibleLength(left);
-        int centerLen = AnsiString.VisibleLength(center);
-        int rightLen  = AnsiString.VisibleLength(right);
-
-        // Place left at column 0.
-        if (leftLen > 0)
-            AnsiToScreen.WriteLine(s, 0, 0, left, Palette.MedGrey, null);
-
-        // Place right flush against the right edge.
-        int rightCol = w - rightLen;
-        if (rightLen > 0 && rightCol >= 0)
-            AnsiToScreen.WriteLine(s, rightCol, 0, right, Palette.MedGrey, null);
-
-        // Place center centered within the full bar, but nudge it so it doesn't overlap left/right.
-        if (centerLen > 0)
-        {
-            int centerCol = (w - centerLen) / 2;
-            int minCol    = leftLen > 0 ? leftLen + 1 : 0;
-            int maxCol    = rightLen > 0 ? rightCol - 1 - centerLen : w - centerLen;
-            if (centerCol < minCol) centerCol = minCol;
-            if (centerCol > maxCol) centerCol = maxCol;
-            if (centerCol >= 0 && centerCol + centerLen <= w)
-                AnsiToScreen.WriteLine(s, centerCol, 0, center, Palette.MedGrey, null);
-        }
-
-        return s;
+        (int lineIdx, int col) = InputLayer.CursorInInputLines(_currentInputText, _currentInputCursor, w);
+        int visibleLine = Math.Max(0, lineIdx - skip);
+        return (inputStartRow + visibleLine, col);
     }
 
-    private static Screen BuildInputScreen(string text, int w, int inputRows, int skip, string ghostSuffix)
+    private float ComputeScrollbarOpacity()
     {
-        Screen s = new Screen(w, inputRows, new Cell(' ', Palette.InputFg, Palette.InputBg, CellStyle.None));
-        List<string> inputLines = WrapInput(text, w);
-        for (int r = 0; r < inputRows; r++)
-        {
-            int lineIdx = skip + r;
-            string line = lineIdx < inputLines.Count ? inputLines[lineIdx] : PromptPrefix;
-            (int endX, Rgb? _, Rgb? _) = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, Palette.InputBg);
-            AnsiToScreen.PadRowBackground(s, endX, r, Palette.InputFg, Palette.InputBg);
-
-            // Ghost text is appended to whatever the last visible input row is, just after the current text.
-            if (!string.IsNullOrEmpty(ghostSuffix) && lineIdx == inputLines.Count - 1)
-            {
-                int gx = endX;
-                for (int i = 0; i < ghostSuffix.Length && gx < w; i++, gx++)
-                    s.Set(gx, r, new Cell(ghostSuffix[i], Palette.GhostFg, Palette.InputBg, CellStyle.None));
-            }
-        }
-        return s;
-    }
-
-    private static Screen BuildCompletionPopup(int w, int rows, List<string> matches, int selected)
-    {
-        // Same colors as the input area; selected row gets a brighter background so it reads as the active pick.
-        Screen s = new Screen(w, rows, new Cell(' ', Palette.InputFg, Palette.InputBg, CellStyle.None));
-
-        int total = matches.Count;
-        int first = 0;
-        if (total > rows)
-        {
-            first = selected - rows / 2;
-            if (first < 0) first = 0;
-            if (first > total - rows) first = total - rows;
-        }
-
-        for (int r = 0; r < rows; r++)
-        {
-            int idx = first + r;
-            if (idx >= total) break;
-            bool isSel = idx == selected;
-            Rgb bg = isSel ? Palette.PopupSelBg : Palette.InputBg;
-            string line = "  " + matches[idx];
-            // Pre-fill row background so selection highlight extends past the text to the right edge.
-            s.Fill(new Rect(0, r, w, 1), new Cell(' ', Palette.InputFg, bg, CellStyle.None));
-            (int endX, Rgb? _, Rgb? _) = AnsiToScreen.WriteLine(s, 0, r, line, Palette.InputFg, bg);
-            AnsiToScreen.PadRowBackground(s, endX, r, Palette.InputFg, bg);
-        }
-        return s;
+        long now = Environment.TickCount64;
+        if (_scrollbarShowUntil == 0 || now >= _scrollbarShowUntil) return 0f;
+        long remaining = _scrollbarShowUntil - now;
+        if (remaining >= ScrollbarFadeMs) return 1f;
+        return (float)remaining / ScrollbarFadeMs;
     }
 
     // Refresh _completionMatches/_completionIndex/_completionActive based on the current input buffer.
@@ -962,430 +681,6 @@ public class DisplayScreen : IDisplay
         return pick.Substring(_currentInputText.Length);
     }
 
-    // ------------------------------------------------------------------------------------------------------
-    // ANSI rendering of messages (reused logic from DisplayAnsi, fed back through AnsiToScreen)
-    // ------------------------------------------------------------------------------------------------------
-
-    private static List<string> RenderMessageRows(DisplayMessage msg, int w)
-    {
-        List<string> result = new List<string>();
-        string prefix = PrefixTextForType(msg.Type);
-        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User;
-        // Prose-style messages get true word-boundary wrapping; everything else falls back to hard
-        // character wrap so code-like content isn't broken at arbitrary spaces inside tokens.
-        bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
-                     || msg.Type == FrameType.System || msg.Type == FrameType.Thinking;
-
-        if (useMarkdown)
-        {
-            List<string> mdLines = MarkdownAnsi.Render(ExpandTabs(msg.Content), msg.Type, w);
-            bool firstLine = true;
-            foreach (string mdLine in mdLines)
-            {
-                string full = firstLine ? prefix + mdLine : mdLine;
-                firstLine = false;
-                List<string> wrappedLines = wordWrap ? AnsiString.WordWrap(full, w) : AnsiString.Wrap(full, w);
-                foreach (string wrapped in wrappedLines)
-                    result.Add(wrapped);
-            }
-            if (result.Count == 0)
-                result.Add(prefix);
-        }
-        else
-        {
-            string[] logicalLines = msg.Content.Split('\n');
-            bool first = true;
-            foreach (string line in logicalLines)
-            {
-                string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
-                first = false;
-                List<string> wrappedLines = wordWrap ? AnsiString.WordWrap(full, w) : AnsiString.Wrap(full, w);
-                foreach (string wl in wrappedLines)
-                    result.Add(wl);
-            }
-        }
-
-        return result;
-    }
-
-    private static List<string> RenderMessageRowsRaw(DisplayMessage msg, int w)
-    {
-        List<string> result = new List<string>();
-        string prefix = PrefixTextForType(msg.Type);
-        string[] logicalLines = msg.Content.Split('\n');
-        bool first = true;
-        foreach (string line in logicalLines)
-        {
-            string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
-            first = false;
-            foreach (string wl in AnsiString.Wrap(full, w))
-                result.Add(wl);
-        }
-        if (result.Count == 0)
-            result.Add(prefix);
-        return result;
-    }
-
-    private static List<string> RenderToolCallRows(DisplayMessage msg, int w)
-    {
-        // Tool call arguments and paired responses do NOT word-wrap; long lines are truncated at the
-        // screen edge by the Screen blitter. This keeps things like code/diffs/log output readable
-        // rather than breaking mid-token. However, the summary line wraps so long commands are visible.
-        List<string> result = new List<string>();
-        string content = msg.Content;
-
-        int paren = content.IndexOf('(');
-        string name = paren >= 0 ? content.Substring(0, paren).Trim() : content;
-        string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
-        if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
-            argsJson = argsJson.Substring(0, argsJson.Length - 1);
-
-        // Show wrapped summary as first line(s) so long commands are fully visible when expanded
-        string summary = FormatToolCallSummary(content, msg.PairedResponseContent);
-        foreach (string wrappedLine in AnsiString.WordWrap(summary, w))
-            result.Add(wrappedLine);
-
-        // Properties whose values are already shown in the summary line — don't repeat them in the body.
-        // "content" is shown as a free-floating block with the response background instead of a labeled value.
-        HashSet<string> summaryProps = SummaryPropertiesFor(name);
-
-        // SGR sequences for body rows. read_file / write_file get the dim/dark blue file background;
-        // everything else uses the neutral gray response background.
-        // Bg-only variants are passed to the syntax highlighter so token foreground colors are preserved.
-        string respBodyAnsi   = msg.PairedResponseIsError ? Palette.ErrBodyAnsi   : Palette.BodyAnsi;
-        string respBodyBgAnsi = msg.PairedResponseIsError ? Palette.ErrBodyBgAnsi : Palette.BodyBgAnsi;
-        string fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
-
-        if (!string.IsNullOrWhiteSpace(argsJson))
-        {
-            try
-            {
-                using JsonDocument doc = JsonDocument.Parse(argsJson);
-                List<string> inlineProps = new List<string>();
-
-                foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
-                {
-                    if (summaryProps.Contains(prop.Name)) continue;
-
-                    string val = prop.Value.ValueKind == JsonValueKind.String
-                        ? prop.Value.GetString() ?? string.Empty
-                        : prop.Value.ToString();
-
-                    val = val.Replace("\\n", "\n").Replace("\\t", "    ").Replace("\t", "    ");
-
-                    // "content" (write_file etc.) is rendered as a body block with no label, using the same
-                    // background as a tool response so it doesn't sit on the bright tool-call blue.
-                    if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
-                        foreach (string valLine in val.Split('\n'))
-                            result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(valLine), fileLang, respBodyBgAnsi));
-                        continue;
-                    }
-
-                    string[] valLines = val.Split('\n');
-                    if (valLines.Length == 1)
-                    {
-                        // Collect short single-line props and join them onto one compact line.
-                        inlineProps.Add($"{prop.Name} {val}");
-                    }
-                    else
-                    {
-                        // Multi-line value: flush pending inline props first, then render as indented block.
-                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
-                        bool firstPropLine = true;
-                        foreach (string valLine in valLines)
-                        {
-                            result.Add(firstPropLine ? $"  {prop.Name}  {valLine}" : $"    {valLine}");
-                            firstPropLine = false;
-                        }
-                    }
-                }
-
-                if (inlineProps.Count > 0)
-                    result.Add("  " + string.Join("  ", inlineProps));
-            }
-            catch
-            {
-                foreach (string rawLine in argsJson.Split('\n'))
-                    result.Add(rawLine);
-            }
-        }
-
-        // The write_file / edit_file* paired responses are just status lines ("File written: ...",
-        // "File edited: ... (N operation(s) applied)") — the filename and line count are already part
-        // of the summary, so suppressing them removes redundant noise. Errors are never suppressed.
-        bool suppressPairedResponse = !msg.PairedResponseIsError
-            && (name == "write_file" || name == "edit_file_replace" || name == "edit_file_insert");
-
-        // Render stdout (PairedResponseContent) with normal response background (blue/gray).
-        if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
-        {
-            // Pass bg-only SGR so token foreground colors are preserved in syntax-highlighted response lines.
-            string respBgAnsi = msg.PairedResponseIsError ? Palette.ErrBodyBgAnsi : respBodyBgAnsi;
-            foreach (string respLine in msg.PairedResponseContent.Split('\n'))
-                result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLine), fileLang, respBgAnsi));
-        }
-
-        // Render stderr (PairedResponseError) with error background (red).
-        if (!string.IsNullOrEmpty(msg.PairedResponseError))
-        {
-            foreach (string errLine in msg.PairedResponseError.Split('\n'))
-                result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(errLine), fileLang, Palette.ErrBodyBgAnsi));
-        }
-
-        if (result.Count == 0)
-            result.Add(name);
-        return result;
-    }
-
-    // Property names that are already represented in the one-line summary for a given tool, so the
-    // expanded body shouldn't repeat them.
-    private static HashSet<string> SummaryPropertiesFor(string toolName)
-    {
-        HashSet<string> set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        switch (toolName)
-        {
-            case "read_file":
-                set.Add("file_path"); set.Add("offset"); set.Add("lines"); break;
-            case "write_file":
-            case "edit_file_replace":
-            case "edit_file_insert":
-                set.Add("file_path"); break;
-            case "bash":
-                set.Add("command"); break;
-            case "search_web":
-                set.Add("query"); break;
-            case "fetch_page":
-                set.Add("url"); break;
-        }
-        return set;
-    }
-
-    private static string FormatToolCallSummary(string content, string? pairedResponse)
-    {
-        int paren = content.IndexOf('(');
-        if (paren < 0) return content.Replace('\n', ' ');
-
-        string name = content.Substring(0, paren).Trim();
-        string argsJson = content.Substring(paren + 1);
-        if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
-            argsJson = argsJson.Substring(0, argsJson.Length - 1);
-
-        JsonElement root = default;
-        bool parsed = false;
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(argsJson);
-            root = doc.RootElement.Clone();
-            parsed = true;
-        }
-        catch { }
-
-        string Get(string key)
-        {
-            if (!parsed) return string.Empty;
-            return root.TryGetProperty(key, out JsonElement el) ? el.GetString() ?? string.Empty : string.Empty;
-        }
-
-        string label = name.Replace('_', ' ');
-        // Response line count appended as "(N lines)" for tools where it's meaningful: read returns the
-        // file slice, write/edit don't return content but we know how many lines were written from the
-        // call's own "content" arg. Computed once and threaded through the specific summary builders.
-        int respLineCount = CountLines(pairedResponse);
-        int writeLineCount = (name == "write_file" || name == "edit_file_replace" || name == "edit_file_insert")
-            ? CountLines(Get("content") + Get("new_text"))
-            : 0;
-        string summary = name switch
-        {
-            "read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
-            "write_file" or "edit_file_replace" or "edit_file_insert"  => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
-            "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
-            "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
-            "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),
-            _                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)
-        };
-        return summary;
-    }
-
-    // Returns the number of newline-delimited lines in text, treating empty as 0.
-    private static int CountLines(string? text)
-    {
-        if (string.IsNullOrEmpty(text)) return 0;
-        int count = 1;
-        for (int i = 0; i < text.Length; i++)
-            if (text[i] == '\n') count++;
-        // A trailing newline shouldn't inflate the line count.
-        if (text[text.Length - 1] == '\n') count--;
-        return Math.Max(1, count);
-    }
-
-    // Extracts a string-valued argument from a ToolCall content string of the form "name({...json...})".
-    // Returns empty when the JSON cannot be parsed or the property is missing/non-string.
-    private static string ExtractStringArg(string content, string argName)
-    {
-        int paren = content.IndexOf('(');
-        if (paren < 0) return string.Empty;
-        string argsJson = content.Substring(paren + 1);
-        if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
-            argsJson = argsJson.Substring(0, argsJson.Length - 1);
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(argsJson);
-            if (doc.RootElement.TryGetProperty(argName, out JsonElement el) && el.ValueKind == JsonValueKind.String)
-                return el.GetString() ?? string.Empty;
-        }
-        catch { }
-        return string.Empty;
-    }
-
-    // SGR codes used to colorize filenames / paths / commands inside tool summaries.
-
-    private static string BuildPathSummary(string label, string path, int respLineCount)
-    {
-        if (string.IsNullOrEmpty(path)) return label;
-        string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
-        return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
-    }
-
-    private static string BuildWriteFileSummary(string label, string path, int writeLineCount)
-    {
-        if (string.IsNullOrEmpty(path)) return label;
-        string tail = writeLineCount > 0 ? $" ({writeLineCount} lines)" : string.Empty;
-        return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
-    }
-
-    private static string BuildReadFileSummary(string label, string path, string offset, string lines, int respLineCount)
-    {
-        if (string.IsNullOrEmpty(path)) return label;
-        string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
-        if (!string.IsNullOrEmpty(offset) && !string.IsNullOrEmpty(lines))
-        {
-            int.TryParse(offset, out int start);
-            int.TryParse(lines, out int count);
-            int end = start + count - 1;
-            return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}  [{offset}-{end}]{tail}";
-        }
-        if (!string.IsNullOrEmpty(offset))
-            return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}  [from {offset}]{tail}";
-        return $"{label} {Palette.FileNameAnsi}{path}{Palette.ResetAnsi}{tail}";
-    }
-
-    private static string BuildRunCommandSummary(string label, string command)
-    {
-        if (string.IsNullOrEmpty(command)) return "$";
-        int nl = command.IndexOf('\n');
-        string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
-        // Bash command text is left in the row's normal color — no yellow highlight.
-        return $"$ {first}";
-    }
-
-    private static string BuildGenericSummary(string label, JsonElement root, bool parsed)
-    {
-        if (!parsed) return label;
-        foreach (JsonProperty prop in root.EnumerateObject())
-        {
-            if (prop.Value.ValueKind == JsonValueKind.String)
-            {
-                string val = prop.Value.GetString() ?? string.Empty;
-                if (!string.IsNullOrEmpty(val))
-                    return $"{label} {Palette.FileNameAnsi}{val}{Palette.ResetAnsi}";
-            }
-        }
-        return label;
-    }
-
-    // ------------------------------------------------------------------------------------------------------
-    // Input wrapping (unchanged from DisplayAnsi)
-    // ------------------------------------------------------------------------------------------------------
-
-    private (int Row, int Col) GetCursorScreenPos(int inputStartRow, int skip, int w)
-    {
-        (int lineIdx, int col) = CursorInInputLines(_currentInputText, _currentInputCursor, w);
-        int visibleLine = Math.Max(0, lineIdx - skip);
-        return (inputStartRow + visibleLine, col);
-    }
-
-    private static (int LineIdx, int Col) CursorInInputLines(string text, int cursor, int w)
-    {
-        string[] logicalLines = text.Split('\n');
-        int remaining = cursor;
-        int screenLine = 0;
-
-        for (int li = 0; li < logicalLines.Length; li++)
-        {
-            string prefix = li == 0 ? PromptPrefix : "  ";
-            int logLen = logicalLines[li].Length;
-
-            if (remaining <= logLen || li == logicalLines.Length - 1)
-            {
-                int colInFull = prefix.Length + remaining;
-                return (screenLine + colInFull / w, colInFull % w);
-            }
-
-            remaining -= logLen + 1;
-            int fullLen = prefix.Length + logicalLines[li].Length;
-            screenLine += Math.Max(1, (int)Math.Ceiling((double)fullLen / w));
-        }
-
-        return (screenLine, 0);
-    }
-
-    private static int CharFromInputLines(string text, int targetLine, int targetCol, int w)
-    {
-        string[] logicalLines = text.Split('\n');
-        int screenLine = 0;
-        int charPos = 0;
-
-        for (int li = 0; li < logicalLines.Length; li++)
-        {
-            string prefix = li == 0 ? PromptPrefix : "  ";
-            int fullLen = prefix.Length + logicalLines[li].Length;
-            int wrappedRows = Math.Max(1, (int)Math.Ceiling((double)fullLen / w));
-
-            if (screenLine + wrappedRows > targetLine)
-            {
-                int rowWithin = targetLine - screenLine;
-                int colInFull = Math.Min(rowWithin * w + targetCol, fullLen);
-                int chars = Math.Max(0, colInFull - prefix.Length);
-                return charPos + chars;
-            }
-
-            screenLine += wrappedRows;
-            charPos += logicalLines[li].Length + (li < logicalLines.Length - 1 ? 1 : 0);
-        }
-
-        return text.Length;
-    }
-
-    private static List<string> WrapInput(string text, int w)
-    {
-        List<string> result = new List<string>();
-        string[] logicalLines = text.Split('\n');
-        for (int li = 0; li < logicalLines.Length; li++)
-        {
-            string prefix = li == 0 ? PromptPrefix : "  ";
-            string full = prefix + ExpandTabs(logicalLines[li]);
-            if (full.Length == 0) { result.Add(prefix); continue; }
-            foreach (string wl in AnsiString.Wrap(full, w))
-                result.Add(wl);
-        }
-        if (result.Count == 0)
-            result.Add(PromptPrefix);
-        return result;
-    }
-
-    private static int ComputeInputRows(string text, int w)
-    {
-        return WrapInput(text, w).Count;
-    }
-
-    private static string ExpandTabs(string text) => text.Replace("\t", "    ");
-
-    // ------------------------------------------------------------------------------------------------------
-    // Input loop (mirrors DisplayAnsi, with mouse mapping going through the captured StackLayout/ScreenView)
-    // ------------------------------------------------------------------------------------------------------
-
     private void SetInput(string text, int cursor)
     {
         lock (_consoleLock)
@@ -1412,14 +707,9 @@ public class DisplayScreen : IDisplay
         return _lastView.ScrollOffset;
     }
 
-    private float ComputeScrollbarOpacity()
-    {
-        long now = Environment.TickCount64;
-        if (_scrollbarShowUntil == 0 || now >= _scrollbarShowUntil) return 0f;
-        long remaining = _scrollbarShowUntil - now;
-        if (remaining >= ScrollbarFadeMs) return 1f;
-        return (float)remaining / ScrollbarFadeMs;
-    }
+    // ------------------------------------------------------------------------------------------------------
+    // Input loop
+    // ------------------------------------------------------------------------------------------------------
 
     private void InputLoop(CancellationToken token)
     {
@@ -1591,7 +881,7 @@ public class DisplayScreen : IDisplay
                 lock (_consoleLock)
                 {
                     inCompletion = false;
-                    string insert = BuildPasteInsert(inputEv.Text, pasteBuffers, ref pasteSeq);
+                    string insert = InputLayer.BuildPasteInsert(inputEv.Text, pasteBuffers, ref pasteSeq);
                     inputBuffer.Insert(cursorPos, insert);
                     cursorPos += insert.Length;
                     SetInput(inputBuffer.ToString(), cursorPos);
@@ -1603,6 +893,53 @@ public class DisplayScreen : IDisplay
             bool ctrl  = key.Modifiers.HasFlag(ConsoleModifiers.Control);
             bool alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
             bool shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
+
+            // When the session tree overlay is open, intercept all keystrokes for tree navigation.
+            // No input goes to the agent while the overlay is active.
+            if (_sessionTreeOpen)
+            {
+                lock (_consoleLock)
+                {
+                    if (key.Key == ConsoleKey.UpArrow)
+                    {
+                        if (_sessionTreeSelected > 0)
+                        {
+                            _sessionTreeSelected--;
+                            if (_sessionTreeSelected < _sessionTreeScroll)
+                                _sessionTreeScroll = _sessionTreeSelected;
+                        }
+                        Redraw();
+                    }
+                    else if (key.Key == ConsoleKey.DownArrow)
+                    {
+                        if (_sessionTreeSelected < _sessionList.Count - 1)
+                        {
+                            _sessionTreeSelected++;
+                            int visRows = Math.Max(1, _lastHeight - 5);
+                            if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
+                                _sessionTreeScroll = _sessionTreeSelected - visRows + 1;
+                        }
+                        Redraw();
+                    }
+                    else if (key.Key == ConsoleKey.F10 || key.Key == ConsoleKey.Enter)
+                    {
+                        // Select the highlighted session and close the overlay.
+                        string? selId = _sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count
+                            ? _sessionList[_sessionTreeSelected].Id
+                            : null;
+                        _sessionTreeOpen = false;
+                        Redraw();
+                        if (selId != null)
+                            _sessionSwitchCallback?.Invoke(selId);
+                    }
+                    else if (key.Key == ConsoleKey.Escape)
+                    {
+                        _sessionTreeOpen = false;
+                        Redraw();
+                    }
+                }
+                continue;
+            }
 
             if (key.Key == ConsoleKey.Enter && !shift && !alt)
             {
@@ -1680,7 +1017,7 @@ public class DisplayScreen : IDisplay
                     lock (_consoleLock)
                         completionsCopy = new List<string>(_completions);
 
-                    UpdateMatches(inputBuffer.ToString(), matches, completionsCopy);
+                    InputLayer.UpdateMatches(inputBuffer.ToString(), matches, completionsCopy);
                     if (matches.Count > 0)
                     {
                         matchIndex = inCompletion ? (matchIndex + 1) % matches.Count : 0;
@@ -1696,7 +1033,7 @@ public class DisplayScreen : IDisplay
             else if (key.Key == ConsoleKey.Backspace && ctrl)
             {
                 inCompletion = false;
-                int newPos = WordStartBefore(inputBuffer.ToString(), cursorPos);
+                int newPos = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
                 inputBuffer.Remove(newPos, cursorPos - newPos);
                 cursorPos = newPos;
                 SetInput(inputBuffer.ToString(), cursorPos);
@@ -1714,7 +1051,7 @@ public class DisplayScreen : IDisplay
             else if (key.Key == ConsoleKey.Delete && ctrl)
             {
                 inCompletion = false;
-                int newPos = WordEndAfter(inputBuffer.ToString(), cursorPos);
+                int newPos = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
                 inputBuffer.Remove(cursorPos, newPos - cursorPos);
                 SetInput(inputBuffer.ToString(), cursorPos);
             }
@@ -1729,7 +1066,7 @@ public class DisplayScreen : IDisplay
             }
             else if (key.Key == ConsoleKey.LeftArrow && ctrl)
             {
-                cursorPos = WordStartBefore(inputBuffer.ToString(), cursorPos);
+                cursorPos = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
                 SetInput(inputBuffer.ToString(), cursorPos);
             }
             else if (key.Key == ConsoleKey.LeftArrow)
@@ -1738,7 +1075,7 @@ public class DisplayScreen : IDisplay
             }
             else if (key.Key == ConsoleKey.RightArrow && ctrl)
             {
-                cursorPos = WordEndAfter(inputBuffer.ToString(), cursorPos);
+                cursorPos = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
                 SetInput(inputBuffer.ToString(), cursorPos);
             }
             else if (key.Key == ConsoleKey.RightArrow)
@@ -1772,11 +1109,11 @@ public class DisplayScreen : IDisplay
                 }
                 int upW = Console.WindowWidth;
                 if (upW < 1) upW = 80;
-                (int upLine, int upCol) = CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
+                (int upLine, int upCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
 
                 if (upLine > 0)
                 {
-                    cursorPos = CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
+                    cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
                     SetInput(inputBuffer.ToString(), cursorPos);
                 }
                 else if (history.Count > 0)
@@ -1807,12 +1144,12 @@ public class DisplayScreen : IDisplay
                 }
                 int downW = Console.WindowWidth;
                 if (downW < 1) downW = 80;
-                (int downLine, int downCol) = CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
-                int totalLines = WrapInput(inputBuffer.ToString(), downW).Count;
+                (int downLine, int downCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
+                int totalLines = InputLayer.WrapInput(inputBuffer.ToString(), downW).Count;
 
                 if (downLine < totalLines - 1)
                 {
-                    cursorPos = CharFromInputLines(inputBuffer.ToString(), downLine + 1, downCol, downW);
+                    cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), downLine + 1, downCol, downW);
                     SetInput(inputBuffer.ToString(), cursorPos);
                 }
                 else if (historyIndex >= 0)
@@ -1832,7 +1169,7 @@ public class DisplayScreen : IDisplay
                 lock (_consoleLock)
                 {
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
-                    int pageH = Math.Max(1, Console.WindowHeight - 3 - ComputeInputRows(_currentInputText, Console.WindowWidth));
+                    int pageH = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
                     _scrollTarget += Math.Max(1, pageH - 1);
                 }
                 continue;
@@ -1842,7 +1179,7 @@ public class DisplayScreen : IDisplay
                 lock (_consoleLock)
                 {
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
-                    int pageH = Math.Max(1, Console.WindowHeight - 3 - ComputeInputRows(_currentInputText, Console.WindowWidth));
+                    int pageH = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
                     _scrollTarget = Math.Max(0f, _scrollTarget - Math.Max(1, pageH - 1));
                 }
                 continue;
@@ -1865,6 +1202,31 @@ public class DisplayScreen : IDisplay
                     _ = SendAsync("/cancel");
                 }
             }
+            else if (key.Key == ConsoleKey.F10)
+            {
+                lock (_consoleLock)
+                {
+                    if (_sessionList.Count > 0)
+                    {
+                        _sessionTreeOpen = !_sessionTreeOpen;
+                        if (_sessionTreeOpen)
+                        {
+                            // Pre-select the currently active session.
+                            _sessionTreeSelected = 0;
+                            for (int i = 0; i < _sessionList.Count; i++)
+                            {
+                                if (string.Equals(_sessionList[i].Id, _sessionActiveId, StringComparison.Ordinal))
+                                {
+                                    _sessionTreeSelected = i;
+                                    break;
+                                }
+                            }
+                            _sessionTreeScroll = 0;
+                        }
+                        Redraw();
+                    }
+                }
+            }
             else if (key.Key == ConsoleKey.A && ctrl)
             {
                 cursorPos = 0;
@@ -1881,7 +1243,7 @@ public class DisplayScreen : IDisplay
                 if (!string.IsNullOrEmpty(clip))
                 {
                     inCompletion = false;
-                    string insert = BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
+                    string insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
                     inputBuffer.Insert(cursorPos, insert);
                     cursorPos += insert.Length;
                     SetInput(inputBuffer.ToString(), cursorPos);
@@ -1918,35 +1280,6 @@ public class DisplayScreen : IDisplay
                 SetInput(inputBuffer.ToString(), cursorPos);
             }
         }
-    }
-
-    // Builds the text to insert at the cursor for a paste. Content under 256 characters is inserted
-    // inline (embedded newlines preserved as literal text); larger content is stored under a short
-    // placeholder key that is expanded back to the full content when the line is committed.
-    private static string BuildPasteInsert(string content, Dictionary<string, string> pasteBuffers, ref int pasteSeq)
-    {
-        if (content.Length < 256)
-            return content;
-
-        int byteCount = Encoding.UTF8.GetByteCount(content);
-        string placeholder = $"[Pasted {byteCount} bytes from clipboard #{++pasteSeq}]";
-        pasteBuffers[placeholder] = content;
-        return placeholder;
-    }
-
-    private static int WordStartBefore(string text, int pos)
-    {
-        int i = pos - 1;
-        while (i > 0 && text[i - 1] != ' ' && text[i - 1] != '\n') i--;
-        return i < 0 ? 0 : i;
-    }
-
-    private static int WordEndAfter(string text, int pos)
-    {
-        int i = pos;
-        while (i < text.Length && (text[i] == ' ' || text[i] == '\n')) i++;
-        while (i < text.Length && text[i] != ' ' && text[i] != '\n') i++;
-        return i;
     }
 
     private async Task SendAsync(string text)
@@ -2019,17 +1352,5 @@ public class DisplayScreen : IDisplay
         lock (_consoleLock)
             _preserveTopSourceRow = CurrentTopSourceRow();
         _model.Mode = next;
-    }
-
-    private static void UpdateMatches(string input, List<string> matches, List<string> completions)
-    {
-        matches.Clear();
-        if (!input.StartsWith("/", StringComparison.Ordinal)) return;
-
-        foreach (string completion in completions)
-        {
-            if (completion.StartsWith(input, StringComparison.OrdinalIgnoreCase))
-                matches.Add(completion);
-        }
     }
 }

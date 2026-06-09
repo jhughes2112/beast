@@ -19,11 +19,18 @@ public static class SessionService
             return;
         if (string.IsNullOrEmpty(data.DisplayName))
             return;
-        Directory.CreateDirectory(SessionsDir);
-        string path = Path.Combine(SessionsDir, data.Id + ".json");
-        string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-        File.WriteAllText(path, json);
-        SaveLastSession(data.Id);
+        try
+        {
+            Directory.CreateDirectory(SessionsDir);
+            string path = Path.Combine(SessionsDir, data.Id + ".json");
+            string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            File.WriteAllText(path, json);
+            SaveLastSession(data.Id);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SessionService] Save failed for {data.Id}: {ex.Message}");
+        }
     }
 
     private static void SaveLastSession(string sessionId)
@@ -58,8 +65,16 @@ public static class SessionService
         string path = Path.Combine(SessionsDir, sessionId + ".json");
         if (!File.Exists(path))
             return null;
-        string json = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<BeastSession>(json);
+        try
+        {
+            string json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize<BeastSession>(json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[SessionService] Failed to load session {sessionId}: {ex.Message}");
+            return null;
+        }
     }
 
     public static BeastSession? LoadBySessionId(string? sessionId)

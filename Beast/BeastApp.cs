@@ -10,6 +10,18 @@ using NAudio.Wave;
 // Beast app: starts the agent backend via IAgentContext and drives a session via the provided display.
 public class BeastApp : IDisposable, IAsyncDisposable
 {
+    // Per-session conversation model and streaming state, keyed by session ID.
+    private class SessionState
+    {
+        public ConversationModel Model { get; } = new ConversationModel();
+        public int NextIndex;
+        public int StreamIndex = -1;
+        public string StreamContent = "";
+        public Dictionary<string, int> StreamTagToSlot = new Dictionary<string, int>();
+        public Dictionary<int, FrameType> SlotTypes = new Dictionary<int, FrameType>();
+        public Dictionary<FrameType, int> PendingCommit = new Dictionary<FrameType, int>();
+    }
+
     private readonly ILauncher _agentContext;
     private readonly List<string> _messages;
     private readonly IDisplay _display;
@@ -17,21 +29,21 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private string? _idleSoundFile;
 
     private CancellationTokenSource? _cts;
-    private ConversationModel? _model;
     private ITransportClient? _wsClient;
+
+    // Per-session models and streaming state.
+    private readonly Dictionary<string, SessionState> _sessions = new Dictionary<string, SessionState>(StringComparer.Ordinal);
+    private string _activeSessionId = "";
+    private readonly HashSet<string> _busySessions = new HashSet<string>(StringComparer.Ordinal);
+    // Display names announced by the agent via SessionAnnounce frames, keyed by session ID.
+    private readonly Dictionary<string, string> _sessionDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
 
     // Read loop state
     private Task? _readTask;
     private CancellationTokenSource? _readCts;
-    private int _nextIndex = 0;
-    private int _streamIndex = -1;
-    private Dictionary<string, int> _streamTagToSlot = new Dictionary<string, int>();  // tag → slot
-    private Dictionary<int, FrameType> _slotTypes = new Dictionary<int, FrameType>();     // slot → type
-    private Dictionary<FrameType, int> _pendingCommit = new Dictionary<FrameType, int>();  // type → slot to reuse
-    private string _streamContent = "";
     // Inbound frames queued by ReadLoop and drained under _consoleLock by DrainFrameQueue().
-    private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string Content)> _frameQueue
-        = new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string)>();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string SessionId, string Content)> _frameQueue
+        = new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string, string)>();
 
     public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, Log log)
     {
@@ -50,7 +62,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             try
             {
                 if (_wsClient != null)
-                    await _wsClient.SendAsync("/quit");
+                    await _wsClient.SendAsync(_activeSessionId + "|/quit");
             }
             catch { }
 
@@ -71,11 +83,13 @@ public class BeastApp : IDisposable, IAsyncDisposable
             RequestGracefulExit();
         };
 
-        _model = new ConversationModel();
-        _display.Attach(_model);
-        _display.SetSendAsync(text => _wsClient!.SendAsync(text));
+        // Create the root session placeholder and attach it.
+        SessionState rootState = new SessionState();
+        _display.Attach(rootState.Model);
+        _display.SetSendAsync(text => _wsClient!.SendAsync(_activeSessionId + "|" + text));
         _display.SetRequestExit(RequestGracefulExit);
         _display.SetFrameDrain(DrainFrameQueue);
+        _display.SetSessionSwitchCallback(SwitchActiveSession);
 
         // Load settings to pick up optional idle sound path.
         SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
@@ -112,8 +126,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 string? message = await wsClient.ReceiveAsync(token);
                 if (message == null) break;
 
-                (FrameType type, string content) = ParseFrame(message);
-                _frameQueue.Enqueue((type, content));
+                (FrameType type, string sessionId, string content) = ParseFrame(message);
+                _frameQueue.Enqueue((type, sessionId, content));
             }
         }
         catch (OperationCanceledException) { }
@@ -122,8 +136,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             _display.SetStatus($"[read error] {ex.Message}");
         }
 
-        // Agent connection is gone — stop the busy animation and any open stream so the display
-        // stops redrawing at 60fps and the streaming slot is released.
+        // Agent connection is gone — stop the busy animation and any open stream.
         _display.OnStreamEnd();
         _display.SetAgentBusy(false);
         _display.SetStatus("Agent disconnected.");
@@ -133,60 +146,155 @@ public class BeastApp : IDisposable, IAsyncDisposable
     // Drains all queued inbound frames. Must be called under the display's lock.
     public void DrainFrameQueue()
     {
-        while (_frameQueue.TryDequeue(out (FrameType Type, string Content) frame))
-            ProcessFrame(frame.Type, frame.Content);
+        while (_frameQueue.TryDequeue(out (FrameType Type, string SessionId, string Content) frame))
+            ProcessFrame(frame.Type, frame.SessionId, frame.Content);
     }
 
-    private static (FrameType Type, string Content) ParseFrame(string message)
+    // Wire format: N|sessionId|content (sessionId may be empty for orchestrator-level frames).
+    private static (FrameType Type, string SessionId, string Content) ParseFrame(string message)
     {
-        int pipe = message.IndexOf('|');
-        if (pipe < 0 || !byte.TryParse(message.Substring(0, pipe), out byte typeByte))
-            return (FrameType.Output, message);
+        int pipe1 = message.IndexOf('|');
+        if (pipe1 < 0 || !byte.TryParse(message.Substring(0, pipe1), out byte typeByte))
+            return (FrameType.Output, string.Empty, message);
 
-        return ((FrameType)typeByte, message.Substring(pipe + 1));
+        int pipe2 = message.IndexOf('|', pipe1 + 1);
+        if (pipe2 < 0)
+        {
+            // Old single-pipe format (no session ID) — backward compatibility.
+            return ((FrameType)typeByte, string.Empty, message.Substring(pipe1 + 1));
+        }
+
+        string sessionId = message.Substring(pipe1 + 1, pipe2 - pipe1 - 1);
+        string content = message.Substring(pipe2 + 1);
+        return ((FrameType)typeByte, sessionId, content);
     }
 
-    private void ProcessFrame(FrameType type, string content)
+    // Returns the SessionState for the given ID, creating it if new.
+    // Announces new sessions to the display.
+    private SessionState EnsureSession(string sessionId)
     {
+        if (_sessions.TryGetValue(sessionId, out SessionState? existing))
+            return existing;
+
+        SessionState state = new SessionState();
+        _sessions[sessionId] = state;
+
+        if (string.IsNullOrEmpty(_activeSessionId))
+        {
+            _activeSessionId = sessionId;
+            _display.Attach(state.Model);
+        }
+
+        NotifySessionList();
+        return state;
+    }
+
+    // Switches the actively displayed session. Called from the F10 overlay.
+    private void SwitchActiveSession(string sessionId)
+    {
+        if (string.Equals(_activeSessionId, sessionId, StringComparison.Ordinal)) return;
+        if (!_sessions.TryGetValue(sessionId, out SessionState? state)) return;
+
+        _activeSessionId = sessionId;
+        _display.OnStreamEnd();
+        _display.SetAgentBusy(_busySessions.Contains(sessionId));
+        _display.Attach(state.Model);
+        NotifySessionList();
+    }
+
+    // Returns the parent session ID for a given session ID, or null if it is a root.
+    // Parent-child relationship is encoded as "parentId_N" where N is a positive integer.
+    private static string? GetParentId(string id)
+    {
+        int last = id.LastIndexOf('_');
+        if (last < 0) return null;
+        string suffix = id.Substring(last + 1);
+        if (!int.TryParse(suffix, out _)) return null;
+        return id.Substring(0, last);
+    }
+
+    // Appends this node and its children (sorted by numeric suffix) to result in DFS pre-order.
+    private static void DfsAdd(
+        string id,
+        int depth,
+        Dictionary<string, List<string>> childrenMap,
+        List<(string Id, int Depth)> result)
+    {
+        result.Add((id, depth));
+        if (!childrenMap.TryGetValue(id, out List<string>? children)) return;
+        children.Sort((a, b) =>
+        {
+            int lastA = a.LastIndexOf('_');
+            int lastB = b.LastIndexOf('_');
+            int numA = lastA >= 0 && int.TryParse(a.Substring(lastA + 1), out int nA) ? nA : 0;
+            int numB = lastB >= 0 && int.TryParse(b.Substring(lastB + 1), out int nB) ? nB : 0;
+            return numA.CompareTo(numB);
+        });
+        foreach (string child in children)
+            DfsAdd(child, depth + 1, childrenMap, result);
+    }
+
+    // Pushes the current session list and counts to the display.
+    private void NotifySessionList()
+    {
+        // Build parent→children map from IDs.
+        Dictionary<string, List<string>> childrenMap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        HashSet<string> hasParent = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string id in _sessions.Keys)
+        {
+            if (string.IsNullOrEmpty(id)) continue;
+            string? parentId = GetParentId(id);
+            if (parentId != null && _sessions.ContainsKey(parentId))
+            {
+                if (!childrenMap.TryGetValue(parentId, out List<string>? kids))
+                {
+                    kids = new List<string>();
+                    childrenMap[parentId] = kids;
+                }
+                kids.Add(id);
+                hasParent.Add(id);
+            }
+        }
+
+        // DFS from roots (sorted by key for deterministic order).
+        List<string> roots = new List<string>();
+        foreach (string id in _sessions.Keys)
+        {
+            if (!string.IsNullOrEmpty(id) && !hasParent.Contains(id))
+                roots.Add(id);
+        }
+        roots.Sort(StringComparer.Ordinal);
+
+        List<(string Id, int Depth)> ordered = new List<(string, int)>();
+        foreach (string root in roots)
+            DfsAdd(root, 0, childrenMap, ordered);
+
+        List<SessionDisplayInfo> list = new List<SessionDisplayInfo>();
+        foreach ((string id, int depth) in ordered)
+        {
+            string name = _sessionDisplayNames.TryGetValue(id, out string? announced) ? announced : id;
+            list.Add(new SessionDisplayInfo(id, name, _busySessions.Contains(id), depth));
+        }
+
+        _display.SetSessionList(list, _activeSessionId);
+        _display.SetSessionCounts(_busySessions.Count, _sessions.Count);
+    }
+
+    private void ProcessFrame(FrameType type, string sessionId, string content)
+    {
+        bool isActive = string.IsNullOrEmpty(sessionId) || string.Equals(sessionId, _activeSessionId, StringComparison.Ordinal);
+
+        // Global frames that don't route to a specific session model.
         switch (type)
         {
-            case FrameType.StreamStart:
-                FrameType startType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
-                _streamContent = "";
-                _streamIndex = _nextIndex++;
-                _streamTagToSlot[content] = _streamIndex;
-                _slotTypes[_streamIndex] = startType;
-                _model!.Update(_streamIndex, startType, _streamContent);
-                _display.OnStreamStart(_streamIndex, startType);
-                break;
-
-            case FrameType.StreamChunk:
-                if (_streamIndex < 0) break;
-                _streamContent += content;
-                _slotTypes.TryGetValue(_streamIndex, out FrameType chunkType);
-                _model!.Update(_streamIndex, chunkType, _streamContent);
-                _display.OnStreamChunk(content);
-                break;
-
-            case FrameType.StreamEnd:
-                FrameType endType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
-                if (_streamTagToSlot.TryGetValue(content, out int endSlot))
-                {
-                    _pendingCommit[endType] = endSlot;
-                    _streamTagToSlot.Remove(content);
-                }
-                _streamIndex = -1;
-                _streamContent = "";
-                _display.OnStreamEnd();
-                break;
-
             case FrameType.Status:
                 if (content == "ready")
                 {
+                    string readySessionId = sessionId;
                     async Task SendMessagesAsync()
                     {
                         foreach (string msg in _messages)
-                            await _wsClient!.SendAsync(msg);
+                            await _wsClient!.SendAsync(readySessionId + "|" + msg);
                     }
                     _ = SendMessagesAsync();
                 }
@@ -194,24 +302,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 {
                     _display.SetStatus(content);
                 }
-                break;
+                return;
 
             case FrameType.Debug:
-                // Debug frames are suppressed on the Beast side; they appear in the agent's own console.
-                break;
-
-            case FrameType.Busy:
-                _display.SetAgentBusy(true);
-                break;
-
-            case FrameType.Idle:
-                _display.SetAgentBusy(false);
-                PlayIdleSound();
-                break;
-
-            case FrameType.User:
-                _model!.Update(_nextIndex++, FrameType.User, content);
-                break;
+                // Debug frames suppressed on the Beast side.
+                return;
 
             case FrameType.Stats:
                 try
@@ -227,7 +322,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
                     _display.SetStatsInfo(model, prompt, completion, cost, maxContext, contextTokens);
                 }
                 catch { }
-                break;
+                return;
 
             case FrameType.Completions:
                 try
@@ -239,35 +334,126 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 {
                     _display.SetCompletions(Array.Empty<string>());
                 }
+                return;
+
+            case FrameType.SessionAnnounce:
+                // Handled below to ensure session is created.
+                break;
+        }
+
+        // Session-scoped frames: route to the appropriate SessionState.
+        // Empty session ID means the frame came from the orchestrator (no specific session).
+        // For those, use or create the active session.
+        string effectiveId = string.IsNullOrEmpty(sessionId) ? _activeSessionId : sessionId;
+        SessionState session;
+
+        if (string.IsNullOrEmpty(effectiveId))
+        {
+            // First frame before any session is known — create a placeholder with no ID.
+            session = new SessionState();
+            _sessions[""] = session;
+            _activeSessionId = "";
+            _display.Attach(session.Model);
+        }
+        else
+        {
+            session = EnsureSession(effectiveId);
+        }
+
+        isActive = string.Equals(effectiveId, _activeSessionId, StringComparison.Ordinal);
+
+        switch (type)
+        {
+            case FrameType.Busy:
+                _busySessions.Add(effectiveId);
+                _display.SetAgentBusy(_busySessions.Count > 0);
+                NotifySessionList();
+                break;
+
+            case FrameType.Idle:
+                _busySessions.Remove(effectiveId);
+                _display.SetAgentBusy(_busySessions.Count > 0);
+                PlayIdleSound();
+                NotifySessionList();
                 break;
 
             case FrameType.Clear:
-                _model!.Clear();
-                _nextIndex = 0;
-                _streamIndex = -1;
-                _streamContent = "";
-                _streamTagToSlot.Clear();
-                _slotTypes.Clear();
-                _pendingCommit.Clear();
+                session.Model.Clear();
+                session.NextIndex = 0;
+                session.StreamIndex = -1;
+                session.StreamContent = "";
+                session.StreamTagToSlot.Clear();
+                session.SlotTypes.Clear();
+                session.PendingCommit.Clear();
+                break;
+
+            case FrameType.StreamStart:
+                FrameType startType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
+                session.StreamContent = "";
+                session.StreamIndex = session.NextIndex++;
+                session.StreamTagToSlot[content] = session.StreamIndex;
+                session.SlotTypes[session.StreamIndex] = startType;
+                session.Model.Update(session.StreamIndex, startType, session.StreamContent);
+                if (isActive)
+                    _display.OnStreamStart(session.StreamIndex, startType);
+                break;
+
+            case FrameType.StreamChunk:
+                if (session.StreamIndex < 0) break;
+                session.StreamContent += content;
+                session.SlotTypes.TryGetValue(session.StreamIndex, out FrameType chunkType);
+                session.Model.Update(session.StreamIndex, chunkType, session.StreamContent);
+                if (isActive) _display.OnStreamChunk(content);
+                break;
+
+            case FrameType.StreamEnd:
+                FrameType endType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
+                if (session.StreamTagToSlot.TryGetValue(content, out int endSlot))
+                {
+                    session.PendingCommit[endType] = endSlot;
+                    session.StreamTagToSlot.Remove(content);
+                }
+                session.StreamIndex = -1;
+                session.StreamContent = "";
+                if (isActive) _display.OnStreamEnd();
+                break;
+
+            case FrameType.User:
+                session.Model.Update(session.NextIndex++, FrameType.User, content);
                 break;
 
             case FrameType.ToolCall:
-                _model!.Update(_nextIndex++, FrameType.ToolCall, content);
+                session.Model.Update(session.NextIndex++, FrameType.ToolCall, content);
+                break;
+
+            case FrameType.SessionAnnounce:
+                try
+                {
+                    using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(content);
+                    if (doc.RootElement.TryGetProperty("name", out System.Text.Json.JsonElement nameEl))
+                    {
+                        string announcedName = nameEl.GetString() ?? "";
+                        if (!string.IsNullOrEmpty(announcedName) && !string.IsNullOrEmpty(effectiveId))
+                            _sessionDisplayNames[effectiveId] = announcedName;
+                    }
+                }
+                catch { }
+                NotifySessionList();
                 break;
 
             default:
                 // Reuse the stream slot for the committed frame that immediately follows StreamEnd.
                 int slotIndex;
-                if (_pendingCommit.TryGetValue(type, out int pendingSlot))
+                if (session.PendingCommit.TryGetValue(type, out int pendingSlot))
                 {
                     slotIndex = pendingSlot;
-                    _pendingCommit.Remove(type);
+                    session.PendingCommit.Remove(type);
                 }
                 else
                 {
-                    slotIndex = _nextIndex++;
+                    slotIndex = session.NextIndex++;
                 }
-                _model!.Update(slotIndex, type, content);
+                session.Model.Update(slotIndex, type, content);
                 break;
         }
     }
