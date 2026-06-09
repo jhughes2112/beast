@@ -29,9 +29,6 @@ public class ProtocolResponses
         WriteIndented = false
     };
 
-    // Pluggable logger - tests redirect this to ctx.Log; default is silent.
-    public static Action<string> Log = _ => { };
-
     private bool _streamingSupported = true;
 
     // Native runtime state: the last server-issued response id. In-memory only, reset by Rehydrate.
@@ -155,20 +152,19 @@ public class ProtocolResponses
         LiveUsageProgress onProgress,
         ITransportServer transport,
         string sessionId,
+        QueryLogger? queryLogger,
         CancellationToken cancellationToken)
     {
+        JsonObject body = BuildBody(model, tools, maxCompletionTokens, extraPayload);
+        queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
         if (_streamingSupported)
         {
-            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, tools, maxCompletionTokens, extraPayload, extraHeaders, bundle, onProgress, transport, sessionId, cancellationToken);
+            ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, transport, sessionId, cancellationToken);
             if (streamResult != null) return streamResult;
         }
 
-        JsonObject body = BuildBody(model, tools, maxCompletionTokens, extraPayload);
-
         string requestJson = body.ToJsonString();
-        string postLine = $"[http] POST {model.Endpoint}";
-        Log(postLine); transport.Debug(sessionId,postLine);
-        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -184,9 +180,6 @@ public class ProtocolResponses
         {
             httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
             responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-            string rspLine = $"[http] RSP {(int)httpResponse.StatusCode}";
-            Log(rspLine); transport.Debug(sessionId,rspLine);
-            Log(responseBody); transport.Debug(sessionId,responseBody);
         }
         catch (OperationCanceledException)
         {
@@ -280,15 +273,12 @@ public class ProtocolResponses
         return item;
     }
 
-    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
+    private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
-        JsonObject streamBody = BuildBody(model, tools, maxCompletionTokens, extraPayload);
+        JsonObject streamBody = (JsonObject)body.DeepClone();
         streamBody["stream"] = true;
 
         string requestJson = streamBody.ToJsonString();
-        string postLine = $"[http] POST {model.Endpoint} (streaming)";
-        Log(postLine); transport.Debug(sessionId,postLine);
-        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -317,9 +307,6 @@ public class ProtocolResponses
         {
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
-            string errLine = $"[http] RSP {statusCode} (streaming error)";
-            Log(errLine); transport.Debug(sessionId,errLine);
-            Log(errorBody); transport.Debug(sessionId,errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {

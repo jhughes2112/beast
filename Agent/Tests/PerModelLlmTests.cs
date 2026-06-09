@@ -85,27 +85,11 @@ public static class PerModelLlmTests
             using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
             Tool[] tools = registry.GetToolsForRole(role);
 
-            Action<string> previousChatLog = ProtocolChatCompletions.Log;
-            Action<string> previousResponsesLog = ProtocolResponses.Log;
-            Action<string> previousAnthropicLog = ProtocolAnthropic.Log;
-            ProtocolChatCompletions.Log = line => ctx.Log($"        {line}");
-            ProtocolResponses.Log = line => ctx.Log($"        {line}");
-            ProtocolAnthropic.Log = line => ctx.Log($"        {line}");
-            LlmResult result;
-            try
-            {
-                session.UpdateModel(service.Model.ConfigId);
-                CancellationToken turnToken = session.BeginTurn();
-                using CancellationTokenSource turnLinked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, linkedCts.Token);
-                result = await service.RunToCompletionAsync(session, session.Bundle, tools, 0, localTransport, turnLinked.Token);
-                session.EndTurn(false);
-            }
-            finally
-            {
-                ProtocolChatCompletions.Log = previousChatLog;
-                ProtocolResponses.Log = previousResponsesLog;
-                ProtocolAnthropic.Log = previousAnthropicLog;
-            }
+            session.UpdateModel(service.Model.ConfigId);
+            CancellationToken turnToken = session.BeginTurn();
+            using CancellationTokenSource turnLinked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, linkedCts.Token);
+            LlmResult result = await service.RunToCompletionAsync(session, session.Bundle, tools, 0, localTransport, turnLinked.Token);
+            session.EndTurn(false);
 
             bool gotResponse = false;
             foreach ((FrameType type, string text) in localTransport.Sent)

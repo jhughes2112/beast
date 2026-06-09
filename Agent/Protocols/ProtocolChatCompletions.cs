@@ -26,9 +26,6 @@ public class ProtocolChatCompletions
         WriteIndented = false
     };
 
-    // Pluggable logger - tests redirect this to ctx.Log; default is silent.
-    public static Action<string> Log = _ => { };
-
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
 
@@ -194,11 +191,14 @@ public class ProtocolChatCompletions
         LiveUsageProgress onProgress,
         ITransportServer transport,
         string sessionId,
+        QueryLogger? queryLogger,
         CancellationToken cancellationToken)
     {
+        bool logged = false;
         for (;;)
         {
             JsonObject body = BuildRequestBody(model, tools, maxCompletionTokens);
+            if (!logged) { logged = true; queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
 
             if (_streamingSupported)
             {
@@ -213,9 +213,6 @@ public class ProtocolChatCompletions
             {
                 httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, sessionId, cancellationToken);
                 responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-                string rspLine = $"[http] RSP {(int)httpResponse.StatusCode}";
-                Log(rspLine); transport.Debug(sessionId,rspLine);
-                Log(responseBody); transport.Debug(sessionId,responseBody);
             }
             catch (OperationCanceledException)
             {
@@ -375,9 +372,6 @@ public class ProtocolChatCompletions
         }
 
         string requestJson = obj.ToJsonString();
-        string postLine = $"[http] POST {url}";
-        Log(postLine); transport.Debug(sessionId,postLine);
-        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -414,9 +408,6 @@ public class ProtocolChatCompletions
         }
 
         string requestJson = obj.ToJsonString();
-        string postLine = $"[http] POST {url} (streaming)";
-        Log(postLine); transport.Debug(sessionId,postLine);
-        Log(requestJson); transport.Debug(sessionId,requestJson);
 
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -449,9 +440,6 @@ public class ProtocolChatCompletions
         {
             string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
             int statusCode = (int)httpResponse.StatusCode;
-            string errLine = $"[http] RSP {statusCode} (streaming error)";
-            Log(errLine); transport.Debug(sessionId,errLine);
-            Log(errorBody); transport.Debug(sessionId,errorBody);
 
             if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
             {

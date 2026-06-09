@@ -551,11 +551,12 @@ public class DisplayScreen : IDisplay
         Screen statusScreen = StatusBarLayer.Build(left, center, right, w);
         frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
 
-        // Session tree overlay layer (optional, drawn on top when F10 is active).
+        // Session tree overlay layer (optional): narrow right-side panel so agent output stays visible.
         if (_sessionTreeOpen)
         {
-            Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, w, historyH, _sessionActiveId);
-            frame.Blit(treeOverlay, 0, 0, BlendMode.Normal, null);
+            int panelW = Math.Min(52, Math.Max(36, w / 3));
+            Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId);
+            frame.Blit(treeOverlay, w - panelW, 0, BlendMode.Normal, null);
         }
 
         // Cursor glow layer (applied last so it lifts all underlying layers).

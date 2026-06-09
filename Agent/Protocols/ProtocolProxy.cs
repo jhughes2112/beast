@@ -120,7 +120,7 @@ public class ProtocolProxy
         _protocolAnthropic?.OnClear();
     }
 
-    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
+    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)
     {
         bundle.SetActiveProxy(this);
 
@@ -130,7 +130,6 @@ public class ProtocolProxy
         if (_detected == DetectedProtocol.Unknown)
         {
             ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, endpoint);
-            LogProbe(transport, sessionId, "Anthropic", anthropic);
             if (anthropic.Outcome == ProbeOutcome.Supported)
             {
                 _detected = DetectedProtocol.Anthropic;
@@ -138,7 +137,6 @@ public class ProtocolProxy
             else
             {
                 ProbeResult responses = await ProtocolResponses.ProbeAsync(_model.ApiKey, endpoint);
-                LogProbe(transport, sessionId, "Responses", responses);
                 if (responses.Outcome == ProbeOutcome.Supported)
                 {
                     _detected = DetectedProtocol.Responses;
@@ -146,7 +144,6 @@ public class ProtocolProxy
                 else
                 {
                     ProbeResult chat = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, endpoint);
-                    LogProbe(transport, sessionId, "ChatCompletions", chat);
                     if (chat.Outcome == ProbeOutcome.Supported)
                     {
                         _detected = DetectedProtocol.ChatCompletions;
@@ -155,12 +152,8 @@ public class ProtocolProxy
                     {
                         // Fallback for debug mode: retry with localhost instead of host.docker.internal
                         string fallbackEndpoint = endpoint.Replace("host.docker.internal", "localhost", System.StringComparison.OrdinalIgnoreCase);
-                        string debugLine = $"[probe] All protocols failed for {endpoint}; retrying with {fallbackEndpoint}";
-                        ProtocolChatCompletions.Log(debugLine);
-                        transport.Debug(sessionId, debugLine);
 
                         ProbeResult anthropicFallback = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                        LogProbe(transport, sessionId, "Anthropic (fallback)", anthropicFallback);
                         if (anthropicFallback.Outcome == ProbeOutcome.Supported)
                         {
                             _detected = DetectedProtocol.Anthropic;
@@ -169,7 +162,6 @@ public class ProtocolProxy
                         else
                         {
                             ProbeResult responsesFallback = await ProtocolResponses.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                            LogProbe(transport, sessionId, "Responses (fallback)", responsesFallback);
                             if (responsesFallback.Outcome == ProbeOutcome.Supported)
                             {
                                 _detected = DetectedProtocol.Responses;
@@ -178,7 +170,6 @@ public class ProtocolProxy
                             else
                             {
                                 ProbeResult chatFallback = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                                LogProbe(transport, sessionId, "ChatCompletions (fallback)", chatFallback);
                                 if (chatFallback.Outcome == ProbeOutcome.Supported)
                                 {
                                     _detected = DetectedProtocol.ChatCompletions;
@@ -194,17 +185,14 @@ public class ProtocolProxy
         IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
         if (_detected == DetectedProtocol.Anthropic)
-            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, cancellationToken);
+            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
         if (_detected == DetectedProtocol.Responses)
-            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, cancellationToken);
+            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
         if (_detected == DetectedProtocol.ChatCompletions)
-            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, cancellationToken);
+            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
-        string failLine = $"[probe] No recognized protocol found for: {endpoint}";
-        ProtocolChatCompletions.Log(failLine);
-        transport.Debug(sessionId, failLine);
         return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
     }
 
@@ -252,14 +240,6 @@ public class ProtocolProxy
         Responses,
         ChatCompletions
     }
-
-    private static void LogProbe(ITransportServer transport, string sessionId, string name, ProbeResult result)
-    {
-        string line = $"[probe] {name}: {result.Outcome} — {result.Detail}";
-        ProtocolChatCompletions.Log(line);
-        transport.Debug(sessionId, line);
-    }
-
 
     // Returns true if a JsonNode represents an "empty" extra value that should be skipped.
     // Null nodes and empty-string JsonValues are skipped so settings files can contain

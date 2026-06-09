@@ -26,9 +26,6 @@ public static class WebToolsTests
     {
         ctx.Log("  WebToolsTests: testing web search via OpenRouter");
 
-        Action<string> previousLog = ProtocolChatCompletions.Log;
-        ProtocolChatCompletions.Log = line => ctx.Log($"    {line}");
-
         TestCaptureTransport captureTransport = new TestCaptureTransport();
 
         try
@@ -50,10 +47,6 @@ public static class WebToolsTests
         catch (Exception ex)
         {
             ctx.Log($"    ERROR: {ex.Message}");
-        }
-        finally
-        {
-            ProtocolChatCompletions.Log = previousLog;
         }
     }
 

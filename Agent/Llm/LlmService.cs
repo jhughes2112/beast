@@ -1,4 +1,3 @@
-#define LOG_QUERIES
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -136,10 +135,7 @@ public class LlmService
                     transport.Stats(sessionId, liveJson);
                 };
 
-#if LOG_QUERIES
-                conversation.QueryLog.Write(model.Config.Name, bundle.Canonical.Messages, toolDefs);
-#endif
-                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, maxCompletionTokens, onProgress, transport, sessionId, cancellationToken);
+                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, maxCompletionTokens, onProgress, transport, sessionId, conversation.QueryLog, cancellationToken);
 
                 if (callResult.Outcome == ProtocolCallOutcome.Success)
                 {

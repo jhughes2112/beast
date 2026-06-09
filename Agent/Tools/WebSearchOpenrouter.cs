@@ -40,7 +40,7 @@ public class WebSearchOpenrouter
             int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
 
             ProtocolProxy proxy = new ProtocolProxy(_model);
-            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, (i, o, c) => { }, transport, sessionId, cancellationToken);
+            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), maxTokens, (i, o, c) => { }, transport, sessionId, null, cancellationToken);
 
             if (result.Outcome == ProtocolCallOutcome.Success)
             {

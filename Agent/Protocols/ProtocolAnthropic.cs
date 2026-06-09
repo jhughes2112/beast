@@ -32,9 +32,6 @@ public class ProtocolAnthropic
 {
     private const string AnthropicVersion = "2023-06-01";
 
-    // Pluggable logger - tests redirect this to ctx.Log; default is silent.
-    public static Action<string> Log = _ => { };
-
     private bool _streamingSupported = true;
 
     // Native runtime state: the SDK message chain plus the system prompt text. Both are
@@ -150,9 +147,10 @@ public class ProtocolAnthropic
         LiveUsageProgress onProgress,
         ITransportServer transport,
         string sessionId,
+        QueryLogger? queryLogger,
         CancellationToken cancellationToken)
     {
-        AnthropicClient client = BuildClient(model, extraHeaders);
+        AnthropicClient client = BuildClient(model, extraHeaders, queryLogger);
         MessageParameters parameters = BuildParameters(model, tools, maxCompletionTokens, extraPayload);
 
         ProtocolResult result;
@@ -242,11 +240,41 @@ public class ProtocolAnthropic
         return arr;
     }
 
+    // Intercepts the outgoing SDK request to log the exact wire payload before forwarding it.
+    private sealed class QueryLoggingHandler : DelegatingHandler
+    {
+        private readonly QueryLogger _logger;
+        private readonly string _modelName;
+        private readonly string _endpoint;
+
+        public QueryLoggingHandler(QueryLogger logger, string modelName, string endpoint) : base(new HttpClientHandler())
+        {
+            _logger = logger;
+            _modelName = modelName;
+            _endpoint = endpoint;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Content != null)
+            {
+                string body = await request.Content.ReadAsStringAsync(cancellationToken);
+                _logger.Write(_modelName, _endpoint, body);
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            }
+            return await base.SendAsync(request, cancellationToken);
+        }
+    }
+
     // The SDK reads its API key from APIAuthentication. The user-provided endpoint is honored
     // exactly by routing the SDK's HttpClient at it; we never override user data.
-    private static AnthropicClient BuildClient(LlmModel model, Dictionary<string, string> extraHeaders)
+    private static AnthropicClient BuildClient(LlmModel model, Dictionary<string, string> extraHeaders, QueryLogger? queryLogger)
     {
-        HttpClient httpClient = new HttpClient
+        HttpMessageHandler innerHandler = queryLogger != null
+            ? new QueryLoggingHandler(queryLogger, model.Config.Name, model.Endpoint)
+            : new HttpClientHandler();
+
+        HttpClient httpClient = new HttpClient(innerHandler)
         {
             BaseAddress = new Uri(model.Endpoint)
         };
@@ -261,9 +289,6 @@ public class ProtocolAnthropic
 
     private async Task<ProtocolResult> ExecuteBlockingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
-        string postLine = $"[sdk] Messages {model.Endpoint}";
-        Log(postLine); transport.Debug(sessionId, postLine);
-
         MessageResponse response;
         try
         {
@@ -283,9 +308,6 @@ public class ProtocolAnthropic
 
     private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
-        string postLine = $"[sdk] Messages {model.Endpoint} (streaming)";
-        Log(postLine); transport.Debug(sessionId, postLine);
-
         List<MessageResponse> outputs = new List<MessageResponse>();
         string? openStreamTag = null;
         int liveInputTokens = 0;

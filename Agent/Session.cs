@@ -241,15 +241,18 @@ public class Session
     public ListenerBundle Bundle => _bundle;
 
     // Sets the display name from the first user message in history, if not already set.
-    public void InferDisplayName()
+    // Returns true if the name was newly assigned (so the caller can announce it to the client).
+    public bool InferDisplayName()
     {
-        if (!string.IsNullOrEmpty(_data.DisplayName)) return;
+        if (!string.IsNullOrEmpty(_data.DisplayName)) return false;
         string? first = GetFirstUserText();
         if (!string.IsNullOrWhiteSpace(first))
         {
             string name = first.Trim();
             _data.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
+            return true;
         }
+        return false;
     }
 
     // Prepares for a new LLM turn: flushes pending messages and arms the per-turn CTS.

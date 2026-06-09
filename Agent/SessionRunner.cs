@@ -659,9 +659,10 @@ public class SessionRunner
     private async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken)
     {
         session.UpdateModel(service.Model.ConfigId);
-        session.InferDisplayName();
-
         CancellationToken turnToken = session.BeginTurn();
+        // BeginTurn flushes _inputQueue into Messages, so InferDisplayName can now see the first user text.
+        if (session.InferDisplayName())
+            session.AnnounceToClient();
         bool interrupted = false;
         try
         {
