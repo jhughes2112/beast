@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
@@ -8,14 +7,11 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-public enum SessionRunnerExit { Cancelled, ContextFull }
-
 // Executes a session: LLM turns, tool dispatch (including sub-session spawning), and role transitions.
 // Ownership rules:
 //   - Session system prompt is set once at construction; never mutated during a run.
-//   - RunAsync exits with ContextFull when the context limit is hit or /compact is issued.
-//     The caller is responsible for calling CompactAsync and swapping to the successor runner.
-//   - CompactAsync runs the summarization and returns a pre-loaded successor runner.
+//   - RunAsync runs until cancelled or until context fills; it compacts internally when needed
+//     and returns the successor runner. Returns null when the process should stop.
 //   - Session is saved in the RunAsync finally block on every exit.
 public class SessionRunner
 {
@@ -53,8 +49,11 @@ public class SessionRunner
     public void Deliver(string targetId, string text) => _currentSession.Deliver(targetId, text);
 
     public string ActiveSessionId => _currentSession.Id;
+    public Session CurrentSession => _currentSession;
 
-    public async Task<SessionRunnerExit> RunAsync(CancellationToken ct)
+    // Runs until cancelled. Compaction is handled inline: when context fills the current session
+    // is summarized, a child session is created and announced, and the loop continues on the new session.
+    public async Task RunAsync(CancellationToken ct)
     {
         Session session = _currentSession;
 
@@ -103,16 +102,20 @@ public class SessionRunner
                         SendStats(session, service.Model.Config.ContextWindow);
                     }
 
-                    // Signal the owner to compact; do not run inline.
                     if (_wantsCompact)
                     {
                         _wantsCompact = false;
-                        return SessionRunnerExit.ContextFull;
+                        Session? compacted = await CompactAsync(ct);
+                        if (compacted == null)
+                            break;
+                        session = compacted;
+                        _currentSession = compacted;
                     }
                 }
 
                 // 3. Run the LLM whenever the session has work.
                 // NeedsAttention() returns false after an interrupt until AddUserMessage() is called.
+                bool contextFull = false;
                 if (session.NeedsAttention() && service != null && role != null)
                 {
                     session.SendBusy();
@@ -129,12 +132,12 @@ public class SessionRunner
                                 toolList.Add(tool);
                         }
                         Tool[] tools = toolList.ToArray();
-                        LlmResult result = await session.RunTurnAsync(service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
+                        LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
                         SendStats(session, service.Model.Config.ContextWindow);
 
                         if (result.ExitReason == LlmExitReason.ContextFull)
                         {
-                            return SessionRunnerExit.ContextFull;
+                            contextFull = true;
                         }
                         else if (result.ExitReason == LlmExitReason.Failed)
                         {
@@ -149,13 +152,22 @@ public class SessionRunner
                                 _currentSession = session;
                             }
                         }
-                        // Interrupted: session._interruptedAndWaiting is set in RunTurnAsync;
+                        // Interrupted: _interruptedAndWaiting is set in EndTurn;
                         // NeedsAttention() returns false until AddUserMessage() is called with new input.
                     }
                     finally
                     {
                         session.SendIdle();
                     }
+                }
+
+                if (contextFull)
+                {
+                    Session? compacted = await CompactAsync(ct);
+                    if (compacted == null)
+                        break;
+                    session = compacted;
+                    _currentSession = compacted;
                 }
 
                 if (role != null)
@@ -176,13 +188,11 @@ public class SessionRunner
             if (!_currentSession.Ephemeral)
                 SessionService.Save(_currentSession.Data);
         }
-
-        return SessionRunnerExit.Cancelled;
     }
 
-    // Summarizes the current session and returns a new runner seeded with the compacted content.
+    // Summarizes the current session and returns a new child session seeded with the compacted content.
     // Returns null if the service, role, or summary prompt is unavailable.
-    public async Task<SessionRunner?> CompactAsync(CancellationToken ct)
+    private async Task<Session?> CompactAsync(CancellationToken ct)
     {
         Role? role = _roleService.GetRole(_currentSession.Role);
         LlmService? service = role != null ? _registry.GetServiceForRole(role, _currentSession.Model, 0) : null;
@@ -196,7 +206,7 @@ public class SessionRunner
         IReadOnlyList<CanonicalMessage> tailExchanges = ExtractTailExchanges(_currentSession.Data.Messages, 2);
 
         _transport.Status(_currentSession.Id, "[Compaction] Started.");
-        string? summary = await _currentSession.SummarizeAsync(service, role.SummaryPrompt, Array.Empty<Tool>(), ct);
+        string? summary = await SummarizeAsync(_currentSession, service, role.SummaryPrompt, Array.Empty<Tool>(), ct);
 
         if (string.IsNullOrWhiteSpace(summary))
         {
@@ -219,12 +229,15 @@ public class SessionRunner
         newSession.FlushPendingMessages();
         newSession.ReplayExchanges(tailExchanges);
 
+        _currentSession.AddChild(newSession);
+        newSession.AnnounceToClient();
+
         if (!newSession.Ephemeral)
             SessionService.Save(newSession.Data);
 
         _cachedSessions = SessionService.List();
         _transport.Status(_currentSession.Id, "[Compaction] Complete.");
-        return new SessionRunner(newSession, _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+        return newSession;
     }
 
     // ---- Session management ----
@@ -453,7 +466,7 @@ public class SessionRunner
         string summaryPrompt = currentRole.SummaryPrompt;
 
         _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
-        string? summary = await session.SummarizeAsync(service, summaryPrompt, roleTools, ct);
+        string? summary = await SummarizeAsync(session, service, summaryPrompt, roleTools, ct);
         if (string.IsNullOrEmpty(summary))
         {
             _transport.Error(session.Id, "[Role] Summary failed; staying in current role.");
@@ -482,7 +495,7 @@ public class SessionRunner
         _transport.Status(session.Id, $"[Role] Evaluating: {currentRole.EndOfTurnPrompt}");
         for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
         {
-            LlmResult evalResult = await evalSession.RunTurnAsync(service, new Tool[] { answerTool }, 0, ct);
+            LlmResult evalResult = await RunTurnAsync(evalSession, service, new Tool[] { answerTool }, 0, ct);
 
             if (evalResult.ExitReason != LlmExitReason.Completed)
                 break;
@@ -624,7 +637,7 @@ public class SessionRunner
         LlmResult result;
         try
         {
-            result = await subSession.RunTurnAsync(service, innerTools, 0, ct);
+            result = await RunTurnAsync(subSession, service, innerTools, 0, ct);
         }
         finally
         {
@@ -636,6 +649,48 @@ public class SessionRunner
         if (result.ExitReason == LlmExitReason.Completed)
             return subSession.GetLastAssistantText();
 
+        return null;
+    }
+
+    // ---- LLM turn execution ----
+
+    // Runs one LLM turn on the given session. Delegates bundle management and turn-CTS lifecycle
+    // to the session; this method owns the LlmService call and interrupt handling.
+    private async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken)
+    {
+        session.UpdateModel(service.Model.ConfigId);
+        session.InferDisplayName();
+
+        CancellationToken turnToken = session.BeginTurn();
+        bool interrupted = false;
+        try
+        {
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, appToken);
+            try
+            {
+                return await service.RunToCompletionAsync(session, session.Bundle, tools, reserveTokens, _transport, linked.Token);
+            }
+            catch (OperationCanceledException) when (turnToken.IsCancellationRequested && !appToken.IsCancellationRequested)
+            {
+                interrupted = true;
+                return new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
+            }
+        }
+        finally
+        {
+            session.EndTurn(interrupted);
+        }
+    }
+
+    // Runs a summarization prompt in a temporary fork of the session and returns the assistant text.
+    // The fork is discarded after the call; the original session is never modified.
+    private async Task<string?> SummarizeAsync(Session session, LlmService service, string prompt, Tool[] tools, CancellationToken appToken)
+    {
+        Session temp = session.Fork($"{session.Id}_sum", string.Empty, true);
+        temp.AddUserMessage(prompt);
+        LlmResult result = await RunTurnAsync(temp, service, tools, 0, appToken);
+        if (result.ExitReason == LlmExitReason.Completed)
+            return temp.GetLastAssistantText();
         return null;
     }
 

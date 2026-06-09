@@ -37,30 +37,23 @@ public class AgentOrchestrator
         _settings.LoadSettings();
         _registry.LoadFromConfigs(_settings, _roleService);
 
-        SessionRunner runner = new SessionRunner(
-            LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+        SessionRunner runner = new SessionRunner(LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+
+        using CancellationTokenSource inputCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         while (!ct.IsCancellationRequested)
         {
-            using CancellationTokenSource inputCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             Task inputTask = ReadInputAsync(runner, inputCts.Token);
-
-            SessionRunnerExit exit = await runner.RunAsync(ct);
-
+            await runner.RunAsync(ct);
             inputCts.Cancel();
             await inputTask;
 
-            if (exit == SessionRunnerExit.Cancelled)
+            if (ct.IsCancellationRequested) 
                 break;
 
-            SessionRunner? next = await runner.CompactAsync(ct);
-            if (next == null)
-            {
-                _transport.Error(runner.ActiveSessionId, "[orchestrator] Compaction failed; runner cannot continue.");
-                break;
-            }
-
-            runner = next;
+            // RunAsync exited without cancellation (compaction failure) — keep the server alive
+            // and restart on the same session so the user can issue commands and continue.
+            runner = new SessionRunner(runner.CurrentSession, _registry, _roleService, _settings, _transport, _cancellationTokenSource);
         }
     }
 
@@ -105,9 +98,6 @@ public class AgentOrchestrator
             string content = pipe >= 0 ? line.Substring(pipe + 1) : line;
             if (content.Length == 0)
                 continue;
-
-            if (string.IsNullOrEmpty(sessionId))
-                sessionId = runner.ActiveSessionId;
 
             runner.Deliver(sessionId, content);
         }

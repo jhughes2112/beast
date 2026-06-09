@@ -3,14 +3,14 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 
 
-// Stateful adapter over BeastSession. Owns all mutation, logic, and runtime wiring.
-// One Session = one independent conversation thread. Sessions can run concurrently without
-// sharing any mutable state — each has its own bundle, queue, and cancellation token.
+// Stateful adapter over BeastSession. Owns all mutation of conversation state.
+// One Session = one independent conversation thread with its own bundle, queues, and turn CTS.
 //
 // Callers load/save BeastSession (pure data), wrap it in Session, then talk to Session only.
+// SessionRunner drives the LLM; Session provides BeginTurn/EndTurn lifecycle hooks and exposes
+// Bundle so SessionRunner can pass it through to LlmService.
 // systemPrompt is applied once at construction. For sessions loaded from disk the prompt is
 // already in Messages; pass string.Empty to skip re-injection.
 public class Session
@@ -235,64 +235,41 @@ public class Session
         }
     }
 
-    // ---- Turn execution ----
+    // ---- Turn lifecycle ----
 
-    // Runs one LLM turn. Flushes pending messages first, then LlmService polls TryGetPendingInput
-    // between tool calls to pick up any input delivered via Deliver() during the turn.
-    // Returns Completed, ContextFull, Failed, or Interrupted.
-    // Re-throws OperationCanceledException only when appToken fires (process shutdown).
-    // Interrupt() cancels the per-turn token; that case is absorbed and returned as Interrupted.
-    public async Task<LlmResult> RunTurnAsync(LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken)
+    // The conversation bundle — passed to LlmService by SessionRunner so it can read/write history.
+    public ListenerBundle Bundle => _bundle;
+
+    // Sets the display name from the first user message in history, if not already set.
+    public void InferDisplayName()
     {
-        _data.Model = service.Model.ConfigId;
-
-        if (string.IsNullOrEmpty(_data.DisplayName))
+        if (!string.IsNullOrEmpty(_data.DisplayName)) return;
+        string? first = GetFirstUserText();
+        if (!string.IsNullOrWhiteSpace(first))
         {
-            string? first = GetFirstUserText();
-            if (!string.IsNullOrWhiteSpace(first))
-            {
-                string name = first.Trim();
-                _data.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
-            }
-        }
-
-        // Flush any messages queued before this turn starts.
-        FlushPendingMessages();
-
-        _turnCts = new CancellationTokenSource();
-        try
-        {
-            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(_turnCts.Token, appToken);
-            try
-            {
-                return await service.RunToCompletionAsync(this, _bundle, tools, reserveTokens, _transport, linked.Token);
-            }
-            catch (OperationCanceledException) when (_turnCts.IsCancellationRequested && !appToken.IsCancellationRequested)
-            {
-                // Interrupt() was called — mark as waiting for user so NeedsAttention() returns false
-                // until AddUserMessage() is called with new input.
-                _interruptedAndWaiting = true;
-                return new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
-            }
-        }
-        finally
-        {
-            _turnCts.Dispose();
-            _turnCts = null;
+            string name = first.Trim();
+            _data.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
         }
     }
 
-    // Runs a summarization call in a temporary copy of this session and returns the assistant text.
-    // This session is never modified — the temp copy is discarded after the call.
-    // Returns null if the call fails or is interrupted.
-    public async Task<string?> SummarizeAsync(LlmService service, string prompt, Tool[] tools, CancellationToken appToken)
+    // Prepares for a new LLM turn: flushes pending messages and arms the per-turn CTS.
+    // Returns the turn-specific cancellation token; always pair with EndTurn.
+    // LlmService polls TryGetPendingInput between tool calls to pick up mid-turn user input.
+    public CancellationToken BeginTurn()
     {
-        Session temp = Fork($"{_data.Id}_sum", string.Empty, true);
-        temp.AddUserMessage(prompt);
-        LlmResult result = await temp.RunTurnAsync(service, tools, 0, appToken);
-        if (result.ExitReason == LlmExitReason.Completed)
-            return temp.GetLastAssistantText();
-        return null;
+        FlushPendingMessages();
+        _turnCts = new CancellationTokenSource();
+        return _turnCts.Token;
+    }
+
+    // Cleans up after a turn. If interrupted, sets the wait state so NeedsAttention() stays
+    // false until new user text arrives via AddUserMessage.
+    public void EndTurn(bool interrupted)
+    {
+        _turnCts?.Dispose();
+        _turnCts = null;
+        if (interrupted)
+            _interruptedAndWaiting = true;
     }
 
     // Creates an independent copy of this session from this exact point in history.
@@ -380,6 +357,6 @@ public class Session
             }
         }
 
-        return $"({generation}) {base_}";
+        return $"({generation:D2}) {base_}";
     }
 }

@@ -439,6 +439,14 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 }
                 catch { }
                 NotifySessionList();
+                // Auto-switch when a compacted successor is announced. Sub-sessions are announced
+                // while the parent is still busy, so the busy check skips them correctly.
+                if (!string.IsNullOrEmpty(effectiveId) && !string.IsNullOrEmpty(_activeSessionId))
+                {
+                    bool isDirectChild = string.Equals(GetParentId(effectiveId), _activeSessionId, StringComparison.Ordinal);
+                    if (isDirectChild && !_busySessions.Contains(_activeSessionId))
+                        SwitchActiveSession(effectiveId);
+                }
                 break;
 
             default:
