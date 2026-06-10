@@ -20,11 +20,20 @@ public class LlmResult
 {
     public LlmExitReason ExitReason { get; }
     public string ErrorMessage { get; }
+    // Provider finish/stop reason of the completing turn ("length"/"max_tokens" when the response
+    // was cut off by the output limit). Empty for non-completing exits.
+    public string FinishReason { get; }
 
     public LlmResult(LlmExitReason exitReason, string errorMessage)
+        : this(exitReason, errorMessage, string.Empty)
+    {
+    }
+
+    public LlmResult(LlmExitReason exitReason, string errorMessage, string finishReason)
     {
         ExitReason = exitReason;
         ErrorMessage = errorMessage;
+        FinishReason = finishReason;
     }
 }
 
@@ -51,7 +60,9 @@ public class LlmService
         _handler = new ProtocolProxy(model, detectedProtocol);
     }
 
-    public async Task<LlmResult> RunToCompletionAsync(Session conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
+    // maxOutputCap (0 = none) hard-limits each response's max_tokens, so a sub-session's reply is
+    // guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
+    public async Task<LlmResult> RunToCompletionAsync(Session conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
     {
         if (_availability.IsDown)
         {
@@ -74,6 +85,23 @@ public class LlmService
             const int kMaxEmptyResponses = 10;
             int rateLimitRetries = 0;
             const int kMaxRateLimitRetries = 10;
+
+            // Token budget of tool outputs appended since the last provider response. ContextLength
+            // (provider-reported) does not yet include them, so we add this when sizing max_tokens to
+            // keep input + output inside the window. Reset to 0 once a response reports the new size.
+            int pendingToolBudget = 0;
+
+            // Room the window must keep free for the model's next response: its configured max
+            // output, tightened by the sub-session cap when one is set. Tool outputs may consume
+            // everything else above the reserve. When neither bound is configured a default floor
+            // applies, otherwise tool rounds could fill the window completely and the next
+            // request would be sized to zero output tokens.
+            const int kDefaultOutputBudget = 4096;
+            int outputBudget = model.Config.MaxOutputTokens > 0 ? model.Config.MaxOutputTokens : 0;
+            if (maxOutputCap > 0 && (outputBudget == 0 || maxOutputCap < outputBudget))
+                outputBudget = maxOutputCap;
+            if (outputBudget == 0)
+                outputBudget = kDefaultOutputBudget;
 
             for (; ; )
             {
@@ -104,7 +132,12 @@ public class LlmService
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                int? maxCompletionTokens = ComputeMaxCompletionTokens(conversation, model.Config.ContextWindow, reserveTokens);
+                // Size the response against the exact context plus the budget of any not-yet-reported
+                // tool outputs, so input + output stays within the window even right after a tool round.
+                int usedTokens = conversation.ContextLength + pendingToolBudget;
+                int? maxCompletionTokens = ComputeMaxCompletionTokens(usedTokens, model.Config.ContextWindow);
+                if (maxOutputCap > 0)
+                    maxCompletionTokens = maxCompletionTokens.HasValue ? Math.Min(maxCompletionTokens.Value, maxOutputCap) : maxOutputCap;
 
                 // Provisional live stats while the turn streams. Protocols report inputTokens as the
                 // whole-conversation input the provider bills this turn (Anthropic via StreamStart
@@ -133,15 +166,22 @@ public class LlmService
                 {
                     ProtocolCallPayload payload = callResult.Payload!;
                     conversation.RecordTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
+                    // The reported size now includes everything sent this turn, including any prior
+                    // tool outputs, so the pending budget is fully accounted for and resets to zero.
+                    pendingToolBudget = 0;
 
                     SendCostUpdate(conversation, model.Config.ContextWindow, transport);
 
-                    (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, bundle, transport, sessionId, cancellationToken);
+                    (LlmResult? terminalResult, bool toolsDispatched, int addedToolBudget) = await ProcessAssistantResponseAsync(payload, tools, bundle, transport, sessionId, model.Config.ContextWindow, conversation.ContextLength, outputBudget, reserveTokens, cancellationToken);
                     if (terminalResult != null)
                     {
                         finalResult = terminalResult;
                         break;
                     }
+
+                    // Tool outputs were appended but not yet reflected in ContextLength; carry their
+                    // allocated budget forward so the next request sizes max_tokens correctly.
+                    pendingToolBudget = addedToolBudget;
 
                     // Check if new user input has arrived between tool calls; inject it so the
                     // LLM can see and respond to it on the next iteration.
@@ -200,7 +240,7 @@ public class LlmService
         return finalResult;
     }
 
-    private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ITransportServer transport, string sessionId, CancellationToken ct)
+    private async Task<(LlmResult? terminalResult, bool toolsDispatched, int addedToolBudget)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ITransportServer transport, string sessionId, int contextWindow, int currentContext, int outputBudget, int reserveTokens, CancellationToken ct)
     {
         string text = (payload.AssistantText ?? string.Empty).Trim();
         bool hasToolCalls = payload.ToolCalls.Count > 0;
@@ -208,7 +248,7 @@ public class LlmService
         // Empty turn: no content and no tool calls. Caller decides if this counts toward empty-streak.
         if (text.Length == 0 && !hasToolCalls)
         {
-            return (null, false);
+            return (null, false, 0);
         }
 
         List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
@@ -217,8 +257,14 @@ public class LlmService
         {
             // The producing protocol already fanned the assistant turn out through the bundle,
             // which means the transport listener rendered it. No direct transport call here.
-            return (new LlmResult(LlmExitReason.Completed, ""), false);
+            // Carry the finish reason so a capped sub-session can tell a cut-off reply from a complete one.
+            return (new LlmResult(LlmExitReason.Completed, "", payload.FinishReason), false, 0);
         }
+
+        // Tool outputs may use whatever the window has left after the response room and the
+        // compaction reserve; parallel calls split it evenly so the combined outputs always fit.
+        int roundBudget = Math.Max(0, contextWindow - currentContext - outputBudget - reserveTokens);
+        int perToolBudget = roundBudget / toolCalls.Count;
 
         (string toolName, ToolResult toolResult)[] completedTools = new (string, ToolResult)[toolCalls.Count];
 
@@ -227,7 +273,7 @@ public class LlmService
         {
             int index = i;
             SemanticToolCall toolCall = toolCalls[index];
-            tasks[index] = ExecuteToolAsync(toolCall, tools, transport, sessionId, ct)
+            tasks[index] = ExecuteToolAsync(toolCall, tools, transport, sessionId, perToolBudget, ct)
                 .ContinueWith(t => completedTools[index] = (toolCall.Name, t.Result), ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
         }
 
@@ -240,10 +286,10 @@ public class LlmService
             bundle.OnToolResult(toolCalls[i].Id, result);
         }
 
-        return (null, true);
+        return (null, true, perToolBudget * toolCalls.Count);
     }
 
-    private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, ITransportServer transport, string sessionId, CancellationToken ct)
+    private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, ITransportServer transport, string sessionId, int maxOutputTokens, CancellationToken ct)
     {
         Action<string> fixLog = msg => transport.Status(sessionId, msg);
 
@@ -296,7 +342,7 @@ public class LlmService
         ToolResult result;
         try
         {
-            result = await matchedTool.Handler(argsObj, ct, transport, sessionId);
+            result = await matchedTool.Handler(argsObj, ct, transport, sessionId, maxOutputTokens);
         }
         catch (OperationCanceledException)
         {
@@ -306,13 +352,45 @@ public class LlmService
         {
             result = new ToolResult(string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1);
         }
-        return result;
+        return TruncateToBudget(result, maxOutputTokens);
     }
 
-    internal int? ComputeMaxCompletionTokens(Session conversation, int contextLength, int reserveTokens)
+    // Hard-enforces the per-call output budget. The conversation-loop math assumes every tool
+    // result fits its budget, but raw handlers don't bound themselves and a sub-session reply can
+    // come back over budget after its retries are exhausted. ≈4 chars/token matches the
+    // protocols' streaming estimates. StdErr keeps priority so error text survives truncation.
+    private static ToolResult TruncateToBudget(ToolResult result, int maxOutputTokens)
     {
-        int usedTokens = conversation.ContextLength;
-        long available = contextLength - usedTokens - reserveTokens;
+        ToolResult bounded;
+        int maxChars = maxOutputTokens * 4;
+        if (result.StdOut.Length + result.StdErr.Length <= maxChars)
+        {
+            bounded = result;
+        }
+        else
+        {
+            const string marker = "\n[Output truncated: it exceeded the remaining context budget for this tool call.]";
+            string stdErr = result.StdErr;
+            string stdOut = result.StdOut;
+            if (stdErr.Length > maxChars)
+            {
+                stdErr = stdErr.Substring(0, maxChars) + marker;
+                stdOut = string.Empty;
+            }
+            else
+            {
+                stdOut = stdOut.Substring(0, maxChars - stdErr.Length) + marker;
+            }
+            bounded = new ToolResult(stdOut, stdErr, result.ExitCode);
+        }
+        return bounded;
+    }
+
+    // usedTokens is the exact reported context plus the budget of any not-yet-reported tool outputs.
+    // Tool outputs are bounded to that budget, so input + this result stays within the window.
+    internal int? ComputeMaxCompletionTokens(int usedTokens, int contextWindow)
+    {
+        long available = contextWindow - usedTokens;
         if (available <= 0) return 0;
 
         if (_model.Config.MaxOutputTokens <= 0) return null;

@@ -133,8 +133,8 @@ public class SessionRunner
                     session.SendBusy();
                     try
                     {
-                        Tool[] tools = GetOrBuildTools(role, session.IsSubagent, service.Model.Config.ContextWindow);
-                        LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
+                        Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
+                        LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, 0, _cancellationTokenSource.Token);
                         SendStats(session, service.Model.Config.ContextWindow);
 
                         // A model-initiated Answer call records a pending transition. Apply it
@@ -502,7 +502,7 @@ public class SessionRunner
         // Best-effort: the model already decided to transition, so a failed summary doesn't abort it.
         if (!string.IsNullOrEmpty(currentRole.SummaryPrompt))
         {
-            Tool[] roleTools = _registry.GetToolsForRole(currentRole, _service?.Model.Config.ContextWindow ?? 0);
+            Tool[] roleTools = _registry.GetToolsForRole(currentRole);
             _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
             string? summary = await SummarizeAsync(session, currentRole.SummaryPrompt, roleTools, ct);
             if (string.IsNullOrEmpty(summary))
@@ -526,7 +526,7 @@ public class SessionRunner
             return null;
 
         // 1. Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
-        Tool[] roleTools = _registry.GetToolsForRole(currentRole, _service?.Model.Config.ContextWindow ?? 0);
+        Tool[] roleTools = _registry.GetToolsForRole(currentRole);
         string summaryPrompt = currentRole.SummaryPrompt;
 
         _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
@@ -572,7 +572,7 @@ public class SessionRunner
         session.AddChild(evalSession);
         for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
         {
-            LlmResult evalResult = await RunTurnAsync(evalSession, evalService, new Tool[] { answerTool }, 0, ct);
+            LlmResult evalResult = await RunTurnAsync(evalSession, evalService, new Tool[] { answerTool }, 0, 0, ct);
 
             if (evalResult.ExitReason != LlmExitReason.Completed)
                 break;
@@ -656,7 +656,7 @@ public class SessionRunner
                     Parameters = parameters
                 }
             },
-            Handler = (JsonObject args, CancellationToken ct, ITransportServer transport, string sessionId) =>
+            Handler = (JsonObject args, CancellationToken ct, ITransportServer transport, string sessionId, int maxOutputTokens) =>
             {
                 string answer = (args["answer"]?.GetValue<string>() ?? string.Empty).TrimStart();
 
@@ -685,7 +685,7 @@ public class SessionRunner
 
     // ---- Sub-session dispatch ----
 
-    private static string BuildSubSessionMessage(string toolName, JsonObject args, string goal)
+    private static string BuildSubSessionMessage(string toolName, JsonObject args, string goal, int outputBudgetTokens)
     {
         JsonObject displayArgs = new JsonObject();
         foreach (KeyValuePair<string, JsonNode?> kv in args)
@@ -694,13 +694,25 @@ public class SessionRunner
                 displayArgs[kv.Key] = kv.Value?.DeepClone();
         }
 
-        return $"Use tools such as {toolName} with parameters {displayArgs.ToJsonString()} to return: {goal}\nYour final message will be the response that most accurately satisfies the request.";
+        return $"Use tools such as {toolName} with parameters {displayArgs.ToJsonString()} to return: {goal}\n"
+            + $"Your final message is the response returned to the calling agent and is inserted into its context, so it must fit within approximately {outputBudgetTokens} tokens. "
+            + "If your raw findings are larger, summarize them to fit while preserving the exact details requested (file paths, line numbers, names, key output).";
     }
 
-    // Runs an ephemeral sub-session using the "Tools" role to fulfill a single tool call.
-    // Returns the last assistant text, or null if the Tools role is unavailable (falls back to raw handler).
-    private async Task<string?> RunSubSessionAsync(string toolName, JsonObject args, string goal, CancellationToken ct)
+    // Runs an ephemeral sub-session using the "Tools" role to fulfill a single tool call. The result
+    // is inserted into the calling agent's context and must fit within outputBudgetTokens. Each
+    // attempt forks from the clean sub-session so a clipped or over-budget reply never pollutes the
+    // session history; the fork is discarded and a new one started with a tighter cap if needed.
+    // Returns the last fitting assistant text, or null if the Tools role is unavailable (the caller
+    // falls back to the raw handler).
+    private async Task<string?> RunSubSessionAsync(string toolName, JsonObject args, string goal, int outputBudgetTokens, CancellationToken ct)
     {
+        // No budget left for any reply (window nearly full): a sub-session is pointless, and a
+        // 0 cap would collide with the "uncapped" sentinel on retries. Fall back to the raw
+        // handler, whose output the tool dispatcher truncates to the budget.
+        if (outputBudgetTokens <= 0)
+            return null;
+
         Role? toolsRole = _roleService.GetRole("Tools");
         if (toolsRole == null)
             return null;
@@ -709,23 +721,55 @@ public class SessionRunner
         if (service == null)
             return null;
 
-        Tool[] innerTools = _registry.GetToolsForRole(toolsRole, service.Model.Config.ContextWindow);
+        Tool[] innerTools = _registry.GetToolsForRole(toolsRole);
 
-        // Truncate goal to a display-friendly length for use as the session name.
         string displayName = goal.Length > 80 ? goal.Substring(0, 80) : goal;
 
         BeastSession subData = new BeastSession(_currentSession.AllocateChildId(), displayName, service.Model.ConfigId, "Tools", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral, 0);
         Session subSession = new Session(subData, toolsRole.SystemPrompt, _transport, true);
         subSession.AnnounceToClient();
-
-        subSession.AddUserMessage(BuildSubSessionMessage(toolName, args, goal));
+        subSession.AddUserMessage(BuildSubSessionMessage(toolName, args, goal, outputBudgetTokens));
+        _currentSession.AddChild(subSession);
 
         subSession.SendBusy();
-        _currentSession.AddChild(subSession);
-        LlmResult result;
         try
         {
-            result = await RunTurnAsync(subSession, service, innerTools, 0, ct);
+            const int MaxFitAttempts = 3;
+            string? finalText = null;
+            // First attempt is uncapped so the subagent can read large files or reason extensively;
+            // only its final reply must fit. Retries use outputBudgetTokens as a hard cap so the
+            // model is forced to produce a concise reply rather than getting clipped mid-sentence.
+            int outputCap = 0;
+            for (int attempt = 0; attempt < MaxFitAttempts; attempt++)
+            {
+                // Fork from the clean sub-session so each attempt starts from the same state.
+                // The fork is ephemeral and discarded whether the attempt succeeds or fails.
+                Session forkSession = subSession.Fork(_currentSession.AllocateChildId(), string.Empty, true);
+                subSession.AddChild(forkSession);
+
+                LlmResult result = await RunTurnAsync(forkSession, service, innerTools, 0, outputCap, ct);
+                if (result.ExitReason != LlmExitReason.Completed)
+                    break;
+
+                if (result.FinishReason == "length" || result.FinishReason == "max_tokens")
+                {
+                    // Clipped response is useless — retry with a hard cap so the model must fit.
+                    outputCap = outputBudgetTokens;
+                    continue;
+                }
+
+                finalText = forkSession.GetLastAssistantText();
+                int responseTokens = forkSession.LastTokenUsage?.CompletionTokens ?? 0;
+                if (responseTokens <= outputBudgetTokens)
+                    return finalText;
+
+                // Complete but over budget — cap the next attempt.
+                outputCap = outputBudgetTokens;
+            }
+
+            // Still over budget (or no clean completion): return what we have; the tool
+            // dispatcher (LlmService.ExecuteToolAsync) hard-truncates to the budget as a last resort.
+            return finalText;
         }
         finally
         {
@@ -733,18 +777,14 @@ public class SessionRunner
                 SessionService.Save(subSession.Data);
             subSession.SendIdle();
         }
-
-        if (result.ExitReason == LlmExitReason.Completed)
-            return subSession.GetLastAssistantText();
-
-        return null;
     }
 
     // ---- LLM turn execution ----
 
     // Runs one LLM turn on the given session. Delegates bundle management and turn-CTS lifecycle
     // to the session; this method owns the LlmService call and interrupt handling.
-    private async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, int reserveTokens, CancellationToken appToken)
+    // maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
+    private async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, int reserveTokens, int maxOutputCap, CancellationToken appToken)
     {
         session.UpdateModel(service.Model.ConfigId);
         CancellationToken turnToken = session.BeginTurn();
@@ -757,7 +797,7 @@ public class SessionRunner
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, appToken);
             try
             {
-                return await service.RunToCompletionAsync(session, session.Bundle, tools, reserveTokens, _transport, linked.Token);
+                return await service.RunToCompletionAsync(session, session.Bundle, tools, reserveTokens, maxOutputCap, _transport, linked.Token);
             }
             catch (OperationCanceledException) when (turnToken.IsCancellationRequested && !appToken.IsCancellationRequested)
             {
@@ -784,7 +824,7 @@ public class SessionRunner
         Session temp = session.Fork($"{session.Id}_sum", string.Empty, true);
         temp.AddUserMessage(prompt);
         session.AddChild(temp);
-        LlmResult result = await RunTurnAsync(temp, service, tools, 0, appToken);
+        LlmResult result = await RunTurnAsync(temp, service, tools, 0, 0, appToken);
         if (result.ExitReason == LlmExitReason.Completed)
             return temp.GetLastAssistantText();
         return null;
@@ -792,20 +832,18 @@ public class SessionRunner
 
     // ---- Helpers ----
 
-    // Returns the cached Tool[] for the role+mode+contextWindow combination, building on first call.
-    // Cache key includes context window so a model change (different window) gets a fresh build.
+    // Returns the cached Tool[] for the role+mode combination, building on first call.
     // Cleared on /reload so config changes (new tools, webSearch) take effect immediately.
-    private Tool[] GetOrBuildTools(Role role, bool isSubagent, int contextWindow)
+    private Tool[] GetOrBuildTools(Role role, bool isSubagent)
     {
-        string key = isSubagent ? $"sub:{role.Name}:{contextWindow}" : $"agent:{role.Name}:{contextWindow}";
+        string key = isSubagent ? $"sub:{role.Name}" : $"agent:{role.Name}";
         if (_toolsByRole.TryGetValue(key, out Tool[]? cached))
             return cached;
 
-        int maxChars = ToolFactory.ComputeMaxToolOutputChars(contextWindow);
         bool hasToolsRole = _roleService.GetRole("Tools") != null;
         Dictionary<string, Tool> allTools = (!isSubagent && hasToolsRole)
-            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync, maxChars)
-            : ToolFactory.Build(_settings.Settings.WebSearch, maxChars);
+            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync)
+            : ToolFactory.Build(_settings.Settings.WebSearch);
 
         List<Tool> toolList = new List<Tool>();
         foreach (string toolName in role.Tools)

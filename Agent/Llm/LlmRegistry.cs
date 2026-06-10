@@ -29,7 +29,7 @@ public class LlmRegistry
 	// (rate-limit timers, permanently-down flags) survives /reload and session restarts.
 	private readonly Dictionary<string, ModelAvailability> _availability = new(StringComparer.OrdinalIgnoreCase);
 
-	// Stored at load time so GetToolsForRole can rebuild tools with a per-session output limit.
+	// Stored at load time so GetToolsForRole can rebuild the tool set on demand.
 	private WebSearchConfig? _webSearch;
 
 	public LlmRegistry()
@@ -161,12 +161,12 @@ public class LlmRegistry
 		return PickModel(role, preferredModelId, minContextRequired);
 	}
 
-	// Builds a fresh Tool array for the role, scaled to the given context window.
+	// Builds a fresh Tool array for the role. Output limits are dynamic per call (LlmService
+	// passes each tool its token budget), so no context window scaling is needed here.
 	// Called per sub-session turn, not per tool call, so rebuilding on demand is cheap.
-	public Tool[] GetToolsForRole(Role role, int contextWindow)
+	public Tool[] GetToolsForRole(Role role)
 	{
-		int maxChars = ToolFactory.ComputeMaxToolOutputChars(contextWindow);
-		Dictionary<string, Tool> allTools = ToolFactory.Build(_webSearch, maxChars);
+		Dictionary<string, Tool> allTools = ToolFactory.Build(_webSearch);
 		List<Tool> allowed = new List<Tool>();
 		foreach (string name in role.Tools)
 		{

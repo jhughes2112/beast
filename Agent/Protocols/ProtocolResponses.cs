@@ -520,7 +520,12 @@ public class ProtocolResponses
         _rehydratedInput = null;
         _deltaInput.Clear();
 
+        // The Responses API reports output clipping via incomplete_details rather than a finish
+        // reason; normalize it to "length" so callers detect cut-off replies uniformly.
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
+        string? incompleteReason = responseRoot["incomplete_details"]?["reason"]?.GetValue<string>();
+        if (toolCalls.Count == 0 && incompleteReason == "max_output_tokens")
+            finishReason = "length";
 
         (TokenUsageInfo usage, decimal cost) = ExtractUsage(responseRoot, model);
 

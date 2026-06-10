@@ -46,8 +46,10 @@ public class ToolResult
 }
 
 // Internal tool representation used by LlmService's execution loop.
+// The trailing int is maxOutputTokens: the token budget this call's output must fit into, set by
+// LlmService from the remaining context space divided among the round's parallel tool calls.
 public class Tool
 {
 	public ToolDefinition Definition { get; set; } = new();
-	public Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> Handler { get; set; } = null!;
+	public Func<JsonObject, CancellationToken, ITransportServer, string, int, Task<ToolResult>> Handler { get; set; } = null!;
 }
