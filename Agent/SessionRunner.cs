@@ -178,7 +178,9 @@ public class SessionRunner
                             ? "No Models Available"
                             : $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
                     int delayMs = waitMs == long.MaxValue ? 30000 : Math.Clamp((int)waitMs, 10, 30000);
-                    await Task.Delay(delayMs, _cancellationTokenSource.Token);
+                    await Task.WhenAny(
+                        Task.Delay(delayMs, _cancellationTokenSource.Token),
+                        session.WaitForInputAsync(_cancellationTokenSource.Token));
                 }
             }
         }

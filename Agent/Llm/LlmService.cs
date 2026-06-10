@@ -308,6 +308,10 @@ public class LlmService
         {
             result = await matchedTool.Handler(argsObj, ct, transport, sessionId);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             result = new ToolResult(string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1);

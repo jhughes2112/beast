@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 
 
 // Stateful adapter over BeastSession. Owns all mutation of conversation state.
@@ -21,6 +22,7 @@ public class Session
 
     private readonly ConcurrentQueue<string> _inputQueue = new ConcurrentQueue<string>();
     private readonly ConcurrentQueue<string> _commandQueue = new ConcurrentQueue<string>();
+    private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0, 1);
     private CancellationTokenSource? _turnCts;
     private bool _isSubagent;
 
@@ -29,7 +31,7 @@ public class Session
     public QueryLogger QueryLog { get; }
 
     // Set when a turn is interrupted; cleared when new user text arrives via AddUserMessage.
-    // NeedsAttention() returns false while set so the loop waits instead of re-running immediately.
+    // NeedsAttention() returns false while set, so the idle loop waits for real new input.
     private bool _interruptedAndWaiting = false;
 
     // Expose raw data only for persistence (SessionService.Save). All other access goes through
@@ -66,7 +68,11 @@ public class Session
 
     // Allocates a unique child session ID rooted at this session's ID.
     // IDs form a path: "parentId_N" where N increments from 1.
-    public string AllocateChildId() => $"{_data.Id}_{++_data.ChildCounter}";
+    public string AllocateChildId()
+    {
+        int n = Interlocked.Increment(ref _data.ChildCounter);
+        return $"{_data.Id}_{n}";
+    }
 
     // ---- Busy/Idle signaling ----
 
@@ -137,37 +143,56 @@ public class Session
 
     public void AddChild(Session child) => _children.TryAdd(child.Id, child);
 
-    // Delivers a user message to the session matching targetId, recursing into children.
-    // Parallel tool calls can produce multiple simultaneous children; all are searched.
+    // Routes incoming text to the correct session. Commands targeting this session are parsed
+    // here: /cancel interrupts, other /commands go to the command queue, plain text goes to
+    // AddUserMessage. Routing to children only forwards /cancel and plain text — non-cancel
+    // commands are never forwarded because child command queues are never drained externally.
     public void Deliver(string targetId, string text)
     {
         if (targetId == _data.Id)
         {
-            AddUserMessage(text);
+            if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+            {
+                Interrupt();
+            }
+            else if (text.StartsWith("/"))
+            {
+                _commandQueue.Enqueue(text);
+                Signal();
+            }
+            else
+            {
+                AddUserMessage(text);
+            }
             return;
         }
+        if (!targetId.StartsWith(_data.Id + "_", StringComparison.Ordinal))
+            return;
+        if (text.StartsWith("/") && !text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
+            return;
         foreach (Session child in _children.Values)
             child.Deliver(targetId, text);
     }
 
-    // Queues input. Commands go to _commandQueue (or fire Interrupt for /cancel); text goes to
-    // _inputQueue and clears the interrupted-wait state. Thread-safe.
+    // Enqueues plain user text, clears the interrupted-wait state, and wakes the idle loop.
     public void AddUserMessage(string text)
     {
-        if (text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
-        {
-            Interrupt();
-        }
-        else if (text.StartsWith("/"))
-        {
-            _commandQueue.Enqueue(text);
-        }
-        else
-        {
-            _interruptedAndWaiting = false;
-            _inputQueue.Enqueue(text);
-        }
+        _interruptedAndWaiting = false;
+        _inputQueue.Enqueue(text);
+        Signal();
     }
+
+    // Signals the idle loop that there is work to do. Capped at 1 so rapid calls do not
+    // accumulate; the loop consumes exactly one permit per iteration and re-evaluates state.
+    private void Signal()
+    {
+        if (_inputSignal.CurrentCount == 0)
+            _inputSignal.Release();
+    }
+
+    // Returns a task that completes when input or a command arrives, or when ct is cancelled.
+    // Used by SessionRunner to break out of the inter-turn delay early.
+    public Task WaitForInputAsync(CancellationToken ct) => _inputSignal.WaitAsync(ct);
 
     // Drains the pending message queue into the bundle.
     // Call before saving a session that had AddUserMessage() called outside of a running turn.

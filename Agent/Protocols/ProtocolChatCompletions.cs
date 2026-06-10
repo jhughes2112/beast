@@ -224,7 +224,7 @@ public class ProtocolChatCompletions
             }
             catch (Exception ex)
             {
-                return ProtocolResult.Failed(ex.Message);
+                return ProtocolResult.Transient(ex.Message);
             }
 
             if (httpResponse.IsSuccessStatusCode)
@@ -232,20 +232,20 @@ public class ProtocolChatCompletions
                 JsonNode? root = JsonNode.Parse(responseBody);
                 if (root == null)
                 {
-                    return ProtocolResult.Failed("Empty response from API");
+                    return ProtocolResult.Transient("Empty response from API");
                 }
 
                 string? errMsg = root["error"]?["message"]?.GetValue<string>();
                 JsonArray? choices = root["choices"]?.AsArray();
                 if (choices == null || choices.Count == 0 || errMsg != null)
                 {
-                    return ProtocolResult.Failed(errMsg ?? "Empty response from API");
+                    return ProtocolResult.Transient(errMsg ?? "Empty response from API");
                 }
 
                 JsonNode? messageNode = choices[0]?["message"];
                 if (messageNode is not JsonObject messageObj)
                 {
-                    return ProtocolResult.Failed("Response missing message object");
+                    return ProtocolResult.Transient("Response missing message object");
                 }
 
                 (string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
@@ -433,7 +433,7 @@ public class ProtocolChatCompletions
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Failed(ex.Message);
+            return ProtocolResult.Transient(ex.Message);
         }
 
         if (!httpResponse.IsSuccessStatusCode)
@@ -466,113 +466,126 @@ public class ProtocolChatCompletions
         int streamedCharCount = 0;
         int livePromptTokens = 0;
 
-        using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
-        using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
+        try
         {
-            while (true)
+            using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
+            using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
             {
-                string? line = await reader.ReadLineAsync(cancellationToken);
-                if (line == null) break;
-                if (!line.StartsWith("data: ")) continue;
-
-                string data = line.Substring(6);
-                if (data == "[DONE]") break;
-
-                JsonNode? chunkNode = JsonNode.Parse(data);
-                if (chunkNode == null) continue;
-
-                JsonNode? usageNode = chunkNode["usage"];
-                if (usageNode != null)
+                while (true)
                 {
-                    usageNodeFinal = usageNode;
-                    int? promptTokens = usageNode["prompt_tokens"]?.GetValue<int?>();
-                    if (promptTokens.HasValue && promptTokens.Value > 0)
+                    string? line = await reader.ReadLineAsync(cancellationToken);
+                    if (line == null) break;
+                    if (!line.StartsWith("data: ")) continue;
+
+                    string data = line.Substring(6);
+                    if (data == "[DONE]") break;
+
+                    JsonNode? chunkNode = JsonNode.Parse(data);
+                    if (chunkNode == null) continue;
+
+                    JsonNode? usageNode = chunkNode["usage"];
+                    if (usageNode != null)
                     {
-                        livePromptTokens = promptTokens.Value;
-                    }
-                }
-
-                JsonArray? choices = chunkNode["choices"]?.AsArray();
-                if (choices == null || choices.Count == 0) continue;
-
-                JsonNode? delta = choices[0]?["delta"];
-                if (delta == null) continue;
-
-                string? fr = choices[0]?["finish_reason"]?.GetValue<string>();
-                if (fr != null) finishReason = fr;
-
-                string? reasoningDelta = delta["reasoning_content"]?.GetValue<string>()
-                                      ?? delta["reasoning"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(reasoningDelta))
-                {
-                    if (openStreamTag != StreamTag.Thinking)
-                    {
-                        if (openStreamTag != null)
+                        usageNodeFinal = usageNode;
+                        int? promptTokens = usageNode["prompt_tokens"]?.GetValue<int?>();
+                        if (promptTokens.HasValue && promptTokens.Value > 0)
                         {
-                            bundle.Canonical.OnStreamEnd(openStreamTag);
-                            bundle.Transport?.OnStreamEnd(openStreamTag);
+                            livePromptTokens = promptTokens.Value;
                         }
-                        bundle.Canonical.OnStreamStart(StreamTag.Thinking);
-                        bundle.Transport?.OnStreamStart(StreamTag.Thinking);
-                        openStreamTag = StreamTag.Thinking;
                     }
 
-                    reasoningBuilder.Append(reasoningDelta);
-                    bundle.Canonical.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
-                    bundle.Transport?.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
-                    streamedCharCount += reasoningDelta.Length;
-                    EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
-                }
+                    JsonArray? choices = chunkNode["choices"]?.AsArray();
+                    if (choices == null || choices.Count == 0) continue;
 
-                string? contentDelta = delta["content"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(contentDelta))
-                {
-                    if (openStreamTag != StreamTag.Assistant)
+                    JsonNode? delta = choices[0]?["delta"];
+                    if (delta == null) continue;
+
+                    string? fr = choices[0]?["finish_reason"]?.GetValue<string>();
+                    if (fr != null) finishReason = fr;
+
+                    string? reasoningDelta = delta["reasoning_content"]?.GetValue<string>()
+                                          ?? delta["reasoning"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(reasoningDelta))
                     {
-                        if (openStreamTag != null)
+                        if (openStreamTag != StreamTag.Thinking)
                         {
-                            bundle.Canonical.OnStreamEnd(openStreamTag);
-                            bundle.Transport?.OnStreamEnd(openStreamTag);
+                            if (openStreamTag != null)
+                            {
+                                bundle.Canonical.OnStreamEnd(openStreamTag);
+                                bundle.Transport?.OnStreamEnd(openStreamTag);
+                            }
+                            bundle.Canonical.OnStreamStart(StreamTag.Thinking);
+                            bundle.Transport?.OnStreamStart(StreamTag.Thinking);
+                            openStreamTag = StreamTag.Thinking;
                         }
-                        bundle.Canonical.OnStreamStart(StreamTag.Assistant);
-                        bundle.Transport?.OnStreamStart(StreamTag.Assistant);
-                        openStreamTag = StreamTag.Assistant;
+
+                        reasoningBuilder.Append(reasoningDelta);
+                        bundle.Canonical.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
+                        bundle.Transport?.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
+                        streamedCharCount += reasoningDelta.Length;
+                        EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
                     }
 
-                    contentBuilder.Append(contentDelta);
-                    bundle.Canonical.OnStreamChunk(StreamTag.Assistant, contentDelta);
-                    bundle.Transport?.OnStreamChunk(StreamTag.Assistant, contentDelta);
-                    streamedCharCount += contentDelta.Length;
-                    EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
-                }
-
-                JsonArray? tcDeltas = delta["tool_calls"]?.AsArray();
-                if (tcDeltas != null)
-                {
-                    foreach (JsonNode? tcNode in tcDeltas)
+                    string? contentDelta = delta["content"]?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(contentDelta))
                     {
-                        if (tcNode == null) continue;
-                        int index = tcNode["index"]?.GetValue<int>() ?? 0;
-
-                        while (toolCallAccumulators.Count <= index)
+                        if (openStreamTag != StreamTag.Assistant)
                         {
-                            toolCallAccumulators.Add(new StreamingToolCall());
+                            if (openStreamTag != null)
+                            {
+                                bundle.Canonical.OnStreamEnd(openStreamTag);
+                                bundle.Transport?.OnStreamEnd(openStreamTag);
+                            }
+                            bundle.Canonical.OnStreamStart(StreamTag.Assistant);
+                            bundle.Transport?.OnStreamStart(StreamTag.Assistant);
+                            openStreamTag = StreamTag.Assistant;
                         }
 
-                        StreamingToolCall acc = toolCallAccumulators[index];
-                        if (tcNode["id"] != null) acc.Id = tcNode["id"]!.GetValue<string>();
-                        if (tcNode["function"]?["name"] != null) acc.Name = tcNode["function"]!["name"]!.GetValue<string>();
-                        string? argDelta = tcNode["function"]?["arguments"]?.GetValue<string>();
-                        if (argDelta != null) acc.Arguments.Append(argDelta);
+                        contentBuilder.Append(contentDelta);
+                        bundle.Canonical.OnStreamChunk(StreamTag.Assistant, contentDelta);
+                        bundle.Transport?.OnStreamChunk(StreamTag.Assistant, contentDelta);
+                        streamedCharCount += contentDelta.Length;
+                        EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
+                    }
+
+                    JsonArray? tcDeltas = delta["tool_calls"]?.AsArray();
+                    if (tcDeltas != null)
+                    {
+                        foreach (JsonNode? tcNode in tcDeltas)
+                        {
+                            if (tcNode == null) continue;
+                            int index = tcNode["index"]?.GetValue<int>() ?? 0;
+
+                            while (toolCallAccumulators.Count <= index)
+                            {
+                                toolCallAccumulators.Add(new StreamingToolCall());
+                            }
+
+                            StreamingToolCall acc = toolCallAccumulators[index];
+                            if (tcNode["id"] != null) acc.Id = tcNode["id"]!.GetValue<string>();
+                            if (tcNode["function"]?["name"] != null) acc.Name = tcNode["function"]!["name"]!.GetValue<string>();
+                            string? argDelta = tcNode["function"]?["arguments"]?.GetValue<string>();
+                            if (argDelta != null) acc.Arguments.Append(argDelta);
+                        }
                     }
                 }
             }
         }
-
-        if (openStreamTag != null)
+        catch (OperationCanceledException)
         {
-            bundle.Canonical.OnStreamEnd(openStreamTag);
-            bundle.Transport?.OnStreamEnd(openStreamTag);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return ProtocolResult.Transient(ex.Message);
+        }
+        finally
+        {
+            if (openStreamTag != null)
+            {
+                bundle.Canonical.OnStreamEnd(openStreamTag);
+                bundle.Transport?.OnStreamEnd(openStreamTag);
+            }
         }
 
         string assistantText = contentBuilder.ToString();

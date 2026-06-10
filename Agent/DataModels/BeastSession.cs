@@ -56,7 +56,7 @@ public class BeastSession
     // Monotonically increasing counter used to assign unique child session IDs.
     // Session.AllocateChildId() increments this and returns "{Id}_{ChildCounter}".
     [JsonPropertyName("childCounter")]
-    public int ChildCounter { get; internal set; }
+    public int ChildCounter;
 
     [JsonConstructor]
     public BeastSession(

@@ -5,8 +5,8 @@ public enum ProtocolCallOutcome
 {
     Success,     // A well-formed assistant turn was received and written to session state.
     RateLimited, // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
-    Transient,   // A recoverable infrastructure error (network failure, timeout, 5xx). LlmService backs off briefly then retries.
-    Failed,      // An unrecoverable error (auth failure, bad request). LlmService marks the model down until the user resets.
+    Transient,   // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off briefly.
+    Failed,      // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
 }
 
 // Normalised payload returned on ProviderCallOutcome.Success.

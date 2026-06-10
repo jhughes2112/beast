@@ -192,13 +192,13 @@ public class ProtocolResponses
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Failed(ex.Message);
+            return ProtocolResult.Transient(ex.Message);
         }
 
         if (httpResponse.IsSuccessStatusCode)
         {
             JsonNode? root = JsonNode.Parse(responseBody);
-            if (root == null) return ProtocolResult.Failed("Empty response from Responses API");
+            if (root == null) return ProtocolResult.Transient("Empty response from Responses API");
 
             return CommitResponse(bundle, root, model);
         }
@@ -301,7 +301,7 @@ public class ProtocolResponses
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Failed(ex.Message);
+            return ProtocolResult.Transient(ex.Message);
         }
 
         if (!httpResponse.IsSuccessStatusCode)
@@ -329,86 +329,99 @@ public class ProtocolResponses
                 string? openStreamTag = null;
                 int liveInputTokens = 0;
 
-        using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
-        using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
+        try
         {
-            while (true)
+            using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
+            using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
             {
-                string? line = await reader.ReadLineAsync(cancellationToken);
-                if (line == null) break;
-                if (!line.StartsWith("data: ")) continue;
-
-                string data = line.Substring(6);
-                if (data == "[DONE]") break;
-
-                JsonNode? eventNode = JsonNode.Parse(data);
-                if (eventNode == null) continue;
-
-                string? eventType = eventNode["type"]?.GetValue<string>();
-
-                // Any event that carries a response.usage.input_tokens establishes the input
-                // baseline for live frames. response.created and response.in_progress provide
-                // this before the first text delta, so input no longer counts up from zero.
-                int? eventInputTokens = eventNode["response"]?["usage"]?["input_tokens"]?.GetValue<int?>();
-                if (eventInputTokens.HasValue && eventInputTokens.Value > 0)
+                while (true)
                 {
-                    liveInputTokens = eventInputTokens.Value;
-                }
+                    string? line = await reader.ReadLineAsync(cancellationToken);
+                    if (line == null) break;
+                    if (!line.StartsWith("data: ")) continue;
 
-                if (eventType == "response.output_text.delta")
-                {
-                    string? delta = eventNode["delta"]?.GetValue<string>();
-                    if (!string.IsNullOrEmpty(delta))
+                    string data = line.Substring(6);
+                    if (data == "[DONE]") break;
+
+                    JsonNode? eventNode = JsonNode.Parse(data);
+                    if (eventNode == null) continue;
+
+                    string? eventType = eventNode["type"]?.GetValue<string>();
+
+                    // Any event that carries a response.usage.input_tokens establishes the input
+                    // baseline for live frames. response.created and response.in_progress provide
+                    // this before the first text delta, so input no longer counts up from zero.
+                    int? eventInputTokens = eventNode["response"]?["usage"]?["input_tokens"]?.GetValue<int?>();
+                    if (eventInputTokens.HasValue && eventInputTokens.Value > 0)
                     {
-                        if (openStreamTag != StreamTag.Assistant)
-                        {
-                            if (openStreamTag != null)
-                            {
-                                bundle.Canonical.OnStreamEnd(openStreamTag);
-                                bundle.Transport?.OnStreamEnd(openStreamTag);
-                            }
-                            bundle.Canonical.OnStreamStart(StreamTag.Assistant);
-                            bundle.Transport?.OnStreamStart(StreamTag.Assistant);
-                            openStreamTag = StreamTag.Assistant;
-                        }
-                        bundle.Canonical.OnStreamChunk(StreamTag.Assistant, delta);
-                        bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
-                        EmitProgress(model, liveInputTokens, onProgress);
+                        liveInputTokens = eventInputTokens.Value;
                     }
-                }
-                else if (eventType == "response.reasoning_summary_text.delta")
-                {
-                    string? delta = eventNode["delta"]?.GetValue<string>();
-                    if (!string.IsNullOrEmpty(delta))
+
+                    if (eventType == "response.output_text.delta")
                     {
-                        if (openStreamTag != StreamTag.Thinking)
+                        string? delta = eventNode["delta"]?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(delta))
                         {
-                            if (openStreamTag != null)
+                            if (openStreamTag != StreamTag.Assistant)
                             {
-                                bundle.Canonical.OnStreamEnd(openStreamTag);
-                                bundle.Transport?.OnStreamEnd(openStreamTag);
+                                if (openStreamTag != null)
+                                {
+                                    bundle.Canonical.OnStreamEnd(openStreamTag);
+                                    bundle.Transport?.OnStreamEnd(openStreamTag);
+                                }
+                                bundle.Canonical.OnStreamStart(StreamTag.Assistant);
+                                bundle.Transport?.OnStreamStart(StreamTag.Assistant);
+                                openStreamTag = StreamTag.Assistant;
                             }
-                            bundle.Canonical.OnStreamStart(StreamTag.Thinking);
-                            bundle.Transport?.OnStreamStart(StreamTag.Thinking);
-                            openStreamTag = StreamTag.Thinking;
+                            bundle.Canonical.OnStreamChunk(StreamTag.Assistant, delta);
+                            bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
+                            EmitProgress(model, liveInputTokens, onProgress);
                         }
-                        bundle.Canonical.OnStreamChunk(StreamTag.Thinking, delta);
-                        bundle.Transport?.OnStreamChunk(StreamTag.Thinking, delta);
-                        EmitProgress(model, liveInputTokens, onProgress);
                     }
-                }
-                else if (eventType == "response.completed" || eventType == "response.done")
-                {
-                    finalResponseNode = eventNode["response"];
-                    break;
+                    else if (eventType == "response.reasoning_summary_text.delta")
+                    {
+                        string? delta = eventNode["delta"]?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(delta))
+                        {
+                            if (openStreamTag != StreamTag.Thinking)
+                            {
+                                if (openStreamTag != null)
+                                {
+                                    bundle.Canonical.OnStreamEnd(openStreamTag);
+                                    bundle.Transport?.OnStreamEnd(openStreamTag);
+                                }
+                                bundle.Canonical.OnStreamStart(StreamTag.Thinking);
+                                bundle.Transport?.OnStreamStart(StreamTag.Thinking);
+                                openStreamTag = StreamTag.Thinking;
+                            }
+                            bundle.Canonical.OnStreamChunk(StreamTag.Thinking, delta);
+                            bundle.Transport?.OnStreamChunk(StreamTag.Thinking, delta);
+                            EmitProgress(model, liveInputTokens, onProgress);
+                        }
+                    }
+                    else if (eventType == "response.completed" || eventType == "response.done")
+                    {
+                        finalResponseNode = eventNode["response"];
+                        break;
+                    }
                 }
             }
         }
-
-        if (openStreamTag != null)
+        catch (OperationCanceledException)
         {
-            bundle.Canonical.OnStreamEnd(openStreamTag);
-            bundle.Transport?.OnStreamEnd(openStreamTag);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return ProtocolResult.Transient(ex.Message);
+        }
+        finally
+        {
+            if (openStreamTag != null)
+            {
+                bundle.Canonical.OnStreamEnd(openStreamTag);
+                bundle.Transport?.OnStreamEnd(openStreamTag);
+            }
         }
 
         if (finalResponseNode != null)
@@ -416,7 +429,7 @@ public class ProtocolResponses
             return CommitResponse(bundle, finalResponseNode, model);
         }
 
-        return ProtocolResult.Failed("Stream ended without a response.completed event");
+        return ProtocolResult.Transient("Stream ended without a response.completed event");
     }
 
     // The Responses SSE stream does not surface usage on text deltas, but response.created and
@@ -443,7 +456,7 @@ public class ProtocolResponses
         if (output == null || output.Count == 0)
         {
             string? errMsg = responseRoot["error"]?["message"]?.GetValue<string>();
-            return ProtocolResult.Failed(errMsg ?? "Empty response from Responses API");
+            return ProtocolResult.Transient(errMsg ?? "Empty response from Responses API");
         }
 
         StringBuilder assistantTextBuilder = new StringBuilder();
