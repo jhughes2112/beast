@@ -25,6 +25,15 @@ public class SessionRunner
     // (session switch, role transition). Accessed by CompactAsync after RunAsync returns.
     private Session _currentSession = null!;
 
+    // Per-runner LlmService — owns a fresh ProtocolProxy so conversation state is never shared
+    // with other sessions. Replaced when the model or role changes, or after a permanent failure.
+    private LlmService? _service;
+
+    // Keyed by "agent:{roleName}" or "sub:{roleName}". Populated lazily, cleared on /reload.
+    // Safe because ToolFactory.BuildSubagent captures RunSubSessionAsync which is bound to this
+    // instance, so the delegate stays valid for the runner's lifetime.
+    private readonly Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
+
     private bool _wantsCompact = false;
     private string _clientSessionId = string.Empty;
     private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
@@ -57,9 +66,7 @@ public class SessionRunner
     {
         Session session = _currentSession;
 
-        Role? initialRole = _roleService.GetRole(session.Role);
-        LlmService? initialService = _registry.GetServiceForRole(initialRole, session.Model, session.ContextLength + _settings.Settings.CompactionReserveTokens);
-        SendStats(session, initialService?.Model.Config.ContextWindow ?? 0);
+        SendStats(session, _service?.Model.Config.ContextWindow ?? 0);
 
         _cachedSessions = SessionService.List();
         string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
@@ -73,9 +80,10 @@ public class SessionRunner
                 session = await DrainInputAsync(session);
                 _currentSession = session;
 
-                // 2. Resolve role and service after drain (commands may have changed role or model).
+                // 2. Resolve role and refresh service after drain (commands may have changed role or model).
                 Role? role = _roleService.GetRole(session.Role);
-                LlmService? service = _registry.GetServiceForRole(role, session.Model, session.ContextLength + _settings.Settings.CompactionReserveTokens);
+                RefreshService(role, session);
+                LlmService? service = _service;
 
                 if (service != null)
                 {
@@ -96,12 +104,6 @@ public class SessionRunner
                         _transport.Completions(session.Id, currentCandidates);
                     }
 
-                    if (service.Model.ConfigId != session.Model)
-                    {
-                        session.UpdateModel(service.Model.ConfigId);
-                        SendStats(session, service.Model.Config.ContextWindow);
-                    }
-
                     if (_wantsCompact)
                     {
                         _wantsCompact = false;
@@ -110,6 +112,7 @@ public class SessionRunner
                             break;
                         session = compacted;
                         _currentSession = compacted;
+                        _service = null;  // compacted session starts fresh
                     }
                 }
 
@@ -121,17 +124,7 @@ public class SessionRunner
                     session.SendBusy();
                     try
                     {
-                        bool hasToolsRole = _roleService.GetRole("Tools") != null;
-                        Dictionary<string, Tool> allTools = (!session.IsSubagent && hasToolsRole)
-                            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync)
-                            : ToolFactory.Build(_settings.Settings.WebSearch);
-                        List<Tool> toolList = new List<Tool>();
-                        foreach (string toolName in role.Tools)
-                        {
-                            if (allTools.TryGetValue(toolName, out Tool? tool))
-                                toolList.Add(tool);
-                        }
-                        Tool[] tools = toolList.ToArray();
+                        Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
                         LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
                         SendStats(session, service.Model.Config.ContextWindow);
 
@@ -145,11 +138,12 @@ public class SessionRunner
                         }
                         else if (result.ExitReason == LlmExitReason.Completed)
                         {
-                            Session? advanced = await AdvanceRoleAsync(session, service, role, _cancellationTokenSource.Token);
+                            Session? advanced = await AdvanceRoleAsync(session, role, _cancellationTokenSource.Token);
                             if (advanced != null)
                             {
                                 session = advanced;
                                 _currentSession = session;
+                                _service = null;  // new role may use a different model
                             }
                         }
                         // Interrupted: _interruptedAndWaiting is set in EndTurn;
@@ -199,18 +193,17 @@ public class SessionRunner
     private async Task<Session?> CompactAsync(CancellationToken ct)
     {
         Role? role = _roleService.GetRole(_currentSession.Role);
-        LlmService? service = role != null ? _registry.GetServiceForRole(role, _currentSession.Model, 0) : null;
 
-        if (role == null || service == null || string.IsNullOrEmpty(role.SummaryPrompt))
+        if (role == null || string.IsNullOrEmpty(role.SummaryPrompt))
         {
-            _transport.Status(_currentSession.Id, "[Compaction] No service or summary prompt available.");
+            _transport.Status(_currentSession.Id, "[Compaction] No role or summary prompt available.");
             return null;
         }
 
         IReadOnlyList<CanonicalMessage> tailExchanges = ExtractTailExchanges(_currentSession.Data.Messages, 2);
 
         _transport.Status(_currentSession.Id, "[Compaction] Started.");
-        string? summary = await SummarizeAsync(_currentSession, service, role.SummaryPrompt, Array.Empty<Tool>(), ct);
+        string? summary = await SummarizeAsync(_currentSession, role.SummaryPrompt, Array.Empty<Tool>(), ct);
 
         if (string.IsNullOrWhiteSpace(summary))
         {
@@ -258,9 +251,9 @@ public class SessionRunner
         }
         Role? role = _roleService.GetRole(roleName);
         string systemPrompt = role?.SystemPrompt ?? string.Empty;
-        LlmService? service = role != null ? _registry.GetServiceForRole(role, string.Empty, 0) : null;
-        string model = service?.Model.ConfigId ?? string.Empty;
-        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, model, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral, 0);
+        LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
+        string modelId = model?.ConfigId ?? string.Empty;
+        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral, 0);
         return new Session(fresh, systemPrompt, _transport, false);
     }
 
@@ -300,6 +293,7 @@ public class SessionRunner
                         if (!session.Ephemeral)
                             SessionService.Save(session.Data);
                         session = CreateFreshSession(session.Role, false);
+                        _service = null;
                         _cachedSessions = SessionService.List();
                         _transport.Status(session.Id, "New session started.");
                     }
@@ -308,6 +302,7 @@ public class SessionRunner
                         if (!session.Ephemeral)
                             SessionService.Save(session.Data);
                         session = CreateFreshSession(session.Role, true);
+                        _service = null;
                         _cachedSessions = SessionService.List();
                         _transport.Status(session.Id, "Ephemeral session started (not saved).");
                     }
@@ -329,6 +324,7 @@ public class SessionRunner
                             if (!session.Ephemeral)
                                 SessionService.Save(session.Data);
                             session = new Session(loaded, string.Empty, _transport, false);
+                            _service = null;
                             _cachedSessions = SessionService.List();
                             _transport.Status(session.Id, "Switched to session: " + loaded.DisplayName);
                         }
@@ -344,14 +340,20 @@ public class SessionRunner
                     _transport.Status(session.Id, "Session cleared.");
                     break;
                 case "reload":
-                    ReloadRegistry();
+                    _roleService.Reload();
+                    _settings.LoadSettings();
+                    _registry.LoadFromConfigs(_settings, _roleService);
+                    await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
                     _registry.ResetAllAvailability();
+                    _service = null;
+                    _toolsByRole.Clear();
                     _transport.Status(session.Id, "Config files reloaded.");
                     break;
                 case "role":
                     if (args != null)
                     {
                         session.UpdateRole(args);
+                        _service = null;  // new role may use a different model
                         _transport.Status(session.Id, $"Role set to {args}");
                     }
                     break;
@@ -359,14 +361,14 @@ public class SessionRunner
                     if (args != null)
                     {
                         Role? modelRole = _roleService.GetRole(session.Role);
-                        LlmService? modelService = modelRole != null ? _registry.GetServiceForRole(modelRole, args, session.ContextLength + _settings.Settings.CompactionReserveTokens) : null;
-                        if (modelService == null)
+                        LlmModel? targetModel = modelRole != null ? _registry.GetModelForRole(modelRole, args, 0) : null;
+                        if (targetModel == null)
                             _transport.Error(session.Id, $"Unknown model: {args}");
                         else
                         {
                             session.UpdateModel(args);
                             _registry.ResetAvailability(args);
-                            session.InvalidateProtocol();
+                            _service = null;  // force fresh service with new model next turn
                             _transport.Status(session.Id, $"Model set to {args}");
                         }
                     }
@@ -396,8 +398,8 @@ public class SessionRunner
         };
 
         Role? activeRole = _roleService.GetRole(session.Role);
-        LlmService? activeService = activeRole != null
-            ? _registry.GetServiceForRole(activeRole, session.Model, session.ContextLength + _settings.Settings.CompactionReserveTokens)
+        LlmModel? activeModel = activeRole != null
+            ? _registry.GetModelForRole(activeRole, session.Model, session.ContextLength + _settings.Settings.CompactionReserveTokens)
             : null;
 
         string currentRoleName = activeRole != null ? activeRole.Name : session.Role;
@@ -405,7 +407,7 @@ public class SessionRunner
 
         if (activeRole != null)
         {
-            string currentModelId = activeService != null ? activeService.Model.ConfigId : session.Model + " (not available)";
+            string currentModelId = activeModel != null ? activeModel.ConfigId : session.Model + " (not available)";
             List<string> enabledModels = _registry.GetEnabledModelsForRole(activeRole);
             AddCurrentFirst(candidates, "/model ", currentModelId, enabledModels);
         }
@@ -460,7 +462,7 @@ public class SessionRunner
     //      Retries up to MaxEvalAttempts times if the model fails to call the tool.
     //   3. Maps the selected truth label to the next role name.
     //      Empty next-role = stop and return to user; non-empty = start fresh session.
-    private async Task<Session?> AdvanceRoleAsync(Session session, LlmService service, Role currentRole, CancellationToken ct)
+    private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths.Count == 0)
             return null;
@@ -470,7 +472,7 @@ public class SessionRunner
         string summaryPrompt = currentRole.SummaryPrompt;
 
         _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
-        string? summary = await SummarizeAsync(session, service, summaryPrompt, roleTools, ct);
+        string? summary = await SummarizeAsync(session, summaryPrompt, roleTools, ct);
         if (string.IsNullOrEmpty(summary))
         {
             _transport.Error(session.Id, "[Role] Summary failed; staying in current role.");
@@ -488,11 +490,20 @@ public class SessionRunner
             sb.AppendLine($"- {truth}");
 
         // 3. Run the evaluation on the current model with only the Answer tool.
+        //    Uses a fresh service so the eval session's ProtocolProxy is isolated from the parent.
         const int MaxEvalAttempts = 3;
         string? selectedTruth = null;
         Tool answerTool = BuildAnswerTool(currentRole.Truths.Keys, t => selectedTruth = t);
 
-        BeastSession evalData = new BeastSession(session.AllocateChildId(), string.Empty, service.Model.ConfigId, currentRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
+        Role? sessionRole = _roleService.GetRole(session.Role);
+        LlmService? evalService = _registry.CreateService(sessionRole, session.Model, 0);
+        if (evalService == null)
+        {
+            _transport.Error(session.Id, "[Role] No service available for evaluation; staying in current role.");
+            return null;
+        }
+
+        BeastSession evalData = new BeastSession(session.AllocateChildId(), string.Empty, evalService.Model.ConfigId, currentRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
         Session evalSession = new Session(evalData, currentRole.SystemPrompt, _transport, true);
         evalSession.AddUserMessage(sb.ToString());
 
@@ -500,7 +511,7 @@ public class SessionRunner
         session.AddChild(evalSession);
         for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
         {
-            LlmResult evalResult = await RunTurnAsync(evalSession, service, new Tool[] { answerTool }, 0, ct);
+            LlmResult evalResult = await RunTurnAsync(evalSession, evalService, new Tool[] { answerTool }, 0, ct);
 
             if (evalResult.ExitReason != LlmExitReason.Completed)
                 break;
@@ -621,7 +632,7 @@ public class SessionRunner
         if (toolsRole == null)
             return null;
 
-        LlmService? service = _registry.GetServiceForRole(toolsRole, string.Empty, 0);
+        LlmService? service = _registry.CreateService(toolsRole, string.Empty, 0);
         if (service == null)
             return null;
 
@@ -688,9 +699,15 @@ public class SessionRunner
     }
 
     // Runs a summarization prompt in a temporary fork of the session and returns the assistant text.
-    // The fork is discarded after the call; the original session is never modified.
-    private async Task<string?> SummarizeAsync(Session session, LlmService service, string prompt, Tool[] tools, CancellationToken appToken)
+    // Creates its own fresh LlmService so the fork's ProtocolProxy is never shared with the
+    // parent session. The fork is discarded after the call; the original session is untouched.
+    private async Task<string?> SummarizeAsync(Session session, string prompt, Tool[] tools, CancellationToken appToken)
     {
+        Role? role = _roleService.GetRole(session.Role);
+        LlmService? service = _registry.CreateService(role, session.Model, 0);
+        if (service == null)
+            return null;
+
         Session temp = session.Fork($"{session.Id}_sum", string.Empty, true);
         temp.AddUserMessage(prompt);
         session.AddChild(temp);
@@ -702,11 +719,46 @@ public class SessionRunner
 
     // ---- Helpers ----
 
-    private void ReloadRegistry()
+    // Returns the cached Tool[] for the role+mode combination, building it on the first call.
+    // The cache is keyed by "agent:{roleName}" or "sub:{roleName}" and cleared on /reload so
+    // config changes (new tools, different webSearch settings) take effect immediately.
+    private Tool[] GetOrBuildTools(Role role, bool isSubagent)
     {
-        _roleService.Reload();
-        _settings.LoadSettings();
-        _registry.LoadFromConfigs(_settings, _roleService);
+        string key = isSubagent ? $"sub:{role.Name}" : $"agent:{role.Name}";
+        if (_toolsByRole.TryGetValue(key, out Tool[]? cached))
+            return cached;
+
+        bool hasToolsRole = _roleService.GetRole("Tools") != null;
+        Dictionary<string, Tool> allTools = (!isSubagent && hasToolsRole)
+            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync)
+            : ToolFactory.Build(_settings.Settings.WebSearch);
+
+        List<Tool> toolList = new List<Tool>();
+        foreach (string toolName in role.Tools)
+        {
+            if (allTools.TryGetValue(toolName, out Tool? tool))
+                toolList.Add(tool);
+        }
+        Tool[] tools = toolList.ToArray();
+        _toolsByRole[key] = tools;
+        return tools;
+    }
+
+    // Replaces _service when the model or role has changed, or when the service has permanently
+    // failed. Also updates session.Model if the registry selected a different model as fallback.
+    private void RefreshService(Role? role, Session session)
+    {
+        if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model)
+            return;
+
+        int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
+        _service = _registry.CreateService(role, session.Model, minCtx);
+
+        if (_service != null && _service.Model.ConfigId != session.Model)
+        {
+            session.UpdateModel(_service.Model.ConfigId);
+            SendStats(session, _service.Model.Config.ContextWindow);
+        }
     }
 
     // Returns the last `count` user-exchange groups from the canonical message list, oldest-first.

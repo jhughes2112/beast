@@ -34,35 +34,26 @@ public class LlmResult
 // dispatching tools, handling XML-tool-call fallback, and surfacing terminal results.
 public class LlmService
 {
-    private ProtocolProxy _handler = null!;  // set in UpdateModel during the constructor
-    private LlmModel _model;
-    private DateTimeOffset _availableAt = DateTimeOffset.MinValue;
+    private readonly ProtocolProxy _handler;
+    private readonly LlmModel _model;
+    private readonly ModelAvailability _availability;
+
     public LlmModel Model => _model;
-    public bool IsDown => _availableAt == DateTimeOffset.MaxValue;
+    public bool IsDown => _availability.IsDown;
 
-    public LlmService(LlmModel model)
+    // detectedProtocol is resolved by LlmRegistry.ProbeEndpointsAsync before any session starts.
+    // availability is shared across all service instances for the same model so rate-limit and
+    // down state set by one session are visible to others picking that model next.
+    public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability)
     {
         _model = model;
-        UpdateModel(model);
-    }
-
-    public void UpdateModel(LlmModel model)
-    {
-        _model = model;
-        _handler = new ProtocolProxy(model);
-    }
-
-    // Clears any down-timer so this service becomes a candidate again.
-    // Call when the user explicitly indicates intent to retry (new input, /reload, /model, /clear).
-    public void ResetAvailability()
-    {
-        _availableAt = DateTimeOffset.MinValue;
+        _availability = availability;
+        _handler = new ProtocolProxy(model, detectedProtocol);
     }
 
     public async Task<LlmResult> RunToCompletionAsync(Session conversation, ListenerBundle bundle, Tool[] tools, int reserveTokens, ITransportServer transport, CancellationToken cancellationToken)
     {
-        // Waits until the backoff timer expires. Returns false immediately if permanently down.
-        if (_availableAt == DateTimeOffset.MaxValue)
+        if (_availability.IsDown)
         {
             return new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is permanently down");
         }
@@ -88,7 +79,7 @@ public class LlmService
             {
                 if (rateLimitRetries <= kMaxRateLimitRetries)
                 {
-                    TimeSpan delay = _availableAt - DateTimeOffset.UtcNow;
+                    TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
                     if (delay > TimeSpan.Zero)
                     {
                         if (rateLimitRetries>0)
@@ -100,7 +91,7 @@ public class LlmService
                 }
                 else
                 {
-                    finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availableAt:u}");
+                    finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availability.AvailableAt:u}");
                     break;
                 }
 
@@ -176,18 +167,18 @@ public class LlmService
                 else if (callResult.Outcome == ProtocolCallOutcome.RateLimited)
                 {
                     rateLimitRetries++;
-                    _availableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
+                    _availability.AvailableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
                     // loop and retry
                 }
                 else if (callResult.Outcome == ProtocolCallOutcome.Transient)
                 {
-                    _availableAt = DateTimeOffset.UtcNow.AddSeconds(30);
+                    _availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(30);
                     finalResult = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
                     break;
                 }
                 else
                 {
-                    _availableAt = DateTimeOffset.MaxValue;
+                    _availability.AvailableAt = DateTimeOffset.MaxValue;
                     finalResult = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
                     break;
                 }

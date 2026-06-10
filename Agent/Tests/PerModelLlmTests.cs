@@ -48,7 +48,7 @@ public static class PerModelLlmTests
         LlmService? service = null;
         try
         {
-            service = registry.GetServiceById(modelId, 0);
+            service = registry.CreateServiceById(modelId, 0);
             if (service == null)
             {
                 ctx.Log($"        SKIP: model '{modelId}' service not found");

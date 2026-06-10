@@ -6,6 +6,15 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
+// The wire protocol spoken by an endpoint — detected once per endpoint and cached in LlmRegistry.
+public enum DetectedProtocol
+{
+    Unknown,
+    Anthropic,
+    Responses,
+    ChatCompletions
+}
+
 public enum ProbeOutcome
 {
     Supported,    // The endpoint speaks this protocol.
@@ -74,6 +83,51 @@ public class ProtocolProxy
         _detected = DetectedProtocol.Unknown;
     }
 
+    // Create with a known protocol — skips the per-turn probe in ExecuteAsync.
+    // Always prefer this constructor; use the no-protocol overload only as a fallback.
+    public ProtocolProxy(LlmModel model, DetectedProtocol detected)
+    {
+        _model = model;
+        _detected = detected;
+    }
+
+    // Probes an endpoint and returns which protocol it speaks, plus the effective endpoint URL
+    // (which may differ from the input when the docker-internal→localhost fallback fires).
+    public static async Task<(DetectedProtocol detected, string effectiveEndpoint)> ProbeEndpointAsync(
+        string apiKey, string endpoint, CancellationToken ct = default)
+    {
+        ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(apiKey, endpoint);
+        if (anthropic.Outcome == ProbeOutcome.Supported)
+            return (DetectedProtocol.Anthropic, endpoint);
+
+        ProbeResult responses = await ProtocolResponses.ProbeAsync(apiKey, endpoint);
+        if (responses.Outcome == ProbeOutcome.Supported)
+            return (DetectedProtocol.Responses, endpoint);
+
+        ProbeResult chat = await ProtocolChatCompletions.ProbeAsync(apiKey, endpoint);
+        if (chat.Outcome == ProbeOutcome.Supported)
+            return (DetectedProtocol.ChatCompletions, endpoint);
+
+        if (!endpoint.Contains("host.docker.internal", StringComparison.OrdinalIgnoreCase))
+            return (DetectedProtocol.Unknown, endpoint);
+
+        string fallback = endpoint.Replace("host.docker.internal", "localhost", StringComparison.OrdinalIgnoreCase);
+
+        ProbeResult anthropicFb = await ProtocolAnthropic.ProbeAsync(apiKey, fallback);
+        if (anthropicFb.Outcome == ProbeOutcome.Supported)
+            return (DetectedProtocol.Anthropic, fallback);
+
+        ProbeResult responsesFb = await ProtocolResponses.ProbeAsync(apiKey, fallback);
+        if (responsesFb.Outcome == ProbeOutcome.Supported)
+            return (DetectedProtocol.Responses, fallback);
+
+        ProbeResult chatFb = await ProtocolChatCompletions.ProbeAsync(apiKey, fallback);
+        if (chatFb.Outcome == ProbeOutcome.Supported)
+            return (DetectedProtocol.ChatCompletions, fallback);
+
+        return (DetectedProtocol.Unknown, endpoint);
+    }
+
     // Resets detection and discards the protocol instance so the next ExecuteAsync re-probes
     // and rehydrates from canonical. Called by ListenerBundle.InvalidateProtocol().
     public void Invalidate()
@@ -129,57 +183,10 @@ public class ProtocolProxy
 
         if (_detected == DetectedProtocol.Unknown)
         {
-            ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, endpoint);
-            if (anthropic.Outcome == ProbeOutcome.Supported)
-            {
-                _detected = DetectedProtocol.Anthropic;
-            }
-            else
-            {
-                ProbeResult responses = await ProtocolResponses.ProbeAsync(_model.ApiKey, endpoint);
-                if (responses.Outcome == ProbeOutcome.Supported)
-                {
-                    _detected = DetectedProtocol.Responses;
-                }
-                else
-                {
-                    ProbeResult chat = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, endpoint);
-                    if (chat.Outcome == ProbeOutcome.Supported)
-                    {
-                        _detected = DetectedProtocol.ChatCompletions;
-                    }
-                    else if (endpoint.Contains("host.docker.internal", System.StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Fallback for debug mode: retry with localhost instead of host.docker.internal
-                        string fallbackEndpoint = endpoint.Replace("host.docker.internal", "localhost", System.StringComparison.OrdinalIgnoreCase);
-
-                        ProbeResult anthropicFallback = await ProtocolAnthropic.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                        if (anthropicFallback.Outcome == ProbeOutcome.Supported)
-                        {
-                            _detected = DetectedProtocol.Anthropic;
-                            _model = new LlmModel(_model.ConfigId, fallbackEndpoint, _model.ApiKey, _model.Extras, _model.Config);
-                        }
-                        else
-                        {
-                            ProbeResult responsesFallback = await ProtocolResponses.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                            if (responsesFallback.Outcome == ProbeOutcome.Supported)
-                            {
-                                _detected = DetectedProtocol.Responses;
-                                _model = new LlmModel(_model.ConfigId, fallbackEndpoint, _model.ApiKey, _model.Extras, _model.Config);
-                            }
-                            else
-                            {
-                                ProbeResult chatFallback = await ProtocolChatCompletions.ProbeAsync(_model.ApiKey, fallbackEndpoint);
-                                if (chatFallback.Outcome == ProbeOutcome.Supported)
-                                {
-                                    _detected = DetectedProtocol.ChatCompletions;
-                                    _model = new LlmModel(_model.ConfigId, fallbackEndpoint, _model.ApiKey, _model.Extras, _model.Config);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            (DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(_model.ApiKey, endpoint, cancellationToken);
+            _detected = probed;
+            if (effectiveEndpoint != endpoint)
+                _model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Config);
         }
 
         IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
@@ -233,14 +240,6 @@ public class ProtocolProxy
     }
 
     // The protocol an endpoint speaks, resolved once by probing and then cached.
-    private enum DetectedProtocol
-    {
-        Unknown,
-        Anthropic,
-        Responses,
-        ChatCompletions
-    }
-
     // Returns true if a JsonNode represents an "empty" extra value that should be skipped.
     // Null nodes and empty-string JsonValues are skipped so settings files can contain
     // self-documenting placeholder keys. Non-string nodes (arrays, objects, numbers) are

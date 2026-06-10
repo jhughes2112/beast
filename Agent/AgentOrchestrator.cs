@@ -36,6 +36,7 @@ public class AgentOrchestrator
         _roleService.Reload();
         _settings.LoadSettings();
         _registry.LoadFromConfigs(_settings, _roleService);
+        await _registry.ProbeEndpointsAsync(ct);
 
         SessionRunner runner = new SessionRunner(LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource);
 
@@ -75,9 +76,9 @@ public class AgentOrchestrator
         }
         Role? role = _roleService.GetRole(roleName);
         string systemPrompt = role?.SystemPrompt ?? string.Empty;
-        LlmService? service = role != null ? _registry.GetServiceForRole(role, string.Empty, 0) : null;
-        string model = service?.Model.ConfigId ?? string.Empty;
-        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, model, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, false, 0);
+        LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
+        string modelId = model?.ConfigId ?? string.Empty;
+        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, false, 0);
         return new Session(fresh, systemPrompt, _transport, false);
     }
 
