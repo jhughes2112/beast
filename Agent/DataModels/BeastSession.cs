@@ -55,6 +55,10 @@ public class BeastSession
 
     // Monotonically increasing counter used to assign unique child session IDs.
     // Session.AllocateChildId() increments this and returns "{Id}_{ChildCounter}".
+    // A field (not a property) so Interlocked.Increment can take it by ref; [JsonInclude] is
+    // required because System.Text.Json ignores fields by default, which would both skip it
+    // on Save and make the [JsonConstructor] childCounter parameter fail to bind on Load.
+    [JsonInclude]
     [JsonPropertyName("childCounter")]
     public int ChildCounter;
 

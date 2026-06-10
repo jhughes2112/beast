@@ -713,6 +713,7 @@ public class ProtocolChatCompletions
         else
         {
             cost += (freshPromptTokens / 1_000_000m) * model.Config.Cost.Input;
+            cost += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
             cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
         }
 

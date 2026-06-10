@@ -423,7 +423,7 @@ public class ProtocolAnthropic
         bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
         bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
-        int totalInputTokens = 0;
+        int freshInputTokens = 0;
         int cacheCreationTokens = 0;
         int cacheReadTokens = 0;
         int outputTokens = 0;
@@ -433,7 +433,7 @@ public class ProtocolAnthropic
         {
             if (res.StreamStartMessage?.Usage != null)
             {
-                totalInputTokens = res.StreamStartMessage.Usage.InputTokens;
+                freshInputTokens = res.StreamStartMessage.Usage.InputTokens;
                 cacheCreationTokens = res.StreamStartMessage.Usage.CacheCreationInputTokens;
                 cacheReadTokens = res.StreamStartMessage.Usage.CacheReadInputTokens;
             }
@@ -447,8 +447,8 @@ public class ProtocolAnthropic
             }
         }
 
-        int cachedTokens = cacheCreationTokens + cacheReadTokens;
-        int freshInputTokens = totalInputTokens - cachedTokens;
+        // Anthropic's input_tokens already EXCLUDES cache reads/writes; the full context is the sum.
+        int totalInputTokens = freshInputTokens + cacheCreationTokens + cacheReadTokens;
 
         TokenUsageInfo usage = new TokenUsageInfo
         {
@@ -456,7 +456,7 @@ public class ProtocolAnthropic
             CompletionTokens = outputTokens
         };
 
-        decimal cost = ResolveCost(freshInputTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
+        decimal cost = ResolveCost(freshInputTokens, cacheCreationTokens, cacheReadTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
 
@@ -480,7 +480,7 @@ public class ProtocolAnthropic
         bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
         bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
-        int totalInputTokens = response.Usage?.InputTokens ?? 0;
+        int freshInputTokens = response.Usage?.InputTokens ?? 0;
         int cacheCreationTokens = 0;
         int cacheReadTokens = 0;
         int outputTokens = response.Usage?.OutputTokens ?? 0;
@@ -491,8 +491,8 @@ public class ProtocolAnthropic
             cacheReadTokens = response.Usage.CacheReadInputTokens;
         }
 
-        int cachedTokens = cacheCreationTokens + cacheReadTokens;
-        int freshInputTokens = totalInputTokens - cachedTokens;
+        // Anthropic's input_tokens already EXCLUDES cache reads/writes; the full context is the sum.
+        int totalInputTokens = freshInputTokens + cacheCreationTokens + cacheReadTokens;
 
         TokenUsageInfo usage = new TokenUsageInfo
         {
@@ -500,7 +500,7 @@ public class ProtocolAnthropic
             CompletionTokens = outputTokens
         };
 
-        decimal cost = ResolveCost(freshInputTokens, outputTokens, model, response);
+        decimal cost = ResolveCost(freshInputTokens, cacheCreationTokens, cacheReadTokens, outputTokens, model, response);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : (response.StopReason ?? "end_turn");
 
@@ -511,12 +511,14 @@ public class ProtocolAnthropic
         return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + outputTokens));
     }
 
-    // Computes cost from the model's configured per-million pricing. When that yields zero
-    // (model pricing not configured), falls back to the SDK's own cost calculation derived
-    // from the response usage and model id.
-    private static decimal ResolveCost(int inputTokens, int outputTokens, LlmModel model, MessageResponse? response)
+    // Computes cost from the model's configured per-million pricing, billing cache writes and
+    // reads at their own rates. When that yields zero (model pricing not configured), falls back
+    // to the SDK's own cost calculation derived from the response usage and model id.
+    private static decimal ResolveCost(int inputTokens, int cacheWriteTokens, int cacheReadTokens, int outputTokens, LlmModel model, MessageResponse? response)
     {
         decimal cost = (inputTokens / 1_000_000m) * model.Config.Cost.Input
+                     + (cacheWriteTokens / 1_000_000m) * model.Config.Cost.CacheWrite
+                     + (cacheReadTokens / 1_000_000m) * model.Config.Cost.CacheRead
                      + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
 
         if (cost == 0m && response != null)

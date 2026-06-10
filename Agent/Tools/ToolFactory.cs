@@ -48,8 +48,9 @@ public static class ToolFactory
             async (args, ct, transport, sessionId) =>
             {
                 string command = Str(args, "command");
+                string workingDir = Str(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return await ShellTools.BashAsync(command, timeoutSeconds, ct);
+                return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
             });
 
         Register(tools, "read_file",
@@ -143,8 +144,9 @@ public static class ToolFactory
             async (args, ct, transport, sessionId) =>
             {
                 string command = Str(args, "command");
+                string workingDir = Str(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return await ShellTools.BashAsync(command, timeoutSeconds, ct);
+                return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
             },
             runSubSession);
 

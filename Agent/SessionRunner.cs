@@ -113,6 +113,9 @@ public class SessionRunner
                         session = compacted;
                         _currentSession = compacted;
                         _service = null;  // compacted session starts fresh
+                        // Drop the local too: its protocol still holds the old session's conversation.
+                        // The next loop iteration rebuilds a fresh service for the compacted session.
+                        service = null;
                     }
                 }
 
@@ -162,6 +165,9 @@ public class SessionRunner
                         break;
                     session = compacted;
                     _currentSession = compacted;
+                    // The old service's protocol still holds the pre-compaction conversation;
+                    // force a fresh service so the compacted session rehydrates from its own canonical.
+                    _service = null;
                 }
 
                 if (role != null)
@@ -171,10 +177,15 @@ public class SessionRunner
                         _transport.Status(session.Id, waitMs == long.MaxValue
                             ? "No Models Available"
                             : $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
-                    int delayMs = waitMs == long.MaxValue ? 30000 : Math.Clamp((int)waitMs, 10, 30000);
-                    await Task.WhenAny(
-                        Task.Delay(delayMs, _cancellationTokenSource.Token),
-                        session.WaitForInputAsync(_cancellationTokenSource.Token));
+                    // Floor of 250ms keeps the idle loop from spinning; input still wakes it
+                    // instantly via the session signal. The wait CTS is cancelled afterwards so
+                    // a losing WaitForInputAsync waiter is removed instead of accumulating.
+                    int delayMs = waitMs == long.MaxValue ? 30000 : Math.Clamp((int)waitMs, 250, 30000);
+                    using CancellationTokenSource waitCts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token);
+                    Task waitTask = session.WaitForInputAsync(waitCts.Token);
+                    await Task.WhenAny(Task.Delay(delayMs, _cancellationTokenSource.Token), waitTask);
+                    waitCts.Cancel();
+                    try { await waitTask; } catch (OperationCanceledException) { }
                 }
             }
         }

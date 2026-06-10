@@ -187,17 +187,23 @@ public class LlmRegistry
 		return enabled;
 	}
 
-	// Returns 0 if any model in the role has a non-permanently-down availability timer.
-	// Returns long.MaxValue only when every model in the role is permanently down.
+	// Returns 0 if any model in the role is available right now, the smallest remaining
+	// rate-limit wait when all live models are backing off, and long.MaxValue only when
+	// every model in the role is permanently down.
 	public long GetMillisecondsUntilAvailable(Role role)
 	{
+		long best = long.MaxValue;
+		DateTimeOffset now = DateTimeOffset.UtcNow;
 		foreach (string cid in role.Models)
 		{
 			if (!_models.ContainsKey(cid)) continue;
-			if (_availability.TryGetValue(cid, out ModelAvailability? avail) && avail.IsDown) continue;
-			return 0;
+			if (!_availability.TryGetValue(cid, out ModelAvailability? avail)) return 0;
+			if (avail.IsDown) continue;
+			long wait = (long)(avail.AvailableAt - now).TotalMilliseconds;
+			if (wait <= 0) return 0;
+			if (wait < best) best = wait;
 		}
-		return long.MaxValue;
+		return best;
 	}
 
 	// Resets all availability state — call on /reload or /clear so transient failures are retried.

@@ -303,7 +303,9 @@ public class ProtocolProxy
                 }
                 else if (value.GetValueKind() == JsonValueKind.Array)
                 {
-                    payload["models"] = (JsonArray)value;
+                    // DeepClone: the node belongs to the extras tree and gets parented into the
+                    // request body downstream; re-using it across turns would throw.
+                    payload["models"] = (JsonArray)value.DeepClone();
                 }
             }
             else if (key.StartsWith("or_provider_"))

@@ -90,6 +90,7 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
     private async Task RecvLoop(CancellationToken token)
     {
         byte[] buf = new byte[65536];
+        System.Collections.Generic.List<byte> msg = new System.Collections.Generic.List<byte>(65536);
         try
         {
             while (!token.IsCancellationRequested && _ws != null && _ws.State == WebSocketState.Open)
@@ -97,7 +98,12 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
                 WebSocketReceiveResult result = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), token);
                 if (result.MessageType == WebSocketMessageType.Close) break;
 
-                string text = Encoding.UTF8.GetString(buf, 0, result.Count);
+                // Accumulate fragments until EndOfMessage so large messages arrive intact.
+                msg.AddRange(new ArraySegment<byte>(buf, 0, result.Count));
+                if (!result.EndOfMessage) continue;
+
+                string text = Encoding.UTF8.GetString(msg.ToArray());
+                msg.Clear();
                 _frames.Writer.TryWrite(text);
             }
         }

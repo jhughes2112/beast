@@ -145,7 +145,7 @@ public class ConversationModel
             if (!string.IsNullOrEmpty(callId))
                 _pendingToolCallById[callId] = index;
         }
-        else if (type == FrameType.ToolResponse && _pendingToolCallById.Count > 0)
+        else if (type == FrameType.ToolResponse)
         {
             int callIndex = -1;
             if (!string.IsNullOrEmpty(callId) && _pendingToolCallById.TryGetValue(callId, out int byIdIndex))

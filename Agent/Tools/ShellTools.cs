@@ -15,6 +15,7 @@ public static class ShellTools
 		""")]
 	public static async Task<ToolResult> BashAsync(
 		[Description("Shell command to execute")] string command,
+		[Description("Optional working directory for the command.")] string? workingDir,
 		[Description("Timeout in seconds (default 60).")] int? timeoutSeconds,
 		CancellationToken cancellationToken)
 	{
@@ -28,22 +29,25 @@ public static class ShellTools
 				timeout = 60;
 			}
 
-			string cwd = Directory.GetCurrentDirectory();
+			string cwd = string.IsNullOrWhiteSpace(workingDir) ? Directory.GetCurrentDirectory() : workingDir;
 
 			if (Directory.Exists(cwd))
 			{
 				try
 				{
+					// ArgumentList passes the command as a single argv entry — no quote escaping,
+					// so commands containing quotes, backslashes, or $ arrive at bash verbatim.
 					ProcessStartInfo psi = new ProcessStartInfo
 					{
 						FileName = "/bin/bash",
-						Arguments = $"-c \"{command.Replace("\"", "\\\"")}\"",
 						WorkingDirectory = cwd,
 						RedirectStandardOutput = true,
 						RedirectStandardError = true,
 						UseShellExecute = false,
 						CreateNoWindow = true
 					};
+					psi.ArgumentList.Add("-c");
+					psi.ArgumentList.Add(command);
 
 					using (Process process = new Process { StartInfo = psi })
 					{

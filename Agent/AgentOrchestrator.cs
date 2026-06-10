@@ -95,7 +95,7 @@ public class AgentOrchestrator
             // Inbound wire format: sessionId|content
             // Falls back to the active session if no pipe is present (e.g. debug transport).
             int pipe = line.IndexOf('|');
-            string sessionId = pipe >= 0 ? line.Substring(0, pipe) : string.Empty;
+            string sessionId = pipe >= 0 ? line.Substring(0, pipe) : runner.ActiveSessionId;
             string content = pipe >= 0 ? line.Substring(pipe + 1) : line;
             if (content.Length == 0)
                 continue;

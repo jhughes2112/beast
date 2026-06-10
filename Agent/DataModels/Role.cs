@@ -75,7 +75,7 @@ public class Role
             If the command returns an error or the goal is not achieved by the output, try up to 10 tool calls to determine the correct command that produces 
             the minimum results needed to accomplish the goal. Respond only with the exact command and its output, without commentary.
             Cite precisely: file paths, line numbers, function names, exact outputs. 
-            If the goal is not achieved, be very brief, but report this fact, list exaxt tools called, in addition to the exact output from the original command.
+            If the goal is not achieved, be very brief, but report this fact, list exact tools called, in addition to the exact output from the original command.
             """;
         return new Role("Tools", new List<string> { "*" }, toolNames, systemPrompt, string.Empty, string.Empty, new Dictionary<string, string>());
     }

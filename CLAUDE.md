@@ -45,7 +45,7 @@ Beast (Windows CLI / TUI)
   └── WebSocket client → connects to Agent inside Docker
 
 Agent (Docker container)
-  └── WebSocket server (port 8765)
+  └── WebSocket server (port 13131)
   └── AgentOrchestrator → manages conversation lifecycle
       └── LlmService → runs LLM conversation loop
           └── IProtocol implementations → Anthropic / ChatCompletions / Responses API

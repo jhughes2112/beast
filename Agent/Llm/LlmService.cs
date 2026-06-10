@@ -95,7 +95,8 @@ public class LlmService
                     break;
                 }
 
-                if (conversation.ContextLength + reserveTokens > model.Config.ContextWindow)
+                // >= so ComputeMaxCompletionTokens can never produce a zero-token request budget.
+                if (conversation.ContextLength + reserveTokens >= model.Config.ContextWindow)
                 {
                     finalResult = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
                     break;
@@ -186,16 +187,14 @@ public class LlmService
         }
         catch (OperationCanceledException ex)
         {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                finalResult = new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
-            }
-            else
-            {
-                string reason = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
-                finalResult = new LlmResult(LlmExitReason.Interrupted, $"Cancelled: {reason}");
+            // Our token cancelled: rethrow so RunTurnAsync classifies interrupt vs app shutdown.
+            if (cancellationToken.IsCancellationRequested)
                 throw;
-            }
+
+            // Cancellation without our token = client-side timeout (e.g. HttpClient). Surface it
+            // as a failure so the user sees it instead of a silent retry loop.
+            string reason = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+            finalResult = new LlmResult(LlmExitReason.Failed, $"LLM call cancelled unexpectedly (client-side timeout): {reason}");
         }
 
         return finalResult;

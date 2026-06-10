@@ -184,10 +184,20 @@ public class Session
 
     // Signals the idle loop that there is work to do. Capped at 1 so rapid calls do not
     // accumulate; the loop consumes exactly one permit per iteration and re-evaluates state.
+    // Concurrent producers (transport thread + runner thread) can race past the count check,
+    // so an over-release is swallowed — the permit is already pending either way.
     private void Signal()
     {
         if (_inputSignal.CurrentCount == 0)
-            _inputSignal.Release();
+        {
+            try
+            {
+                _inputSignal.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+            }
+        }
     }
 
     // Returns a task that completes when input or a command arrives, or when ct is cancelled.
