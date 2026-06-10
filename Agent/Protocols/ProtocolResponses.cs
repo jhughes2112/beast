@@ -221,13 +221,15 @@ public class ProtocolResponses
 
         // If we have rehydrated input, send the full history once (no previous_response_id).
         // Otherwise, chain from the last response id and send only the delta items.
+        // DeepClone is required: assigning a JsonNode to a body object parents it, and the same
+        // node cannot be parented twice — re-use across turns throws InvalidOperationException.
         if (_rehydratedInput != null)
         {
-            body["input"] = _rehydratedInput;
+            body["input"] = _rehydratedInput.DeepClone();
         }
         else
         {
-            body["input"] = _deltaInput;
+            body["input"] = _deltaInput.DeepClone();
             if (_previousResponseId != null)
             {
                 body["previous_response_id"] = _previousResponseId;

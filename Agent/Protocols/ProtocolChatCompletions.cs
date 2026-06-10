@@ -251,6 +251,7 @@ public class ProtocolChatCompletions
                 (string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
                 string thinking = ExtractThinking(messageObj);
 
+                OnAssistantTurn(assistantText, thinking, toolCalls);
                 bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
                 bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
@@ -601,6 +602,7 @@ public class ProtocolChatCompletions
             finishReason = "tool_calls";
         }
 
+        OnAssistantTurn(assistantText, thinking, semanticToolCalls);
         bundle.Canonical.OnAssistantTurn(assistantText, thinking, semanticToolCalls);
         bundle.Transport?.OnAssistantTurn(assistantText, thinking, semanticToolCalls);
 
