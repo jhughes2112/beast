@@ -60,9 +60,13 @@ internal static class SeparatorLayer
     internal static int AnimationCount => BusyAnimations.Length;
 
     // Builds the 1-row separator Screen. Idle: plain horizontal rule. Busy: animated label on the left.
-    internal static Screen Build(int w, bool agentBusy, long busyStartTick, int busyWordIndex, int currentAnimationIndex)
+    // The right end always carries the "{Role} F10(N/T)" status (role in yellow), independent of busy state.
+    internal static Screen Build(int w, bool agentBusy, long busyStartTick, int busyWordIndex, int currentAnimationIndex, string role, int sessionActive, int sessionTotal)
     {
         Screen sep = new Screen(w, 1, new Cell('─', DisplayScreen.Palette.BrightWhite, DisplayScreen.Palette.Background, CellStyle.None));
+
+        DrawRightStatus(sep, w, role, sessionActive, sessionTotal);
+
         if (!agentBusy)
             return sep;
 
@@ -84,5 +88,28 @@ internal static class SeparatorLayer
         AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, DisplayScreen.Palette.Background);
 
         return sep;
+    }
+
+    // Renders "{Role} F10(N/T)" right-aligned on the separator: the role segment in yellow, the
+    // F10 hint in grey, with a leading/trailing space so it reads clearly against the rule.
+    private static void DrawRightStatus(Screen sep, int w, string role, int sessionActive, int sessionTotal)
+    {
+        if (sessionTotal <= 0)
+            return;
+
+        string hint = $"F10({sessionActive}/{sessionTotal})";
+        bool hasRole = !string.IsNullOrEmpty(role);
+        string roleSeg = hasRole ? role + " " : "";
+        string text = $" {roleSeg}{hint} ";
+
+        int startCol = w - text.Length;
+        if (startCol < 0)
+            return;
+
+        // Lay down the full text (including the clearing spaces and the grey hint) in grey first,
+        // then overwrite just the role characters in yellow.
+        AnsiToScreen.WriteLine(sep, startCol, 0, text, DisplayScreen.Palette.MedGrey, DisplayScreen.Palette.Background);
+        if (hasRole)
+            AnsiToScreen.WriteLine(sep, startCol + 1, 0, role, DisplayScreen.Palette.Yellow, DisplayScreen.Palette.Background);
     }
 }

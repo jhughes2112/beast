@@ -35,6 +35,12 @@ public class SessionRunner
     private readonly Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
 
     private bool _wantsCompact = false;
+
+    // Set by the always-available Answer tool's handler when the model opts to transition. Read and
+    // cleared by RunAsync after each turn; non-null _pendingTruth means a transition is pending.
+    private string? _pendingTruth;
+    private string? _pendingAnswer;
+
     private string _clientSessionId = string.Empty;
     private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
@@ -131,7 +137,25 @@ public class SessionRunner
                         LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
                         SendStats(session, service.Model.Config.ContextWindow);
 
-                        if (result.ExitReason == LlmExitReason.ContextFull)
+                        // A model-initiated Answer call records a pending transition. Apply it
+                        // regardless of how the turn ended — the model opted to transition, so it
+                        // takes precedence over context-full/failed handling for this turn.
+                        if (_pendingTruth != null)
+                        {
+                            string truth = _pendingTruth;
+                            string answer = _pendingAnswer ?? string.Empty;
+                            _pendingTruth = null;
+                            _pendingAnswer = null;
+
+                            Session? advanced = await ApplyTransitionAsync(session, role, truth, answer, _cancellationTokenSource.Token);
+                            if (advanced != null)
+                            {
+                                session = advanced;
+                                _currentSession = session;
+                                _service = null;  // new role may use a different model
+                            }
+                        }
+                        else if (result.ExitReason == LlmExitReason.ContextFull)
                         {
                             contextFull = true;
                         }
@@ -141,6 +165,8 @@ public class SessionRunner
                         }
                         else if (result.ExitReason == LlmExitReason.Completed)
                         {
+                            // The model finished without opting to transition. Confront it with the
+                            // role's end-of-turn question and require an explicit Answer-tool call.
                             Session? advanced = await AdvanceRoleAsync(session, role, _cancellationTokenSource.Token);
                             if (advanced != null)
                             {
@@ -467,14 +493,33 @@ public class SessionRunner
 
     // ---- Role transition ----
 
-    // Called after a completed worker turn. If the role defines EndOfTurnPrompt + Truths:
+    // Applies a model-initiated role transition. The model called the always-available Answer tool
+    // mid-turn, selecting one of the role's truth statements; selectedAnswer is the full briefing
+    // that becomes the next phase's first prompt. Runs end-of-turn bookkeeping, then maps the truth.
+    private async Task<Session?> ApplyTransitionAsync(Session session, Role currentRole, string selectedTruth, string selectedAnswer, CancellationToken ct)
+    {
+        // Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
+        // Best-effort: the model already decided to transition, so a failed summary doesn't abort it.
+        if (!string.IsNullOrEmpty(currentRole.SummaryPrompt))
+        {
+            Tool[] roleTools = _registry.GetToolsForRole(currentRole, _service?.Model.Config.ContextWindow ?? 0);
+            _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
+            string? summary = await SummarizeAsync(session, currentRole.SummaryPrompt, roleTools, ct);
+            if (string.IsNullOrEmpty(summary))
+                _transport.Error(session.Id, "[Role] Summary bookkeeping failed; continuing transition.");
+        }
+
+        return CreateNextRoleSession(session, currentRole, selectedTruth, selectedAnswer);
+    }
+
+    // Called after a completed worker turn when the model did NOT already opt to transition via the
+    // Answer tool. Confronts the model with the role's EndOfTurnPrompt and requires an explicit
+    // answer. If the role defines no EndOfTurnPrompt + Truths, there is nothing to confront.
     //   1. Runs SummaryPrompt in a fork (with full tools) to let the model do bookkeeping.
-    //   2. Runs EndOfTurnPrompt in a fresh ephemeral session with only the Answer tool.
-    //      The answer must begin with one truth statement verbatim and continue with context
-    //      for the next phase. Retries up to MaxEvalAttempts times on a missing or bad answer.
+    //   2. Confronts the model in a fresh ephemeral session with only the Answer tool. The answer
+    //      must begin with one truth statement verbatim and continue with context for the next
+    //      phase. Retries up to MaxEvalAttempts times on a missing or bad answer.
     //   3. Maps the matched truth label to the next role name.
-    //      Empty next-role = stop and return to user; non-empty = start a fresh session whose
-    //      first user prompt is the evaluator's full answer.
     private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths.Count == 0)
@@ -492,7 +537,7 @@ public class SessionRunner
             return null;
         }
 
-        // 2. Build the evaluation message: summary context + end-of-turn question + truth options.
+        // 2. Build the confrontation message: summary context + end-of-turn question + truth options.
         StringBuilder sb = new StringBuilder();
         sb.AppendLine(summary);
         sb.AppendLine();
@@ -504,12 +549,12 @@ public class SessionRunner
         sb.AppendLine();
         sb.AppendLine("After the chosen statement, continue your answer with the context the next phase needs to start working: what has been accomplished, what remains to be done, and any constraints or decisions it must know about. Your entire answer becomes the next phase's first prompt, so write it as a complete briefing.");
 
-        // 3. Run the evaluation on the current model with only the Answer tool.
+        // 3. Run the confrontation on the current model with only the Answer tool.
         //    Uses a fresh service so the eval session's ProtocolProxy is isolated from the parent.
         const int MaxEvalAttempts = 3;
         string? selectedTruth = null;
         string? selectedAnswer = null;
-        Tool answerTool = BuildAnswerTool(currentRole.Truths.Keys, (truth, answer) => { selectedTruth = truth; selectedAnswer = answer; });
+        Tool answerTool = BuildAnswerTool(currentRole.EndOfTurnPrompt, currentRole.Truths.Keys, (truth, answer) => { selectedTruth = truth; selectedAnswer = answer; });
 
         Role? sessionRole = _roleService.GetRole(session.Role);
         LlmService? evalService = _registry.CreateService(sessionRole, session.Model, 0);
@@ -544,19 +589,23 @@ public class SessionRunner
             return null;
         }
 
-        // 4. Map the matched truth label to the next role name. The Answer tool handler only
-        //    accepts answers that begin with one of the Truths keys, so the lookup always hits.
+        return CreateNextRoleSession(session, currentRole, selectedTruth, selectedAnswer!);
+    }
+
+    // Maps the chosen truth label to the next role and returns the successor session. The Answer tool
+    // handler only accepts answers beginning with one of the Truths keys, so the lookup always hits.
+    // Empty next-role = task finished; returns null and control goes back to the user. Otherwise saves
+    // the current session and starts a fresh one whose first user prompt is the model's full answer.
+    private Session? CreateNextRoleSession(Session session, Role currentRole, string selectedTruth, string selectedAnswer)
+    {
         currentRole.Truths.TryGetValue(selectedTruth, out string? nextRoleName);
 
-        // 5. Empty next role = task finished; return control to the user.
         if (string.IsNullOrEmpty(nextRoleName))
         {
             _transport.Status(session.Id, $"[Role] {selectedTruth} → done.");
             return null;
         }
 
-        // 6. Transition: save current session and start a fresh one whose first user prompt is the
-        //    evaluator's full answer (truth statement + briefing for the next phase).
         Role nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
 
         if (!session.Ephemeral)
@@ -565,17 +614,18 @@ public class SessionRunner
         BeastSession freshData = new BeastSession(session.AllocateChildId(), session.DisplayName, session.Model, nextRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
         Session next = new Session(freshData, nextRole.SystemPrompt, _transport, false);
 
-        next.AddUserMessage(selectedAnswer!);
+        next.AddUserMessage(selectedAnswer);
 
         _transport.Status(session.Id, $"[Role] {selectedTruth} → {nextRole.Name}");
         return next;
     }
 
-    // Builds a one-shot Answer tool that captures the evaluator's decision via a closure.
-    // The answer must begin with one of the truth statements verbatim and may continue with a
-    // briefing for the next phase; onAnswer receives (matched statement, full answer). A
-    // non-matching answer returns an error result so the retry loop can correct the model.
-    private static Tool BuildAnswerTool(IEnumerable<string> truthLabels, Action<string, string> onAnswer)
+    // Builds the always-available Answer tool. Its description is the role's EndOfTurnPrompt, so the
+    // model knows the question that, once answerable, lets it transition at any point in a turn.
+    // The answer must begin with one of the truth statements verbatim and continues with a briefing
+    // for the next phase; onAnswer receives (matched statement, full answer). A non-matching answer
+    // returns an error result so the model can correct itself within the same turn.
+    private static Tool BuildAnswerTool(string endOfTurnPrompt, IEnumerable<string> truthLabels, Action<string, string> onAnswer)
     {
         List<string> labels = new List<string>(truthLabels);
         string optionList = string.Join("; ", labels);
@@ -602,7 +652,7 @@ public class SessionRunner
                 Function = new FunctionDefinition
                 {
                     Name = "Answer",
-                    Description = "Submit your determination. Call once. Begin with one of the provided statements verbatim, then continue with a briefing that gives the next phase its goal and context.",
+                    Description = $"{endOfTurnPrompt} Call this tool the moment that can be answered to record your determination and move to the next phase — you need not finish anything else first. Begin your answer with exactly one of the provided statements verbatim, then continue with a briefing that gives the next phase its goal and context.",
                     Parameters = parameters
                 }
             },
@@ -763,6 +813,20 @@ public class SessionRunner
             if (allTools.TryGetValue(toolName, out Tool? tool))
                 toolList.Add(tool);
         }
+
+        // The root agent always carries the Answer tool when its role defines transitions, so the
+        // model can opt to transition at any point in a turn rather than only after it completes.
+        // Its handler records the decision into _pendingTruth/_pendingAnswer for RunAsync to apply.
+        if (!isSubagent && !string.IsNullOrEmpty(role.EndOfTurnPrompt) && role.Truths.Count > 0)
+        {
+            Tool answerTool = BuildAnswerTool(role.EndOfTurnPrompt, role.Truths.Keys, (truth, answer) =>
+            {
+                _pendingTruth = truth;
+                _pendingAnswer = answer;
+            });
+            toolList.Add(answerTool);
+        }
+
         Tool[] tools = toolList.ToArray();
         _toolsByRole[key] = tools;
         return tools;
@@ -812,6 +876,7 @@ public class SessionRunner
         string json = JsonSerializer.Serialize(new
         {
             model = session.Model,
+            role = session.Role,
             promptTokens = session.CumulativeInputTokens,
             completionTokens = session.CumulativeOutputTokens,
             totalCost = session.TotalCost,

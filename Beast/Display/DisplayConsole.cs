@@ -34,7 +34,7 @@ public class DisplayConsole : IDisplay
         _log.Verbose($"[status] {text}");
     }
 
-    public void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
+    public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
     {
         // No persistent status bar in non-interactive mode.
     }

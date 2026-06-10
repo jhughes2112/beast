@@ -123,7 +123,7 @@ public class LlmService
                     int liveContextTokens = contextBaseline;
                     int livePromptTokens = inputBaseline + inputTokens;
                     int liveCompletionTokens = outputBaseline + outputTokens;
-                    string liveJson = BuildStatsJson(conversation.Model, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, model.Config.ContextWindow, liveContextTokens);
+                    string liveJson = BuildStatsJson(conversation.Model, conversation.Role, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, model.Config.ContextWindow, liveContextTokens);
                     transport.Stats(sessionId, liveJson);
                 };
 
@@ -329,15 +329,16 @@ public class LlmService
         int completion = conversation.CumulativeOutputTokens;
         int contextTokens = conversation.ContextLength;
 
-        string json = BuildStatsJson(conversation.Model, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
+        string json = BuildStatsJson(conversation.Model, conversation.Role, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
         transport.Stats(conversation.Id, json);
     }
 
-    private static string BuildStatsJson(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
+    private static string BuildStatsJson(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
     {
         return JsonSerializer.Serialize(new
         {
             model,
+            role,
             promptTokens,
             completionTokens,
             totalCost,

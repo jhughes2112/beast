@@ -12,7 +12,7 @@ file sealed class NullDisplay : IDisplay
 {
     public void Attach(ConversationModel model) { }
     public void SetStatus(string text) { }
-    public void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens) { }
+    public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens) { }
     public void SetCompletions(IReadOnlyList<string> completions) { }
     public void OnStreamStart(int streamIndex, FrameType type) { }
     public void OnStreamChunk(string chunk) { }

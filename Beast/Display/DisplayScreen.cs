@@ -39,6 +39,7 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb Red           = new Rgb(255, 0, 0);      // 196
         public static readonly Rgb Blue          = new Rgb(0, 135, 215);    // 33
         public static readonly Rgb Orange        = new Rgb(215, 95, 0);     // 166
+        public static readonly Rgb Yellow        = new Rgb(215, 175, 0);    // 178
         public static readonly Rgb BrightWhite   = new Rgb(238, 238, 238);  // 255
         public static readonly Rgb ToolCallFg    = new Rgb(95, 255, 255);   // 51
         public static readonly Rgb ToolCallBg    = new Rgb(0, 0, 95);       // 17
@@ -95,6 +96,8 @@ public class DisplayScreen : IDisplay
     // right (model name). They're stored separately so each can be positioned independently.
     private string _statsMetrics       = "";
     private string _statsModelName     = "";
+    // Role of the most recent stats frame; shown in yellow at the right end of the separator line.
+    private string _currentRole        = "";
 
     // Bottom-left of the status bar is normally the rooted client path Beast was launched from.
     // SetStatus messages are transient: they replace the path for TransientStatusMs then revert.
@@ -197,7 +200,7 @@ public class DisplayScreen : IDisplay
         }
     }
 
-    public void SetStatsInfo(string model, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
+    public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
     {
         string contextInfo = maxContext > 0 && contextTokens > 0
             ? $"  {(int)((double)contextTokens / maxContext * 100)}%/{maxContext}"
@@ -209,6 +212,7 @@ public class DisplayScreen : IDisplay
         {
             _statsMetrics   = metrics;
             _statsModelName = model;
+            _currentRole    = role;
             // A real stats frame supersedes any optimistic /model override.
             _modelOverride = "";
             Redraw();
@@ -489,8 +493,8 @@ public class DisplayScreen : IDisplay
         Screen frame = new Screen(w, h, bgCell);
         frame.Blit(historyView, 0, 0, BlendMode.Normal, null);
 
-        // Separator layer.
-        Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex);
+        // Separator layer. Carries the "{Role} F10(N/T)" status at its right end.
+        Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex, _currentRole, _sessionActive, _sessionTotal);
         frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
 
         // Input layer.
@@ -513,9 +517,7 @@ public class DisplayScreen : IDisplay
         }
         string modeName = _model != null ? _model.Mode.ToString() : "";
         string left = string.IsNullOrEmpty(modeName) ? _statusText : $"{_statusText}  {modeName}";
-        string rightModel = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
-        string sessionHint = _sessionTotal > 0 ? $"F10({_sessionActive}/{_sessionTotal}) " : "";
-        string right = sessionHint + rightModel;
+        string right = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
         string center = _statsMetrics;
         Screen statusScreen = StatusBarLayer.Build(left, center, right, w);
         frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);

@@ -323,12 +323,13 @@ public class BeastApp : IDisposable, IAsyncDisposable
                     using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(content);
                     System.Text.Json.JsonElement root = doc.RootElement;
                     string model = root.TryGetProperty("model", out System.Text.Json.JsonElement m) ? m.GetString() ?? "" : "";
+                    string role = root.TryGetProperty("role", out System.Text.Json.JsonElement rl) ? rl.GetString() ?? "" : "";
                     int prompt = root.TryGetProperty("promptTokens", out System.Text.Json.JsonElement p) ? p.GetInt32() : 0;
                     int completion = root.TryGetProperty("completionTokens", out System.Text.Json.JsonElement c) ? c.GetInt32() : 0;
                     decimal cost = root.TryGetProperty("totalCost", out System.Text.Json.JsonElement tc) ? tc.GetDecimal() : 0m;
                     int maxContext = root.TryGetProperty("maxContext", out System.Text.Json.JsonElement mc) ? mc.GetInt32() : 0;
                     int contextTokens = root.TryGetProperty("contextTokens", out System.Text.Json.JsonElement ct) ? ct.GetInt32() : 0;
-                    _display.SetStatsInfo(model, prompt, completion, cost, maxContext, contextTokens);
+                    _display.SetStatsInfo(model, role, prompt, completion, cost, maxContext, contextTokens);
                 }
                 catch { }
                 return;
