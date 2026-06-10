@@ -280,6 +280,15 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetSessionCounts(_busySessions.Count, _sessions.Count);
     }
 
+    // Frames that carry new message content, as opposed to busy/idle plumbing. StreamChunk and
+    // StreamEnd are excluded so concurrent streams auto-track per message, not per chunk.
+    private static bool IsMessageFrame(FrameType type)
+    {
+        bool plumbing = type == FrameType.Busy || type == FrameType.Idle || type == FrameType.Clear
+            || type == FrameType.StreamChunk || type == FrameType.StreamEnd || type == FrameType.SessionAnnounce;
+        return !plumbing;
+    }
+
     private void ProcessFrame(FrameType type, string sessionId, string content)
     {
         bool isActive = string.IsNullOrEmpty(sessionId) || string.Equals(sessionId, _activeSessionId, StringComparison.Ordinal);
@@ -361,6 +370,14 @@ public class BeastApp : IDisposable, IAsyncDisposable
         }
 
         isActive = string.Equals(effectiveId, _activeSessionId, StringComparison.Ordinal);
+
+        // Auto-track: switch the display to whichever session most recently received message
+        // content, unless the user is navigating the session overlay or reading scrolled-up history.
+        if (!isActive && IsMessageFrame(type) && !_display.IsAutoTrackSuppressed())
+        {
+            SwitchActiveSession(effectiveId);
+            isActive = true;
+        }
 
         switch (type)
         {

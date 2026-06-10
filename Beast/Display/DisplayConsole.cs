@@ -106,6 +106,7 @@ public class DisplayConsole : IDisplay
     public void SetSessionCounts(int active, int total) { }
     public void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
     public void SetSessionSwitchCallback(Action<string> switchTo) { }
+    public bool IsAutoTrackSuppressed() { return false; }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {

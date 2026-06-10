@@ -64,7 +64,9 @@ public class DisplayScreen : IDisplay
         public static readonly string ResetAnsi     = "\x1b[39m";         // reset foreground only
     }
 
-    private readonly CollapseMode      _initialMode;
+    // Collapse mode applied to each attached model; starts at the launch mode and follows Ctrl+O
+    // cycling so session switches don't reset the user's chosen verbosity.
+    private CollapseMode               _currentMode;
     private ConversationModel?         _model;
     private Func<string, Task>?        _sendAsync;
     private Action?                    _requestExit;
@@ -80,6 +82,8 @@ public class DisplayScreen : IDisplay
     private int  _sessionTotal = 0;
     private readonly List<SessionDisplayInfo> _sessionList = new List<SessionDisplayInfo>();
     private string _sessionActiveId = "";
+    // Session that was active when the overlay opened; restored if the user cancels with Escape.
+    private string _sessionTreeRestoreId = "";
 
     private readonly List<string> _completions = new List<string> { "/verbose" };
     private readonly object       _consoleLock = new object();
@@ -146,20 +150,6 @@ public class DisplayScreen : IDisplay
     private const int ScrollbarShowMs = 1000;
     private const int ScrollbarFadeMs = 350;
 
-    // When set, the next Redraw will adjust scroll so this source-row stays at the top of the viewport.
-    // Used to keep the top line stable when a block expands/collapses or the view mode changes.
-    private int? _preserveTopSourceRow = null;
-
-    // When set, the next Redraw will re-anchor around a block that just toggled collapse state. We capture
-    // the slot index plus the old (slotTop, slotBottom, topViewRow) so we can pick the correct strategy:
-    //   - view top was above the block: keep view top unchanged
-    //   - view top was inside the block: snap view top to the block's new top (avoids "popping" into deleted rows)
-    //   - view top was below the block: shift view top by the height delta so what was visible stays put
-    private int? _pendingToggleSlot   = null;
-    private int  _pendingToggleSlotTop;
-    private int  _pendingToggleSlotBottom;
-    private int  _pendingToggleViewTop;
-
     private readonly StringBuilder _drawBuf = new StringBuilder(65536);
     private StreamWriter? _bufferedOut;
     private bool _needsErase = true;
@@ -174,7 +164,7 @@ public class DisplayScreen : IDisplay
 
     public DisplayScreen(CollapseMode initialMode)
     {
-        _initialMode = initialMode;
+        _currentMode = initialMode;
     }
 
     public void Attach(ConversationModel model)
@@ -182,7 +172,7 @@ public class DisplayScreen : IDisplay
         if (_model != null)
             _model.MessageUpdated -= OnMessageUpdated;
         _model = model;
-        _model.Mode = _initialMode;
+        _model.Mode = _currentMode;
         _model.MessageUpdated += OnMessageUpdated;
         lock (_consoleLock)
         {
@@ -190,6 +180,9 @@ public class DisplayScreen : IDisplay
             _historyScrollOffset = 0f;
             _scrollTarget = 0f;
             _needsErase = true;
+            // New conversation model — the previous layout is not a valid anchoring basis.
+            _lastStack = null;
+            _lastView  = null;
             if (_runCts != null) Redraw();
         }
     }
@@ -266,6 +259,13 @@ public class DisplayScreen : IDisplay
     public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
     public void SetFrameDrain(Action drain) { _frameDrain = drain; }
     public void SetSessionSwitchCallback(Action<string> switchTo) { _sessionSwitchCallback = switchTo; }
+
+    public bool IsAutoTrackSuppressed()
+    {
+        lock (_consoleLock)
+            // Same pinned-to-bottom threshold as ApplyLayoutAnchoring.
+            return _sessionTreeOpen || _scrollTarget >= 0.5f;
+    }
 
     public void SetSessionCounts(int active, int total)
     {
@@ -351,8 +351,11 @@ public class DisplayScreen : IDisplay
             if (msg.Type == FrameType.Clear)
             {
                 _historyScrollOffset = 0f;
+                _scrollTarget = 0f;
                 _blockCache.Clear();
                 _needsErase = true;
+                _lastStack = null;
+                _lastView  = null;
             }
             else
             {
@@ -376,6 +379,9 @@ public class DisplayScreen : IDisplay
         {
             _blockCache.Clear();
             _renderedWidth = w;
+            // Reflow changes every block height; the previous layout is not a valid anchoring basis.
+            _lastStack = null;
+            _lastView  = null;
         }
 
         if (w != _lastWidth || h != _lastHeight)
@@ -412,7 +418,11 @@ public class DisplayScreen : IDisplay
         int totalRows = historyComposite.H;
         int maxOffset = Math.Max(0, totalRows - historyH);
 
-        // 2. Clamp animation values.
+        // 2. Re-anchor against the previous frame's layout so block height changes (collapse,
+        // expand, streaming growth, blocks appearing or hiding) keep the on-screen content stable,
+        // then clamp the animation values into the new valid range.
+        ApplyLayoutAnchoring(stack);
+
         if (_scrollTarget        > maxOffset) _scrollTarget        = maxOffset;
         if (_scrollTarget        < 0f)        _scrollTarget        = 0f;
         if (_historyScrollOffset > maxOffset) _historyScrollOffset = maxOffset;
@@ -421,47 +431,6 @@ public class DisplayScreen : IDisplay
         _scrollbarTopRow    = 0;
         _scrollbarHeight    = historyH;
         _scrollbarMaxOffset = maxOffset;
-
-        // If a block-toggle anchor is pending, pick the best top-of-view based on where the toggled block
-        // used to be relative to the viewport. This produces stable behavior even when the block is taller
-        // than the screen, where a naive "preserve top source row" can pop into now-deleted rows.
-        if (_pendingToggleSlot.HasValue)
-        {
-            BlockPlacement? newPlace = stack.PlacementOfSlot(_pendingToggleSlot.Value);
-            int viewTop    = _pendingToggleViewTop;
-            int oldTop     = _pendingToggleSlotTop;
-            int oldBottom  = _pendingToggleSlotBottom;
-            // Default: keep the view's top source-row exactly where it was. Toggling a block should not
-            // scroll the rest of the content, even when the block changes height.
-            int desiredTop = viewTop;
-            // Exception: if the toggled block straddled (or started at) the top of the view, anchor the
-            // view to that block's new top so the collapsed/expanded block is what sits at the top.
-            if (newPlace.HasValue && oldTop <= viewTop && oldBottom > viewTop)
-                desiredTop = newPlace.Value.Top;
-
-            if (desiredTop < 0) desiredTop = 0;
-            if (desiredTop > maxOffset) desiredTop = maxOffset;
-            float newOffsetFromBottom = totalRows - historyH - desiredTop;
-            if (newOffsetFromBottom < 0f) newOffsetFromBottom = 0f;
-            if (newOffsetFromBottom > maxOffset) newOffsetFromBottom = maxOffset;
-            _historyScrollOffset = newOffsetFromBottom;
-            _scrollTarget        = newOffsetFromBottom;
-            _pendingToggleSlot   = null;
-        }
-        // If a preservation request is pending (toggle/mode change), reproject the scroll offset so the
-        // captured source-row stays at the top of the view. totalRows changed since the request was filed.
-        else if (_preserveTopSourceRow.HasValue)
-        {
-            int targetTop = _preserveTopSourceRow.Value;
-            if (targetTop < 0) targetTop = 0;
-            if (targetTop > maxOffset) targetTop = maxOffset;
-            float newOffsetFromBottom = totalRows - historyH - targetTop;
-            if (newOffsetFromBottom < 0f) newOffsetFromBottom = 0f;
-            if (newOffsetFromBottom > maxOffset) newOffsetFromBottom = maxOffset;
-            _historyScrollOffset = newOffsetFromBottom;
-            _scrollTarget        = newOffsetFromBottom;
-            _preserveTopSourceRow = null;
-        }
 
         // Scroll offset is "rows from the bottom"; convert to "rows from the top" for ScreenView.
         int viewOffsetFromTop = totalRows - historyH - (int)Math.Round(_historyScrollOffset);
@@ -627,6 +596,89 @@ public class DisplayScreen : IDisplay
         }
     }
 
+    // Re-anchors the scroll offset so on-screen content stays put when the block layout changes
+    // (collapse/expand toggles, streaming growth, blocks appearing or hiding). The offset is measured
+    // in rows from the bottom, which already follows content through changes entirely above the view
+    // top, so only blocks at or below the view top need an explicit correction. Walks the new layout
+    // against the previous frame's layout and sums the required correction per changed block.
+    private void ApplyLayoutAnchoring(StackLayout stack)
+    {
+        if (_lastStack == null || _lastView == null) return;
+        // Pinned to the bottom: follow new content instead of anchoring (the normal streaming case).
+        if (_scrollTarget < 0.5f) return;
+
+        int oldViewTop = _lastView.ScrollOffset;
+        IReadOnlyList<BlockPlacement> oldP = _lastStack.Placements;
+        IReadOnlyList<BlockPlacement> newP = stack.Placements;
+        int spacer = stack.SpacerRows;
+
+        int shift = 0;     // correction to apply to the from-bottom offsets
+        int cumDelta = 0;  // total height delta walked so far, for mapping new coordinates to old
+        int iOld = 0;
+        int iNew = 0;
+        while (iOld < oldP.Count || iNew < newP.Count)
+        {
+            bool haveOld = iOld < oldP.Count;
+            bool haveNew = iNew < newP.Count;
+            bool takeOld = haveOld && (!haveNew || oldP[iOld].SlotIndex <= newP[iNew].SlotIndex);
+            bool takeNew = haveNew && (!haveOld || newP[iNew].SlotIndex <= oldP[iOld].SlotIndex);
+
+            if (takeOld && takeNew)
+            {
+                // Slot present in both frames: a plain height change.
+                BlockPlacement op = oldP[iOld++];
+                BlockPlacement np = newP[iNew++];
+                int d = np.Height - op.Height;
+                if (d != 0)
+                {
+                    shift += ClassifyShift(op.Top, op.Bottom, oldViewTop, d);
+                    cumDelta += d;
+                }
+            }
+            else if (takeOld)
+            {
+                // Block disappeared (hidden or cleared); its spacer row goes with it.
+                BlockPlacement op = oldP[iOld++];
+                int d = -(op.Height + spacer);
+                shift += ClassifyShift(op.Top, op.Bottom, oldViewTop, d);
+                cumDelta += d;
+            }
+            else
+            {
+                // Block appeared. Map its new top back into the previous frame's coordinates so it
+                // can be classified against the old view top like everything else.
+                BlockPlacement np = newP[iNew++];
+                int d = np.Height + spacer;
+                int effTop = np.Top - cumDelta;
+                shift += ClassifyShift(effTop, effTop + d, oldViewTop, d);
+                cumDelta += d;
+            }
+        }
+
+        if (shift != 0)
+        {
+            _historyScrollOffset += shift;
+            _scrollTarget        += shift;
+        }
+    }
+
+    // How much of a block's height delta must be applied to the from-bottom scroll offset:
+    //   entirely above the view top → 0 (from-bottom offsets follow content above automatically)
+    //   at or below the view top    → d (keeps the view's top row on the same content)
+    //   straddling the view top     → growth keeps the visible rows fixed (d); shrink leaves the
+    //                                 bottom of the screen anchored (0)
+    private static int ClassifyShift(int top, int bottom, int viewTop, int d)
+    {
+        int result;
+        if (bottom <= viewTop)
+            result = 0;
+        else if (top >= viewTop)
+            result = d;
+        else
+            result = d > 0 ? d : 0;
+        return result;
+    }
+
     // ------------------------------------------------------------------------------------------------------
     // Input utilities (instance wrappers over InputLayer static methods)
     // ------------------------------------------------------------------------------------------------------
@@ -692,20 +744,21 @@ public class DisplayScreen : IDisplay
         }
     }
 
+    // Switches the display to the overlay's highlighted session so its contents are visible behind
+    // the panel while navigating. Called with _consoleLock held; the switch callback re-enters
+    // Attach on this thread, which is safe because the lock is reentrant.
+    private void PreviewSelectedSession()
+    {
+        if (_sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
+            _sessionSwitchCallback?.Invoke(_sessionList[_sessionTreeSelected].Id);
+    }
+
     private int? SlotAtTerminalRow(int row)
     {
         if (_lastStack == null || _lastView == null) return null;
         if (row < 0 || row >= _lastHistoryHeight) return null;
         int sourceRow = _lastView.MapViewRowToSourceRow(row);
         return _lastStack.SlotAtRow(sourceRow);
-    }
-
-    // Source-row currently at the top of the visible viewport, or 0 if no frame has been drawn yet.
-    // Used to capture a stable anchor before toggling a block so expansion does not shift the top line.
-    private int CurrentTopSourceRow()
-    {
-        if (_lastView == null) return 0;
-        return _lastView.ScrollOffset;
     }
 
     // ------------------------------------------------------------------------------------------------------
@@ -747,6 +800,8 @@ public class DisplayScreen : IDisplay
                         _needsErase = true;
                         _blockCache.Clear();
                         _renderedWidth = curW;
+                        _lastStack = null;
+                        _lastView  = null;
                         needRedraw = true;
                     }
                     float remaining = _scrollTarget - _historyScrollOffset;
@@ -837,37 +892,7 @@ public class DisplayScreen : IDisplay
                         int? slot = SlotAtTerminalRow(inputEv.Row);
                         if (slot.HasValue)
                         {
-                            // Compute the toggle anchor only when we have everything we need. All state
-                            // mutations happen together at the bottom — no early-outs, no partial writes.
-                            bool hasAnchor = false;
-                            int anchorSlotTop = 0;
-                            int anchorSlotBottom = 0;
-                            int anchorViewTop = 0;
-
-                            if (_lastStack != null && _lastView != null)
-                            {
-                                BlockPlacement? p = _lastStack.PlacementOfSlot(slot.Value);
-                                if (p.HasValue)
-                                {
-                                    hasAnchor        = true;
-                                    anchorSlotTop    = p.Value.Top;
-                                    anchorSlotBottom = p.Value.Bottom;
-                                    anchorViewTop    = _lastView.ScrollOffset;
-                                }
-                            }
-
-                            // Apply all mutations at once.
-                            if (hasAnchor)
-                            {
-                                _pendingToggleSlot       = slot.Value;
-                                _pendingToggleSlotTop    = anchorSlotTop;
-                                _pendingToggleSlotBottom = anchorSlotBottom;
-                                _pendingToggleViewTop    = anchorViewTop;
-                            }
-                            else
-                            {
-                                _pendingToggleSlot = null;
-                            }
+                            // Redraw's layout anchoring keeps the view stable through the height change.
                             _model?.ToggleCollapsed(slot.Value);
                             // Keep hover indicator after the click — mouse is still over the block.
                             _hoverSlot = slot.Value;
@@ -908,6 +933,8 @@ public class DisplayScreen : IDisplay
                             _sessionTreeSelected--;
                             if (_sessionTreeSelected < _sessionTreeScroll)
                                 _sessionTreeScroll = _sessionTreeSelected;
+                            // Live preview: show the highlighted session behind the panel immediately.
+                            PreviewSelectedSession();
                         }
                         Redraw();
                     }
@@ -919,23 +946,23 @@ public class DisplayScreen : IDisplay
                             int visRows = Math.Max(1, _lastHeight - 5);
                             if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
                                 _sessionTreeScroll = _sessionTreeSelected - visRows + 1;
+                            PreviewSelectedSession();
                         }
                         Redraw();
                     }
                     else if (key.Key == ConsoleKey.F10 || key.Key == ConsoleKey.Enter)
                     {
-                        // Select the highlighted session and close the overlay.
-                        string? selId = _sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count
-                            ? _sessionList[_sessionTreeSelected].Id
-                            : null;
+                        // Commit the highlighted session (already previewed) and close the overlay.
                         _sessionTreeOpen = false;
+                        PreviewSelectedSession();
                         Redraw();
-                        if (selId != null)
-                            _sessionSwitchCallback?.Invoke(selId);
                     }
                     else if (key.Key == ConsoleKey.Escape)
                     {
                         _sessionTreeOpen = false;
+                        // Cancel: restore the session that was active when the overlay opened.
+                        if (!string.IsNullOrEmpty(_sessionTreeRestoreId))
+                            _sessionSwitchCallback?.Invoke(_sessionTreeRestoreId);
                         Redraw();
                     }
                 }
@@ -1212,6 +1239,7 @@ public class DisplayScreen : IDisplay
                         _sessionTreeOpen = !_sessionTreeOpen;
                         if (_sessionTreeOpen)
                         {
+                            _sessionTreeRestoreId = _sessionActiveId;
                             // Pre-select the currently active session.
                             _sessionTreeSelected = 0;
                             for (int i = 0; i < _sessionList.Count; i++)
@@ -1222,7 +1250,11 @@ public class DisplayScreen : IDisplay
                                     break;
                                 }
                             }
+                            // Scroll the pre-selected row into view.
                             _sessionTreeScroll = 0;
+                            int visRows = Math.Max(1, _lastHeight - 5);
+                            if (_sessionTreeSelected >= visRows)
+                                _sessionTreeScroll = _sessionTreeSelected - visRows + 1;
                         }
                         Redraw();
                     }
@@ -1349,9 +1381,8 @@ public class DisplayScreen : IDisplay
             CollapseMode.Minimized => CollapseMode.Quiet,
             _                      => CollapseMode.Verbose
         };
-        // Preserve the top visible source row through the mode switch — same rationale as block toggle.
-        lock (_consoleLock)
-            _preserveTopSourceRow = CurrentTopSourceRow();
+        _currentMode = next;
+        // Redraw's layout anchoring keeps the view stable through the per-block height changes.
         _model.Mode = next;
     }
 }
