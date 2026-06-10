@@ -332,7 +332,11 @@ public class ProtocolAnthropic
                     streamedChars += assistantDelta.Length;
                     if (openStreamTag != StreamTag.Assistant)
                     {
-                        if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                        if (openStreamTag != null)
+                        {
+                            bundle.Canonical.OnStreamEnd(openStreamTag);
+                            bundle.Transport?.OnStreamEnd(openStreamTag);
+                        }
                         bundle.Canonical.OnStreamStart(StreamTag.Assistant);
                         bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                         openStreamTag = StreamTag.Assistant;
@@ -347,7 +351,11 @@ public class ProtocolAnthropic
                     streamedChars += thinkingDelta.Length;
                     if (openStreamTag != StreamTag.Thinking)
                     {
-                        if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                        if (openStreamTag != null)
+                        {
+                            bundle.Canonical.OnStreamEnd(openStreamTag);
+                            bundle.Transport?.OnStreamEnd(openStreamTag);
+                        }
                         bundle.Canonical.OnStreamStart(StreamTag.Thinking);
                         bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                         openStreamTag = StreamTag.Thinking;
@@ -379,19 +387,19 @@ public class ProtocolAnthropic
         }
         catch (OperationCanceledException)
         {
-            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
             throw;
         }
         catch (Exception ex)
         {
-            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
             return ClassifyException(ex);
         }
-
-        if (openStreamTag != null)
+        finally
         {
-            bundle.Canonical.OnStreamEnd(openStreamTag);
-            bundle.Transport?.OnStreamEnd(openStreamTag);
+            if (openStreamTag != null)
+            {
+                bundle.Canonical.OnStreamEnd(openStreamTag);
+                bundle.Transport?.OnStreamEnd(openStreamTag);
+            }
         }
 
         if (outputs.Count == 0)

@@ -362,7 +362,11 @@ public class ProtocolResponses
                     {
                         if (openStreamTag != StreamTag.Assistant)
                         {
-                            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                            if (openStreamTag != null)
+                            {
+                                bundle.Canonical.OnStreamEnd(openStreamTag);
+                                bundle.Transport?.OnStreamEnd(openStreamTag);
+                            }
                             bundle.Canonical.OnStreamStart(StreamTag.Assistant);
                             bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                             openStreamTag = StreamTag.Assistant;
@@ -379,7 +383,11 @@ public class ProtocolResponses
                     {
                         if (openStreamTag != StreamTag.Thinking)
                         {
-                            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
+                            if (openStreamTag != null)
+                            {
+                                bundle.Canonical.OnStreamEnd(openStreamTag);
+                                bundle.Transport?.OnStreamEnd(openStreamTag);
+                            }
                             bundle.Canonical.OnStreamStart(StreamTag.Thinking);
                             bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                             openStreamTag = StreamTag.Thinking;
