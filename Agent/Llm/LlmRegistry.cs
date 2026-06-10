@@ -29,20 +29,19 @@ public class LlmRegistry
 	// (rate-limit timers, permanently-down flags) survives /reload and session restarts.
 	private readonly Dictionary<string, ModelAvailability> _availability = new(StringComparer.OrdinalIgnoreCase);
 
-	private Dictionary<string, Tool> _tools = new(StringComparer.OrdinalIgnoreCase);
-	private Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
+	// Stored at load time so GetToolsForRole can rebuild tools with a per-session output limit.
+	private WebSearchConfig? _webSearch;
 
 	public LlmRegistry()
 	{
 	}
 
-	// Loads model configs and tools from settings. Call this first, then ProbeEndpointsAsync.
+	// Loads model configs from settings. Call this first, then ProbeEndpointsAsync.
 	// Models already in _availability keep their existing down/rate-limit state across reloads.
 	public void LoadFromConfigs(SettingsService settings, RoleService roles)
 	{
-		_tools = ToolFactory.Build(settings.Settings.WebSearch);
+		_webSearch = settings.Settings.WebSearch;
 		_models.Clear();
-		_toolsByRole.Clear();
 
 		foreach (ProviderConfig provider in settings.Settings.Providers)
 		{
@@ -76,11 +75,6 @@ public class LlmRegistry
 						role.Models.Insert(starIdx++, id);
 				}
 			}
-		}
-
-		foreach (Role role in roles.Roles.Values)
-		{
-			_toolsByRole[role.Name] = BuildToolsForRole(role);
 		}
 	}
 
@@ -167,10 +161,19 @@ public class LlmRegistry
 		return PickModel(role, preferredModelId, minContextRequired);
 	}
 
-	// Returns the prebuilt Tool array for the given role.
-	public Tool[] GetToolsForRole(Role role)
+	// Builds a fresh Tool array for the role, scaled to the given context window.
+	// Called per sub-session turn, not per tool call, so rebuilding on demand is cheap.
+	public Tool[] GetToolsForRole(Role role, int contextWindow)
 	{
-		return _toolsByRole[role.Name];
+		int maxChars = ToolFactory.ComputeMaxToolOutputChars(contextWindow);
+		Dictionary<string, Tool> allTools = ToolFactory.Build(_webSearch, maxChars);
+		List<Tool> allowed = new List<Tool>();
+		foreach (string name in role.Tools)
+		{
+			if (allTools.TryGetValue(name, out Tool? tool))
+				allowed.Add(tool);
+		}
+		return allowed.ToArray();
 	}
 
 	// Returns the role's models filtered to those currently registered (enabled in settings).
@@ -262,18 +265,4 @@ public class LlmRegistry
 		return avail;
 	}
 
-	private Tool[] BuildToolsForRole(Role role)
-	{
-		List<Tool> allowed = new();
-
-		foreach (string name in role.Tools)
-		{
-			if (_tools.TryGetValue(name, out Tool? tool))
-			{
-				allowed.Add(tool);
-			}
-		}
-
-		return allowed.ToArray();
-	}
 }

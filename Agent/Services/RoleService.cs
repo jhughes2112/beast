@@ -119,7 +119,7 @@ public class RoleService
 
     private Dictionary<string, Role> CreateDefaultRoles()
     {
-        Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch);
+        Dictionary<string, Tool> tools = ToolFactory.Build(_settings.WebSearch, ToolFactory.ComputeMaxToolOutputChars(0));
         List<string> toolNames = new List<string>(tools.Keys);
 
         Role defaultRole = Role.DefaultRole(toolNames);

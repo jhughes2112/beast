@@ -10,7 +10,14 @@ using System.Text;
 // Builds the tool dictionary with explicit registrations — no reflection.
 public static class ToolFactory
 {
-    public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig)
+    // 75 % of context window in characters (~4 chars/token), floored at 5 000 so very small
+    // models still get a workable limit and a zero context window falls back safely.
+    public static int ComputeMaxToolOutputChars(int contextWindow)
+    {
+        return Math.Max(5000, (int)(contextWindow * 0.75f * 4));
+    }
+
+    public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig, int maxToolOutputChars)
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
@@ -23,7 +30,8 @@ public static class ToolFactory
             {
                 string url = Str(args, "url");
                 return await webFetch.FetchPageAsync(url, ct);
-            });
+            },
+            maxToolOutputChars);
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
@@ -36,7 +44,8 @@ public static class ToolFactory
                 {
                     string query = Str(args, "query");
                     return await webSearch.SearchWebAsync(query, transport, sessionId, ct);
-                });
+                },
+                maxToolOutputChars);
         }
 
         Register(tools, "bash",
@@ -51,7 +60,8 @@ public static class ToolFactory
                 string workingDir = Str(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
                 return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
-            });
+            },
+            maxToolOutputChars);
 
         Register(tools, "read_file",
             "Read a file and return its contents. CWD is /workspace/",
@@ -65,7 +75,8 @@ public static class ToolFactory
                 string offset = Str(args, "offset");
                 string lines = Str(args, "lines");
                 return await FileTools.ReadFileAsync(filePath, offset, lines, ct);
-            });
+            },
+            maxToolOutputChars);
 
         Register(tools, "write_file",
             "Create a new file or overwrite an existing one. If the file already exists, you must read_file first. Prefer edit_file for partial changes. Only create files required by the task. CWD is /workspace/ but temporary files should go in /tmp/",
@@ -77,7 +88,8 @@ public static class ToolFactory
                 string filePath = Str(args, "file_path");
                 string content = Str(args, "content");
                 return await FileTools.WriteFileAsync(filePath, content, ct);
-            });
+            },
+            maxToolOutputChars);
 
         Register(tools, "edit_file",
             "Replace old_text with new_text in a file. Tries exact match first; if not found, retries with all whitespace stripped from both old_text and the file to find the region, then replaces it. CWD is /workspace/",
@@ -91,7 +103,8 @@ public static class ToolFactory
                 string oldText = Str(args, "old_text");
                 string newText = Str(args, "new_text");
                 return await FileTools.EditFileAsync(filePath, oldText, newText, ct);
-            });
+            },
+            maxToolOutputChars);
 
         return tools;
     }
@@ -100,9 +113,9 @@ public static class ToolFactory
     // "goal" parameter and dispatches through a sub-session before falling back to the raw handler.
     public static Dictionary<string, Tool> BuildSubagent(
         WebSearchConfig? webSearchConfig,
-        Func<string, JsonObject, string, CancellationToken, Task<string?>> runSubSession)
+        Func<string, JsonObject, string, CancellationToken, Task<string?>> runSubSession,
+        int maxToolOutputChars)
     {
-
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
         WebFetch webFetch = new();
@@ -116,7 +129,8 @@ public static class ToolFactory
                 string url = Str(args, "url");
                 return await webFetch.FetchPageAsync(url, ct);
             },
-            runSubSession);
+            runSubSession,
+            maxToolOutputChars);
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
@@ -131,7 +145,8 @@ public static class ToolFactory
                     string query = Str(args, "query");
                     return await webSearch.SearchWebAsync(query, transport, sessionId, ct);
                 },
-                runSubSession);
+                runSubSession,
+                maxToolOutputChars);
         }
 
         SubagentRegister(tools, "bash",
@@ -148,7 +163,8 @@ public static class ToolFactory
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
                 return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
             },
-            runSubSession);
+            runSubSession,
+            maxToolOutputChars);
 
         SubagentRegister(tools, "read_file",
             "Read a file and return its contents. CWD is /workspace/",
@@ -164,7 +180,8 @@ public static class ToolFactory
                 string lines = Str(args, "lines");
                 return await FileTools.ReadFileAsync(filePath, offset, lines, ct);
             },
-            runSubSession);
+            runSubSession,
+            maxToolOutputChars);
 
         Register(tools, "write_file",
             "Create a new file or overwrite an existing one. If the file already exists, you must read_file first. Prefer edit_file for partial changes. Only create files required by the task. CWD is /workspace/ but temporary files should go in /tmp/",
@@ -176,7 +193,8 @@ public static class ToolFactory
                 string filePath = Str(args, "file_path");
                 string content = Str(args, "content");
                 return await FileTools.WriteFileAsync(filePath, content, ct);
-            });
+            },
+            maxToolOutputChars);
 
         SubagentRegister(tools, "edit_file",
             "Replace old_text with new_text in a file. Tries exact match first; if not found, retries with all whitespace stripped from both old_text and the file to find the region, then replaces it. CWD is /workspace/",
@@ -192,7 +210,8 @@ public static class ToolFactory
                 string newText = Str(args, "new_text");
                 return await FileTools.EditFileAsync(filePath, oldText, newText, ct);
             },
-            runSubSession);
+            runSubSession,
+            maxToolOutputChars);
 
         return tools;
     }
@@ -203,7 +222,8 @@ public static class ToolFactory
         string description,
         JsonObject parameters,
         Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> handler,
-        Func<string, JsonObject, string, CancellationToken, Task<string?>> runSubSession)
+        Func<string, JsonObject, string, CancellationToken, Task<string?>> runSubSession,
+        int maxToolOutputChars)
     {
         tools[name] = new Tool
         {
@@ -218,30 +238,27 @@ public static class ToolFactory
                 string? subResult = await runSubSession(name, args, goal, ct);
                 if (subResult != null)
                     return new ToolResult(subResult, string.Empty, 0);
-                return await TruncateIfNeeded(handler(args, ct, transport, sessionId), ct);
+                return await TruncateIfNeeded(handler(args, ct, transport, sessionId), maxToolOutputChars, ct);
             }
         };
     }
 
-    private static async Task<ToolResult> TruncateIfNeeded(Task<ToolResult> resultTask, CancellationToken cancellationToken)
+    private static async Task<ToolResult> TruncateIfNeeded(Task<ToolResult> resultTask, int maxChars, CancellationToken cancellationToken)
     {
-        const int MaxContentLength = 5000;
-        const int HeadLength = 2500;
-        const int TailLength = 2500;
-
         ToolResult result = await resultTask;
 
         string fullContent = result.ExitCode == 0 ? result.StdOut : result.StdErr;
 
-        if (fullContent.Length <= MaxContentLength)
+        if (fullContent.Length <= maxChars)
             return result;
 
         string tempPath = Path.Combine(Path.GetTempPath(), $"beast_tool_output_{Guid.NewGuid():N}.txt");
         await File.WriteAllTextAsync(tempPath, fullContent, cancellationToken);
 
-        string head = fullContent.Substring(0, HeadLength);
-        string tail = fullContent.Substring(fullContent.Length - TailLength, TailLength);
-        int skippedLength = fullContent.Length - HeadLength - TailLength;
+        int halfChars = maxChars / 2;
+        string head = fullContent.Substring(0, halfChars);
+        string tail = fullContent.Substring(fullContent.Length - halfChars, halfChars);
+        int skippedLength = fullContent.Length - halfChars - halfChars;
 
         StringBuilder truncated = new StringBuilder();
         truncated.Append(head);
@@ -260,7 +277,7 @@ public static class ToolFactory
             return new ToolResult(result.StdOut, truncated.ToString(), result.ExitCode);
     }
 
-    private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> handler)
+    private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> handler, int maxToolOutputChars)
     {
         tools[name] = new Tool
         {
@@ -269,7 +286,7 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
             },
-            Handler = async (args, ct, transport, sessionId) => await TruncateIfNeeded(handler(args, ct, transport, sessionId), ct)
+            Handler = async (args, ct, transport, sessionId) => await TruncateIfNeeded(handler(args, ct, transport, sessionId), maxToolOutputChars, ct)
         };
     }
 

@@ -127,7 +127,7 @@ public class SessionRunner
                     session.SendBusy();
                     try
                     {
-                        Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
+                        Tool[] tools = GetOrBuildTools(role, session.IsSubagent, service.Model.Config.ContextWindow);
                         LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, _cancellationTokenSource.Token);
                         SendStats(session, service.Model.Config.ContextWindow);
 
@@ -470,16 +470,18 @@ public class SessionRunner
     // Called after a completed worker turn. If the role defines EndOfTurnPrompt + Truths:
     //   1. Runs SummaryPrompt in a fork (with full tools) to let the model do bookkeeping.
     //   2. Runs EndOfTurnPrompt in a fresh ephemeral session with only the Answer tool.
-    //      Retries up to MaxEvalAttempts times if the model fails to call the tool.
-    //   3. Maps the selected truth label to the next role name.
-    //      Empty next-role = stop and return to user; non-empty = start fresh session.
+    //      The answer must begin with one truth statement verbatim and continue with context
+    //      for the next phase. Retries up to MaxEvalAttempts times on a missing or bad answer.
+    //   3. Maps the matched truth label to the next role name.
+    //      Empty next-role = stop and return to user; non-empty = start a fresh session whose
+    //      first user prompt is the evaluator's full answer.
     private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths.Count == 0)
             return null;
 
         // 1. Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
-        Tool[] roleTools = _registry.GetToolsForRole(currentRole);
+        Tool[] roleTools = _registry.GetToolsForRole(currentRole, _service?.Model.Config.ContextWindow ?? 0);
         string summaryPrompt = currentRole.SummaryPrompt;
 
         _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
@@ -496,15 +498,18 @@ public class SessionRunner
         sb.AppendLine();
         sb.AppendLine(currentRole.EndOfTurnPrompt);
         sb.AppendLine();
-        sb.AppendLine("You must call the Answer tool with exactly one of these statements verbatim:");
+        sb.AppendLine("You must call the Answer tool. Your answer must begin with exactly one of these statements, verbatim:");
         foreach (string truth in currentRole.Truths.Keys)
             sb.AppendLine($"- {truth}");
+        sb.AppendLine();
+        sb.AppendLine("After the chosen statement, continue your answer with the context the next phase needs to start working: what has been accomplished, what remains to be done, and any constraints or decisions it must know about. Your entire answer becomes the next phase's first prompt, so write it as a complete briefing.");
 
         // 3. Run the evaluation on the current model with only the Answer tool.
         //    Uses a fresh service so the eval session's ProtocolProxy is isolated from the parent.
         const int MaxEvalAttempts = 3;
         string? selectedTruth = null;
-        Tool answerTool = BuildAnswerTool(currentRole.Truths.Keys, t => selectedTruth = t);
+        string? selectedAnswer = null;
+        Tool answerTool = BuildAnswerTool(currentRole.Truths.Keys, (truth, answer) => { selectedTruth = truth; selectedAnswer = answer; });
 
         Role? sessionRole = _roleService.GetRole(session.Role);
         LlmService? evalService = _registry.CreateService(sessionRole, session.Model, 0);
@@ -531,7 +536,7 @@ public class SessionRunner
                 break;
 
             if (attempt < MaxEvalAttempts - 1)
-                evalSession.AddUserMessage("You must call the Answer tool. Please call it now with one of the listed truth statements.");
+                evalSession.AddUserMessage("You must call the Answer tool. Begin your answer with one of the listed statements verbatim, then continue with the briefing for the next phase.");
         }
         if (selectedTruth == null)
         {
@@ -539,23 +544,9 @@ public class SessionRunner
             return null;
         }
 
-        // 4. Map the selected truth label to the next role name (case-insensitive).
-        string? nextRoleName = null;
-        bool foundTruth = false;
-        foreach (KeyValuePair<string, string> kvp in currentRole.Truths)
-        {
-            if (string.Equals(kvp.Key, selectedTruth, StringComparison.OrdinalIgnoreCase))
-            {
-                nextRoleName = kvp.Value;
-                foundTruth = true;
-                break;
-            }
-        }
-        if (!foundTruth)
-        {
-            _transport.Error(session.Id, $"[Role] Answer '{selectedTruth}' not in truths; staying in current role.");
-            return null;
-        }
+        // 4. Map the matched truth label to the next role name. The Answer tool handler only
+        //    accepts answers that begin with one of the Truths keys, so the lookup always hits.
+        currentRole.Truths.TryGetValue(selectedTruth, out string? nextRoleName);
 
         // 5. Empty next role = task finished; return control to the user.
         if (string.IsNullOrEmpty(nextRoleName))
@@ -564,7 +555,8 @@ public class SessionRunner
             return null;
         }
 
-        // 6. Transition: save current session and start a fresh one seeded with the summary.
+        // 6. Transition: save current session and start a fresh one whose first user prompt is the
+        //    evaluator's full answer (truth statement + briefing for the next phase).
         Role nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
 
         if (!session.Ephemeral)
@@ -573,27 +565,30 @@ public class SessionRunner
         BeastSession freshData = new BeastSession(session.AllocateChildId(), session.DisplayName, session.Model, nextRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
         Session next = new Session(freshData, nextRole.SystemPrompt, _transport, false);
 
-        next.AddUserMessage(summary);
+        next.AddUserMessage(selectedAnswer!);
 
         _transport.Status(session.Id, $"[Role] {selectedTruth} → {nextRole.Name}");
         return next;
     }
 
-    // Builds a one-shot Answer tool that captures the evaluator's truth selection via a closure.
-    // The evaluator is given only this tool, forcing a structured decision.
-    private static Tool BuildAnswerTool(IEnumerable<string> truthLabels, Action<string> onAnswer)
+    // Builds a one-shot Answer tool that captures the evaluator's decision via a closure.
+    // The answer must begin with one of the truth statements verbatim and may continue with a
+    // briefing for the next phase; onAnswer receives (matched statement, full answer). A
+    // non-matching answer returns an error result so the retry loop can correct the model.
+    private static Tool BuildAnswerTool(IEnumerable<string> truthLabels, Action<string, string> onAnswer)
     {
-        string optionList = string.Join("; ", truthLabels);
+        List<string> labels = new List<string>(truthLabels);
+        string optionList = string.Join("; ", labels);
 
-        JsonObject truthProp = new JsonObject();
-        truthProp["type"] = "string";
-        truthProp["description"] = $"One of the provided truth statements verbatim. Options: {optionList}";
+        JsonObject answerProp = new JsonObject();
+        answerProp["type"] = "string";
+        answerProp["description"] = $"Your full answer. It must begin with exactly one of these statements, verbatim: {optionList}. After the statement, continue with the context the next phase needs to start working: what has been accomplished, what remains, and any constraints or decisions it must know about. The entire answer becomes the next phase's first prompt.";
 
         JsonObject properties = new JsonObject();
-        properties["truth"] = truthProp;
+        properties["answer"] = answerProp;
 
         JsonArray required = new JsonArray();
-        required.Add(JsonValue.Create("truth"));
+        required.Add(JsonValue.Create("answer"));
 
         JsonObject parameters = new JsonObject();
         parameters["type"] = "object";
@@ -607,16 +602,33 @@ public class SessionRunner
                 Function = new FunctionDefinition
                 {
                     Name = "Answer",
-                    Description = "Submit your determination. Call once with exactly one of the provided statements verbatim.",
+                    Description = "Submit your determination. Call once. Begin with one of the provided statements verbatim, then continue with a briefing that gives the next phase its goal and context.",
                     Parameters = parameters
                 }
             },
             Handler = (JsonObject args, CancellationToken ct, ITransportServer transport, string sessionId) =>
             {
-                string? truth = args["truth"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(truth))
-                    onAnswer(truth);
-                return Task.FromResult(new ToolResult("Answer recorded.", string.Empty, 0));
+                string answer = (args["answer"]?.GetValue<string>() ?? string.Empty).TrimStart();
+
+                // Longest prefix match so one statement being a prefix of another resolves correctly.
+                string? matched = null;
+                foreach (string label in labels)
+                {
+                    if (answer.StartsWith(label, StringComparison.OrdinalIgnoreCase) && (matched == null || label.Length > matched.Length))
+                        matched = label;
+                }
+
+                ToolResult result;
+                if (matched != null)
+                {
+                    onAnswer(matched, answer);
+                    result = new ToolResult("Answer recorded.", string.Empty, 0);
+                }
+                else
+                {
+                    result = new ToolResult(string.Empty, $"Your answer must begin with exactly one of these statements, verbatim: {optionList}", 1);
+                }
+                return Task.FromResult(result);
             }
         };
     }
@@ -647,7 +659,7 @@ public class SessionRunner
         if (service == null)
             return null;
 
-        Tool[] innerTools = _registry.GetToolsForRole(toolsRole);
+        Tool[] innerTools = _registry.GetToolsForRole(toolsRole, service.Model.Config.ContextWindow);
 
         // Truncate goal to a display-friendly length for use as the session name.
         string displayName = goal.Length > 80 ? goal.Substring(0, 80) : goal;
@@ -730,19 +742,20 @@ public class SessionRunner
 
     // ---- Helpers ----
 
-    // Returns the cached Tool[] for the role+mode combination, building it on the first call.
-    // The cache is keyed by "agent:{roleName}" or "sub:{roleName}" and cleared on /reload so
-    // config changes (new tools, different webSearch settings) take effect immediately.
-    private Tool[] GetOrBuildTools(Role role, bool isSubagent)
+    // Returns the cached Tool[] for the role+mode+contextWindow combination, building on first call.
+    // Cache key includes context window so a model change (different window) gets a fresh build.
+    // Cleared on /reload so config changes (new tools, webSearch) take effect immediately.
+    private Tool[] GetOrBuildTools(Role role, bool isSubagent, int contextWindow)
     {
-        string key = isSubagent ? $"sub:{role.Name}" : $"agent:{role.Name}";
+        string key = isSubagent ? $"sub:{role.Name}:{contextWindow}" : $"agent:{role.Name}:{contextWindow}";
         if (_toolsByRole.TryGetValue(key, out Tool[]? cached))
             return cached;
 
+        int maxChars = ToolFactory.ComputeMaxToolOutputChars(contextWindow);
         bool hasToolsRole = _roleService.GetRole("Tools") != null;
         Dictionary<string, Tool> allTools = (!isSubagent && hasToolsRole)
-            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync)
-            : ToolFactory.Build(_settings.Settings.WebSearch);
+            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync, maxChars)
+            : ToolFactory.Build(_settings.Settings.WebSearch, maxChars);
 
         List<Tool> toolList = new List<Tool>();
         foreach (string toolName in role.Tools)

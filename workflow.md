@@ -24,10 +24,13 @@ RunAsync loop
        -> SummarizeAsync(role.SummaryPrompt, roleTools)  // fork: bookkeeping (MEMORY.md, PLAN.md, etc.)
        -> build eval message: summary + end_of_turn_prompt + truth options
        -> ephemeral session (same model/role) with only the Answer tool
-       -> LLM calls Answer(truth label)  (retries up to 3 times)
-       -> map truth label → next role name
+       -> LLM calls Answer(answer)  (retries up to 3 times)
+            answer must START with one truth label verbatim, then continue with a
+            briefing for the next phase (accomplished / remaining / constraints)
+       -> map matched truth label → next role name
        -> empty next-role = stop and return to user
-       -> non-empty next-role = fresh session seeded with summary, loop continues
+       -> non-empty next-role = fresh session whose first user prompt is the full
+          answer (truth + briefing), loop continues
   -> on ContextFull: RunCompactionAsync(role.SummaryPrompt) → retry with compacted session
   -> on Failed: end turn, fall back to another model or display error
 ```
@@ -127,7 +130,7 @@ Roles with no `end_of_turn_prompt` or `truths` behave in steady state — user-d
 
 - `Agent/DataModels/Role.cs` — `Role` class: name, models, tools, system_prompt, summary_prompt, end_of_turn_prompt, truths
 - `Agent/Services/RoleService.cs` — loads roles from `roles.json`; merges user (~/.beast/) and project (.beast/) definitions
-- `Agent/AgentOrchestrator.cs` — `AdvanceRoleAsync`: summary fork, evaluator dispatch, truth matching, role transition
+- `Agent/SessionRunner.cs` — `AdvanceRoleAsync`: summary fork, evaluator dispatch, truth matching, role transition
 
 ---
 
