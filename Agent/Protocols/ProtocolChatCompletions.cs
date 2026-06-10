@@ -656,14 +656,6 @@ public class ProtocolChatCompletions
         return string.Empty;
     }
 
-    private static void EmitNonStreamingThinking(ITransportServer transport, string sessionId, JsonNode root)
-    {
-        JsonNode? messageNode = root["choices"]?[0]?["message"];
-        if (messageNode is not JsonObject messageObj) return;
-        string thinking = ExtractThinking(messageObj);
-        if (!string.IsNullOrEmpty(thinking)) transport.Thinking(sessionId, thinking);
-    }
-
     private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode root, LlmModel model)
     {
         return ExtractUsageFromNode(root["usage"], model);

@@ -174,8 +174,10 @@ public class SessionRunner
                 {
                     long waitMs = _registry.GetMillisecondsUntilAvailable(role);
                     if (waitMs > 0)
-                        _transport.Status(session.Id, $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
-                    int delayMs = Math.Clamp((int)waitMs, 10, 30000);
+                        _transport.Status(session.Id, waitMs == long.MaxValue
+                            ? "No Models Available"
+                            : $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
+                    int delayMs = waitMs == long.MaxValue ? 30000 : Math.Clamp((int)waitMs, 10, 30000);
                     await Task.Delay(delayMs, _cancellationTokenSource.Token);
                 }
             }
@@ -493,6 +495,7 @@ public class SessionRunner
         evalSession.AddUserMessage(sb.ToString());
 
         _transport.Status(session.Id, $"[Role] Evaluating: {currentRole.EndOfTurnPrompt}");
+        session.AddChild(evalSession);
         for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
         {
             LlmResult evalResult = await RunTurnAsync(evalSession, service, new Tool[] { answerTool }, 0, ct);
@@ -506,7 +509,6 @@ public class SessionRunner
             if (attempt < MaxEvalAttempts - 1)
                 evalSession.AddUserMessage("You must call the Answer tool. Please call it now with one of the listed truth statements.");
         }
-
         if (selectedTruth == null)
         {
             _transport.Error(session.Id, "[Role] Evaluation failed; staying in current role.");
@@ -689,6 +691,7 @@ public class SessionRunner
     {
         Session temp = session.Fork($"{session.Id}_sum", string.Empty, true);
         temp.AddUserMessage(prompt);
+        session.AddChild(temp);
         LlmResult result = await RunTurnAsync(temp, service, tools, 0, appToken);
         if (result.ExitReason == LlmExitReason.Completed)
             return temp.GetLastAssistantText();

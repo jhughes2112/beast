@@ -180,6 +180,7 @@ public class ProtocolAnthropic
         // Anthropic requires a positive max_tokens; it cannot be omitted like the OpenAI protocols.
         // Prefer the caller's computed budget, otherwise fall back to the model's declared limit.
         int maxTokens = maxCompletionTokens > 0 ? maxCompletionTokens.Value : model.Config.MaxOutputTokens;
+        if (maxTokens <= 0) maxTokens = 8192;
         parameters.MaxTokens = maxTokens;
 
         if (!string.IsNullOrEmpty(_system))
@@ -378,6 +379,7 @@ public class ProtocolAnthropic
         }
         catch (OperationCanceledException)
         {
+            if (openStreamTag != null) { bundle.Canonical.OnStreamEnd(openStreamTag); bundle.Transport?.OnStreamEnd(openStreamTag); }
             throw;
         }
         catch (Exception ex)

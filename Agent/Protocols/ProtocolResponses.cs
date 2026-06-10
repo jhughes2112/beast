@@ -111,10 +111,11 @@ public class ProtocolResponses
 
         foreach (SemanticToolCall tc in toolCalls)
         {
+            string normalizedId = ProtocolHelpers.NormalizeToolCallId(tc.Id);
             JsonObject item = new JsonObject();
             item["type"] = "function_call";
-            item["id"] = tc.Id;
-            item["call_id"] = tc.Id;
+            item["id"] = normalizedId;
+            item["call_id"] = normalizedId;
             item["name"] = tc.Name;
             item["arguments"] = tc.ArgumentsJson;
             _deltaInput.Add(item);
@@ -125,7 +126,7 @@ public class ProtocolResponses
     {
         JsonObject item = new JsonObject();
         item["type"] = "function_call_output";
-        item["call_id"] = toolCallId;
+        item["call_id"] = ProtocolHelpers.NormalizeToolCallId(toolCallId);
         string output = result.StdOut;
         if (!string.IsNullOrEmpty(result.StdErr))
         {

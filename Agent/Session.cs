@@ -136,7 +136,6 @@ public class Session
     public bool TryDequeueCommand(out string? command) => _commandQueue.TryDequeue(out command);
 
     public void AddChild(Session child) => _children.TryAdd(child.Id, child);
-    public void RemoveChild(Session child) => _children.TryRemove(child.Id, out _);
 
     // Delivers a user message to the session matching targetId, recursing into children.
     // Parallel tool calls can produce multiple simultaneous children; all are searched.
