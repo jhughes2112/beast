@@ -53,10 +53,6 @@ public class CanonicalConversation
         _messages.Add(new ToolResultMessage(toolCallId, content));
     }
 
-    public void OnStreamStart(string tag) { }
-    public void OnStreamChunk(string tag, string chunk) { }
-    public void OnStreamEnd(string tag) { }
-
     public void OnClear()
     {
         _messages.Clear();

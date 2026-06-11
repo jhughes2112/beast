@@ -78,7 +78,7 @@ public class SessionRunner
     {
         Session session = _currentSession;
 
-        SendStats(session);
+        session.SendStats();
 
         _cachedSessions = SessionService.List();
         string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
@@ -104,7 +104,7 @@ public class SessionRunner
                         _clientSessionId = session.Id;
                         _transport.Clear(session.Id);
                         session.ReplayToTransport();
-                        SendStats(session);
+                        session.SendStats();
                         _transport.Status(session.Id, "ready");
                     }
 
@@ -137,7 +137,7 @@ public class SessionRunner
                     {
                         Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
                         LlmResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
-                        SendStats(session);
+                        session.SendStats();
 
                         // A model-initiated Answer call records a pending transition. Apply it
                         // regardless of how the turn ended — the model opted to transition, so it
@@ -694,7 +694,7 @@ public class SessionRunner
         if (_service != null && _service.Model.ConfigId != session.Model)
         {
             session.UpdateModel(_service.Model);
-            SendStats(session);
+            session.SendStats();
         }
     }
 
@@ -718,20 +718,5 @@ public class SessionRunner
         for (int i = startIndex; i < messages.Count; i++)
             result.Add(messages[i]);
         return result;
-    }
-
-    private void SendStats(Session session)
-    {
-        string json = JsonSerializer.Serialize(new
-        {
-            model = session.Model,
-            role = session.Role,
-            promptTokens = session.CumulativeInputTokens,
-            completionTokens = session.CumulativeOutputTokens,
-            totalCost = session.TotalCost,
-            maxContext = session.ContextWindow,
-            contextTokens = session.ContextLength
-        });
-        _transport.Stats(session.Id, json);
     }
 }

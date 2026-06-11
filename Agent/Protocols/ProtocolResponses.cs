@@ -381,14 +381,11 @@ public class ProtocolResponses
                             {
                                 if (openStreamTag != null)
                                 {
-                                    bundle.Canonical.OnStreamEnd(openStreamTag);
                                     bundle.Transport?.OnStreamEnd(openStreamTag);
                                 }
-                                bundle.Canonical.OnStreamStart(StreamTag.Assistant);
                                 bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                                 openStreamTag = StreamTag.Assistant;
                             }
-                            bundle.Canonical.OnStreamChunk(StreamTag.Assistant, delta);
                             bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
                             EmitProgress(model, liveInputTokens, onProgress);
                         }
@@ -402,14 +399,11 @@ public class ProtocolResponses
                             {
                                 if (openStreamTag != null)
                                 {
-                                    bundle.Canonical.OnStreamEnd(openStreamTag);
                                     bundle.Transport?.OnStreamEnd(openStreamTag);
                                 }
-                                bundle.Canonical.OnStreamStart(StreamTag.Thinking);
                                 bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                                 openStreamTag = StreamTag.Thinking;
                             }
-                            bundle.Canonical.OnStreamChunk(StreamTag.Thinking, delta);
                             bundle.Transport?.OnStreamChunk(StreamTag.Thinking, delta);
                             EmitProgress(model, liveInputTokens, onProgress);
                         }
@@ -434,7 +428,6 @@ public class ProtocolResponses
         {
             if (openStreamTag != null)
             {
-                bundle.Canonical.OnStreamEnd(openStreamTag);
                 bundle.Transport?.OnStreamEnd(openStreamTag);
             }
         }

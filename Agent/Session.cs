@@ -57,6 +57,14 @@ public class Session
     // queries it for completion sizing and tool-response reservations.
     public ContextBudget Budget => _budget;
 
+    // Sends current session stats to the client using explicit values.
+    public void SendStats()
+    {
+        _transport.Stats(_data.Id, _data.Model, _data.Role,
+            _data.CumulativeInputTokens, _data.CumulativeOutputTokens,
+            _data.TotalCost, _data.ContextWindow, _data.CurrentContextSize);
+    }
+
     public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
     {
         _data = data;

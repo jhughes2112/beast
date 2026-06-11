@@ -49,7 +49,7 @@ public interface ITransportServer
     void System(string sessionId, string text);
     void User(string sessionId, string text);
     void Debug(string sessionId, string text);
-    void Stats(string sessionId, string json);
+    void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens);
     void Completions(string sessionId, string json);
     // subagent distinguishes sub-session completion from main-agent completion so the client
     // can react differently (e.g. play a different notification sound).

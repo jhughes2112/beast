@@ -32,8 +32,6 @@ public class ProtocolAnthropic
 {
     private const string AnthropicVersion = "2023-06-01";
 
-    private bool _streamingSupported = true;
-
     // Native runtime state: the SDK message chain plus the system prompt text. Both are
     // in-memory only and rebuilt from canonical by Rehydrate.
     private readonly List<Message> _native = new List<Message>();
@@ -155,16 +153,8 @@ public class ProtocolAnthropic
         MessageParameters parameters = BuildParameters(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
 
         ProtocolResult result;
-        if (_streamingSupported)
-        {
-            parameters.Stream = true;
-            result = await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, sessionId, cancellationToken);
-        }
-        else
-        {
-            parameters.Stream = false;
-            result = await ExecuteBlockingAsync(client, parameters, model, bundle, transport, sessionId, cancellationToken);
-        }
+        parameters.Stream = true;
+        result = await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, sessionId, cancellationToken);
 
         return result;
     }
@@ -295,25 +285,6 @@ public class ProtocolAnthropic
         return new AnthropicClient(new APIAuthentication(model.ApiKey), httpClient);
     }
 
-    private async Task<ProtocolResult> ExecuteBlockingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
-    {
-        MessageResponse response;
-        try
-        {
-            response = await client.Messages.GetClaudeMessageAsync(parameters, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return ClassifyException(ex);
-        }
-
-        return CommitResponse(response, model, bundle);
-    }
-
     private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
     {
         List<MessageResponse> outputs = new List<MessageResponse>();
@@ -341,14 +312,11 @@ public class ProtocolAnthropic
                     {
                         if (openStreamTag != null)
                         {
-                            bundle.Canonical.OnStreamEnd(openStreamTag);
                             bundle.Transport?.OnStreamEnd(openStreamTag);
                         }
-                        bundle.Canonical.OnStreamStart(StreamTag.Assistant);
                         bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                         openStreamTag = StreamTag.Assistant;
                     }
-                    bundle.Canonical.OnStreamChunk(StreamTag.Assistant, assistantDelta);
                     bundle.Transport?.OnStreamChunk(StreamTag.Assistant, assistantDelta);
                 }
 
@@ -360,14 +328,11 @@ public class ProtocolAnthropic
                     {
                         if (openStreamTag != null)
                         {
-                            bundle.Canonical.OnStreamEnd(openStreamTag);
                             bundle.Transport?.OnStreamEnd(openStreamTag);
                         }
-                        bundle.Canonical.OnStreamStart(StreamTag.Thinking);
                         bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                         openStreamTag = StreamTag.Thinking;
                     }
-                    bundle.Canonical.OnStreamChunk(StreamTag.Thinking, thinkingDelta);
                     bundle.Transport?.OnStreamChunk(StreamTag.Thinking, thinkingDelta);
                 }
 
@@ -404,7 +369,6 @@ public class ProtocolAnthropic
         {
             if (openStreamTag != null)
             {
-                bundle.Canonical.OnStreamEnd(openStreamTag);
                 bundle.Transport?.OnStreamEnd(openStreamTag);
             }
         }
@@ -466,55 +430,6 @@ public class ProtocolAnthropic
         decimal cost = ResolveCost(freshInputTokens, cacheCreationTokens, cacheReadTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
-
-        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
-        string logLine = $"[usage] input={totalInputTokens} (fresh={freshInputTokens} cache_write={cacheCreationTokens} cache_read={cacheReadTokens}) output={outputTokens} total={totalInputTokens + outputTokens} cost={cost:F6} msg=\"{msgPreview}\"";
-        Console.WriteLine(logLine);
-
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + outputTokens));
-    }
-
-    // Appends the native assistant message verbatim (preserving signed blocks), extracts the
-    // semantic view for the canonical fan-out, and builds the LlmService payload.
-    private ProtocolResult CommitResponse(MessageResponse response, LlmModel model, ListenerBundle bundle)
-    {
-        if (response.Message != null)
-        {
-            _native.Add(response.Message);
-        }
-
-        (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(response.Content);
-        bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
-        bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
-
-        int freshInputTokens = response.Usage?.InputTokens ?? 0;
-        int cacheCreationTokens = 0;
-        int cacheReadTokens = 0;
-        int outputTokens = response.Usage?.OutputTokens ?? 0;
-
-        if (response.Usage != null)
-        {
-            cacheCreationTokens = response.Usage.CacheCreationInputTokens;
-            cacheReadTokens = response.Usage.CacheReadInputTokens;
-        }
-
-        // Anthropic's input_tokens already EXCLUDES cache reads/writes; the full context is the sum.
-        int totalInputTokens = freshInputTokens + cacheCreationTokens + cacheReadTokens;
-
-        TokenUsageInfo usage = new TokenUsageInfo
-        {
-            PromptTokens = freshInputTokens,
-            CompletionTokens = outputTokens
-        };
-
-        decimal cost = ResolveCost(freshInputTokens, cacheCreationTokens, cacheReadTokens, outputTokens, model, response);
-
-        string finishReason = toolCalls.Count > 0 ? "tool_calls" : (response.StopReason ?? "end_turn");
-
-        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
-        string logLine = $"[usage] input={totalInputTokens} (fresh={freshInputTokens} cache_write={cacheCreationTokens} cache_read={cacheReadTokens}) output={outputTokens} total={totalInputTokens + outputTokens} cost={cost:F6} msg=\"{msgPreview}\"";
-        Console.WriteLine(logLine);
-
         return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + outputTokens));
     }
 

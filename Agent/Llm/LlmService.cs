@@ -110,7 +110,7 @@ public class LlmService
                     }
                     else
                     {
-                        result = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availability.AvailableAt:u}");
+                        result = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, trying another model.");
                         break;
                     }
 
@@ -134,7 +134,7 @@ public class LlmService
                     // the in-flight turn on top of the persisted cumulative baselines; contextTokens
                     // stays as the current context occupancy. These are superseded at commit by the
                     // authoritative cumulative values.
-                    decimal costBaseline = conversation.TotalCost;  //***** These need to be locals so they get captured by the closure!!
+                    decimal costBaseline = conversation.TotalCost; // locals captured by closure for provisional stats
                     int contextBaseline = conversation.ContextLength;
                     int inputBaseline = conversation.CumulativeInputTokens;
                     int outputBaseline = conversation.CumulativeOutputTokens;
@@ -143,25 +143,23 @@ public class LlmService
                     int contextWindow = _model.Config.ContextWindow;
                     LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
                         {
-                            int liveContextTokens = contextBaseline;
-                            int livePromptTokens = inputBaseline + inputTokens;
-                            int liveCompletionTokens = outputBaseline + outputTokens;
-                            string liveJson = BuildStatsJson(modelId, role, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, contextWindow, liveContextTokens);
-                            transport.Stats(conversation.Id, liveJson);
+                            transport.Stats(conversation.Id, modelId, role,
+                                inputBaseline + inputTokens,
+                                outputBaseline + outputTokens,
+                                costBaseline + turnCost,
+                                contextWindow, contextBaseline);
                         };
 
                     ProtocolResult callResult = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.Id, conversation.QueryLog, linked.Token);
 
                     if (callResult.Outcome == ProtocolCallOutcome.Success)
                     {
-                        ProtocolCallPayload payload = callResult.Payload!;
                         // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
                         // which resets pending reservations: the size already includes any prior tool outputs.
-                        conversation.RecordTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
+                        conversation.RecordTurnUsage(callResult.Payload!.Usage, callResult.Payload.Cost, callResult.Payload.CurrentContextSize);
+                        conversation.SendStats();
 
-                        SendCostUpdate(conversation, _model.Config.ContextWindow, transport);
-
-                        (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, conversation.Bundle, budget, transport, conversation.Id, linked.Token);
+                        (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(callResult.Payload, tools, conversation.Bundle, budget, transport, conversation.Id, linked.Token);
                         if (terminalResult != null)
                         {
                             result = terminalResult;
@@ -238,6 +236,7 @@ public class LlmService
         return result;
     }
 
+	// The LLM sends us a message and/or tool calls.  Here we deal with those.
     private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ContextBudget budget, ITransportServer transport, string sessionId, CancellationToken ct)
     {
         string text = (payload.AssistantText ?? string.Empty).Trim();
@@ -386,32 +385,5 @@ public class LlmService
             bounded = new ToolResult(stdOut, stdErr, result.ExitCode);
         }
         return bounded;
-    }
-
-    // Pushes a Stats frame to the client the moment the session cost changes so the displayed
-    // total updates in realtime, rather than only at turn boundaries via the orchestrator. This
-    // carries the authoritative committed totals and supersedes any provisional live frame.
-    private void SendCostUpdate(Session conversation, int maxContext, ITransportServer transport)
-    {
-        int prompt = conversation.CumulativeInputTokens;
-        int completion = conversation.CumulativeOutputTokens;
-        int contextTokens = conversation.ContextLength;
-
-        string json = BuildStatsJson(conversation.Model, conversation.Role, prompt, completion, conversation.TotalCost, maxContext, contextTokens);
-        transport.Stats(conversation.Id, json);
-    }
-
-    private static string BuildStatsJson(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
-    {
-        return JsonSerializer.Serialize(new
-        {
-            model,
-            role,
-            promptTokens,
-            completionTokens,
-            totalCost,
-            maxContext,
-            contextTokens
-        });
     }
 }

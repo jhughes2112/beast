@@ -528,16 +528,13 @@ public class ProtocolChatCompletions
                         {
                             if (openStreamTag != null)
                             {
-                                bundle.Canonical.OnStreamEnd(openStreamTag);
                                 bundle.Transport?.OnStreamEnd(openStreamTag);
                             }
-                            bundle.Canonical.OnStreamStart(StreamTag.Thinking);
                             bundle.Transport?.OnStreamStart(StreamTag.Thinking);
                             openStreamTag = StreamTag.Thinking;
                         }
 
                         reasoningBuilder.Append(reasoningDelta);
-                        bundle.Canonical.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
                         bundle.Transport?.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
                         streamedCharCount += reasoningDelta.Length;
                         EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
@@ -550,16 +547,13 @@ public class ProtocolChatCompletions
                         {
                             if (openStreamTag != null)
                             {
-                                bundle.Canonical.OnStreamEnd(openStreamTag);
                                 bundle.Transport?.OnStreamEnd(openStreamTag);
                             }
-                            bundle.Canonical.OnStreamStart(StreamTag.Assistant);
                             bundle.Transport?.OnStreamStart(StreamTag.Assistant);
                             openStreamTag = StreamTag.Assistant;
                         }
 
                         contentBuilder.Append(contentDelta);
-                        bundle.Canonical.OnStreamChunk(StreamTag.Assistant, contentDelta);
                         bundle.Transport?.OnStreamChunk(StreamTag.Assistant, contentDelta);
                         streamedCharCount += contentDelta.Length;
                         EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
@@ -600,7 +594,6 @@ public class ProtocolChatCompletions
         {
             if (openStreamTag != null)
             {
-                bundle.Canonical.OnStreamEnd(openStreamTag);
                 bundle.Transport?.OnStreamEnd(openStreamTag);
             }
         }
