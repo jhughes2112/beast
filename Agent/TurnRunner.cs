@@ -14,7 +14,7 @@ public static class TurnRunner
     // maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
     public static async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken appToken)
     {
-        session.UpdateModel(service.Model.ConfigId);
+        session.UpdateModel(service.Model);
         CancellationToken turnToken = session.BeginTurn();
         // BeginTurn flushes _inputQueue into Messages, so InferDisplayName can now see the first user text.
         if (session.InferDisplayName())

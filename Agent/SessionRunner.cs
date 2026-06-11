@@ -78,7 +78,7 @@ public class SessionRunner
     {
         Session session = _currentSession;
 
-        SendStats(session, _service?.Model.Config.ContextWindow ?? 0);
+        SendStats(session);
 
         _cachedSessions = SessionService.List();
         string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
@@ -95,9 +95,8 @@ public class SessionRunner
                 // 2. Resolve role and refresh service after drain (commands may have changed role or model).
                 Role? role = _roleService.GetRole(session.Role);
                 RefreshService(role, session);
-                LlmService? service = _service;
 
-                if (service != null)
+                if (_service != null)
                 {
                     // Send history to the client whenever the active session changes.
                     if (session.Id != _clientSessionId)
@@ -105,7 +104,7 @@ public class SessionRunner
                         _clientSessionId = session.Id;
                         _transport.Clear(session.Id);
                         session.ReplayToTransport();
-                        SendStats(session, service.Model.Config.ContextWindow);
+                        SendStats(session);
                         _transport.Status(session.Id, "ready");
                     }
 
@@ -125,23 +124,20 @@ public class SessionRunner
                         session = compacted;
                         _currentSession = compacted;
                         _service = null;  // compacted session starts fresh
-                        // Drop the local too: its protocol still holds the old session's conversation.
-                        // The next loop iteration rebuilds a fresh service for the compacted session.
-                        service = null;
                     }
                 }
 
                 // 3. Run the LLM whenever the session has work.
                 // NeedsAttention() returns false after an interrupt until AddUserMessage() is called.
                 bool contextFull = false;
-                if (session.NeedsAttention() && service != null && role != null)
+                if (session.NeedsAttention() && _service != null && role != null)
                 {
                     session.SendBusy();
                     try
                     {
                         Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
-                        LlmResult result = await TurnRunner.RunTurnAsync(session, service, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
-                        SendStats(session, service.Model.Config.ContextWindow);
+                        LlmResult result = await TurnRunner.RunTurnAsync(session, _service, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
+                        SendStats(session);
 
                         // A model-initiated Answer call records a pending transition. Apply it
                         // regardless of how the turn ended — the model opted to transition, so it
@@ -173,7 +169,7 @@ public class SessionRunner
                         {
                             // The model finished without opting to transition. Confront it with the
                             // role's end-of-turn question and require an explicit Answer-tool call.
-                            Session? advanced = await AdvanceRoleAsync(session, role, service, _cancellationTokenSource.Token);
+                            Session? advanced = await AdvanceRoleAsync(session, role, _service, _cancellationTokenSource.Token);
                             if (advanced != null)
                             {
                                 session = advanced;
@@ -409,7 +405,7 @@ public class SessionRunner
                             _transport.Error(session.Id, $"Unknown model: {args}");
                         else
                         {
-                            session.UpdateModel(args);
+                            session.UpdateModel(targetModel);
                             _registry.ResetAvailability(args);
                             _service = null;  // force fresh service with new model next turn
                             _transport.Status(session.Id, $"Model set to {args}");
@@ -697,8 +693,8 @@ public class SessionRunner
 
         if (_service != null && _service.Model.ConfigId != session.Model)
         {
-            session.UpdateModel(_service.Model.ConfigId);
-            SendStats(session, _service.Model.Config.ContextWindow);
+            session.UpdateModel(_service.Model);
+            SendStats(session);
         }
     }
 
@@ -724,7 +720,7 @@ public class SessionRunner
         return result;
     }
 
-    private void SendStats(Session session, int maxContext)
+    private void SendStats(Session session)
     {
         string json = JsonSerializer.Serialize(new
         {
@@ -733,7 +729,7 @@ public class SessionRunner
             promptTokens = session.CumulativeInputTokens,
             completionTokens = session.CumulativeOutputTokens,
             totalCost = session.TotalCost,
-            maxContext,
+            maxContext = session.ContextWindow,
             contextTokens = session.ContextLength
         });
         _transport.Stats(session.Id, json);

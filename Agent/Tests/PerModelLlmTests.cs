@@ -85,7 +85,7 @@ public static class PerModelLlmTests
             using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
             Tool[] tools = registry.GetToolsForRole(role);
 
-            session.UpdateModel(service.Model.ConfigId);
+            session.UpdateModel(service.Model);
             CancellationToken turnToken = session.BeginTurn();
             using CancellationTokenSource turnLinked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, linkedCts.Token);
             LlmResult result = await service.RunToCompletionAsync(session, session.Bundle, tools, null, 0, 0, localTransport, turnLinked.Token);

@@ -17,6 +17,9 @@ public class BeastSession
     [JsonPropertyName("model")]
     public string Model { get; internal set; }
 
+    [JsonPropertyName("contextWindow")]
+    public int ContextWindow { get; internal set; }
+
     [JsonPropertyName("role")]
     public string Role { get; internal set; }
 

@@ -42,6 +42,7 @@ public class Session
     public string Id => _data.Id;
     public string DisplayName => _data.DisplayName;
     public string Model => _data.Model;
+    public int ContextWindow => _data.ContextWindow;
     public string Role => _data.Role;
     public bool Ephemeral => _data.Ephemeral;
     public bool IsSubagent => _isSubagent;
@@ -108,7 +109,7 @@ public class Session
 
     // Sets the active model name. Call InvalidateProtocol() separately if the model switch
     // requires discarding the in-progress protocol (e.g. via the /model command).
-    public void UpdateModel(string model) => _data.Model = model;
+    public void UpdateModel(LlmModel model) { _data.Model = model.ConfigId; _data.ContextWindow = model.Config.ContextWindow;  }
 
     public void UpdateRole(string role) => _data.Role = role;
 
