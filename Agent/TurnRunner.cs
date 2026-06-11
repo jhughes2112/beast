@@ -42,8 +42,8 @@ public static class TurnRunner
     // Runs a summarization prompt in a temporary fork of the session and returns the assistant
     // text, or null when no service is available or the turn did not complete. Creates its own
     // fresh LlmService so the fork's ProtocolProxy is never shared with the parent session. The
-    // fork is silent — it inherits the parent's display name so it is never announced as a
-    // session of its own — and is discarded after the call; the original session is untouched.
+    // fork shares the session's ID, so the summary turn streams live into the session's client
+    // view; the fork is discarded after the call and the original session's record is untouched.
     public static async Task<string?> SummarizeAsync(Session session, string prompt, Tool[] tools, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken appToken)
     {
         string? summary = null;
@@ -52,9 +52,8 @@ public static class TurnRunner
         LlmService? service = registry.CreateService(role, session.Model, 0);
         if (service != null)
         {
-            Session temp = session.Fork($"{session.Id}_sum", session.DisplayName, true);
+            Session temp = session.Fork();
             temp.AddUserMessage(prompt);
-            session.AddChild(temp);
             LlmResult result = await RunTurnAsync(temp, service, tools, null, 0, 0, transport, appToken);
             if (result.ExitReason == LlmExitReason.Completed)
                 summary = temp.GetLastAssistantText();

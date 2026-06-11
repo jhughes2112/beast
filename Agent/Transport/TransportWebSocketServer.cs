@@ -131,7 +131,7 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
     public void Debug(string sessionId, string text)       => Send(FrameType.Debug,        sessionId, text);
     public void Stats(string sessionId, string json)       => Send(FrameType.Stats,        sessionId, json);
     public void Completions(string sessionId, string json) => Send(FrameType.Completions,  sessionId, json);
-    public void Idle(string sessionId)                     => Send(FrameType.Idle,         sessionId, string.Empty);
+    public void Idle(string sessionId, bool subagent)      => Send(FrameType.Idle,         sessionId, subagent ? "subagent" : string.Empty);
     public void Busy(string sessionId)                     => Send(FrameType.Busy,         sessionId, string.Empty);
     public void Clear(string sessionId)                    => Send(FrameType.Clear,        sessionId, string.Empty);
     public void ToolCallWithId(string sessionId, string callId, string text)  => Send(FrameType.ToolCall,     sessionId, callId + "\x01" + text);

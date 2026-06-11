@@ -17,6 +17,10 @@ public class BeastSettings
     [JsonPropertyName("idleSoundFile")]
     public string IdleSoundFile { get; set; } = string.Empty;
 
+    // Played when a subagent sub-session completes; empty means no sound.
+    [JsonPropertyName("subagentSoundFile")]
+    public string SubagentSoundFile { get; set; } = string.Empty;
+
     [JsonPropertyName("compactionReserveTokens")]
     public int CompactionReserveTokens { get; set; } = 0;
 }

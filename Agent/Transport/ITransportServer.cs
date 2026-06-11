@@ -51,7 +51,9 @@ public interface ITransportServer
     void Debug(string sessionId, string text);
     void Stats(string sessionId, string json);
     void Completions(string sessionId, string json);
-    void Idle(string sessionId);
+    // subagent distinguishes sub-session completion from main-agent completion so the client
+    // can react differently (e.g. play a different notification sound).
+    void Idle(string sessionId, bool subagent);
     void Busy(string sessionId);
     void Clear(string sessionId);
     // Frame content is "callId\x01text" so Beast can pair by identity.

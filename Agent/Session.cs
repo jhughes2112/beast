@@ -94,7 +94,7 @@ public class Session
     public void SendIdle()
     {
         if (Interlocked.Decrement(ref _busyCount) == 0)
-            _transport.Idle(_data.Id);
+            _transport.Idle(_data.Id, _isSubagent);
     }
 
     public void AnnounceToClient()
@@ -229,18 +229,29 @@ public class Session
 
     // ---- Replay / hydration ----
 
-    // Hydrates the bundle from a list of stored exchanges (used when building a compacted session).
-    // System messages are skipped — they are already applied in the constructor.
-    public void ReplayExchanges(IReadOnlyList<CanonicalMessage> exchanges)
+    // Hydrates the conversation from a list of stored exchanges (used when building a compacted
+    // session and when adopting a fork's result). System messages are skipped — they are already
+    // applied in the constructor. toClient=false writes only the canonical record: used when the
+    // client already watched the same content stream in under this session's ID via a fork.
+    public void ReplayExchanges(IReadOnlyList<CanonicalMessage> exchanges, bool toClient)
     {
         foreach (CanonicalMessage msg in exchanges)
         {
             if (msg is UserMessage um)
-                _bundle.OnUserMessage(um.Text);
+            {
+                if (toClient) _bundle.OnUserMessage(um.Text);
+                else _bundle.Canonical.OnUserMessage(um.Text);
+            }
             else if (msg is AssistantMessage am)
-                _bundle.OnAssistantTurn(am.Text, am.Thinking, am.ToolCalls);
+            {
+                if (toClient) _bundle.OnAssistantTurn(am.Text, am.Thinking, am.ToolCalls);
+                else _bundle.Canonical.OnAssistantTurn(am.Text, am.Thinking, am.ToolCalls);
+            }
             else if (msg is ToolResultMessage tr)
-                _bundle.OnToolResult(tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
+            {
+                if (toClient) _bundle.OnToolResult(tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
+                else _bundle.Canonical.OnToolResult(tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
+            }
         }
     }
 
@@ -351,16 +362,18 @@ public class Session
             _interruptedAndWaiting = true;
     }
 
-    // Creates an independent copy of this session from this exact point in history.
-    // The fork shares no mutable state with the original — both can run and diverge freely.
-    // Messages are immutable so a shallow list copy suffices. System prompt is already in
-    // the forked message list; do not re-inject it.
-    public Session Fork(string newId, string newDisplayName, bool ephemeral)
+    // Creates an independent ephemeral copy of this session from this exact point in history.
+    // The fork keeps this session's ID, so everything it streams renders in this session's
+    // client view as if this session were running the turn — forks are never announced, saved,
+    // or added to the session tree. The fork shares no mutable conversation state with the
+    // original; messages are immutable so a shallow list copy suffices. System prompt is
+    // already in the forked message list; do not re-inject it.
+    public Session Fork()
     {
         List<CanonicalMessage> forkedMessages = new List<CanonicalMessage>(_data.Messages);
         BeastSession forked = new BeastSession(
-            newId,
-            newDisplayName,
+            _data.Id,
+            _data.DisplayName,
             _data.Model,
             _data.Role,
             forkedMessages,
@@ -369,13 +382,24 @@ public class Session
             _data.CumulativeInputTokens,
             _data.CumulativeOutputTokens,
             _data.CurrentContextSize,
-            ephemeral,
+            true,
             0);
-        return new Session(forked, string.Empty, _transport, _isSubagent);
+        Session fork = new Session(forked, string.Empty, _transport, _isSubagent);
+        _activeFork = fork;
+        return fork;
     }
 
-    // Cancels the in-progress turn, if any.
-    public void Interrupt() => _turnCts?.Cancel();
+    // The most recent fork of this session. Forks share this session's ID, so a /cancel routed
+    // here by ID must also reach the fork actually running the turn. A stale fork is harmless
+    // to interrupt — its turn CTS is already gone.
+    private Session? _activeFork;
+
+    // Cancels the in-progress turn, if any — including a turn running in a same-ID fork.
+    public void Interrupt()
+    {
+        _turnCts?.Cancel();
+        _activeFork?.Interrupt();
+    }
 
     // ---- Private logic ----
 

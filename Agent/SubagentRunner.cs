@@ -9,8 +9,9 @@ using System.Threading.Tasks;
 // Split from SessionRunner so the fork/retry/adoption invariants live in one place:
 //   - The sub-session is the durable record: announced, saved, and completed by adopting the
 //     best attempt's conversation back into it.
-//   - Forks are internal retry attempts: ephemeral, never announced, IDs allocated under the
-//     sub-session so they never consume the parent's numbering.
+//   - Forks are internal retry attempts: ephemeral, sharing the sub-session's ID so their
+//     turns stream live into the sub-session's client view; adoption is canonical-only
+//     because the client already watched the content arrive.
 //   - Each attempt runs on a fresh LlmService so protocol state never leaks between attempts.
 // currentSession is read at call time because the owning runner's active session changes across
 // compaction and role transitions; the delegate keeps the captured tool handlers valid.
@@ -102,11 +103,9 @@ public class SubagentRunner
                     break;
 
                 // Fork from the clean sub-session so each attempt starts from the same state.
-                // The fork is ephemeral, allocated under the sub-session's ID space so it never
-                // consumes the parent's numbering, and inherits the display name so RunTurnAsync
-                // never announces it as a session of its own.
-                Session forkSession = subSession.Fork(subSession.AllocateChildId(), subSession.DisplayName, true);
-                subSession.AddChild(forkSession);
+                // The fork shares the sub-session's ID, so the attempt's turn streams live into
+                // the sub-session's client view; a retry simply streams after the prior attempt.
+                Session forkSession = subSession.Fork();
 
                 LlmResult result = await TurnRunner.RunTurnAsync(forkSession, attemptService, innerTools, null, 0, outputCap, _transport, ct);
                 if (result.ExitReason != LlmExitReason.Completed)
@@ -130,16 +129,17 @@ public class SubagentRunner
                 outputCap = outputBudgetTokens;
             }
 
-            // Adopt the best attempt's conversation into the sub-session so its saved record and
-            // client view hold the complete exchange, not just the initial prompt. The replay also
-            // carries the usage totals so the saved record reflects what the work cost.
+            // Adopt the best attempt's conversation into the sub-session so its saved record holds
+            // the complete exchange, not just the initial prompt. Canonical-only: the client already
+            // watched the attempt stream in under this ID, so replaying to it would duplicate the
+            // display. The usage totals are carried so the saved record reflects what the work cost.
             if (bestAttempt != null)
             {
                 List<CanonicalMessage> tail = new List<CanonicalMessage>();
                 IReadOnlyList<CanonicalMessage> attemptMessages = bestAttempt.Data.Messages;
                 for (int i = promptCount; i < attemptMessages.Count; i++)
                     tail.Add(attemptMessages[i]);
-                subSession.ReplayExchanges(tail);
+                subSession.ReplayExchanges(tail, false);
                 subSession.RecordTurnUsage(
                     new TokenUsageInfo { PromptTokens = bestAttempt.CumulativeInputTokens, CompletionTokens = bestAttempt.CumulativeOutputTokens },
                     bestAttempt.TotalCost,

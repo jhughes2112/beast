@@ -267,7 +267,7 @@ public class SessionRunner
         Session newSession = new Session(freshData, role.SystemPrompt, _transport, false);
         newSession.AddUserMessage(summary);
         newSession.FlushPendingMessages();
-        newSession.ReplayExchanges(tailExchanges);
+        newSession.ReplayExchanges(tailExchanges, true);
 
         _currentSession.AddChild(newSession);
         newSession.AnnounceToClient();

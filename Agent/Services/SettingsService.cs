@@ -85,6 +85,9 @@ public class SettingsService
         if (!string.IsNullOrWhiteSpace(local.IdleSoundFile))
             Settings.IdleSoundFile = local.IdleSoundFile;
 
+        if (!string.IsNullOrWhiteSpace(local.SubagentSoundFile))
+            Settings.SubagentSoundFile = local.SubagentSoundFile;
+
         // If the local settings file defines any providers, it replaces the entire list.
         if (local.Providers != null && local.Providers.Count > 0)
             Settings.Providers = local.Providers;
@@ -128,6 +131,7 @@ public class SettingsService
         return new BeastSettings
         {
             IdleSoundFile = "C:/Windows/media/Windows Background.wav",
+            SubagentSoundFile = "C:/Windows/media/Windows Hardware Fail.wav",
             CompactionReserveTokens = 4096,
             Providers = new List<ProviderConfig>
             {

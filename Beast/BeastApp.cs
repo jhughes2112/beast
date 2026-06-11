@@ -27,6 +27,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly IDisplay _display;
     private readonly Log _log;
     private string? _idleSoundFile;
+    private string? _subagentSoundFile;
 
     private CancellationTokenSource? _cts;
     private ITransportClient? _wsClient;
@@ -91,9 +92,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetFrameDrain(DrainFrameQueue);
         _display.SetSessionSwitchCallback(SwitchActiveSession);
 
-        // Load settings to pick up optional idle sound path.
+        // Load settings to pick up the optional notification sound paths.
         SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
         _idleSoundFile = settings.Settings.IdleSoundFile;
+        _subagentSoundFile = settings.Settings.SubagentSoundFile;
 
         int exitCode = 0;
         try
@@ -391,7 +393,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
             case FrameType.Idle:
                 _busySessions.Remove(effectiveId);
                 _display.SetAgentBusy(_busySessions.Count > 0);
-                PlayIdleSound();
+                // Content "subagent" marks a sub-session completion; it gets its own sound.
+                PlaySound(content == "subagent" ? _subagentSoundFile : _idleSoundFile);
                 NotifySessionList();
                 break;
 
@@ -484,16 +487,16 @@ public class BeastApp : IDisposable, IAsyncDisposable
         }
     }
 
-    // Plays the configured idle sound file via NAudio, which supports WAV, MP3, and most other formats.
+    // Plays the given sound file via NAudio, which supports WAV, MP3, and most other formats.
     // Playback is fire-and-forget on a threadpool thread; the player is disposed when playback stops.
     // Errors are silently swallowed — a missing or unplayable file is not fatal.
-    private void PlayIdleSound()
+    private static void PlaySound(string? soundFile)
     {
-        if (string.IsNullOrEmpty(_idleSoundFile)) return;
-        if (!File.Exists(_idleSoundFile)) return;
+        if (string.IsNullOrEmpty(soundFile)) return;
+        if (!File.Exists(soundFile)) return;
         try
         {
-            AudioFileReader reader = new AudioFileReader(_idleSoundFile);
+            AudioFileReader reader = new AudioFileReader(soundFile);
             WaveOutEvent output = new WaveOutEvent();
             output.Init(reader);
             output.PlaybackStopped += (s, e) =>
