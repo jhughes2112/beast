@@ -20,6 +20,7 @@ public class Program
 			ITransportServer consoleTransport = new TransportConsoleDebug();
 			TestContext ctx = new TestContext(consoleTransport);
 			LlmServiceTests.Test(ctx);
+			ContextBudgetTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);
 			ShellToolsTests.Test(ctx);

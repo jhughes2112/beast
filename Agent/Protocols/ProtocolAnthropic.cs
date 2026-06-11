@@ -141,6 +141,7 @@ public class ProtocolAnthropic
         LlmModel model,
         ListenerBundle bundle,
         List<ToolDefinition> tools,
+        string? forcedToolName,
         int? maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
@@ -151,7 +152,7 @@ public class ProtocolAnthropic
         CancellationToken cancellationToken)
     {
         AnthropicClient client = BuildClient(model, extraHeaders, queryLogger);
-        MessageParameters parameters = BuildParameters(model, tools, maxCompletionTokens, extraPayload);
+        MessageParameters parameters = BuildParameters(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
 
         ProtocolResult result;
         if (_streamingSupported)
@@ -168,7 +169,7 @@ public class ProtocolAnthropic
         return result;
     }
 
-    private MessageParameters BuildParameters(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
+    private MessageParameters BuildParameters(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
         MessageParameters parameters = new MessageParameters
         {
@@ -191,6 +192,12 @@ public class ProtocolAnthropic
         if (tools.Count > 0)
         {
             parameters.Tools = BuildTools(tools);
+
+            // Force a specific tool when asked; otherwise the model chooses (SDK default).
+            if (!string.IsNullOrEmpty(forcedToolName))
+            {
+                parameters.ToolChoice = new ToolChoice { Type = ToolChoiceType.Tool, Name = forcedToolName };
+            }
         }
 
         ThinkingParameters? thinking = BuildThinking(model, extraPayload);

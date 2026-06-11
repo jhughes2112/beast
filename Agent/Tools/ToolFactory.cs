@@ -98,7 +98,7 @@ public static class ToolFactory
     // "goal" parameter and dispatches through a sub-session before falling back to the raw handler.
     public static Dictionary<string, Tool> BuildSubagent(
         WebSearchConfig? webSearchConfig,
-        Func<string, JsonObject, string, int, CancellationToken, Task<string?>> runSubSession)
+        Func<string, JsonObject, string, int, CancellationToken, Task<(string? text, int responseTokens)>> runSubSession)
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
@@ -200,7 +200,7 @@ public static class ToolFactory
         string description,
         JsonObject parameters,
         Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> handler,
-        Func<string, JsonObject, string, int, CancellationToken, Task<string?>> runSubSession)
+        Func<string, JsonObject, string, int, CancellationToken, Task<(string? text, int responseTokens)>> runSubSession)
     {
         tools[name] = new Tool
         {
@@ -212,9 +212,9 @@ public static class ToolFactory
             Handler = async (args, ct, transport, sessionId, maxOutputTokens) =>
             {
                 string goal = Str(args, "goal");
-                string? subResult = await runSubSession(name, args, goal, maxOutputTokens, ct);
+                (string? subResult, int responseTokens) = await runSubSession(name, args, goal, maxOutputTokens, ct);
                 if (subResult != null)
-                    return new ToolResult(subResult, string.Empty, 0);
+                    return new ToolResult(subResult, string.Empty, 0, responseTokens);
                 return await handler(args, ct, transport, sessionId);
             }
         };

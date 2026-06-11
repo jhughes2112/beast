@@ -19,6 +19,7 @@ public class Session
     private readonly BeastSession _data;
     private readonly ListenerBundle _bundle;
     private readonly ITransportServer _transport;
+    private readonly ContextBudget _budget = new ContextBudget();
 
     private readonly ConcurrentQueue<string> _inputQueue = new ConcurrentQueue<string>();
     private readonly ConcurrentQueue<string> _commandQueue = new ConcurrentQueue<string>();
@@ -50,6 +51,10 @@ public class Session
     public decimal TotalCost => _data.TotalCost;
     public int CumulativeInputTokens => _data.CumulativeInputTokens;
     public int CumulativeOutputTokens => _data.CumulativeOutputTokens;
+
+    // Central token accounting for the context window. LlmService configures it at turn start and
+    // queries it for completion sizing and tool-response reservations.
+    public ContextBudget Budget => _budget;
 
     public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
     {
@@ -119,6 +124,9 @@ public class Session
         _data.TotalCost += cost;
         _data.LastTokenUsage = usage;
         _data.CurrentContextSize = currentContextSize;
+        // The reported size already includes any tool outputs appended since the last response, so
+        // the budget's pending reservations are now fully accounted for.
+        _budget.RecordMeasurement(currentContextSize);
     }
 
     // ---- Attention / input ----
@@ -289,14 +297,48 @@ public class Session
         return false;
     }
 
-    // Prepares for a new LLM turn: flushes pending messages and arms the per-turn CTS.
-    // Returns the turn-specific cancellation token; always pair with EndTurn.
-    // LlmService polls TryGetPendingInput between tool calls to pick up mid-turn user input.
+    // Prepares for a new LLM turn: repairs dangling tool calls, flushes pending messages, and
+    // arms the per-turn CTS. Returns the turn-specific cancellation token; always pair with
+    // EndTurn. LlmService polls TryGetPendingInput between tool calls to pick up mid-turn input.
     public CancellationToken BeginTurn()
     {
+        // Repair before flushing so synthesized results land directly after their assistant
+        // turn, ahead of any newly queued user text.
+        CompleteDanglingToolCalls();
         FlushPendingMessages();
         _turnCts = new CancellationTokenSource();
         return _turnCts.Token;
+    }
+
+    // Synthesizes an error result for any assistant tool call that never received one — the turn
+    // was interrupted mid-round, or the app shut down and the session was reloaded. Without this
+    // the next request would carry tool calls with no matching tool results, which providers
+    // reject or models misread.
+    private void CompleteDanglingToolCalls()
+    {
+        System.Collections.Generic.HashSet<string> satisfiedIds = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+        foreach (CanonicalMessage msg in _data.Messages)
+        {
+            if (msg is ToolResultMessage tr)
+                satisfiedIds.Add(tr.ToolCallId);
+        }
+
+        // Collect first: OnToolResult appends to the list being scanned.
+        System.Collections.Generic.List<string> danglingIds = new System.Collections.Generic.List<string>();
+        foreach (CanonicalMessage msg in _data.Messages)
+        {
+            if (msg is AssistantMessage am)
+            {
+                foreach (SemanticToolCall tc in am.ToolCalls)
+                {
+                    if (!satisfiedIds.Contains(tc.Id))
+                        danglingIds.Add(tc.Id);
+                }
+            }
+        }
+
+        foreach (string id in danglingIds)
+            _bundle.OnToolResult(id, new ToolResult(string.Empty, "Tool call was interrupted before it completed.", 1));
     }
 
     // Cleans up after a turn. If interrupted, sets the wait state so NeedsAttention() stays

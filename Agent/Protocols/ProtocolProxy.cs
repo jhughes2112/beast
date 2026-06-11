@@ -174,7 +174,7 @@ public class ProtocolProxy
         _protocolAnthropic?.OnClear();
     }
 
-    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)
+    public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)
     {
         bundle.SetActiveProxy(this);
 
@@ -192,13 +192,13 @@ public class ProtocolProxy
         IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
         if (_detected == DetectedProtocol.Anthropic)
-            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+            return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
         if (_detected == DetectedProtocol.Responses)
-            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+            return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
         if (_detected == DetectedProtocol.ChatCompletions)
-            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+            return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
         return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
     }

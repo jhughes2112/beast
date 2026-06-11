@@ -147,6 +147,7 @@ public class ProtocolResponses
         LlmModel model,
         ListenerBundle bundle,
         List<ToolDefinition> tools,
+        string? forcedToolName,
         int? maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
@@ -156,7 +157,7 @@ public class ProtocolResponses
         QueryLogger? queryLogger,
         CancellationToken cancellationToken)
     {
-        JsonObject body = BuildBody(model, tools, maxCompletionTokens, extraPayload);
+        JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
         queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
         if (_streamingSupported)
@@ -214,7 +215,7 @@ public class ProtocolResponses
         return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
     }
 
-    private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
+    private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
     {
         JsonObject body = new JsonObject();
         body["model"] = model.Config.Id;
@@ -251,7 +252,19 @@ public class ProtocolResponses
                 toolsArr.Add(t);
             }
             body["tools"] = toolsArr;
-            body["tool_choice"] = "auto";
+
+            // Force a specific tool when asked; otherwise leave the choice to the model.
+            if (!string.IsNullOrEmpty(forcedToolName))
+            {
+                JsonObject choice = new JsonObject();
+                choice["type"] = "function";
+                choice["name"] = forcedToolName;
+                body["tool_choice"] = choice;
+            }
+            else
+            {
+                body["tool_choice"] = "auto";
+            }
         }
 
         foreach (KeyValuePair<string, JsonNode?> kv in extraPayload)

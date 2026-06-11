@@ -185,6 +185,7 @@ public class ProtocolChatCompletions
         LlmModel model,
         ListenerBundle bundle,
         List<ToolDefinition> tools,
+        string? forcedToolName,
         int? maxCompletionTokens,
         Dictionary<string, string> extraHeaders,
         Dictionary<string, JsonNode?> extraPayload,
@@ -197,7 +198,7 @@ public class ProtocolChatCompletions
         bool logged = false;
         for (;;)
         {
-            JsonObject body = BuildRequestBody(model, tools, maxCompletionTokens);
+            JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
             if (!logged) { logged = true; queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
 
             if (_streamingSupported)
@@ -315,7 +316,7 @@ public class ProtocolChatCompletions
         }
     }
 
-    private JsonObject BuildRequestBody(LlmModel model, List<ToolDefinition> tools, int? maxCompletionTokens)
+    private JsonObject BuildRequestBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens)
     {
         JsonObject body = new JsonObject();
         body["model"] = model.Config.Id;
@@ -353,7 +354,22 @@ public class ProtocolChatCompletions
                 toolsArr.Add(JsonNode.Parse(JsonSerializer.Serialize(td, JsonOptions)));
             }
             body["tools"] = toolsArr;
-            if (_parallelToolCallsSupported) body["parallel_tool_calls"] = true;
+
+            // Force a specific tool when asked; otherwise leave choice to the model. A forced single
+            // tool implies one call, so parallel tool calls are not advertised in that case.
+            if (!string.IsNullOrEmpty(forcedToolName))
+            {
+                JsonObject fn = new JsonObject();
+                fn["name"] = forcedToolName;
+                JsonObject choice = new JsonObject();
+                choice["type"] = "function";
+                choice["function"] = fn;
+                body["tool_choice"] = choice;
+            }
+            else if (_parallelToolCallsSupported)
+            {
+                body["parallel_tool_calls"] = true;
+            }
         }
 
         body["seed"] = Random.Shared.Next();

@@ -7,7 +7,8 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Executes a session: LLM turns, tool dispatch (including sub-session spawning), and role transitions.
+// Executes a session: LLM turns, tool dispatch, and role transitions. Subagent-wrapped tool
+// calls are delegated to SubagentRunner; single-turn execution lives in TurnRunner.
 // Ownership rules:
 //   - Session system prompt is set once at construction; never mutated during a run.
 //   - RunAsync runs until cancelled or until context fills; it compacts internally when needed
@@ -30,9 +31,13 @@ public class SessionRunner
     private LlmService? _service;
 
     // Keyed by "agent:{roleName}" or "sub:{roleName}". Populated lazily, cleared on /reload.
-    // Safe because ToolFactory.BuildSubagent captures RunSubSessionAsync which is bound to this
-    // instance, so the delegate stays valid for the runner's lifetime.
+    // Safe because ToolFactory.BuildSubagent captures _subagent.RunSubSessionAsync, and the
+    // SubagentRunner reads the live current session through its accessor, so the delegate stays
+    // valid for the runner's lifetime.
     private readonly Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
+
+    // Handles subagent-wrapped tool calls by running ephemeral "Tools"-role sub-sessions.
+    private readonly SubagentRunner _subagent;
 
     private bool _wantsCompact = false;
 
@@ -58,6 +63,7 @@ public class SessionRunner
         _transport = transport;
         _cancellationTokenSource = cancellationTokenSource;
         _currentSession = session;
+        _subagent = new SubagentRunner(registry, roleService, transport, () => _currentSession);
     }
 
     // Routes inbound input to the session tree by ID.
@@ -134,7 +140,7 @@ public class SessionRunner
                     try
                     {
                         Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
-                        LlmResult result = await RunTurnAsync(session, service, tools, _settings.Settings.CompactionReserveTokens, 0, _cancellationTokenSource.Token);
+                        LlmResult result = await TurnRunner.RunTurnAsync(session, service, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
                         SendStats(session, service.Model.Config.ContextWindow);
 
                         // A model-initiated Answer call records a pending transition. Apply it
@@ -167,7 +173,7 @@ public class SessionRunner
                         {
                             // The model finished without opting to transition. Confront it with the
                             // role's end-of-turn question and require an explicit Answer-tool call.
-                            Session? advanced = await AdvanceRoleAsync(session, role, _cancellationTokenSource.Token);
+                            Session? advanced = await AdvanceRoleAsync(session, role, service, _cancellationTokenSource.Token);
                             if (advanced != null)
                             {
                                 session = advanced;
@@ -240,7 +246,7 @@ public class SessionRunner
         IReadOnlyList<CanonicalMessage> tailExchanges = ExtractTailExchanges(_currentSession.Data.Messages, 2);
 
         _transport.Status(_currentSession.Id, "[Compaction] Started.");
-        string? summary = await SummarizeAsync(_currentSession, role.SummaryPrompt, Array.Empty<Tool>(), ct);
+        string? summary = await TurnRunner.SummarizeAsync(_currentSession, role.SummaryPrompt, Array.Empty<Tool>(), _registry, _roleService, _transport, ct);
 
         if (string.IsNullOrWhiteSpace(summary))
         {
@@ -481,6 +487,7 @@ public class SessionRunner
         TestContext ctx = new TestContext(_transport);
 
         LlmServiceTests.Test(ctx);
+        ContextBudgetTests.Test(ctx);
         FixJsonTests.Test(ctx);
         await FileToolsTests.TestAsync(ctx);
         ShellToolsTests.Test(ctx);
@@ -496,96 +503,40 @@ public class SessionRunner
     // Applies a model-initiated role transition. The model called the always-available Answer tool
     // mid-turn, selecting one of the role's truth statements; selectedAnswer is the full briefing
     // that becomes the next phase's first prompt. Runs end-of-turn bookkeeping, then maps the truth.
-    private async Task<Session?> ApplyTransitionAsync(Session session, Role currentRole, string selectedTruth, string selectedAnswer, CancellationToken ct)
+    private Task<Session?> ApplyTransitionAsync(Session session, Role currentRole, string selectedTruth, string selectedAnswer, CancellationToken ct)
     {
-        // Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
-        // Best-effort: the model already decided to transition, so a failed summary doesn't abort it.
-        if (!string.IsNullOrEmpty(currentRole.SummaryPrompt))
-        {
-            Tool[] roleTools = _registry.GetToolsForRole(currentRole);
-            _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
-            string? summary = await SummarizeAsync(session, currentRole.SummaryPrompt, roleTools, ct);
-            if (string.IsNullOrEmpty(summary))
-                _transport.Error(session.Id, "[Role] Summary bookkeeping failed; continuing transition.");
-        }
-
-        return CreateNextRoleSession(session, currentRole, selectedTruth, selectedAnswer);
+        // The model already provided a full briefing via the Answer tool's answer argument.
+        // No summary needed: selectedAnswer IS the handoff context for the next phase.
+        return Task.FromResult(CreateNextRoleSession(session, currentRole, selectedTruth, selectedAnswer));
     }
 
     // Called after a completed worker turn when the model did NOT already opt to transition via the
-    // Answer tool. Confronts the model with the role's EndOfTurnPrompt and requires an explicit
-    // answer. If the role defines no EndOfTurnPrompt + Truths, there is nothing to confront.
-    //   1. Runs SummaryPrompt in a fork (with full tools) to let the model do bookkeeping.
-    //   2. Confronts the model in a fresh ephemeral session with only the Answer tool. The answer
-    //      must begin with one truth statement verbatim and continue with context for the next
-    //      phase. Retries up to MaxEvalAttempts times on a missing or bad answer.
-    //   3. Maps the matched truth label to the next role name.
-    private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, CancellationToken ct)
+    // Answer tool. Confronts the model in the SAME session: appends a user prompt requiring an explicit
+    // Answer-tool call and exposes only the Answer tool, so it cannot keep working. No summary or
+    // compaction is needed — the full conversation is already in context, so the model writes its
+    // briefing from its own working memory. The Answer call lands in the current conversation;
+    // CreateNextRoleSession then continues this session (same role) or hands off to a fresh one
+    // (different role). If the role defines no EndOfTurnPrompt + Truths, there is nothing to confront.
+    private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, LlmService service, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths.Count == 0)
             return null;
 
-        // 1. Run the role's summary prompt in a fork so the model can update MEMORY.md, PLAN.md, etc.
-        Tool[] roleTools = _registry.GetToolsForRole(currentRole);
-        string summaryPrompt = currentRole.SummaryPrompt;
-
-        _transport.Status(session.Id, "[Role] Running end-of-turn summary...");
-        string? summary = await SummarizeAsync(session, summaryPrompt, roleTools, ct);
-        if (string.IsNullOrEmpty(summary))
-        {
-            _transport.Error(session.Id, "[Role] Summary failed; staying in current role.");
-            return null;
-        }
-
-        // 2. Build the confrontation message: summary context + end-of-turn question + truth options.
-        StringBuilder sb = new StringBuilder();
-        sb.AppendLine(summary);
-        sb.AppendLine();
-        sb.AppendLine(currentRole.EndOfTurnPrompt);
-        sb.AppendLine();
-        sb.AppendLine("You must call the Answer tool. Your answer must begin with exactly one of these statements, verbatim:");
-        foreach (string truth in currentRole.Truths.Keys)
-            sb.AppendLine($"- {truth}");
-        sb.AppendLine();
-        sb.AppendLine("After the chosen statement, continue your answer with the context the next phase needs to start working: what has been accomplished, what remains to be done, and any constraints or decisions it must know about. Your entire answer becomes the next phase's first prompt, so write it as a complete briefing.");
-
-        // 3. Run the confrontation on the current model with only the Answer tool.
-        //    Uses a fresh service so the eval session's ProtocolProxy is isolated from the parent.
-        const int MaxEvalAttempts = 3;
         string? selectedTruth = null;
         string? selectedAnswer = null;
         Tool answerTool = BuildAnswerTool(currentRole.EndOfTurnPrompt, currentRole.Truths.Keys, (truth, answer) => { selectedTruth = truth; selectedAnswer = answer; });
 
-        Role? sessionRole = _roleService.GetRole(session.Role);
-        LlmService? evalService = _registry.CreateService(sessionRole, session.Model, 0);
-        if (evalService == null)
-        {
-            _transport.Error(session.Id, "[Role] No service available for evaluation; staying in current role.");
-            return null;
-        }
+        // Run the confrontation in the current session with only the Answer tool, forcing the model to
+        // call it, and reusing the session's service so the conversation continues uninterrupted. Retry
+        // on a bad answer (the tool rejects an answer that does not begin with a truth statement).
+        session.AddUserMessage(currentRole.EndOfTurnPrompt);
 
-        BeastSession evalData = new BeastSession(session.AllocateChildId(), string.Empty, evalService.Model.ConfigId, currentRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
-        Session evalSession = new Session(evalData, currentRole.SystemPrompt, _transport, true);
-        evalSession.AddUserMessage(sb.ToString());
-
-        _transport.Status(session.Id, $"[Role] Evaluating: {currentRole.EndOfTurnPrompt}");
-        session.AddChild(evalSession);
-        for (int attempt = 0; attempt < MaxEvalAttempts; attempt++)
-        {
-            LlmResult evalResult = await RunTurnAsync(evalSession, evalService, new Tool[] { answerTool }, 0, 0, ct);
-
-            if (evalResult.ExitReason != LlmExitReason.Completed)
-                break;
-
-            if (selectedTruth != null)
-                break;
-
-            if (attempt < MaxEvalAttempts - 1)
-                evalSession.AddUserMessage("You must call the Answer tool. Begin your answer with one of the listed statements verbatim, then continue with the briefing for the next phase.");
-        }
+        // Cap the answer to whatever space remains in the window so the briefing always fits.
+        int answerCap = session.Budget.MaxCompletionTokens() ?? 0;
+        LlmResult evalResult = await TurnRunner.RunTurnAsync(session, service, new Tool[] { answerTool }, "Answer", 0, answerCap, _transport, ct);
         if (selectedTruth == null)
         {
-            _transport.Error(session.Id, "[Role] Evaluation failed; staying in current role.");
+            _transport.Error(session.Id, "[Role] Completed session failed to call Answer tool; staying in current role.");
             return null;
         }
 
@@ -594,8 +545,10 @@ public class SessionRunner
 
     // Maps the chosen truth label to the next role and returns the successor session. The Answer tool
     // handler only accepts answers beginning with one of the Truths keys, so the lookup always hits.
-    // Empty next-role = task finished; returns null and control goes back to the user. Otherwise saves
-    // the current session and starts a fresh one whose first user prompt is the model's full answer.
+    // Empty next-role = task finished; returns null and control goes back to the user. Same role =
+    // continue in place: the answer becomes the next user prompt and null is returned so the caller
+    // keeps the current session. Different role = save the current session and start a fresh one whose
+    // first user prompt is the model's full answer.
     private Session? CreateNextRoleSession(Session session, Role currentRole, string selectedTruth, string selectedAnswer)
     {
         currentRole.Truths.TryGetValue(selectedTruth, out string? nextRoleName);
@@ -607,6 +560,15 @@ public class SessionRunner
         }
 
         Role nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
+
+        // Same role: stay in the current conversation. The briefing becomes the next user prompt so the
+        // model keeps working in place; no new session is created and the caller keeps this session.
+        if (string.Equals(nextRole.Name, currentRole.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            session.AddUserMessage(selectedAnswer);
+            _transport.Status(session.Id, $"[Role] {selectedTruth} → continue ({currentRole.Name}).");
+            return null;
+        }
 
         if (!session.Ephemeral)
             SessionService.Save(session.Data);
@@ -628,11 +590,11 @@ public class SessionRunner
     private static Tool BuildAnswerTool(string endOfTurnPrompt, IEnumerable<string> truthLabels, Action<string, string> onAnswer)
     {
         List<string> labels = new List<string>(truthLabels);
-        string optionList = string.Join("; ", labels);
+        string optionList = string.Join("\n", labels);
 
         JsonObject answerProp = new JsonObject();
         answerProp["type"] = "string";
-        answerProp["description"] = $"Your full answer. It must begin with exactly one of these statements, verbatim: {optionList}. After the statement, continue with the context the next phase needs to start working: what has been accomplished, what remains, and any constraints or decisions it must know about. The entire answer becomes the next phase's first prompt.";
+        answerProp["description"] = $"Your full answer. It must begin with exactly one of these statements, verbatim: {optionList}\n\nAfter the statement, continue with the context the next phase needs to start working: what has been accomplished, what remains, and any constraints or decisions it must know about. The entire answer becomes the next phase's first prompt.";
 
         JsonObject properties = new JsonObject();
         properties["answer"] = answerProp;
@@ -683,153 +645,6 @@ public class SessionRunner
         };
     }
 
-    // ---- Sub-session dispatch ----
-
-    private static string BuildSubSessionMessage(string toolName, JsonObject args, string goal, int outputBudgetTokens)
-    {
-        JsonObject displayArgs = new JsonObject();
-        foreach (KeyValuePair<string, JsonNode?> kv in args)
-        {
-            if (kv.Key != "goal")
-                displayArgs[kv.Key] = kv.Value?.DeepClone();
-        }
-
-        return $"Use tools such as {toolName} with parameters {displayArgs.ToJsonString()} to return: {goal}\n"
-            + $"Your final message is the response returned to the calling agent and is inserted into its context, so it must fit within approximately {outputBudgetTokens} tokens. "
-            + "If your raw findings are larger, summarize them to fit while preserving the exact details requested (file paths, line numbers, names, key output).";
-    }
-
-    // Runs an ephemeral sub-session using the "Tools" role to fulfill a single tool call. The result
-    // is inserted into the calling agent's context and must fit within outputBudgetTokens. Each
-    // attempt forks from the clean sub-session so a clipped or over-budget reply never pollutes the
-    // session history; the fork is discarded and a new one started with a tighter cap if needed.
-    // Returns the last fitting assistant text, or null if the Tools role is unavailable (the caller
-    // falls back to the raw handler).
-    private async Task<string?> RunSubSessionAsync(string toolName, JsonObject args, string goal, int outputBudgetTokens, CancellationToken ct)
-    {
-        // No budget left for any reply (window nearly full): a sub-session is pointless, and a
-        // 0 cap would collide with the "uncapped" sentinel on retries. Fall back to the raw
-        // handler, whose output the tool dispatcher truncates to the budget.
-        if (outputBudgetTokens <= 0)
-            return null;
-
-        Role? toolsRole = _roleService.GetRole("Tools");
-        if (toolsRole == null)
-            return null;
-
-        LlmService? service = _registry.CreateService(toolsRole, string.Empty, 0);
-        if (service == null)
-            return null;
-
-        Tool[] innerTools = _registry.GetToolsForRole(toolsRole);
-
-        string displayName = goal.Length > 80 ? goal.Substring(0, 80) : goal;
-
-        BeastSession subData = new BeastSession(_currentSession.AllocateChildId(), displayName, service.Model.ConfigId, "Tools", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral, 0);
-        Session subSession = new Session(subData, toolsRole.SystemPrompt, _transport, true);
-        subSession.AnnounceToClient();
-        subSession.AddUserMessage(BuildSubSessionMessage(toolName, args, goal, outputBudgetTokens));
-        _currentSession.AddChild(subSession);
-
-        subSession.SendBusy();
-        try
-        {
-            const int MaxFitAttempts = 3;
-            string? finalText = null;
-            // First attempt is uncapped so the subagent can read large files or reason extensively;
-            // only its final reply must fit. Retries use outputBudgetTokens as a hard cap so the
-            // model is forced to produce a concise reply rather than getting clipped mid-sentence.
-            int outputCap = 0;
-            for (int attempt = 0; attempt < MaxFitAttempts; attempt++)
-            {
-                // Fork from the clean sub-session so each attempt starts from the same state.
-                // The fork is ephemeral and discarded whether the attempt succeeds or fails.
-                Session forkSession = subSession.Fork(_currentSession.AllocateChildId(), string.Empty, true);
-                subSession.AddChild(forkSession);
-
-                LlmResult result = await RunTurnAsync(forkSession, service, innerTools, 0, outputCap, ct);
-                if (result.ExitReason != LlmExitReason.Completed)
-                    break;
-
-                if (result.FinishReason == "length" || result.FinishReason == "max_tokens")
-                {
-                    // Clipped response is useless — retry with a hard cap so the model must fit.
-                    outputCap = outputBudgetTokens;
-                    continue;
-                }
-
-                finalText = forkSession.GetLastAssistantText();
-                int responseTokens = forkSession.LastTokenUsage?.CompletionTokens ?? 0;
-                if (responseTokens <= outputBudgetTokens)
-                    return finalText;
-
-                // Complete but over budget — cap the next attempt.
-                outputCap = outputBudgetTokens;
-            }
-
-            // Still over budget (or no clean completion): return what we have; the tool
-            // dispatcher (LlmService.ExecuteToolAsync) hard-truncates to the budget as a last resort.
-            return finalText;
-        }
-        finally
-        {
-            if (!subSession.Ephemeral)
-                SessionService.Save(subSession.Data);
-            subSession.SendIdle();
-        }
-    }
-
-    // ---- LLM turn execution ----
-
-    // Runs one LLM turn on the given session. Delegates bundle management and turn-CTS lifecycle
-    // to the session; this method owns the LlmService call and interrupt handling.
-    // maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
-    private async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, int reserveTokens, int maxOutputCap, CancellationToken appToken)
-    {
-        session.UpdateModel(service.Model.ConfigId);
-        CancellationToken turnToken = session.BeginTurn();
-        // BeginTurn flushes _inputQueue into Messages, so InferDisplayName can now see the first user text.
-        if (session.InferDisplayName())
-            session.AnnounceToClient();
-        bool interrupted = false;
-        try
-        {
-            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, appToken);
-            try
-            {
-                return await service.RunToCompletionAsync(session, session.Bundle, tools, reserveTokens, maxOutputCap, _transport, linked.Token);
-            }
-            catch (OperationCanceledException) when (turnToken.IsCancellationRequested && !appToken.IsCancellationRequested)
-            {
-                interrupted = true;
-                return new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
-            }
-        }
-        finally
-        {
-            session.EndTurn(interrupted);
-        }
-    }
-
-    // Runs a summarization prompt in a temporary fork of the session and returns the assistant text.
-    // Creates its own fresh LlmService so the fork's ProtocolProxy is never shared with the
-    // parent session. The fork is discarded after the call; the original session is untouched.
-    private async Task<string?> SummarizeAsync(Session session, string prompt, Tool[] tools, CancellationToken appToken)
-    {
-        Role? role = _roleService.GetRole(session.Role);
-        LlmService? service = _registry.CreateService(role, session.Model, 0);
-        if (service == null)
-            return null;
-
-        Session temp = session.Fork($"{session.Id}_sum", string.Empty, true);
-        temp.AddUserMessage(prompt);
-        session.AddChild(temp);
-        LlmResult result = await RunTurnAsync(temp, service, tools, 0, 0, appToken);
-        if (result.ExitReason == LlmExitReason.Completed)
-            return temp.GetLastAssistantText();
-        return null;
-    }
-
     // ---- Helpers ----
 
     // Returns the cached Tool[] for the role+mode combination, building on first call.
@@ -842,7 +657,7 @@ public class SessionRunner
 
         bool hasToolsRole = _roleService.GetRole("Tools") != null;
         Dictionary<string, Tool> allTools = (!isSubagent && hasToolsRole)
-            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, RunSubSessionAsync)
+            ? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, _subagent.RunSubSessionAsync)
             : ToolFactory.Build(_settings.Settings.WebSearch);
 
         List<Tool> toolList = new List<Tool>();
