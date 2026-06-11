@@ -60,164 +60,182 @@ public class LlmService
         _handler = new ProtocolProxy(model, detectedProtocol);
     }
 
-    // maxOutputCap (0 = none) hard-limits each response's max_tokens, so a sub-session's reply is
-    // guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
-    public async Task<LlmResult> RunToCompletionAsync(Session conversation, ListenerBundle bundle, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
-    {
-        if (_availability.IsDown)
+	// forcedToolName (null = free choice) requires the model to call that exact tool this turn.
+	// maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
+	// guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
+	// Owns the full turn lifecycle: BeginTurn/EndTurn, interrupt classification, and token linking.
+     public async Task<LlmResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
+     {
+        LlmResult result = new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is permanently down");
+
+        if (_availability.IsDown==false)
         {
-            return new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is permanently down");
-        }
-
-        LlmModel model = _model;
-        LlmResult finalResult = new LlmResult(LlmExitReason.Completed, "");
-        string sessionId = conversation.Id;
-
-        try
-        {
-            List<ToolDefinition> toolDefs = new List<ToolDefinition>();
-            for (int i = 0; i < tools.Length; i++)
+            conversation.UpdateModel(_model);
+            CancellationToken turnToken = conversation.BeginTurn();
+            bool interrupted = false;
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, cancellationToken);
+            try
             {
-                toolDefs.Add(tools[i].Definition);
-            }
-
-            int emptyResponseCount = 0;
-            const int kMaxEmptyResponses = 10;
-            int rateLimitRetries = 0;
-            const int kMaxRateLimitRetries = 10;
-
-            // Central context accounting for this turn. Seeded with the model's window and limits, the
-            // compaction reserve, and the sub-session output cap. It owns all "how much room is left"
-            // math: the context-full gate, completion sizing, and per-tool response reservations.
-            ContextBudget budget = conversation.Budget;
-            budget.Configure(model.Config.ContextWindow, model.Config.MaxOutputTokens, reserveTokens, maxOutputCap, conversation.ContextLength);
-
-            for (; ; )
-            {
-                if (rateLimitRetries <= kMaxRateLimitRetries)
+                List<ToolDefinition> toolDefs = new List<ToolDefinition>();
+                for (int i = 0; i < tools.Length; i++)
                 {
-                    TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
-                    if (delay > TimeSpan.Zero)
+                    toolDefs.Add(tools[i].Definition);
+                }
+
+                int emptyResponseCount = 0;
+                const int kMaxEmptyResponses = 10;
+                int rateLimitRetries = 0;
+                const int kMaxRateLimitRetries = 10;
+
+                // Central context accounting for this turn. Seeded with the model's window and limits, the
+                // compaction reserve, and the sub-session output cap. It owns all "how much room is left"
+                // math: the context-full gate, completion sizing, and per-tool response reservations.
+                ContextBudget budget = conversation.Budget;
+                budget.Configure(_model.Config.ContextWindow, _model.Config.MaxOutputTokens, reserveTokens, maxOutputCap, conversation.ContextLength);
+                result = new LlmResult(LlmExitReason.Completed, "");
+
+                for (; ; )
+                {
+                    if (rateLimitRetries <= kMaxRateLimitRetries)
                     {
-                        if (rateLimitRetries>0)
+                        TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
+                        if (delay > TimeSpan.Zero)
                         {
-                            transport.Status(sessionId, $"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
+                            if (rateLimitRetries>0)
+                            {
+                                transport.Status(conversation.Id, $"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
+                            }
+                            await Task.Delay(delay, linked.Token);
                         }
-                        await Task.Delay(delay, cancellationToken);
-                    }
-                }
-                else
-                {
-                    finalResult = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availability.AvailableAt:u}");
-                    break;
-                }
-
-                if (budget.IsExhausted())
-                {
-                    finalResult = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
-                    break;
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Size the response against the exact context plus any not-yet-reported tool outputs,
-                // so input + output stays within the window even right after a tool round.
-                int? maxCompletionTokens = budget.MaxCompletionTokens();
-
-                // Provisional live stats while the turn streams. Protocols report inputTokens as the
-                // whole-conversation input the provider bills this turn (Anthropic via StreamStart
-                // usage, Responses via response.created usage), which is exactly what the committed
-                // frame reports as promptTokens. outputTokens is the per-turn completion count. The
-                // displayed in/out counters are the absolute session totals, so the live frame adds
-                // the in-flight turn on top of the persisted cumulative baselines; contextTokens
-                // stays as the current context occupancy. These are superseded at commit by the
-                // authoritative cumulative values.
-                decimal costBaseline = conversation.TotalCost;
-                int contextBaseline = conversation.ContextLength;
-                int inputBaseline = conversation.CumulativeInputTokens;
-                int outputBaseline = conversation.CumulativeOutputTokens;
-                LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
-                {
-                    int liveContextTokens = contextBaseline;
-                    int livePromptTokens = inputBaseline + inputTokens;
-                    int liveCompletionTokens = outputBaseline + outputTokens;
-                    string liveJson = BuildStatsJson(conversation.Model, conversation.Role, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, model.Config.ContextWindow, liveContextTokens);
-                    transport.Stats(sessionId, liveJson);
-                };
-
-                ProtocolResult callResult = await _handler.ExecuteAsync(bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, sessionId, conversation.QueryLog, cancellationToken);
-
-                if (callResult.Outcome == ProtocolCallOutcome.Success)
-                {
-                    ProtocolCallPayload payload = callResult.Payload!;
-                    // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
-                    // which resets pending reservations: the size already includes any prior tool outputs.
-                    conversation.RecordTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
-
-                    SendCostUpdate(conversation, model.Config.ContextWindow, transport);
-
-                    (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, bundle, budget, transport, sessionId, cancellationToken);
-                    if (terminalResult != null)
-                    {
-                        finalResult = terminalResult;
-                        break;
-                    }
-
-                    // Check if new user input has arrived between tool calls; inject it so the
-                    // LLM can see and respond to it on the next iteration.
-                    string? newUserInput = conversation.TryGetPendingInput();
-                    if (!string.IsNullOrEmpty(newUserInput))
-                    {
-                        bundle.OnUserMessage(newUserInput);
-                    }
-
-                    if (toolsDispatched)
-                    {
-                        emptyResponseCount = 0;
                     }
                     else
                     {
-                        emptyResponseCount++;
-                        if (emptyResponseCount >= kMaxEmptyResponses)
+                        result = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, retry after {_availability.AvailableAt:u}");
+                        break;
+                    }
+
+                    if (budget.IsExhausted())
+                    {
+                        result = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
+                        break;
+                    }
+
+                    linked.Token.ThrowIfCancellationRequested();
+
+                    // Size the response against the exact context plus any not-yet-reported tool outputs,
+                    // so input + output stays within the window even right after a tool round.
+                    int? maxCompletionTokens = budget.MaxCompletionTokens();
+
+                    // Provisional live stats while the turn streams. Protocols report inputTokens as the
+                    // whole-conversation input the provider bills this turn (Anthropic via StreamStart
+                    // usage, Responses via response.created usage), which is exactly what the committed
+                    // frame reports as promptTokens. outputTokens is the per-turn completion count. The
+                    // displayed in/out counters are the absolute session totals, so the live frame adds
+                    // the in-flight turn on top of the persisted cumulative baselines; contextTokens
+                    // stays as the current context occupancy. These are superseded at commit by the
+                    // authoritative cumulative values.
+                    decimal costBaseline = conversation.TotalCost;  //***** These need to be locals so they get captured by the closure!!
+                    int contextBaseline = conversation.ContextLength;
+                    int inputBaseline = conversation.CumulativeInputTokens;
+                    int outputBaseline = conversation.CumulativeOutputTokens;
+                    string modelId = conversation.Model;
+                    string role = conversation.Role;
+                    int contextWindow = _model.Config.ContextWindow;
+                    LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
                         {
-                            finalResult = new LlmResult(LlmExitReason.Failed, $"Model returned {kMaxEmptyResponses} consecutive empty responses.");
+                            int liveContextTokens = contextBaseline;
+                            int livePromptTokens = inputBaseline + inputTokens;
+                            int liveCompletionTokens = outputBaseline + outputTokens;
+                            string liveJson = BuildStatsJson(modelId, role, livePromptTokens, liveCompletionTokens, costBaseline + turnCost, contextWindow, liveContextTokens);
+                            transport.Stats(conversation.Id, liveJson);
+                        };
+
+                    ProtocolResult callResult = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.Id, conversation.QueryLog, linked.Token);
+
+                    if (callResult.Outcome == ProtocolCallOutcome.Success)
+                    {
+                        ProtocolCallPayload payload = callResult.Payload!;
+                        // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
+                        // which resets pending reservations: the size already includes any prior tool outputs.
+                        conversation.RecordTurnUsage(payload.Usage, payload.Cost, payload.CurrentContextSize);
+
+                        SendCostUpdate(conversation, _model.Config.ContextWindow, transport);
+
+                        (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(payload, tools, conversation.Bundle, budget, transport, conversation.Id, linked.Token);
+                        if (terminalResult != null)
+                        {
+                            result = terminalResult;
                             break;
                         }
+
+                        // Check if new user input has arrived between tool calls; inject it so the
+                        // LLM can see and respond to it on the next iteration.
+                        string? newUserInput = conversation.TryGetPendingInput();
+                        if (!string.IsNullOrEmpty(newUserInput))
+                        {
+                            conversation.Bundle.OnUserMessage(newUserInput);
+                        }
+
+                        if (toolsDispatched)
+                        {
+                            emptyResponseCount = 0;
+                        }
+                        else
+                        {
+                            emptyResponseCount++;
+                            if (emptyResponseCount >= kMaxEmptyResponses)
+                            {
+                                result = new LlmResult(LlmExitReason.Failed, $"Model returned {kMaxEmptyResponses} consecutive empty responses.");
+                                break;
+                            }
+                        }
+                    }
+                    else if (callResult.Outcome == ProtocolCallOutcome.RateLimited)
+                    {
+                        rateLimitRetries++;
+                        _availability.AvailableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
+                        // loop and retry
+                    }
+                    else if (callResult.Outcome == ProtocolCallOutcome.Transient)
+                    {
+                        _availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(300);  // give it five minutes to try another LLM
+                        result = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
+                        break;
+                    }
+                    else
+                    {
+                        _availability.AvailableAt = DateTimeOffset.MaxValue;
+                        result = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
+                        break;
                     }
                 }
-                else if (callResult.Outcome == ProtocolCallOutcome.RateLimited)
+            }
+            catch (OperationCanceledException ex)
+            {
+				// the user interrupted us
+                if (turnToken.IsCancellationRequested && cancellationToken.IsCancellationRequested==false)
                 {
-                    rateLimitRetries++;
-                    _availability.AvailableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
-                    // loop and retry
+					interrupted = true;
+					result = new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
                 }
-                else if (callResult.Outcome == ProtocolCallOutcome.Transient)
-                {
-                    _availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(30);
-                    finalResult = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
-                    break;
-                }
-                else
-                {
-                    _availability.AvailableAt = DateTimeOffset.MaxValue;
-                    finalResult = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
-                    break;
-                }
+				else // The LLM cancelled on its own
+				{
+					result = new LlmResult(LlmExitReason.Failed, $"LLM call cancelled: {ex.Message}");
+				}
+            }
+			catch (Exception ex)
+			{
+				// Cancellation without our token = client-side timeout (e.g. HttpClient). Surface it
+				// as a failure so the user sees it instead of a silent retry loop.
+				string reason = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+				result = new LlmResult(LlmExitReason.Failed, $"LLM call cancelled unexpectedly (client-side timeout): {reason}");
+			}
+            finally
+            {
+                conversation.EndTurn(interrupted);
             }
         }
-        catch (OperationCanceledException ex)
-        {
-            // Our token cancelled: rethrow so RunTurnAsync classifies interrupt vs app shutdown.
-            if (cancellationToken.IsCancellationRequested)
-                throw;
-
-            // Cancellation without our token = client-side timeout (e.g. HttpClient). Surface it
-            // as a failure so the user sees it instead of a silent retry loop.
-            string reason = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
-            finalResult = new LlmResult(LlmExitReason.Failed, $"LLM call cancelled unexpectedly (client-side timeout): {reason}");
-        }
-
-        return finalResult;
+        return result;
     }
 
     private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ContextBudget budget, ITransportServer transport, string sessionId, CancellationToken ct)

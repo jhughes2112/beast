@@ -136,7 +136,7 @@ public class SessionRunner
                     try
                     {
                         Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
-                        LlmResult result = await TurnRunner.RunTurnAsync(session, _service, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
+                        LlmResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
                         SendStats(session);
 
                         // A model-initiated Answer call records a pending transition. Apply it
@@ -529,7 +529,7 @@ public class SessionRunner
 
         // Cap the answer to whatever space remains in the window so the briefing always fits.
         int answerCap = session.Budget.MaxCompletionTokens() ?? 0;
-        LlmResult evalResult = await TurnRunner.RunTurnAsync(session, service, new Tool[] { answerTool }, "Answer", 0, answerCap, _transport, ct);
+        LlmResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { answerTool }, "Answer", 0, answerCap, _transport, ct);
         if (selectedTruth == null)
         {
             _transport.Error(session.Id, "[Role] Completed session failed to call Answer tool; staying in current role.");

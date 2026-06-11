@@ -107,7 +107,7 @@ public class SubagentRunner
                 // the sub-session's client view; a retry simply streams after the prior attempt.
                 Session forkSession = subSession.Fork();
 
-                LlmResult result = await TurnRunner.RunTurnAsync(forkSession, attemptService, innerTools, null, 0, outputCap, _transport, ct);
+                LlmResult result = await attemptService.RunToCompletionAsync(forkSession, innerTools, null, 0, outputCap, _transport, ct);
                 if (result.ExitReason != LlmExitReason.Completed)
                     break;
 

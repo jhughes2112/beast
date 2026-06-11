@@ -10,35 +10,6 @@ using System.Threading.Tasks;
 // interrupt classification.
 public static class TurnRunner
 {
-    // forcedToolName (null = free choice) requires the model to call that exact tool this turn.
-    // maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
-    public static async Task<LlmResult> RunTurnAsync(Session session, LlmService service, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken appToken)
-    {
-        session.UpdateModel(service.Model);
-        CancellationToken turnToken = session.BeginTurn();
-        // BeginTurn flushes _inputQueue into Messages, so InferDisplayName can now see the first user text.
-        if (session.InferDisplayName())
-            session.AnnounceToClient();
-        bool interrupted = false;
-        try
-        {
-            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, appToken);
-            try
-            {
-                return await service.RunToCompletionAsync(session, session.Bundle, tools, forcedToolName, reserveTokens, maxOutputCap, transport, linked.Token);
-            }
-            catch (OperationCanceledException) when (turnToken.IsCancellationRequested && !appToken.IsCancellationRequested)
-            {
-                interrupted = true;
-                return new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
-            }
-        }
-        finally
-        {
-            session.EndTurn(interrupted);
-        }
-    }
-
     // Runs a summarization prompt in a temporary fork of the session and returns the assistant
     // text, or null when no service is available or the turn did not complete. Creates its own
     // fresh LlmService so the fork's ProtocolProxy is never shared with the parent session. The
@@ -54,7 +25,7 @@ public static class TurnRunner
         {
             Session temp = session.Fork();
             temp.AddUserMessage(prompt);
-            LlmResult result = await RunTurnAsync(temp, service, tools, null, 0, 0, transport, appToken);
+            LlmResult result = await service.RunToCompletionAsync(temp, tools, null, 0, 0, transport, appToken);
             if (result.ExitReason == LlmExitReason.Completed)
                 summary = temp.GetLastAssistantText();
         }
