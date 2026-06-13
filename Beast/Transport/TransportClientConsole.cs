@@ -18,7 +18,6 @@ public class TransportClientConsole : ITransportServer
     public void Completions(string sessionId, string json) { }
     public void Idle(string sessionId, bool subagent)      { }
     public void Busy(string sessionId)                     { }
-    public void Clear(string sessionId)                    { }
     public void ToolCallWithId(string sessionId, string callId, string text)           { }
     public void ToolResponseWithId(string sessionId, string callId, ToolResult result) { }
     public void SessionAnnounce(string sessionId, string json) { }

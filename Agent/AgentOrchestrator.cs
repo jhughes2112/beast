@@ -45,7 +45,7 @@ public class AgentOrchestrator
         while (!ct.IsCancellationRequested)
         {
             Task inputTask = ReadInputAsync(runner, inputCts.Token);
-            await runner.RunAsync(ct);
+            Session currentSession = await runner.RunAsync(ct);
             inputCts.Cancel();
             await inputTask;
 
@@ -54,7 +54,7 @@ public class AgentOrchestrator
 
             // RunAsync exited without cancellation (compaction failure) — keep the server alive
             // and restart on the same session so the user can issue commands and continue.
-            runner = new SessionRunner(runner.CurrentSession, _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+            runner = new SessionRunner(currentSession, _registry, _roleService, _settings, _transport, _cancellationTokenSource);
         }
     }
 

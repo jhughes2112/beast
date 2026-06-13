@@ -136,13 +136,6 @@ public class ProtocolResponses
         _deltaInput.Add(item);
     }
 
-    public void OnClear()
-    {
-        _previousResponseId = null;
-        _rehydratedInput = null;
-        _deltaInput.Clear();
-    }
-
     public async Task<ProtocolResult> ExecuteAsync(
         LlmModel model,
         ListenerBundle bundle,
@@ -516,8 +509,7 @@ public class ProtocolResponses
         string assistantText = assistantTextBuilder.ToString();
         string thinking = thinkingBuilder.ToString();
 
-        bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
-        bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
+
 
         // Capture the server response id for next-turn chaining, then clear rehydrated input
         // and delta buffer so subsequent turns accumulate fresh deltas.
@@ -535,14 +527,8 @@ public class ProtocolResponses
 
         (TokenUsageInfo usage, decimal cost) = ExtractUsage(responseRoot, model);
 
-        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
-        int totalInputTokens = responseRoot["usage"]?["input_tokens"]?.GetValue<int>() ?? 0;
-        int cachedTokens = responseRoot["usage"]?["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
-        int freshInputTokens = usage.PromptTokens;
-        string logLine = $"[usage] input={totalInputTokens} (fresh={freshInputTokens} cached={cachedTokens}) output={usage.CompletionTokens} total={usage.PromptTokens + usage.CompletionTokens} cost={cost:F6} msg=\"{msgPreview}\"";
-        Console.WriteLine(logLine);
-
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + usage.CompletionTokens));
+        List<ToolResult> emptyResults = new List<ToolResult>();
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
     }
 
     private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode responseRoot, LlmModel model)
@@ -556,10 +542,11 @@ public class ProtocolResponses
         usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
 
         int cachedTokens = usageNode["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
-        int freshInputTokens = totalInputTokens - cachedTokens;
+         int freshInputTokens = totalInputTokens - cachedTokens;
 
-        // Store only fresh input tokens for session accumulation
-        usage.PromptTokens = freshInputTokens;
+         // Store only fresh input tokens for session accumulation
+         usage.PromptTokens = freshInputTokens;
+         usage.CachedTokens = cachedTokens;
 
         // Prefer a server-reported cost when present; otherwise calculate from fresh token counts.
         decimal? reported = null;

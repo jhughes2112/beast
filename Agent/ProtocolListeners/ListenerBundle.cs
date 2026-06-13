@@ -62,13 +62,6 @@ public class ListenerBundle
         _transport?.OnToolResult(toolCallId, result);
     }
 
-    public void OnClear()
-    {
-        _canonical.OnClear();
-        _activeProxy?.OnClear();
-        _transport?.OnClear();
-    }
-
     // Resets the active proxy so the next turn re-probes and rehydrates from canonical.
     // Call whenever the model changes so the new protocol starts clean.
     public void InvalidateProtocol()

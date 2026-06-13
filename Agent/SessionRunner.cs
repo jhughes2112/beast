@@ -24,7 +24,7 @@ public class SessionRunner
 
     // Tracks the session currently being executed; updated whenever the session changes
     // (session switch, role transition). Accessed by CompactAsync after RunAsync returns.
-    private Session _currentSession = null!;
+    private Session _currentSession;
 
     // Per-runner LlmService — owns a fresh ProtocolProxy so conversation state is never shared
     // with other sessions. Replaced when the model or role changes, or after a permanent failure.
@@ -46,7 +46,6 @@ public class SessionRunner
     private string? _pendingTruth;
     private string? _pendingAnswer;
 
-    private string _clientSessionId = string.Empty;
     private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
     public SessionRunner(
@@ -63,7 +62,7 @@ public class SessionRunner
         _transport = transport;
         _cancellationTokenSource = cancellationTokenSource;
         _currentSession = session;
-        _subagent = new SubagentRunner(registry, roleService, transport, () => _currentSession);
+        _subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
     }
 
     // Routes inbound input to the session tree by ID.
@@ -74,10 +73,10 @@ public class SessionRunner
 
     // Runs until cancelled. Compaction is handled inline: when context fills the current session
     // is summarized, a child session is created and announced, and the loop continues on the new session.
-    public async Task RunAsync(CancellationToken ct)
+    public async Task<Session> RunAsync(CancellationToken ct)
     {
         Session session = _currentSession;
-
+		session.ReplayToTransport();
         session.SendStats();
 
         _cachedSessions = SessionService.List();
@@ -90,23 +89,26 @@ public class SessionRunner
             {
                 // 1. Drain all pending commands from the session queue.
                 session = await DrainInputAsync(session);
-                _currentSession = session;
+				if (_currentSession!=session)
+				{
+                    // Send history to the client whenever the active session changes.
+                    session.ReplayToTransport();
+                    session.SendStats();
+	                SessionService.Save(_currentSession.Data);
+	                _currentSession = session;
+				}
 
                 // 2. Resolve role and refresh service after drain (commands may have changed role or model).
                 Role? role = _roleService.GetRole(session.Role);
-                RefreshService(role, session);
+                _service = RefreshService(role, session);
 
                 if (_service != null)
                 {
-                    // Send history to the client whenever the active session changes.
-                    if (session.Id != _clientSessionId)
-                    {
-                        _clientSessionId = session.Id;
-                        _transport.Clear(session.Id);
-                        session.ReplayToTransport();
-                        session.SendStats();
-                        _transport.Status(session.Id, "ready");
-                    }
+					if (_service.Model.ConfigId!=session.Model)  // if the model changed, update the session with it
+					{
+						session.UpdateModel(_service.Model);
+						session.SendStats();
+					}
 
                     string currentCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
                     if (currentCandidates != lastCompletionCandidates)
@@ -122,7 +124,6 @@ public class SessionRunner
                         if (compacted == null)
                             break;
                         session = compacted;
-                        _currentSession = compacted;
                         _service = null;  // compacted session starts fresh
                     }
                 }
@@ -136,8 +137,61 @@ public class SessionRunner
                     try
                     {
                         Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
-                        LlmResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
-                        session.SendStats();
+
+                        // Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
+                        bool completed = false;
+                        while (!completed)
+						{
+							 ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
+
+							 if (result.Outcome == ProtocolCallOutcome.Success)
+								 {
+									 // Commit the assistant turn to canonical and protocol state before processing.
+									 session.CommitAssistantTurn(result.Payload!);
+									 session.SendStats();
+
+									 // Process the assistant response and dispatch any tool calls.
+									 bool hasToolCalls = await ProcessAssistantResponseAsync(result.Payload!, tools, session, _cancellationTokenSource.Token);
+
+									if (!hasToolCalls)
+									{
+										// No tool calls means the assistant has finished.
+										completed = true;
+									}
+									else
+									{
+										// Tools were dispatched; check for pending user input before next turn.
+										string? newUserInput = session.TryGetPendingInput();
+										if (!string.IsNullOrEmpty(newUserInput))
+										{
+											session.Bundle.OnUserMessage(newUserInput);
+										}
+									}
+								}
+								else if (result.Outcome == ProtocolCallOutcome.ContextFull)
+								{
+									// Context budget exhausted before making the call. Caller handles compaction.
+									contextFull = true;
+									completed = true;
+								}
+								else if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
+								{
+									// Rate-limited repeatedly; caller should try another model or abort.
+									_transport.Error(session.Id, "Rate limited after too many retries");
+									completed = true;
+								}
+								else if (result.Outcome == ProtocolCallOutcome.Interrupted)
+								{
+									// User cancelled the turn — do not surface as error.
+									completed = true;
+								}
+								else
+								{
+									// Failed, transient, or other error.
+									_transport.Error(session.Id, result.ErrorMessage);
+									completed = true;
+								}
+                        }
 
                         // A model-initiated Answer call records a pending transition. Apply it
                         // regardless of how the turn ended — the model opted to transition, so it
@@ -153,19 +207,10 @@ public class SessionRunner
                             if (advanced != null)
                             {
                                 session = advanced;
-                                _currentSession = session;
                                 _service = null;  // new role may use a different model
                             }
                         }
-                        else if (result.ExitReason == LlmExitReason.ContextFull)
-                        {
-                            contextFull = true;
-                        }
-                        else if (result.ExitReason == LlmExitReason.Failed)
-                        {
-                            _transport.Error(session.Id, result.ErrorMessage);
-                        }
-                        else if (result.ExitReason == LlmExitReason.Completed)
+                        else
                         {
                             // The model finished without opting to transition. Confront it with the
                             // role's end-of-turn question and require an explicit Answer-tool call.
@@ -173,7 +218,6 @@ public class SessionRunner
                             if (advanced != null)
                             {
                                 session = advanced;
-                                _currentSession = session;
                                 _service = null;  // new role may use a different model
                             }
                         }
@@ -192,7 +236,6 @@ public class SessionRunner
                     if (compacted == null)
                         break;
                     session = compacted;
-                    _currentSession = compacted;
                     // The old service's protocol still holds the pre-compaction conversation;
                     // force a fresh service so the compacted session rehydrates from its own canonical.
                     _service = null;
@@ -225,6 +268,7 @@ public class SessionRunner
             if (!_currentSession.Ephemeral)
                 SessionService.Save(_currentSession.Data);
         }
+		return _currentSession;
     }
 
     // Summarizes the current session and returns a new child session seeded with the compacted content.
@@ -372,11 +416,6 @@ public class SessionRunner
                             _transport.Error(session.Id, "Session not found: " + args);
                         }
                     }
-                    break;
-                case "clear":
-                    session.Clear();
-                    _registry.ResetAllAvailability();
-                    _transport.Status(session.Id, "Session cleared.");
                     break;
                 case "reload":
                     _roleService.Reload();
@@ -529,7 +568,7 @@ public class SessionRunner
 
         // Cap the answer to whatever space remains in the window so the briefing always fits.
         int answerCap = session.Budget.MaxCompletionTokens() ?? 0;
-        LlmResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { answerTool }, "Answer", 0, answerCap, _transport, ct);
+        ProtocolResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { answerTool }, "Answer", 0, answerCap, _transport, ct);
         if (selectedTruth == null)
         {
             _transport.Error(session.Id, "[Role] Completed session failed to call Answer tool; staying in current role.");
@@ -643,6 +682,128 @@ public class SessionRunner
 
     // ---- Helpers ----
 
+    // The LLM sends us a message and/or tool calls. Process the response and dispatch tools.
+    // Returns true if tool calls were dispatched, false if the assistant turn is complete.
+    private async Task<bool> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, Session session, CancellationToken ct)
+    {
+        string text = (payload.AssistantText ?? string.Empty).Trim();
+        bool hasToolCalls = payload.ToolCalls.Count > 0;
+
+        // Empty turn: no content and no tool calls.
+        if (text.Length == 0 && !hasToolCalls)
+        {
+            return false;
+        }
+
+        List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
+
+        if (!hasToolCalls)
+        {
+            // The producing protocol already fanned the assistant turn out through the bundle,
+            // which means the transport listener rendered it. No tool calls, turn is complete.
+            return false;
+        }
+
+        // Allocate this round's tool-response budget from the window; the budget splits it evenly
+        // across the parallel calls and records the whole round as pending.
+        int perToolBudget = session.Budget.ReserveToolResponses(toolCalls.Count);
+
+        (string toolName, ToolResult toolResult)[] completedTools = new (string, ToolResult)[toolCalls.Count];
+
+        Task[] tasks = new Task[toolCalls.Count];
+        for (int i = 0; i < toolCalls.Count; i++)
+        {
+            int index = i;
+            SemanticToolCall toolCall = toolCalls[index];
+            tasks[index] = ExecuteToolAsync(toolCall, tools, session.Id, perToolBudget, ct)
+                .ContinueWith(t => completedTools[index] = (toolCall.Name, t.Result), ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
+        }
+
+        await Task.WhenAll(tasks);
+
+        for (int i = 0; i < completedTools.Length; i++)
+        {
+            ToolResult result = completedTools[i].toolResult;
+
+            // A sub-session tool reports its reply's exact size; free the unused part of its
+            // reservation so the next request can size against the real remaining room.
+            if (result.MeasuredOutputTokens.HasValue)
+                session.Budget.SettleToolResponse(perToolBudget, result.MeasuredOutputTokens.Value);
+
+            session.Bundle.OnToolResult(toolCalls[i].Id, result);
+        }
+
+        return true;
+    }
+
+    private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, string sessionId, int maxOutputTokens, CancellationToken ct)
+    {
+        Action<string> fixLog = msg => _transport.Status(sessionId, msg);
+
+        Tool? matchedTool = null;
+        foreach (Tool t in tools)
+        {
+            if (t.Definition.Function.Name == toolCall.Name)
+            {
+                matchedTool = t;
+                break;
+            }
+        }
+
+        // Stage 3: fuzzy name correction when exact match fails
+        if (matchedTool == null)
+        {
+            string[] knownNames = new string[tools.Length];
+            for (int i = 0; i < tools.Length; i++)
+                knownNames[i] = tools[i].Definition.Function.Name;
+
+            string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, fixLog);
+            if (correctedName != null)
+            {
+                foreach (Tool t in tools)
+                {
+                    if (t.Definition.Function.Name == correctedName)
+                    {
+                        matchedTool = t;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (matchedTool == null)
+        {
+            return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1);
+        }
+
+        (JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, fixLog);
+
+        if (argsObj == null || argError != null)
+        {
+            return new ToolResult(string.Empty, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
+        }
+
+        // ToolCall framing is already emitted by the TransportListener when the assistant turn
+        // is fanned out by the producing protocol; ToolResponse framing is emitted when the tool
+        // result is fanned out via Bundle.OnToolResult above. Just run the handler here.
+        ToolResult result;
+        try
+        {
+            result = await matchedTool.Handler(argsObj, ct, _transport, sessionId, maxOutputTokens);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            result = new ToolResult(string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1);
+        }
+        return LlmService.TruncateToBudget(result, maxOutputTokens);
+    }
+
+    // ---- Helpers ----
+
     // Returns the cached Tool[] for the role+mode combination, building on first call.
     // Cleared on /reload so config changes (new tools, webSearch) take effect immediately.
     private Tool[] GetOrBuildTools(Role role, bool isSubagent)
@@ -683,19 +844,14 @@ public class SessionRunner
 
     // Replaces _service when the model or role has changed, or when the service has permanently
     // failed. Also updates session.Model if the registry selected a different model as fallback.
-    private void RefreshService(Role? role, Session session)
+    private LlmService? RefreshService(Role? role, Session session)
     {
-        if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model)
-            return;
+        if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model && session==_currentSession)
+            return null;
 
         int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
-        _service = _registry.CreateService(role, session.Model, minCtx);
-
-        if (_service != null && _service.Model.ConfigId != session.Model)
-        {
-            session.UpdateModel(_service.Model);
-            session.SendStats();
-        }
+        LlmService? newService = _registry.CreateService(role, session.Model, minCtx);
+		return newService;
     }
 
     // Returns the last `count` user-exchange groups from the canonical message list, oldest-first.

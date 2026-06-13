@@ -32,6 +32,4 @@ public class ListenerTransport
     public void OnStreamChunk(string tag, string chunk) => _transport.StreamChunk(_sessionId, chunk);
 
     public void OnStreamEnd(string tag) => _transport.StreamEnd(_sessionId, tag);
-
-    public void OnClear() => _transport.Clear(_sessionId);
 }

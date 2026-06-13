@@ -63,10 +63,11 @@ public class LlmService
 	// forcedToolName (null = free choice) requires the model to call that exact tool this turn.
 	// maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
 	// guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
-	// Owns the full turn lifecycle: BeginTurn/EndTurn, interrupt classification, and token linking.
-     public async Task<LlmResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
-     {
-        LlmResult result = new LlmResult(LlmExitReason.Failed, $"LLM {_model.Config.Name} is permanently down");
+	// Handles retry logic, rate limiting, and budget exhaustion. Returns ProtocolResult on each
+	// successful call. Context-full detection happens in CommitTurn when adding content.
+	 public async Task<ProtocolResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
+	 {
+		ProtocolResult result = ProtocolResult.Failed($"LLM {_model.Config.Name} is permanently down");
 
         if (_availability.IsDown==false)
         {
@@ -82,8 +83,6 @@ public class LlmService
                     toolDefs.Add(tools[i].Definition);
                 }
 
-                int emptyResponseCount = 0;
-                const int kMaxEmptyResponses = 10;
                 int rateLimitRetries = 0;
                 const int kMaxRateLimitRetries = 10;
 
@@ -92,7 +91,6 @@ public class LlmService
                 // math: the context-full gate, completion sizing, and per-tool response reservations.
                 ContextBudget budget = conversation.Budget;
                 budget.Configure(_model.Config.ContextWindow, _model.Config.MaxOutputTokens, reserveTokens, maxOutputCap, conversation.ContextLength);
-                result = new LlmResult(LlmExitReason.Completed, "");
 
                 for (; ; )
                 {
@@ -110,17 +108,18 @@ public class LlmService
                     }
                     else
                     {
-                        result = new LlmResult(LlmExitReason.Failed, $"Rate limited after {kMaxRateLimitRetries} retries, trying another model.");
+                        // Rate limiting is a caller-side budget issue, not a model failure.
+                        result = ProtocolResult.TooManyRetries();
                         break;
                     }
 
                     if (budget.IsExhausted())
                     {
-                        result = new LlmResult(LlmExitReason.ContextFull, "Context limit reached");
+                        // Context-full is a caller-side constraint, not a model failure.
+                        // Detection happens in CommitTurn when ADDING content to the session.
+                        result = ProtocolResult.ContextFull("Context budget exhausted");
                         break;
                     }
-
-                    linked.Token.ThrowIfCancellationRequested();
 
                     // Size the response against the exact context plus any not-yet-reported tool outputs,
                     // so input + output stays within the window even right after a tool round.
@@ -150,83 +149,54 @@ public class LlmService
                                 contextWindow, contextBaseline);
                         };
 
-                    ProtocolResult callResult = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.Id, conversation.QueryLog, linked.Token);
+                    result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.Id, conversation.QueryLog, linked.Token);
 
-                    if (callResult.Outcome == ProtocolCallOutcome.Success)
+                    if (result.Outcome == ProtocolCallOutcome.Success)
                     {
                         // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
                         // which resets pending reservations: the size already includes any prior tool outputs.
-                        conversation.RecordTurnUsage(callResult.Payload!.Usage, callResult.Payload.Cost, callResult.Payload.CurrentContextSize);
-                        conversation.SendStats();
-
-                        (LlmResult? terminalResult, bool toolsDispatched) = await ProcessAssistantResponseAsync(callResult.Payload, tools, conversation.Bundle, budget, transport, conversation.Id, linked.Token);
-                        if (terminalResult != null)
-                        {
-                            result = terminalResult;
-                            break;
-                        }
-
-                        // Check if new user input has arrived between tool calls; inject it so the
-                        // LLM can see and respond to it on the next iteration.
-                        string? newUserInput = conversation.TryGetPendingInput();
-                        if (!string.IsNullOrEmpty(newUserInput))
-                        {
-                            conversation.Bundle.OnUserMessage(newUserInput);
-                        }
-
-                        if (toolsDispatched)
-                        {
-                            emptyResponseCount = 0;
-                        }
-                        else
-                        {
-                            emptyResponseCount++;
-                            if (emptyResponseCount >= kMaxEmptyResponses)
-                            {
-                                result = new LlmResult(LlmExitReason.Failed, $"Model returned {kMaxEmptyResponses} consecutive empty responses.");
-                                break;
-                            }
-                        }
+                        conversation.RecordTurnUsage(result.Payload!.Usage, result.Payload.Cost, result.Payload.CurrentContextSize);
+                        break;
                     }
-                    else if (callResult.Outcome == ProtocolCallOutcome.RateLimited)
+                    else if (result.Outcome == ProtocolCallOutcome.RateLimited)
                     {
                         rateLimitRetries++;
-                        _availability.AvailableAt = callResult.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
+                        _availability.AvailableAt = result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
                         // loop and retry
                     }
-                    else if (callResult.Outcome == ProtocolCallOutcome.Transient)
+                    else if (result.Outcome == ProtocolCallOutcome.Transient)
                     {
                         _availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(300);  // give it five minutes to try another LLM
-                        result = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
                         break;
                     }
                     else
                     {
                         _availability.AvailableAt = DateTimeOffset.MaxValue;
-                        result = new LlmResult(LlmExitReason.Failed, callResult.ErrorMessage);
                         break;
                     }
                 }
             }
-            catch (OperationCanceledException ex)
-            {
+			catch (OperationCanceledException ex)
+			{
 				// the user interrupted us
-                if (turnToken.IsCancellationRequested && cancellationToken.IsCancellationRequested==false)
-                {
-					interrupted = true;
-					result = new LlmResult(LlmExitReason.Interrupted, "Interrupted by user");
-                }
+				if (turnToken.IsCancellationRequested && cancellationToken.IsCancellationRequested==false)
+					{
+						interrupted = true;
+						result = result.Outcome == ProtocolCallOutcome.Success
+							? ProtocolResult.Interrupted("Interrupted by user", result.Payload)
+							: ProtocolResult.Interrupted("Interrupted by user");
+					}
 				else // The LLM cancelled on its own
 				{
-					result = new LlmResult(LlmExitReason.Failed, $"LLM call cancelled: {ex.Message}");
+					result = ProtocolResult.Failed($"LLM call cancelled: {ex.Message}");
 				}
-            }
+			}
 			catch (Exception ex)
 			{
 				// Cancellation without our token = client-side timeout (e.g. HttpClient). Surface it
 				// as a failure so the user sees it instead of a silent retry loop.
 				string reason = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
-				result = new LlmResult(LlmExitReason.Failed, $"LLM call cancelled unexpectedly (client-side timeout): {reason}");
+				result = ProtocolResult.Failed($"LLM call cancelled unexpectedly (client-side timeout): {reason}");
 			}
             finally
             {
@@ -236,131 +206,11 @@ public class LlmService
         return result;
     }
 
-	// The LLM sends us a message and/or tool calls.  Here we deal with those.
-    private async Task<(LlmResult? terminalResult, bool toolsDispatched)> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, ListenerBundle bundle, ContextBudget budget, ITransportServer transport, string sessionId, CancellationToken ct)
-    {
-        string text = (payload.AssistantText ?? string.Empty).Trim();
-        bool hasToolCalls = payload.ToolCalls.Count > 0;
-
-        // Empty turn: no content and no tool calls. Caller decides if this counts toward empty-streak.
-        if (text.Length == 0 && !hasToolCalls)
-        {
-            return (null, false);
-        }
-
-        List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
-
-        if (!hasToolCalls)
-        {
-            // The producing protocol already fanned the assistant turn out through the bundle,
-            // which means the transport listener rendered it. No direct transport call here.
-            // Carry the finish reason so a capped sub-session can tell a cut-off reply from a complete one.
-            return (new LlmResult(LlmExitReason.Completed, "", payload.FinishReason), false);
-        }
-
-        // Allocate this round's tool-response budget from the window; the budget splits it evenly
-        // across the parallel calls and records the whole round as pending.
-        int perToolBudget = budget.ReserveToolResponses(toolCalls.Count);
-
-        (string toolName, ToolResult toolResult)[] completedTools = new (string, ToolResult)[toolCalls.Count];
-
-        Task[] tasks = new Task[toolCalls.Count];
-        for (int i = 0; i < toolCalls.Count; i++)
-        {
-            int index = i;
-            SemanticToolCall toolCall = toolCalls[index];
-            tasks[index] = ExecuteToolAsync(toolCall, tools, transport, sessionId, perToolBudget, ct)
-                .ContinueWith(t => completedTools[index] = (toolCall.Name, t.Result), ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
-        }
-
-        await Task.WhenAll(tasks);
-
-        for (int i = 0; i < completedTools.Length; i++)
-        {
-            ToolResult result = completedTools[i].toolResult;
-
-            // A sub-session tool reports its reply's exact size; free the unused part of its
-            // reservation so the next request can size against the real remaining room.
-            if (result.MeasuredOutputTokens.HasValue)
-                budget.SettleToolResponse(perToolBudget, result.MeasuredOutputTokens.Value);
-
-            bundle.OnToolResult(toolCalls[i].Id, result);
-        }
-
-        return (null, true);
-    }
-
-    private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, ITransportServer transport, string sessionId, int maxOutputTokens, CancellationToken ct)
-    {
-        Action<string> fixLog = msg => transport.Status(sessionId, msg);
-
-        Tool? matchedTool = null;
-        foreach (Tool t in tools)
-        {
-            if (t.Definition.Function.Name == toolCall.Name)
-            {
-                matchedTool = t;
-                break;
-            }
-        }
-
-        // Stage 3: fuzzy name correction when exact match fails
-        if (matchedTool == null)
-        {
-            string[] knownNames = new string[tools.Length];
-            for (int i = 0; i < tools.Length; i++)
-                knownNames[i] = tools[i].Definition.Function.Name;
-
-            string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, fixLog);
-            if (correctedName != null)
-            {
-                foreach (Tool t in tools)
-                {
-                    if (t.Definition.Function.Name == correctedName)
-                    {
-                        matchedTool = t;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (matchedTool == null)
-        {
-            return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1);
-        }
-
-        (JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, fixLog);
-
-        if (argsObj == null || argError != null)
-        {
-            return new ToolResult(string.Empty, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
-        }
-
-// ToolCall framing is already emitted by the TransportListener when the assistant turn
-        // is fanned out by the producing protocol; ToolResponse framing is emitted when the tool
-        // result is fanned out via Bundle.OnToolResult above. Just run the handler here.
-        ToolResult result;
-        try
-        {
-            result = await matchedTool.Handler(argsObj, ct, transport, sessionId, maxOutputTokens);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            result = new ToolResult(string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1);
-        }
-        return TruncateToBudget(result, maxOutputTokens);
-    }
-
-    // Hard-enforces the per-call output budget. The conversation-loop math assumes every tool
-    // result fits its budget, but raw handlers don't bound themselves and a sub-session reply can
-    // come back over budget after its retries are exhausted. ≈4 chars/token matches the
-    // protocols' streaming estimates. StdErr keeps priority so error text survives truncation.
-    private static ToolResult TruncateToBudget(ToolResult result, int maxOutputTokens)
+	// Hard-enforces the per-call output budget. The conversation-loop math assumes every tool
+	// result fits its budget, but raw handlers don't bound themselves and a sub-session reply can
+	// come back over budget after its retries are exhausted. ≈4 chars/token matches the
+	// protocols' streaming estimates. StdErr keeps priority so error text survives truncation.
+	public static ToolResult TruncateToBudget(ToolResult result, int maxOutputTokens)
     {
         ToolResult bounded;
         int maxChars = maxOutputTokens * 4;

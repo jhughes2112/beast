@@ -27,35 +27,6 @@ public class FunctionDefinition
 	public JsonObject Parameters { get; set; } = new();
 }
 
-// Result returned by a tool after execution.
-// ExitCode: 0 = success, non-zero = error
-// StdOut: Response content when successful (or both stdout and stderr may be present)
-// StdErr: Error message when exitCode is non-zero (or both stdout and stderr may be present)
-public class ToolResult
-{
-	public string StdOut { get; }
-	public string StdErr { get; }
-	public int ExitCode { get; }
-
-	// Exact token size of this result, as measured by a sub-session's provider response. Null when
-	// the result came from a raw handler that performs no server call: there is nothing to measure,
-	// so its reservation stays pending until the next parent response reconciles it exactly.
-	public int? MeasuredOutputTokens { get; }
-
-	public ToolResult(string stdOut, string stdErr, int exitCode)
-		: this(stdOut, stdErr, exitCode, null)
-	{
-	}
-
-	public ToolResult(string stdOut, string stdErr, int exitCode, int? measuredOutputTokens)
-	{
-		StdOut = stdOut;
-		StdErr = stdErr;
-		ExitCode = exitCode;
-		MeasuredOutputTokens = measuredOutputTokens;
-	}
-}
-
 // Internal tool representation used by LlmService's execution loop.
 // The trailing int is maxOutputTokens: the token budget this call's output must fit into, set by
 // LlmService from the remaining context space divided among the round's parallel tool calls.

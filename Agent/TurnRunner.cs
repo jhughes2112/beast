@@ -25,8 +25,8 @@ public static class TurnRunner
         {
             Session temp = session.Fork();
             temp.AddUserMessage(prompt);
-            LlmResult result = await service.RunToCompletionAsync(temp, tools, null, 0, 0, transport, appToken);
-            if (result.ExitReason == LlmExitReason.Completed)
+            ProtocolResult result = await service.RunToCompletionAsync(temp, tools, null, 0, 0, transport, appToken);
+            if (result.Outcome == ProtocolCallOutcome.Success)
                 summary = temp.GetLastAssistantText();
         }
 

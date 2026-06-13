@@ -52,9 +52,4 @@ public class CanonicalConversation
             content = content + "\nstderr: " + result.StdErr;
         _messages.Add(new ToolResultMessage(toolCallId, content));
     }
-
-    public void OnClear()
-    {
-        _messages.Clear();
-    }
 }

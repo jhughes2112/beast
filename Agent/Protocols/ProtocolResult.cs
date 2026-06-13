@@ -3,23 +3,32 @@ using System.Collections.Generic;
 
 public enum ProtocolCallOutcome
 {
-    Success,     // A well-formed assistant turn was received and written to session state.
-    RateLimited, // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
-    Transient,   // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off briefly.
-    Failed,      // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
+    Success,      // A well-formed assistant turn was received and written to session state.
+    RateLimited,  // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
+    Transient,    // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off briefly.
+    Failed,       // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
+    Interrupted,  // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
+    TooManyRetries, // Rate-limited repeatedly; caller should try another model or abort.
+    ContextFull,  // Caller's context budget is exhausted before attempting a call; not a model failure.
 }
 
 // Normalised payload returned on ProviderCallOutcome.Success.
-// The assistant turn has already been written into session state by the protocol; this
-// payload carries only the semantic info LlmService needs to drive tool execution and
-// the follow-up transport.Output for committed assistant text.
+// Holds the explicit outcomes from a single turn: thinking, assistant text, tool call requests,
+// tool results, and token counts for this exchange. Also carries protocol-specific native objects
+// (ChatCompletions messages, Anthropic SDK messages, Responses blocks) so downstream code can
+// inspect raw provider data without committing it directly to canonical state. The protocol itself
+// controls what gets committed via its own Rehydrate/On* methods.
 public class ProtocolCallPayload
 {
     // Plain assistant text from the turn (empty string if none).
     public string AssistantText { get; }
+    public string Thinking { get; }
 
     // Tool calls the model wants to execute this turn (empty when none).
     public IReadOnlyList<SemanticToolCall> ToolCalls { get; }
+
+    // Tool results produced by this turn's execution (empty when no tools ran).
+    public IReadOnlyList<ToolResult> ToolResults { get; }
 
     // Finish reason string as reported by the API (e.g. "stop", "tool_calls", "length").
     public string FinishReason { get; }
@@ -34,14 +43,32 @@ public class ProtocolCallPayload
     // Cost in USD already computed by the provider using its model config.
     public decimal Cost { get; }
 
-    public ProtocolCallPayload(string assistantText, IReadOnlyList<SemanticToolCall> toolCalls, string finishReason, TokenUsageInfo usage, decimal cost, int currentContextSize)
+    // Protocol-specific native objects for raw inspection (not committed to canonical state).
+    // ChatCompletions: JsonArray of message objects. Anthropic: List<Message> from SDK.
+    // Responses: JsonObject representing the response block. Null when not applicable.
+    public object? NativeAnthropic { get; }
+    public object? NativeResponses { get; }
+
+    public ProtocolCallPayload(
+        string assistantText,
+        string thinking,
+        IReadOnlyList<SemanticToolCall> toolCalls,
+        IReadOnlyList<ToolResult> toolResults,
+        string finishReason,
+        TokenUsageInfo usage,
+        decimal cost,
+        object? nativeAnthropic = null,
+        object? nativeResponses = null)
     {
         AssistantText = assistantText;
+        Thinking = thinking;
         ToolCalls = toolCalls;
+        ToolResults = toolResults;
         FinishReason = finishReason;
         Usage = usage;
         Cost = cost;
-        CurrentContextSize = currentContextSize;
+        NativeAnthropic = nativeAnthropic;
+        NativeResponses = nativeResponses;
     }
 }
 
@@ -86,4 +113,19 @@ public class ProtocolResult
     {
         return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage);
     }
-}
+
+          public static ProtocolResult Interrupted(string errorMessage, ProtocolCallPayload? payload = null)
+           {
+               return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage);
+           }
+
+                public static ProtocolResult TooManyRetries()
+               {
+                   return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, null, "");
+               }
+
+               public static ProtocolResult ContextFull(string errorMessage)
+               {
+                   return new ProtocolResult(ProtocolCallOutcome.ContextFull, null, null, errorMessage);
+               }
+           }

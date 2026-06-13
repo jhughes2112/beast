@@ -167,13 +167,6 @@ public class ProtocolProxy
         _protocolAnthropic?.OnToolResult(toolCallId, result);
     }
 
-    public void OnClear()
-    {
-        _protocolChatCompletions?.OnClear();
-        _protocolResponses?.OnClear();
-        _protocolAnthropic?.OnClear();
-    }
-
     public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)
     {
         bundle.SetActiveProxy(this);

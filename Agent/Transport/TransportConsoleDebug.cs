@@ -19,7 +19,6 @@ public class TransportConsoleDebug : ITransportServer
     public void Completions(string sessionId, string json) => Console.WriteLine($"{sessionId} [completions] {json}");
     public void Idle(string sessionId, bool subagent)      => Console.WriteLine($"{sessionId} [idle]{(subagent ? " (subagent)" : "")}");
     public void Busy(string sessionId)                     => Console.WriteLine($"{sessionId} [busy]");
-    public void Clear(string sessionId)                    { }
     public void ToolCallWithId(string sessionId, string callId, string text)           => Console.WriteLine($"{sessionId} [tool-call] {text}");
     public void ToolResponseWithId(string sessionId, string callId, ToolResult result) => Console.WriteLine($"{sessionId} [tool-response] {result.StdOut}");
     public void SessionAnnounce(string sessionId, string json) { }

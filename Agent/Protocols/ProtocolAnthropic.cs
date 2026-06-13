@@ -129,12 +129,6 @@ public class ProtocolAnthropic
         AppendContent(RoleType.User, toolResult);
     }
 
-    public void OnClear()
-    {
-        _native.Clear();
-        _system = string.Empty;
-    }
-
     public async Task<ProtocolResult> ExecuteAsync(
         LlmModel model,
         ListenerBundle bundle,
@@ -391,8 +385,6 @@ public class ProtocolAnthropic
         _native.Add(assistant);
 
         (string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(assistant.Content);
-        bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
-        bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
 
         int freshInputTokens = 0;
         int cacheCreationTokens = 0;
@@ -424,13 +416,15 @@ public class ProtocolAnthropic
         TokenUsageInfo usage = new TokenUsageInfo
         {
             PromptTokens = freshInputTokens,
-            CompletionTokens = outputTokens
+            CompletionTokens = outputTokens,
+            CachedTokens = cacheReadTokens
         };
 
         decimal cost = ResolveCost(freshInputTokens, cacheCreationTokens, cacheReadTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);
 
         string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalInputTokens + outputTokens));
+        List<ToolResult> emptyResults = new List<ToolResult>();
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
     }
 
     // Computes cost from the model's configured per-million pricing, billing cache writes and

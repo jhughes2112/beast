@@ -107,21 +107,25 @@ public class SubagentRunner
                 // the sub-session's client view; a retry simply streams after the prior attempt.
                 Session forkSession = subSession.Fork();
 
-                LlmResult result = await attemptService.RunToCompletionAsync(forkSession, innerTools, null, 0, outputCap, _transport, ct);
-                if (result.ExitReason != LlmExitReason.Completed)
-                    break;
+                ProtocolResult result = await attemptService.RunToCompletionAsync(forkSession, innerTools, null, 0, outputCap, _transport, ct);
+                  if (result.Outcome != ProtocolCallOutcome.Success)
+                      break;
 
-                if (result.FinishReason == "length" || result.FinishReason == "max_tokens")
+                  // Commit the assistant turn to canonical and protocol state.
+                  forkSession.CommitAssistantTurn(result.Payload!);
+
+                  if (result.Payload!.FinishReason == "length" || result.Payload.FinishReason == "max_tokens")
                 {
                     // Clipped response is useless — retry with a hard cap so the model must fit.
                     outputCap = outputBudgetTokens;
                     continue;
                 }
 
-                finalText = forkSession.GetLastAssistantText();
-                bestAttempt = forkSession;
-                int responseTokens = forkSession.LastTokenUsage?.CompletionTokens ?? 0;
-                bestResponseTokens = responseTokens;
+				int responseTokens = bestAttempt?.CumulativeOutputTokens ?? 0;
+					finalText = forkSession.GetLastAssistantText();
+					bestAttempt = forkSession;
+					int completionTokens = forkSession.LastTokenUsage?.CompletionTokens ?? 0;
+					bestResponseTokens = completionTokens;
                 if (responseTokens <= outputBudgetTokens)
                     break;
 

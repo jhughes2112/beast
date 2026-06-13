@@ -122,10 +122,19 @@ public class Session
     public void UpdateRole(string role) => _data.Role = role;
 
     // Signals the bundle that the active protocol should be discarded on next turn.
-    public void InvalidateProtocol() => _bundle.InvalidateProtocol();
+     public void InvalidateProtocol() => _bundle.InvalidateProtocol();
 
-    // Commits one turn's usage and cost into the monotonic session totals.
-    // Called by LlmService after a successful protocol call.
+     // Commits the full assistant turn from a successful ProtocolCallPayload to both canonical
+        // storage and the active protocol's native state. Handles the assistant message (text,
+        // thinking, tool calls) plus any tool results that came back with this payload. This is the
+        // single entry point for turning an in-flight provider response into committed session state.
+           public void CommitAssistantTurn(ProtocolCallPayload payload)
+           {
+               _bundle.OnAssistantTurn(payload.AssistantText, payload.Thinking, payload.ToolCalls);
+           }
+
+     // Commits one turn's usage and cost into the monotonic session totals.
+     // Called by LlmService after a successful protocol call.
     public void RecordTurnUsage(TokenUsageInfo usage, decimal cost, int currentContextSize)
     {
         _data.CumulativeInputTokens += usage.PromptTokens;
@@ -227,13 +236,6 @@ public class Session
     {
         while (_inputQueue.TryDequeue(out string? text))
             _bundle.OnUserMessage(text);
-    }
-
-    // Clears the conversation history.
-    public void Clear()
-    {
-        _interruptedAndWaiting = false;
-        _bundle.OnClear();
     }
 
     // ---- Replay / hydration ----

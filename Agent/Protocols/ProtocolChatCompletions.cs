@@ -175,12 +175,6 @@ public class ProtocolChatCompletions
         _native.Add(msg);
     }
 
-    public void OnClear()
-    {
-        _native.Clear();
-    }
-
-
     public async Task<ProtocolResult> ExecuteAsync(
         LlmModel model,
         ListenerBundle bundle,
@@ -252,23 +246,15 @@ public class ProtocolChatCompletions
                 (string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
                 string thinking = ExtractThinking(messageObj);
 
-                OnAssistantTurn(assistantText, thinking, toolCalls);
-                bundle.Canonical.OnAssistantTurn(assistantText, thinking, toolCalls);
-                bundle.Transport?.OnAssistantTurn(assistantText, thinking, toolCalls);
+
 
                 string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
                 if (toolCalls.Count > 0) finishReason = "tool_calls";
 
                 (TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
 
-                string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
-                int totalPromptTokens = root["usage"]?["prompt_tokens"]?.GetValue<int>() ?? 0;
-                int cachedTokens = root["usage"]?["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
-                int freshPromptTokens = usage.PromptTokens;
-                string logLine = $"[usage] prompt={totalPromptTokens} (fresh={freshPromptTokens} cached={cachedTokens}) completion={usage.CompletionTokens} cost={cost:F6} msg=\"{msgPreview}\"";
-                Console.WriteLine(logLine);
-
-                return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, toolCalls, finishReason, usage, cost, totalPromptTokens + usage.CompletionTokens));
+                List<ToolResult> emptyResults = new List<ToolResult>();
+                return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
             }
 
             if (TryAdaptToError(httpResponse, responseBody))
@@ -611,20 +597,12 @@ public class ProtocolChatCompletions
             finishReason = "tool_calls";
         }
 
-        OnAssistantTurn(assistantText, thinking, semanticToolCalls);
-        bundle.Canonical.OnAssistantTurn(assistantText, thinking, semanticToolCalls);
-        bundle.Transport?.OnAssistantTurn(assistantText, thinking, semanticToolCalls);
+
 
         (TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(usageNodeFinal, model);
 
-        string msgPreview = assistantText.Length > 100 ? assistantText.Substring(0, 100) + "..." : assistantText;
-        int totalPromptTokens = usageNodeFinal?["prompt_tokens"]?.GetValue<int>() ?? 0;
-        int cachedTokens = usageNodeFinal?["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
-        int freshPromptTokens = tokenUsage.PromptTokens;
-        string logLine = $"[usage] prompt={totalPromptTokens} (fresh={freshPromptTokens} cached={cachedTokens}) completion={tokenUsage.CompletionTokens} total={tokenUsage.PromptTokens + tokenUsage.CompletionTokens} cost={cost:F6} msg=\"{msgPreview}\"";
-        Console.WriteLine(logLine);
-
-        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, semanticToolCalls, finishReason, tokenUsage, cost, totalPromptTokens + tokenUsage.CompletionTokens));
+        List<ToolResult> emptyResults = new List<ToolResult>();
+        return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, semanticToolCalls, emptyResults, finishReason, tokenUsage, cost));
     }
 
     private sealed class StreamingToolCall

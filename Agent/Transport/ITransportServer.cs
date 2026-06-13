@@ -19,7 +19,6 @@ public enum FrameType : byte
     StreamChunk = 8,       // one text delta belonging to the current open stream
     StreamEnd = 9,         // closes the current stream block; content is the same type tag as StreamStart
     Debug = 10,            // diagnostic output; suppressed unless Beast is running in verbose mode
-    Clear = 13,            // clears the client's mirrored conversation memory/display
     User = 14,             // user message; used when replaying history to the client
     Stats = 15,            // JSON stats payload: model, promptTokens, completionTokens, totalCost
     Idle = 16,             // agent is waiting for user input (not processing anything)
@@ -55,7 +54,6 @@ public interface ITransportServer
     // can react differently (e.g. play a different notification sound).
     void Idle(string sessionId, bool subagent);
     void Busy(string sessionId);
-    void Clear(string sessionId);
     // Frame content is "callId\x01text" so Beast can pair by identity.
     void ToolCallWithId(string sessionId, string callId, string text);
     // Frame content is "callId\x01exitCode\x01stdout\x01stderr" so Beast can display results richly.
