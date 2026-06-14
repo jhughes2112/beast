@@ -146,16 +146,15 @@ public class Session
 		}
 	}
 
-	// Commits one turn's usage and cost into the monotonic session totals.
-	// Called by LlmService after a successful protocol call.
+	// Commits one turn's cost into the session total. Called by LlmService immediately on success
+	// so cost is accurate before the caller commits the assistant turn.
 	public void RecordCost(decimal cost)
 	{
 		_data.TotalCost += cost;
 	}
 
 	// Commits one turn's usage and cost into the monotonic session totals.
-	// Called by LlmService after a successful protocol call.
-	private void RecordTurnUsage(TokenUsageInfo usage, int currentContextSize)
+	internal void RecordTurnUsage(TokenUsageInfo usage, int currentContextSize)
 	{
 		_data.CumulativeInputTokens += usage.PromptTokens;
 		_data.CumulativeOutputTokens += usage.CompletionTokens;

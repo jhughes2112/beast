@@ -153,7 +153,7 @@ public class LlmService
 
                     if (result.Outcome == ProtocolCallOutcome.Success)
                     {
-						conversation.RecordCost(result.Payload!.Usage.);
+						conversation.RecordCost(result.Payload!.Cost);
                         break;
                     }
                     else if (result.Outcome == ProtocolCallOutcome.RateLimited)
