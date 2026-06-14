@@ -313,9 +313,14 @@ public class ProtocolChatCompletions
             }
             body["tools"] = toolsArr;
 
-            // Force a specific tool when asked; otherwise leave choice to the model. A forced single
-            // tool implies one call, so parallel tool calls are not advertised in that case.
-            if (!string.IsNullOrEmpty(forcedToolName))
+            // Force a specific tool when asked, require any tool for the AnyTool sentinel; otherwise
+            // leave choice to the model. A forced single tool implies one call, so parallel tool
+            // calls are not advertised in that case.
+            if (forcedToolName == ProtocolProxy.AnyTool)
+            {
+                body["tool_choice"] = "required";
+            }
+            else if (!string.IsNullOrEmpty(forcedToolName))
             {
                 JsonObject fn = new JsonObject();
                 fn["name"] = forcedToolName;

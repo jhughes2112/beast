@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 // turns, eval, compaction/transition summaries) and SubagentRunner (fork attempts). Delegates
 // bundle management and turn-CTS lifecycle to the session; owns the LlmService call and
 // interrupt classification.
-public static class TurnRunner
+public static class Summarizer
 {
     // Runs a summarization prompt in a temporary fork of the session and returns the assistant
     // text, or null when no service is available or the turn did not complete. Creates its own

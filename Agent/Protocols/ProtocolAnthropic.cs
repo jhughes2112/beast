@@ -177,8 +177,13 @@ public class ProtocolAnthropic
         {
             parameters.Tools = BuildTools(tools);
 
-            // Force a specific tool when asked; otherwise the model chooses (SDK default).
-            if (!string.IsNullOrEmpty(forcedToolName))
+            // Force a specific tool when asked, require any tool for the AnyTool sentinel; otherwise
+            // the model chooses (SDK default).
+            if (forcedToolName == ProtocolProxy.AnyTool)
+            {
+                parameters.ToolChoice = new ToolChoice { Type = ToolChoiceType.Any };
+            }
+            else if (!string.IsNullOrEmpty(forcedToolName))
             {
                 parameters.ToolChoice = new ToolChoice { Type = ToolChoiceType.Tool, Name = forcedToolName };
             }

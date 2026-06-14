@@ -51,18 +51,29 @@ public class Role
 
 	public static Role DefaultRole(List<string> toolNames)
 	{
-        const string systemPrompt = "You are a helpful assistant. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress.";
+        const string systemPrompt = "You are a helpful assistant.";
+        const string summaryPrompt = """
+            Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
+            """;
+        const string endOfTurnPrompt = "";
+        Dictionary<string, string> statements = new Dictionary<string, string>();
+        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, statements);
+	}
+
+	public static Role TaskRole(List<string> toolNames)
+	{
+        const string systemPrompt = "You are a capable assistant. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress. Perform the requested task, asking clarifying questions as needed before getting started.";
         const string summaryPrompt = """
             Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
-            Output only a summary of the conversation retaining the objective, current status, discovered context, and key next steps and exact details that would help perform them.
+            Output only a summary of the preceding conversation retaining the objective, critical concepts, current status, discovered context, key next steps, and exact details that would help perform them. Be concise. Retain only that which will help complete the task.
             """;
-        const string endOfTurnPrompt = "Are you finished?";
+        const string endOfTurnPrompt = "Conversation will continue until you call the state_transition tool to end it.";
         Dictionary<string, string> statements = new Dictionary<string, string>()
             {
-                { "This task is complete.", "" },
-                { "There is more work to do.", "Default" }
+                { "This task is complete.", "Default" },
+                { "There is more work to do.", "Task" }
             };
-        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, statements);
+        return new Role("Task", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, statements);
 	}
 
     public static Role ToolsRole(List<string> toolNames)

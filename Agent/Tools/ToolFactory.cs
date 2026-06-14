@@ -214,8 +214,12 @@ public static class ToolFactory
                 string goal = Str(args, "goal");
                 (string? subResult, int responseTokens) = await runSubSession(name, args, goal, maxOutputTokens, ct);
                 if (subResult != null)
-                    return new ToolResult(toolCallId, subResult, string.Empty, 0, responseTokens);
-                return await handler(args, toolCallId, ct, transport, sessionId);
+                    // The sub-session reply carries the provider's exact measurement; never truncated.
+                    return new ToolResult(toolCallId, subResult, string.Empty, 0, Math.Max(1, responseTokens));
+                // The sub-session declined (no budget/role/model): the raw handler's output is
+                // server-unmeasured, so estimate its size and truncate it to the caller's budget.
+                ToolResult raw = await handler(args, toolCallId, ct, transport, sessionId);
+                return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
             }
         };
     }
@@ -229,7 +233,12 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
             },
-            Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) => handler(args, toolCallId, ct, transport, sessionId)
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                // Raw tool output is server-unmeasured: estimate its size and truncate to the budget.
+                ToolResult raw = await handler(args, toolCallId, ct, transport, sessionId);
+                return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
+            }
         };
     }
 

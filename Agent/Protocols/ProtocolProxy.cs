@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -39,6 +39,11 @@ public enum DetectedProtocol
 //   or_models                      — comma-separated fallback model names (string) or JSON array of model names
 public class ProtocolProxy
 {
+    // Sentinel forcedToolName meaning "the model must call some tool this turn, but may pick which."
+    // Distinct from a real tool name (which forces that exact tool) and from null (free choice).
+    // Used by the subagent loop to require the model to actually do work with tools.
+    public const string AnyTool = "__any_tool__";
+
     private const string OpenRouterReferer = "https://mooncast.productions";
     private const string OpenRouterTitle = "Beast";
     private const string OpenRouterCategories = "cli-agent";
@@ -80,15 +85,23 @@ public class ProtocolProxy
         return DetectedProtocol.Unknown;
     }
 
-    // Resolves the host from a URL within a tight timeout; returns false if unreachable.
-    private static async Task<bool> CanResolveHostAsync(string endpoint)
+    // Lightweight client for endpoint reachability probes only. No auth, no logging — we care solely
+    // about whether an HTTP server answers, not what it says.
+    private static readonly HttpClient _probeClient = new HttpClient();
+
+    // Confirms an HTTP server is actually listening at the endpoint within a tight timeout. Any HTTP
+    // response — even 4xx/5xx — proves a server is there; a DNS failure, refused connection, or
+    // timeout means it is not. This is stronger than a hostname lookup: host.docker.internal often
+    // resolves inside Docker even when nothing is serving on the host, so resolution alone would
+    // wrongly accept a dead endpoint.
+    private static async Task<bool> CanReachEndpointAsync(string endpoint)
     {
         try
         {
-            Uri uri = new Uri(endpoint);
             using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-            IPAddress[] addresses = await Dns.GetHostAddressesAsync(uri.Host, cts.Token);
-            return addresses.Length > 0;
+            using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            using HttpResponseMessage response = await _probeClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            return true;
         }
         catch
         {
@@ -97,8 +110,8 @@ public class ProtocolProxy
     }
 
     // Infers the protocol from the URL route, then resolves the effective endpoint URL.
-    // If host.docker.internal fails to resolve, rewrites to localhost (on-host fallback).
-    // Returns Unknown if the URL route is unrecognized or the host cannot be resolved.
+    // If nothing answers at host.docker.internal, rewrites to localhost (on-host fallback).
+    // Returns Unknown if the URL route is unrecognized or no server answers at the endpoint.
     public static async Task<(DetectedProtocol detected, string effectiveEndpoint)> ProbeEndpointAsync(
         string endpoint, CancellationToken ct = default)
     {
@@ -106,14 +119,14 @@ public class ProtocolProxy
         if (protocol == DetectedProtocol.Unknown)
             return (DetectedProtocol.Unknown, endpoint);
 
-        if (await CanResolveHostAsync(endpoint))
+        if (await CanReachEndpointAsync(endpoint))
             return (protocol, endpoint);
 
         if (!endpoint.Contains("host.docker.internal", StringComparison.OrdinalIgnoreCase))
             return (DetectedProtocol.Unknown, endpoint);
 
         string fallback = endpoint.Replace("host.docker.internal", "localhost", StringComparison.OrdinalIgnoreCase);
-        if (await CanResolveHostAsync(fallback))
+        if (await CanReachEndpointAsync(fallback))
             return (protocol, fallback);
 
         return (DetectedProtocol.Unknown, endpoint);

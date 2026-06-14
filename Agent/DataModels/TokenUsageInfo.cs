@@ -34,9 +34,9 @@ public class ToolResult
 	public string StdErr { get; }
 	public int ExitCode { get; }
 
-	// Exact token size of this result, as measured by a sub-session's provider response. Null when
-	// the result came from a raw handler that performs no server call: there is nothing to measure,
-	// so its reservation stays pending until the next parent response reconciles it exactly.
+	// Token size of this result. A sub-session reply carries its provider's exact measurement; a raw
+	// handler's output has no server count, so it is estimated (~4 chars/token) and truncated to the
+	// caller's budget at that point. Always a real positive count — never a zero placeholder.
 	public int MeasuredOutputTokens { get; }
 
 	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens)

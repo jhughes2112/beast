@@ -246,8 +246,13 @@ public class ProtocolResponses
             }
             body["tools"] = toolsArr;
 
-            // Force a specific tool when asked; otherwise leave the choice to the model.
-            if (!string.IsNullOrEmpty(forcedToolName))
+            // Force a specific tool when asked, require any tool for the AnyTool sentinel; otherwise
+            // leave the choice to the model.
+            if (forcedToolName == ProtocolProxy.AnyTool)
+            {
+                body["tool_choice"] = "required";
+            }
+            else if (!string.IsNullOrEmpty(forcedToolName))
             {
                 JsonObject choice = new JsonObject();
                 choice["type"] = "function";

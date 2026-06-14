@@ -108,6 +108,7 @@ public class Session
 
 	public void AnnounceToClient()
 	{
+		InferDisplayName();
 		if (string.IsNullOrEmpty(_data.DisplayName))
 			return;
 		string json = JsonSerializer.Serialize(new { id = _data.Id, name = _data.DisplayName });
@@ -146,11 +147,17 @@ public class Session
 		}
 	}
 
-	// Commits one turn's cost into the session total. Called by LlmService immediately on success
-	// so cost is accurate before the caller commits the assistant turn.
+	// Guards TotalCost: a single turn records its own cost, but parallel subagent tool calls roll
+	// their spend up into the same parent session concurrently after their rounds complete.
+	private readonly object _costLock = new object();
+
+	// Commits cost into the session total. Called by LlmService immediately on success so cost is
+	// accurate before the caller commits the assistant turn, and by SubagentRunner to roll a
+	// completed sub-session's spend up into the calling agent.
 	public void RecordCost(decimal cost)
 	{
-		_data.TotalCost += cost;
+		lock (_costLock)
+			_data.TotalCost += cost;
 	}
 
 	// Commits one turn's usage and cost into the monotonic session totals.
@@ -335,12 +342,14 @@ public class Session
 	{
 		if (!string.IsNullOrEmpty(_data.DisplayName))
 			return false;
-		string? first = GetFirstUserText();
-		if (!string.IsNullOrWhiteSpace(first))
+		foreach (CanonicalMessage msg in _data.Messages)
 		{
-			string name = first.Trim();
-			_data.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
-			return true;
+			if (msg is UserMessage um && !string.IsNullOrWhiteSpace(um.Text))
+			{ 
+				string name = um.Text.Trim();
+				_data.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
+				return true;
+			}
 		}
 		return false;
 	}
@@ -471,16 +480,6 @@ public class Session
 		}
 
 		return false;
-	}
-
-	private string? GetFirstUserText()
-	{
-		foreach (CanonicalMessage msg in _data.Messages)
-		{
-			if (msg is UserMessage um && !string.IsNullOrWhiteSpace(um.Text))
-				return um.Text;
-		}
-		return null;
 	}
 
 	// Produces a display name for a compacted continuation: strips any existing "(N) " prefix,

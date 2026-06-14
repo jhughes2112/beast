@@ -150,7 +150,7 @@ public class SessionRunner
 								session.CommitAssistantTurn(result.Payload!);
 
 								// Process the assistant response and dispatch any tool calls.
-								bool hasToolCalls = await ProcessAssistantResponseAsync(result.Payload!, tools, session, _cancellationTokenSource.Token);
+								bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, _transport, _cancellationTokenSource.Token);
 								if (!hasToolCalls)
 								{
 									// No tool calls means the assistant has finished.
@@ -291,7 +291,7 @@ public class SessionRunner
 		IReadOnlyList<CanonicalMessage> tailExchanges = ExtractTailExchanges(_currentSession.Data.Messages, 2);
 
 		_transport.Status(_currentSession.Id, "[Compaction] Started.");
-		string? summary = await TurnRunner.SummarizeAsync(_currentSession, role.SummaryPrompt, Array.Empty<Tool>(), _registry, _roleService, _transport, ct);
+		string? summary = await Summarizer.SummarizeAsync(_currentSession, role.SummaryPrompt, Array.Empty<Tool>(), _registry, _roleService, _transport, ct);
 
 		if (string.IsNullOrWhiteSpace(summary))
 		{
@@ -685,127 +685,6 @@ public class SessionRunner
 				return Task.FromResult(result);
 			}
 		};
-	}
-
-	// ---- Helpers ----
-
-	// The LLM sends us a message and/or tool calls. Process the response and dispatch tools.
-	// Returns true if tool calls were dispatched, false if the assistant turn is complete.
-	private async Task<bool> ProcessAssistantResponseAsync(ProtocolCallPayload payload, Tool[] tools, Session session, CancellationToken ct)
-	{
-		string text = (payload.AssistantText ?? string.Empty).Trim();
-		bool hasToolCalls = payload.ToolCalls.Count > 0;
-
-		// Empty turn: no content and no tool calls.
-		if (text.Length == 0 && !hasToolCalls)
-		{
-			return false;
-		}
-
-		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
-
-		if (!hasToolCalls)
-		{
-			// The producing protocol already fanned the assistant turn out through the bundle,
-			// which means the transport listener rendered it. No tool calls, turn is complete.
-			return false;
-		}
-
-		// Allocate this round's tool-response budget from the window; the budget splits it evenly
-		// across the parallel calls and records the whole round as pending.
-		int perToolBudget = session.Budget.ReserveToolResponses(toolCalls.Count);
-
-		List<ToolResult> completedTools = new List<ToolResult>();
-
-		Task[] tasks = new Task[toolCalls.Count];
-		for (int i = 0; i < toolCalls.Count; i++)
-		{
-			completedTools.Add(new ToolResult(toolCalls[i].Id, string.Empty, "Tool call failed.", 1, 0));
-			int index = i;
-			SemanticToolCall toolCall = toolCalls[index];
-			tasks[index] = ExecuteToolAsync(toolCall, tools, session.Id, perToolBudget, ct)
-				.ContinueWith(t => completedTools[index] = t.Result, ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
-		}
-
-		await Task.WhenAll(tasks);
-
-		for (int i = 0; i < toolCalls.Count; i++)
-		{
-			ToolResult result = completedTools[i];
-			payload.ToolResults[i] = result;
-
-			// A sub-session tool reports its reply's exact size; free the unused part of its
-			// reservation so the next request can size against the real remaining room.
-			session.Budget.SettleToolResponse(perToolBudget, result.MeasuredOutputTokens);
-		}
-
-		return true;
-	}
-
-	private async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, string sessionId, int maxOutputTokens, CancellationToken ct)
-	{
-		Action<string> fixLog = msg => _transport.Status(sessionId, msg);
-
-		Tool? matchedTool = null;
-		foreach (Tool t in tools)
-		{
-			if (t.Definition.Function.Name == toolCall.Name)
-			{
-				matchedTool = t;
-				break;
-			}
-		}
-
-		// Stage 3: fuzzy name correction when exact match fails
-		if (matchedTool == null)
-		{
-			string[] knownNames = new string[tools.Length];
-			for (int i = 0; i < tools.Length; i++)
-				knownNames[i] = tools[i].Definition.Function.Name;
-
-			string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, fixLog);
-			if (correctedName != null)
-			{
-				foreach (Tool t in tools)
-				{
-					if (t.Definition.Function.Name == correctedName)
-					{
-						matchedTool = t;
-						break;
-					}
-				}
-			}
-		}
-
-		if (matchedTool == null)
-		{
-			return new ToolResult(toolCall.Id, string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1, 0);
-		}
-
-		(JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, fixLog);
-
-		if (argsObj == null || argError != null)
-		{
-			return new ToolResult(toolCall.Id, string.Empty, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1, 0);
-		}
-
-		// ToolCall framing is already emitted by the TransportListener when the assistant turn
-		// is fanned out by the producing protocol; ToolResponse framing is emitted when the tool
-		// result is fanned out via Bundle.OnToolResult above. Just run the handler here.
-		ToolResult result;
-		try
-		{
-			result = await matchedTool.Handler(argsObj, toolCall.Id, ct, _transport, sessionId, maxOutputTokens);
-		}
-		catch (OperationCanceledException)
-		{
-			throw;
-		}
-		catch (Exception ex)
-		{
-			result = new ToolResult(toolCall.Id, string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1, 0);
-		}
-		return result;
 	}
 
 	// ---- Helpers ----

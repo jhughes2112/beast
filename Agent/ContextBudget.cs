@@ -7,7 +7,9 @@ using System;
 // one obvious place that knows how much room the session has, instead of the math being re-derived
 // inline at every call site.
 //
-// Every token count fed in here originates from a provider response — there are no estimates.
+// Token counts fed in here come from provider responses. The one exception is a raw tool output the
+// provider never measured: it is estimated (~4 chars/token) and truncated to its budget at the tool
+// boundary, so the value handed to SettleToolResponse is still a real, bounded count.
 // Reservations are allocations (room we hand a tool), not claims about actual size; the actual size
 // is reconciled exactly when the next response reports the new context size.
 public class ContextBudget
