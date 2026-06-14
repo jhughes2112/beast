@@ -408,6 +408,24 @@ public class SessionRunner
 						_cachedSessions = SessionService.List();
 						_transport.Status(session.Id, "Ephemeral session started (not saved).");
 					}
+					else if (args != null && args.StartsWith("delete ", StringComparison.OrdinalIgnoreCase))
+					{
+						// Drop a subagent session file from disk. Refuse to delete the live root session.
+						string deleteId = args.Substring("delete ".Length).Trim();
+						if (string.Equals(deleteId, session.Id, StringComparison.Ordinal))
+						{
+							_transport.Error(session.Id, "Cannot delete the active session.");
+						}
+						else if (SessionService.Delete(deleteId))
+						{
+							_cachedSessions = SessionService.List();
+							_transport.Status(session.Id, "Deleted session: " + deleteId);
+						}
+						else
+						{
+							_transport.Error(session.Id, "Session file not found: " + deleteId);
+						}
+					}
 					else if (args != null)
 					{
 						string resolvedId = args;
@@ -471,7 +489,7 @@ public class SessionRunner
 					}
 					break;
 				case "help":
-					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /test, /quit");
+					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /session delete <id>, /test, /quit");
 					break;
 				case "test":
 					await RunTestsAsync(session.Id, args);
@@ -558,11 +576,11 @@ public class SessionRunner
 	// Applies a model-initiated role transition. The model called the always-available Answer tool
 	// mid-turn, selecting one of the role's truth statements; selectedAnswer is the full briefing
 	// that becomes the next phase's first prompt. Runs end-of-turn bookkeeping, then maps the truth.
-	private Task<Session?> ApplyTransitionAsync(Session session, Role currentRole, string selectedTruth, string selectedAnswer, CancellationToken ct)
+	private Task<Session?> ApplyTransitionAsync(Session session, Role currentRole, string selectedTruth, string selectedStatement, CancellationToken ct)
 	{
 		// The model already provided a full briefing via the Answer tool's answer argument.
 		// No summary needed: selectedAnswer IS the handoff context for the next phase.
-		return Task.FromResult(CreateNextRoleSession(session, currentRole, selectedTruth, selectedAnswer));
+		return Task.FromResult(CreateNextRoleSession(session, currentRole, selectedTruth, selectedStatement));
 	}
 
 	// Called after a completed worker turn when the model did NOT already opt to transition via the
@@ -579,7 +597,7 @@ public class SessionRunner
 
 		string? selectedStatement = null;
 		string? selectedContext = null;
-		Tool answerTool = BuildStateTransitionTool(currentRole.EndOfTurnPrompt, currentRole.Statements.Keys, (statement, context) => { selectedStatement = statement; selectedContext = context; });
+		Tool stateTransitionTool = BuildStateTransitionTool(currentRole.EndOfTurnPrompt, currentRole.Statements.Keys, (statement, context) => { selectedStatement = statement; selectedContext = context; });
 
 		// Run the confrontation in the current session with only the Answer tool, forcing the model to
 		// call it, and reusing the session's service so the conversation continues uninterrupted. Retry
@@ -588,10 +606,10 @@ public class SessionRunner
 
 		// Cap the answer to whatever space remains in the window so the briefing always fits.
 		int answerCap = session.Budget.MaxCompletionTokens() ?? 0;
-		ProtocolResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { answerTool }, "state_transition", 0, answerCap, _transport, ct);
+		ProtocolResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { stateTransitionTool }, "state_transition", 0, answerCap, _transport, ct);
 		if (selectedStatement == null)
 		{
-			_transport.Error(session.Id, "[Role] Completed session failed to call Answer tool; staying in current role.");
+			_transport.Error(session.Id, "[Role] Completed session failed to call state_transition tool; staying in current role.");
 			return null;
 		}
 

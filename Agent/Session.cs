@@ -136,7 +136,7 @@ public class Session
 
         // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
         // which resets pending reservations: the size already includes any prior tool outputs.
-        RecordTurnUsage(payload.Usage, payload.CurrentContextSize);
+        RecordTurnUsage(payload.Usage);
 	}
 
 	public void CommitToolResults(ProtocolCallPayload payload)
@@ -161,15 +161,17 @@ public class Session
 	}
 
 	// Commits one turn's usage and cost into the monotonic session totals.
-	internal void RecordTurnUsage(TokenUsageInfo usage, int currentContextSize)
+	internal void RecordTurnUsage(TokenUsageInfo usage)
 	{
 		_data.CumulativeInputTokens += usage.PromptTokens;
 		_data.CumulativeOutputTokens += usage.CompletionTokens;
 		_data.LastTokenUsage = usage;
-		_data.CurrentContextSize = currentContextSize;
-		// The reported size already includes any tool outputs appended since the last response, so
-		// the budget's pending reservations are now fully accounted for.
-		_budget.RecordMeasurement(currentContextSize);
+		// The context size is exactly the tokens the provider processed this turn: the whole prompt it
+		// read plus the completion it produced. That is the conversation's true size going into the
+		// next turn, and it already includes any tool outputs appended since the last response, so the
+		// budget's pending reservations are now fully accounted for.
+		_data.CurrentContextSize = usage.PromptTokens + usage.CompletionTokens;
+		_budget.RecordMeasurement(_data.CurrentContextSize);
 	}
 
 	// ---- Attention / input ----

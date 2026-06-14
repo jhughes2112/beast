@@ -20,6 +20,16 @@ public class BeastApp : IDisposable, IAsyncDisposable
         public Dictionary<string, int> StreamTagToSlot = new Dictionary<string, int>();
         public Dictionary<int, FrameType> SlotTypes = new Dictionary<int, FrameType>();
         public Dictionary<FrameType, int> PendingCommit = new Dictionary<FrameType, int>();
+
+        // Last stats reported by the agent for this session. Pushed to the display whenever
+        // this session becomes the actively viewed one.
+        public string StatsModel = "";
+        public string StatsRole = "";
+        public int StatsPromptTokens;
+        public int StatsCompletionTokens;
+        public decimal StatsTotalCost;
+        public int StatsMaxContext;
+        public int StatsContextTokens;
     }
 
     private readonly ILauncher _agentContext;
@@ -91,6 +101,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetRequestExit(RequestGracefulExit);
         _display.SetFrameDrain(DrainFrameQueue);
         _display.SetSessionSwitchCallback(SwitchActiveSession);
+        _display.SetSessionDeleteCallback(DeleteSession);
 
         // Load settings to pick up the optional notification sound paths.
         SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
@@ -200,8 +211,49 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _activeSessionId = sessionId;
         _display.OnStreamEnd();
         _display.SetAgentBusy(_busySessions.Contains(sessionId));
+        _display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext, state.StatsContextTokens);
         _display.Attach(state.Model);
         NotifySessionList();
+    }
+
+    // Deletes a subagent session from the client's memory and tells the agent to drop its file from
+    // the session folder. Invoked from the F10 overlay (under the display lock, like ProcessFrame).
+    // The root session is never deletable, and a still-running session is left alone.
+    private void DeleteSession(string sessionId)
+    {
+        if (string.IsNullOrEmpty(sessionId)) return;
+        if (GetParentId(sessionId) == null) return;
+        if (!_sessions.ContainsKey(sessionId)) return;
+        if (_busySessions.Contains(sessionId)) return;
+
+        // The session files live in the agent's folder, so the agent performs the disk delete. The
+        // command is routed through the root session — only its command queue is drained externally.
+        string rootId = GetRootSessionId();
+        if (!string.IsNullOrEmpty(rootId) && _wsClient != null)
+            _ = _wsClient.SendAsync(rootId + "|/session delete " + sessionId);
+
+        bool wasActive = string.Equals(_activeSessionId, sessionId, StringComparison.Ordinal);
+        _sessions.Remove(sessionId);
+        _busySessions.Remove(sessionId);
+        _sessionDisplayNames.Remove(sessionId);
+
+        if (wasActive && !string.IsNullOrEmpty(rootId))
+            SwitchActiveSession(rootId);
+        else
+            NotifySessionList();
+    }
+
+    // Returns the ID of the root session: the one whose parent is not itself a known session.
+    private string GetRootSessionId()
+    {
+        foreach (string id in _sessions.Keys)
+        {
+            if (string.IsNullOrEmpty(id)) continue;
+            string? parentId = GetParentId(id);
+            if (parentId == null || !_sessions.ContainsKey(parentId))
+                return id;
+        }
+        return "";
     }
 
     // Returns the parent session ID for a given session ID, or null if it is a root.
@@ -215,7 +267,9 @@ public class BeastApp : IDisposable, IAsyncDisposable
         return id.Substring(0, last);
     }
 
-    // Appends this node and its children (sorted by numeric suffix) to result in DFS pre-order.
+    // Appends this node and its children to result in DFS pre-order. Children are sorted by numeric
+    // suffix descending so the most recently spawned agent lands directly under its parent — newest
+    // activity stays at the top of the list instead of scrolling off the bottom.
     private static void DfsAdd(
         string id,
         int depth,
@@ -230,7 +284,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             int lastB = b.LastIndexOf('_');
             int numA = lastA >= 0 && int.TryParse(a.Substring(lastA + 1), out int nA) ? nA : 0;
             int numB = lastB >= 0 && int.TryParse(b.Substring(lastB + 1), out int nB) ? nB : 0;
-            return numA.CompareTo(numB);
+            return numB.CompareTo(numA);
         });
         foreach (string child in children)
             DfsAdd(child, depth + 1, childrenMap, result);
@@ -330,7 +384,21 @@ public class BeastApp : IDisposable, IAsyncDisposable
                     decimal cost = root.TryGetProperty("totalCost", out System.Text.Json.JsonElement tc) ? tc.GetDecimal() : 0m;
                     int maxContext = root.TryGetProperty("maxContext", out System.Text.Json.JsonElement mc) ? mc.GetInt32() : 0;
                     int contextTokens = root.TryGetProperty("contextTokens", out System.Text.Json.JsonElement ct) ? ct.GetInt32() : 0;
-                    _display.SetStatsInfo(model, role, prompt, completion, cost, maxContext, contextTokens);
+
+                    // Stats are session-scoped: store them on the session they belong to so switching
+                    // sessions in the F10 overlay shows that session's own model/role/token counts.
+                    string statsId = string.IsNullOrEmpty(sessionId) ? _activeSessionId : sessionId;
+                    SessionState statsSession = EnsureSession(statsId);
+                    statsSession.StatsModel = model;
+                    statsSession.StatsRole = role;
+                    statsSession.StatsPromptTokens = prompt;
+                    statsSession.StatsCompletionTokens = completion;
+                    statsSession.StatsTotalCost = cost;
+                    statsSession.StatsMaxContext = maxContext;
+                    statsSession.StatsContextTokens = contextTokens;
+
+                    if (string.Equals(statsId, _activeSessionId, StringComparison.Ordinal))
+                        _display.SetStatsInfo(model, role, prompt, completion, cost, maxContext, contextTokens);
                 }
                 catch { }
                 return;
@@ -385,13 +453,15 @@ public class BeastApp : IDisposable, IAsyncDisposable
         {
             case FrameType.Busy:
                 _busySessions.Add(effectiveId);
-                _display.SetAgentBusy(_busySessions.Count > 0);
+                // The separator busy animation reflects the viewed session only; the F10 overlay
+                // dots show every session's busy state independently via NotifySessionList.
+                if (isActive) _display.SetAgentBusy(true);
                 NotifySessionList();
                 break;
 
             case FrameType.Idle:
                 _busySessions.Remove(effectiveId);
-                _display.SetAgentBusy(_busySessions.Count > 0);
+                if (isActive) _display.SetAgentBusy(false);
                 // Content "subagent" marks a sub-session completion; it gets its own sound.
                 PlaySound(content == "subagent" ? _subagentSoundFile : _idleSoundFile);
                 NotifySessionList();

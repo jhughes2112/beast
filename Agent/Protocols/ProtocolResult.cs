@@ -36,10 +36,6 @@ public class ProtocolCallPayload
 	// Token counts for this call.
 	public TokenUsageInfo Usage { get; }
 
-	// Raw prompt + completion tokens as reported by the provider (before subtracting cached tokens).
-	// This represents the actual full context size and is used to track conversation length.
-	public int CurrentContextSize { get; }
-
 	// Cost in USD already computed by the provider using its model config.
 	public decimal Cost { get; }
 

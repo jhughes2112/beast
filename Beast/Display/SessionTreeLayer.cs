@@ -29,7 +29,7 @@ internal static class SessionTreeLayer
         for (int r = 0; r < h; r++)
             AnsiToScreen.WriteLine(s, 0, r, "│", borderFg, panelBg);
 
-        string header = " Sessions  (↑↓ · Enter · Esc)";
+        string header = " Sessions  (↑↓ · Enter · Del · Esc)";
         AnsiToScreen.WriteLine(s, 1, 0, header, headerFg, panelBg);
 
         int visibleRows = h - 1;

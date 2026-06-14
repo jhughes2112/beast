@@ -263,6 +263,21 @@ internal static class BlockRenderer
 
                     val = val.Replace("\\n", "\n").Replace("\\t", "    ").Replace("\t", "    ");
 
+                    // Free-form prose arguments (a subagent's return value, a phase transition briefing)
+                    // are markdown. Render them the same way assistant output is rendered so fenced code
+                    // blocks and long paragraphs are interpreted and width-wrapped, rather than dumped raw
+                    // (raw over-width lines desync the terminal columns around the rendered content).
+                    if (IsProseArg(name, prop.Name))
+                    {
+                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
+                        foreach (string mdLine in MarkdownAnsi.Render(ExpandTabs(val), FrameType.Output, w))
+                        {
+                            foreach (string wrapped in AnsiString.WordWrap(mdLine, w))
+                                result.Add(wrapped);
+                        }
+                        continue;
+                    }
+
                     if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
                     {
                         if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
@@ -319,11 +334,22 @@ internal static class BlockRenderer
         return result;
     }
 
+    // True for string arguments that carry free-form markdown prose rather than code, paths, or short
+    // scalars. These are rendered through the markdown pipeline in the expanded tool-call body.
+    private static bool IsProseArg(string toolName, string propName)
+    {
+        if (toolName == "return_to_caller" && propName.Equals("output", StringComparison.OrdinalIgnoreCase)) return true;
+        if (toolName == "state_transition" && propName.Equals("context", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     private static HashSet<string> SummaryPropertiesFor(string toolName)
     {
         HashSet<string> set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         switch (toolName)
         {
+            case "state_transition":
+                set.Add("statement"); break;
             case "read_file":
                 set.Add("file_path"); set.Add("offset"); set.Add("lines"); break;
             case "write_file":
@@ -378,6 +404,8 @@ internal static class BlockRenderer
             "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
             "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
             "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),
+            "return_to_caller"                                         => BuildLineCountSummary(label, CountLines(Get("output"))),
+            "state_transition"                                         => $"{label} {Get("statement")}",
             _                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)
         };
         return summary;
@@ -408,6 +436,12 @@ internal static class BlockRenderer
         }
         catch { }
         return string.Empty;
+    }
+
+    private static string BuildLineCountSummary(string label, int lineCount)
+    {
+        string tail = lineCount > 0 ? $" ({lineCount} lines)" : string.Empty;
+        return label + tail;
     }
 
     private static string BuildPathSummary(string label, string path, int respLineCount)

@@ -25,6 +25,8 @@ public interface IDisplay
     void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId);
     // Wires up the callback invoked when the user selects a session in the overlay.
     void SetSessionSwitchCallback(Action<string> switchTo);
+    // Wires up the callback invoked when the user deletes a subagent session in the overlay.
+    void SetSessionDeleteCallback(Action<string> deleteSession);
     // True when auto-tracking of incoming messages should be suppressed: the session overlay
     // is open or the user has scrolled away from the bottom of the conversation.
     bool IsAutoTrackSuppressed();

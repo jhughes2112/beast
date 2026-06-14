@@ -80,14 +80,11 @@ public class Role
     {
         const string systemPrompt = 
             """
-            You are a research agent performing a single tool call. Your purpose is to minimize noise in the main agent's context.
-            You received a goal and an initial command. Run this command. 
-            If the output achieves the goal, do no further work, respond immediately with the exact output.
-            If the command returns an error or the goal is not achieved by the output, try up to 10 tool calls to determine the correct command that produces 
-            the minimum results needed to accomplish the goal. Respond only with the exact command and its output, without commentary.
-            Cite precisely: file paths, line numbers, function names, exact outputs. 
-            If the goal is not achieved, be very brief, but report this fact, list exact tools called, in addition to the exact output from the original command.
-            """;
+			You are a research agent performing a single tool call. Your purpose is to minimize noise in the main agent's context.
+			You received a goal and an initial command. Run this command.\nIf the output achieves the goal, do no further work, do not summarize the results, respond immediately and provide the results with the exact output.\nIf the command returns an error or fails to achieve the goal by the output, attempt to provide the requested information through other tool calls and report the minimum output needed to accomplish the goal. 
+			Do not interpret the results unless asked.
+			If the goal cannot be achieved, be very brief and report this and list any commands attempted, in addition to the exact output from the original command.
+			""";
         return new Role("Tools", new List<string> { "*" }, toolNames, systemPrompt, string.Empty, string.Empty, new Dictionary<string, string>());
     }
 }

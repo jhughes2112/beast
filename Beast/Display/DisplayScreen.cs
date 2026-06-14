@@ -74,6 +74,7 @@ public class DisplayScreen : IDisplay
     private CancellationTokenSource?   _runCts;
     private Action?                    _frameDrain;
     private Action<string>?            _sessionSwitchCallback;
+    private Action<string>?            _sessionDeleteCallback;
 
     // Session tree overlay state.
     private bool _sessionTreeOpen = false;
@@ -263,6 +264,7 @@ public class DisplayScreen : IDisplay
     public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
     public void SetFrameDrain(Action drain) { _frameDrain = drain; }
     public void SetSessionSwitchCallback(Action<string> switchTo) { _sessionSwitchCallback = switchTo; }
+    public void SetSessionDeleteCallback(Action<string> deleteSession) { _sessionDeleteCallback = deleteSession; }
 
     public bool IsAutoTrackSuppressed()
     {
@@ -946,6 +948,25 @@ public class DisplayScreen : IDisplay
                         _sessionTreeOpen = false;
                         PreviewSelectedSession();
                         Redraw();
+                    }
+                    else if (key.Key == ConsoleKey.Delete)
+                    {
+                        // Delete removes a subagent session from memory and disk. The root session
+                        // (depth 0) is never deletable, and a session still running is left alone.
+                        if (_sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
+                        {
+                            SessionDisplayInfo target = _sessionList[_sessionTreeSelected];
+                            if (target.Depth > 0 && !target.IsBusy)
+                            {
+                                // The callback rebuilds the list via SetSessionList; clamp afterward,
+                                // then preview whatever now sits at the selection so the view follows.
+                                _sessionDeleteCallback?.Invoke(target.Id);
+                                if (_sessionTreeSelected >= _sessionList.Count)
+                                    _sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
+                                PreviewSelectedSession();
+                                Redraw();
+                            }
+                        }
                     }
                     else if (key.Key == ConsoleKey.Escape)
                     {

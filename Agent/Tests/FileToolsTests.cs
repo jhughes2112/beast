@@ -77,14 +77,14 @@ public static class FileToolsTests
 
 		// Single-line exact replacement
 		ToolResult rep = await FileTools.EditFileAsync("edittool1", path, "second line", "SECOND LINE", cts.Token);
-		ctx.AssertContains(rep.StdOut, "OK", $"Edit exact single: OK (err: {rep.StdErr})");
+		ctx.AssertContains(rep.StdOut, "Edit applied", $"Edit exact single: applied (err: {rep.StdErr})");
 		string after = File.ReadAllText(path);
 		ctx.AssertContains(after, "SECOND LINE", "Edit exact single: updated");
 		ctx.Assert(!after.Contains("second line"), "Edit exact single: old text gone");
 
 		// Multi-line exact replacement
 		ToolResult rep2 = await FileTools.EditFileAsync("edittool2", path, "SECOND LINE\nthird line", "replaced A\nreplaced B", cts.Token);
-		ctx.AssertContains(rep2.StdOut, "OK", $"Edit exact multi: OK (err: {rep2.StdErr})");
+		ctx.AssertContains(rep2.StdOut, "Edit applied", $"Edit exact multi: applied (err: {rep2.StdErr})");
 		string after2 = File.ReadAllText(path);
 		ctx.AssertContains(after2, "replaced A", "Edit exact multi: has replaced A");
 		ctx.AssertContains(after2, "replaced B", "Edit exact multi: has replaced B");
@@ -100,7 +100,7 @@ public static class FileToolsTests
 		// old_text has different indentation — fuzzy match should still work
 		string oldText = "public void Foo()\n{\nreturn;\n}";
 		ToolResult rep = await FileTools.EditFileAsync("edittool3", path, oldText, "public void Bar() { }", cts.Token);
-		ctx.AssertContains(rep.StdOut, "OK", $"Edit fuzzy: OK (err: {rep.StdErr})");
+		ctx.AssertContains(rep.StdOut, "Edit applied", $"Edit fuzzy: applied (err: {rep.StdErr})");
 		string after = File.ReadAllText(path);
 		ctx.AssertContains(after, "Bar", "Edit fuzzy: replacement applied");
 	}
