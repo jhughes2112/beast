@@ -15,16 +15,9 @@ static class ProtocolHelpers
         MaxResponseContentBufferSize = 2 * 1024 * 1024  // 2 MB
     };
 
-    private static readonly HttpClient ProbeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-
     public static HttpClient GetClient()
     {
         return SharedClient;
-    }
-
-    public static HttpClient GetProbeClient()
-    {
-        return ProbeClient;
     }
 
     public static bool IsRateLimited(HttpResponseMessage response, string responseBody)

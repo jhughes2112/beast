@@ -570,39 +570,5 @@ public class ProtocolResponses
         return (usage, cost);
     }
 
-    public static async Task<ProbeResult> ProbeAsync(string apiKey, string endpoint)
-    {
-        try
-        {
-            string probeJson = "{\"model\":\"test\",\"input\":\"\",\"max_output_tokens\":1}";
-            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpoint);
-            req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
-            req.Content = new StringContent(probeJson, Encoding.UTF8, "application/json");
-
-            HttpResponseMessage response = await ProtocolHelpers.GetProbeClient().SendAsync(req);
-            string body = await response.Content.ReadAsStringAsync();
-            int status = (int)response.StatusCode;
-
-            if (status == 404) return ProbeResult.NotSupported("404 on /responses");
-
-            if (body.Contains("\"object\":\"response\""))
-            {
-                if (body.Contains("\"type\":\"message\"") || body.Contains("\"type\":\"function_call\""))
-                    return ProbeResult.Supported();
-                return ProbeResult.NotSupported("/responses: object:response but no message/function_call output");
-            }
-
-            if (status >= 400 && status < 500 && body.Contains("\"error\"") && !body.Contains("messages"))
-            {
-                return ProbeResult.Supported();
-            }
-
-            return ProbeResult.NotSupported($"Unexpected status {status}");
-        }
-        catch (Exception ex)
-        {
-            return ProbeResult.Unreachable(ex.Message);
-        }
-    }
 }
 

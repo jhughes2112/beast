@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -15,34 +16,10 @@ public enum DetectedProtocol
     ChatCompletions
 }
 
-public enum ProbeOutcome
-{
-    Supported,    // The endpoint speaks this protocol.
-    NotSupported, // The endpoint returned a definitive 404 or wrong-shaped body — not this protocol.
-    Unreachable   // The probe could not connect at all (network error, timeout).
-}
-
-public class ProbeResult
-{
-    public ProbeOutcome Outcome { get; }
-    public string       Detail  { get; }
-
-    private ProbeResult(ProbeOutcome outcome, string detail)
-    {
-        Outcome = outcome;
-        Detail = detail;
-    }
-
-    public static ProbeResult Supported()                    => new ProbeResult(ProbeOutcome.Supported, "");
-    public static ProbeResult NotSupported(string detail)    => new ProbeResult(ProbeOutcome.NotSupported, detail);
-    public static ProbeResult Unreachable(string detail)     => new ProbeResult(ProbeOutcome.Unreachable, detail);
-}
-
-// So it is clear, Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
+// Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
 // The lifetime of a ProtocolProxy is tied to the LLMService it is created for.
-// The whole purpose of this class is to 1) detect the protocol by probing the endpoint for Anthropic, ChatCompletions, or Responses,
-// and then 2) route the call to the appropriate protocol implementation, 3) inject headers and payload fields based on the Extras dictionary.
-// They all work the same way, so this saves a lot of boilerplate and simplifies the protocol handling.
+// Protocol is inferred from the endpoint URL path (/messages → Anthropic, /chat/completions → ChatCompletions, /responses → Responses).
+// This class also routes calls to the appropriate protocol implementation and injects headers/payload fields from the Extras dictionary.
 //
 // Extras key conventions:
 //   header_<name>  — added verbatim as an HTTP request header
@@ -91,39 +68,53 @@ public class ProtocolProxy
         _detected = detected;
     }
 
-    // Probes an endpoint and returns which protocol it speaks, plus the effective endpoint URL
-    // (which may differ from the input when the docker-internal→localhost fallback fires).
-    public static async Task<(DetectedProtocol detected, string effectiveEndpoint)> ProbeEndpointAsync(
-        string apiKey, string endpoint, CancellationToken ct = default)
+    // Infers the protocol from the URL route suffix.
+    private static DetectedProtocol DetectProtocolFromUrl(string endpoint)
     {
-        ProbeResult anthropic = await ProtocolAnthropic.ProbeAsync(apiKey, endpoint);
-        if (anthropic.Outcome == ProbeOutcome.Supported)
-            return (DetectedProtocol.Anthropic, endpoint);
+        if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
+            return DetectedProtocol.Anthropic;
+        if (endpoint.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+            return DetectedProtocol.ChatCompletions;
+        if (endpoint.EndsWith("/responses", StringComparison.OrdinalIgnoreCase))
+            return DetectedProtocol.Responses;
+        return DetectedProtocol.Unknown;
+    }
 
-        ProbeResult responses = await ProtocolResponses.ProbeAsync(apiKey, endpoint);
-        if (responses.Outcome == ProbeOutcome.Supported)
-            return (DetectedProtocol.Responses, endpoint);
+    // Resolves the host from a URL within a tight timeout; returns false if unreachable.
+    private static async Task<bool> CanResolveHostAsync(string endpoint)
+    {
+        try
+        {
+            Uri uri = new Uri(endpoint);
+            using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            IPAddress[] addresses = await Dns.GetHostAddressesAsync(uri.Host, cts.Token);
+            return addresses.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
-        ProbeResult chat = await ProtocolChatCompletions.ProbeAsync(apiKey, endpoint);
-        if (chat.Outcome == ProbeOutcome.Supported)
-            return (DetectedProtocol.ChatCompletions, endpoint);
+    // Infers the protocol from the URL route, then resolves the effective endpoint URL.
+    // If host.docker.internal fails to resolve, rewrites to localhost (on-host fallback).
+    // Returns Unknown if the URL route is unrecognized or the host cannot be resolved.
+    public static async Task<(DetectedProtocol detected, string effectiveEndpoint)> ProbeEndpointAsync(
+        string endpoint, CancellationToken ct = default)
+    {
+        DetectedProtocol protocol = DetectProtocolFromUrl(endpoint);
+        if (protocol == DetectedProtocol.Unknown)
+            return (DetectedProtocol.Unknown, endpoint);
+
+        if (await CanResolveHostAsync(endpoint))
+            return (protocol, endpoint);
 
         if (!endpoint.Contains("host.docker.internal", StringComparison.OrdinalIgnoreCase))
             return (DetectedProtocol.Unknown, endpoint);
 
         string fallback = endpoint.Replace("host.docker.internal", "localhost", StringComparison.OrdinalIgnoreCase);
-
-        ProbeResult anthropicFb = await ProtocolAnthropic.ProbeAsync(apiKey, fallback);
-        if (anthropicFb.Outcome == ProbeOutcome.Supported)
-            return (DetectedProtocol.Anthropic, fallback);
-
-        ProbeResult responsesFb = await ProtocolResponses.ProbeAsync(apiKey, fallback);
-        if (responsesFb.Outcome == ProbeOutcome.Supported)
-            return (DetectedProtocol.Responses, fallback);
-
-        ProbeResult chatFb = await ProtocolChatCompletions.ProbeAsync(apiKey, fallback);
-        if (chatFb.Outcome == ProbeOutcome.Supported)
-            return (DetectedProtocol.ChatCompletions, fallback);
+        if (await CanResolveHostAsync(fallback))
+            return (protocol, fallback);
 
         return (DetectedProtocol.Unknown, endpoint);
     }
@@ -176,7 +167,7 @@ public class ProtocolProxy
 
         if (_detected == DetectedProtocol.Unknown)
         {
-            (DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(_model.ApiKey, endpoint, cancellationToken);
+            (DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(endpoint, cancellationToken);
             _detected = probed;
             if (effectiveEndpoint != endpoint)
                 _model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Config);

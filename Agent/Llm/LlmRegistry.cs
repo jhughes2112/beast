@@ -102,7 +102,7 @@ public class LlmRegistry
 			string originalEndpoint = entry.Key;
 			string apiKey = entry.Value.apiKey;
 
-			detectionTasks.Add(originalEndpoint, ProtocolProxy.ProbeEndpointAsync(apiKey, originalEndpoint, ct));
+			detectionTasks.Add(originalEndpoint, ProtocolProxy.ProbeEndpointAsync(originalEndpoint, ct));
 		}
 		foreach (KeyValuePair<string, (string apiKey, List<string> modelIds)> entry in unprobed)
 		{

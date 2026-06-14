@@ -541,32 +541,5 @@ public class ProtocolAnthropic
         return result;
     }
 
-    public static async Task<ProbeResult> ProbeAsync(string apiKey, string endpoint)
-    {
-        try
-        {
-            HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpoint);
-            req.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
-            req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
-            req.Content = new StringContent("{}", Encoding.UTF8, "application/json");
-
-            HttpResponseMessage response = await ProtocolHelpers.GetProbeClient().SendAsync(req);
-            string body = await response.Content.ReadAsStringAsync();
-            int status = (int)response.StatusCode;
-
-            if (status == 404) return ProbeResult.NotSupported("404 on /messages");
-
-            if (status >= 400 && status < 500 && body.Contains("\"type\":\"error\""))
-            {
-                return ProbeResult.Supported();
-            }
-
-            return ProbeResult.NotSupported($"Unexpected status {status}");
-        }
-        catch (Exception ex)
-        {
-            return ProbeResult.Unreachable(ex.Message);
-        }
-    }
 }
 
