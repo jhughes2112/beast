@@ -123,9 +123,11 @@ public class RoleService
         List<string> toolNames = new List<string>(tools.Keys);
 
         Role defaultRole = Role.DefaultRole(toolNames);
+        Role taskRole = Role.TaskRole(toolNames);
         Role toolsRole = Role.ToolsRole(toolNames);
         Dictionary<string, Role> dict = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
         dict[defaultRole.Name] = defaultRole;
+        dict[taskRole.Name] = taskRole;
         dict[toolsRole.Name] = toolsRole;
         return dict;
     }

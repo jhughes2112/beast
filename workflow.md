@@ -21,7 +21,7 @@ RunAsync loop
   -> GetRole(session.Data.Role)           // active role from roles.json
   -> RunTurnAsync(...)                    // one LLM turn: tool dispatch loop inside
   -> when Completed: AdvanceRoleAsync(session, service, role, ct)
-       -> SummarizeAsync(role.SummaryPrompt, roleTools)  // fork: bookkeeping (MEMORY.md, PLAN.md, etc.)
+       -> SummarizeAsync(role.SummaryPrompt, roleTools)  // runs the summary turn in-session, returns result text
        -> build eval message: summary + end_of_turn_prompt + truth options
        -> ephemeral session (same model/role) with only the Answer tool
        -> LLM calls Answer(answer)  (retries up to 3 times)

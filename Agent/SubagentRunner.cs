@@ -161,7 +161,7 @@ public class SubagentRunner
         finally
         {
             if (!subSession.Ephemeral)
-                SessionService.Save(subSession.Data);
+                SessionService.Save(subSession.Data, false);
             subSession.SendIdle();
         }
     }

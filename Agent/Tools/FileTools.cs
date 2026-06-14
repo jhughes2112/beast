@@ -158,7 +158,7 @@ public static async Task<ToolResult> EditFileAsync(
 					{
 						string newContent = fileContent.Substring(0, exactIdx) + replacement + fileContent.Substring(exactIdx + oldText.Length);
 						await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
-						result = new ToolResult(toolCallId, "OK", string.Empty, 0, 0);
+						result = new ToolResult(toolCallId, BuildEditEcho(newContent, exactIdx, replacement.Length), string.Empty, 0, 0);
 					}
 					else
 					{
@@ -199,7 +199,7 @@ public static async Task<ToolResult> EditFileAsync(
 								int origEnd = posMap[matchIdx + strippedOld.Length - 1] + 1;
 								string newContent = fileContent.Substring(0, origStart) + replacement + fileContent.Substring(origEnd);
 								await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
-								result = new ToolResult(toolCallId, "OK", string.Empty, 0, 0);
+								result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, replacement.Length), string.Empty, 0, 0);
 							}
 							else
 							{
@@ -231,7 +231,68 @@ public static async Task<ToolResult> EditFileAsync(
 	return result;
 }
 
-public static async Task<ToolResult> WriteFileAsync(
+// Echoes the edited region of the new file content back to the model: the changed lines plus
+	// three lines of context on each side, with 1-based line numbers and a ">" marker on changed
+	// lines. This lets the model confirm the edit landed where it intended — important because the
+	// whitespace-normalized fallback can match a different region than the model pictured. A large
+	// changed span has its middle collapsed so the echo stays bounded.
+	private static string BuildEditEcho(string content, int replaceStart, int replaceLength)
+	{
+		const int contextLines = 3;
+		const int maxChangedShown = 8;
+
+		string[] lines = content.Split('\n');
+
+		int startLine = LineOfIndex(content, replaceStart);
+		int lastIdx = replaceLength > 0 ? replaceStart + replaceLength - 1 : replaceStart;
+		int endLine = LineOfIndex(content, lastIdx);
+
+		int firstShown = Math.Max(0, startLine - contextLines);
+		int lastShown = Math.Min(lines.Length - 1, endLine + contextLines);
+
+		StringBuilder sb = new StringBuilder();
+		sb.Append("Edit applied. Result context (\">\" marks changed lines):\n");
+
+		bool collapse = (endLine - startLine + 1) > maxChangedShown;
+		int headEnd = startLine + (contextLines + 1);   // last changed line shown before the gap
+		int tailStart = endLine - (contextLines + 1);   // first changed line shown after the gap
+
+		for (int i = firstShown; i <= lastShown; i++)
+		{
+			if (collapse && i > headEnd && i < tailStart)
+			{
+				if (i == headEnd + 1)
+					sb.Append($"        | … {tailStart - headEnd - 1} more changed lines …\n");
+				continue;
+			}
+
+			char marker = (i >= startLine && i <= endLine) ? '>' : ' ';
+			string text = lines[i].TrimEnd('\r');
+			sb.Append(marker);
+			sb.Append(' ');
+			sb.Append((i + 1).ToString().PadLeft(5));
+			sb.Append(" | ");
+			sb.Append(text);
+			sb.Append('\n');
+		}
+
+		return sb.ToString();
+	}
+
+	// Counts the lines preceding a character offset (the 0-based line the offset falls on).
+	private static int LineOfIndex(string content, int index)
+	{
+		int count = 0;
+		int limit = Math.Min(index, content.Length);
+		for (int i = 0; i < limit; i++)
+		{
+			if (content[i] == '\n')
+				count++;
+		}
+		return count;
+	}
+
+	public static async Task<ToolResult> WriteFileAsync(
 	string toolCallId,
 	string filePath,
 	string content,

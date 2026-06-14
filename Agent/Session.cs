@@ -431,20 +431,13 @@ public class Session
 			true,
 			0);
 		Session fork = new Session(forked, string.Empty, _transport, _isSubagent);
-		_activeFork = fork;
 		return fork;
 	}
-
-	// The most recent fork of this session. Forks share this session's ID, so a /cancel routed
-	// here by ID must also reach the fork actually running the turn. A stale fork is harmless
-	// to interrupt — its turn CTS is already gone.
-	private Session? _activeFork;
 
 	// Cancels the in-progress turn, if any — including a turn running in a same-ID fork.
 	public void Interrupt()
 	{
 		_turnCts?.Cancel();
-		_activeFork?.Interrupt();
 	}
 
 	// ---- Private logic ----

@@ -7,13 +7,16 @@ using System.Text.Json;
 
 // Persists conversation sessions as JSON files under <workdir>/.beast/sessions/.
 // Each session is one file: {sessionId}.json
-// The last session ID is tracked in .beast/lastSession.json
+// The last ROOT session ID is tracked in .beast/lastSession.json so the next startup resumes the
+// top-level conversation. Subagent saves write their own file but must NOT touch lastSession.json.
 public static class SessionService
 {
     private static string SessionsDir => Path.Combine(Environment.CurrentDirectory, ".beast", "sessions");
     private static string LastSessionFile => Path.Combine(Environment.CurrentDirectory, ".beast", "lastSession.json");
 
-    public static void Save(BeastSession data)
+    // isRoot: true for the top-level session the user drives (and its compaction/role successors);
+    // only those update lastSession.json. Subagent sessions pass false so resume never lands on one.
+    public static void Save(BeastSession data, bool isRoot)
     {
         if (data.Ephemeral)
             return;
@@ -25,7 +28,8 @@ public static class SessionService
             string path = Path.Combine(SessionsDir, data.Id + ".json");
             string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
             File.WriteAllText(path, json);
-            SaveLastSession(data.Id);
+            if (isRoot)
+                SaveLastSession(data.Id);
         }
         catch (Exception ex)
         {
@@ -92,6 +96,13 @@ public static class SessionService
 
         foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
         {
+            // Only root-level sessions belong in the list. A root id is a bare GUID; every child
+            // session (subagent tool sessions, compaction/role successors) appends "_N" to its
+            // parent's id, so the filename alone identifies them and child files are skipped
+            // without being read.
+            string id = Path.GetFileNameWithoutExtension(file);
+            if (id.Contains('_'))
+                continue;
             try
             {
                 string json = File.ReadAllText(file);

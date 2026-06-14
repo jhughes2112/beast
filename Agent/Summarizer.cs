@@ -1,20 +1,18 @@
-using System;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-// Stateless turn execution. RunTurnAsync runs one LLM turn on a session; SummarizeAsync runs a
-// prompt in a discarded fork and returns the assistant text. Shared by SessionRunner (main
-// turns, eval, compaction/transition summaries) and SubagentRunner (fork attempts). Delegates
-// bundle management and turn-CTS lifecycle to the session; owns the LlmService call and
-// interrupt classification.
+// Stateless summarization. SummarizeAsync runs the summary prompt as a real turn on the session and
+// returns the assistant output taken straight from the protocol result.
+//
+// It does NOT fork. Forking only ever existed to keep the summary turn from polluting the session,
+// but RunToCompletionAsync hands the result back WITHOUT committing it — so the summary text is read
+// directly off result.Payload, and the only thing that lands in the session is whatever we choose to
+// commit. We do commit the turn here so the session closes out with a complete prompt+summary
+// exchange (no dangling user message, and the streamed summary matches the saved record). The caller
+// (CompactAsync) takes the returned text and seeds a fresh compacted session with it.
 public static class Summarizer
 {
-    // Runs a summarization prompt in a temporary fork of the session and returns the assistant
-    // text, or null when no service is available or the turn did not complete. Creates its own
-    // fresh LlmService so the fork's ProtocolProxy is never shared with the parent session. The
-    // fork shares the session's ID, so the summary turn streams live into the session's client
-    // view; the fork is discarded after the call and the original session's record is untouched.
     public static async Task<string?> SummarizeAsync(Session session, string prompt, Tool[] tools, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken appToken)
     {
         string? summary = null;
@@ -23,11 +21,13 @@ public static class Summarizer
         LlmService? service = registry.CreateService(role, session.Model, 0);
         if (service != null)
         {
-            Session temp = session.Fork();
-            temp.AddUserMessage(prompt);
-            ProtocolResult result = await service.RunToCompletionAsync(temp, tools, null, 0, 0, transport, appToken);
+            session.AddUserMessage(prompt);
+            ProtocolResult result = await service.RunToCompletionAsync(session, tools, null, 0, 0, transport, appToken);
             if (result.Outcome == ProtocolCallOutcome.Success)
-                summary = temp.GetLastAssistantText();
+            {
+                session.CommitAssistantTurn(result.Payload!);
+                summary = result.Payload!.AssistantText;
+            }
         }
 
         return summary;

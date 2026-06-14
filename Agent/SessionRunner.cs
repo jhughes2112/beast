@@ -94,7 +94,7 @@ public class SessionRunner
 					// Send history to the client whenever the active session changes.
 					session.ReplayToTransport();
 					session.SendStats();
-					SessionService.Save(_currentSession.Data);
+					SaveRoot(_currentSession);
 					_currentSession = session;
 				}
 
@@ -230,6 +230,9 @@ public class SessionRunner
 					finally
 					{
 						session.SendIdle();
+
+						// Persist the root each turn so its on-disk record and lastSession.json stay current.
+						SaveRoot(session);
 					}
 				}
 
@@ -271,7 +274,7 @@ public class SessionRunner
 		finally
 		{
 			if (!_currentSession.Ephemeral)
-				SessionService.Save(_currentSession.Data);
+				SaveRoot(_currentSession);
 		}
 		return _currentSession;
 	}
@@ -303,10 +306,10 @@ public class SessionRunner
 		// Allocate the child ID before saving so the updated ChildCounter is persisted.
 		string newSessionId = _currentSession.AllocateChildId();
 
-		SessionService.Save(_currentSession.Data);
+		SaveRoot(_currentSession);
 
-		// Compaction creates a fresh session (no history), not a Fork.
-		// Fork = deep copy from a branch point; compaction = clean slate seeded with the summary.
+		// Compaction starts a clean-slate session (no history) seeded with the summary plus the last
+		// couple of exchanges — not a copy of the prior conversation.
 		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral, 0);
 
 		Session newSession = new Session(freshData, role.SystemPrompt, _transport, false);
@@ -318,7 +321,7 @@ public class SessionRunner
 		newSession.AnnounceToClient();
 
 		if (!newSession.Ephemeral)
-			SessionService.Save(newSession.Data);
+			SaveRoot(newSession);
 
 		_cachedSessions = SessionService.List();
 		_transport.Status(_currentSession.Id, "[Compaction] Complete.");
@@ -326,6 +329,17 @@ public class SessionRunner
 	}
 
 	// ---- Session management ----
+
+	// Persists a top-level session (the root the user drives, and its compaction/role successors) and
+	// records it as the session to resume. Inferring the display name first matters: the root is
+	// created nameless, and SessionService.Save skips nameless sessions — so without this the root
+	// would never reach disk while named subagents would. Always marks the save as root so
+	// lastSession.json tracks the top-level conversation, never a subagent tool session.
+	private static void SaveRoot(Session session)
+	{
+		session.InferDisplayName();
+		SessionService.Save(session.Data, true);
+	}
 
 	private Session CreateFreshSession(string roleName, bool ephemeral)
 	{
@@ -379,7 +393,7 @@ public class SessionRunner
 					if (args == "new")
 					{
 						if (!session.Ephemeral)
-							SessionService.Save(session.Data);
+							SaveRoot(session);
 						session = CreateFreshSession(session.Role, false);
 						_service = null;
 						_cachedSessions = SessionService.List();
@@ -388,7 +402,7 @@ public class SessionRunner
 					else if (args == "none")
 					{
 						if (!session.Ephemeral)
-							SessionService.Save(session.Data);
+							SaveRoot(session);
 						session = CreateFreshSession(session.Role, true);
 						_service = null;
 						_cachedSessions = SessionService.List();
@@ -410,7 +424,7 @@ public class SessionRunner
 						if (loaded != null)
 						{
 							if (!session.Ephemeral)
-								SessionService.Save(session.Data);
+								SaveRoot(session);
 							session = new Session(loaded, string.Empty, _transport, false);
 							_service = null;
 							_cachedSessions = SessionService.List();
@@ -612,7 +626,7 @@ public class SessionRunner
 		}
 
 		if (!session.Ephemeral)
-			SessionService.Save(session.Data);
+			SaveRoot(session);
 
 		BeastSession freshData = new BeastSession(session.AllocateChildId(), session.DisplayName, session.Model, nextRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
 		Session next = new Session(freshData, nextRole.SystemPrompt, _transport, false);
