@@ -85,33 +85,46 @@ public class ProtocolProxy
         return DetectedProtocol.Unknown;
     }
 
-    // Lightweight client for endpoint reachability probes only. No auth, no logging — we care solely
-    // about whether an HTTP server answers, not what it says.
-    private static readonly HttpClient _probeClient = new HttpClient();
+    // Probe client: proxy disabled so a localhost / host.docker.internal request connects directly.
+    // The default HttpClient honors HTTP(S)_PROXY/ALL_PROXY, and inside Docker that routed the probe
+    // through a proxy that could not reach host.docker.internal — the probe failed and the endpoint
+    // was wrongly rewritten to localhost. No redirects either; we only care about the first response.
+    private static readonly HttpClient _probeClient = new HttpClient(new SocketsHttpHandler
+    {
+        UseProxy = false,
+        AllowAutoRedirect = false,
+        ConnectTimeout = TimeSpan.FromSeconds(3)
+    });
 
-    // Confirms an HTTP server is actually listening at the endpoint within a tight timeout. Any HTTP
-    // response — even 4xx/5xx — proves a server is there; a DNS failure, refused connection, or
-    // timeout means it is not. This is stronger than a hostname lookup: host.docker.internal often
-    // resolves inside Docker even when nothing is serving on the host, so resolution alone would
-    // wrongly accept a dead endpoint.
+    // Confirms a real HTTP endpoint is serving at the URL. Deliberately calls it INCORRECTLY — a
+    // bodyless GET — so the server rejects it with a fast status (400/404/405/401); a correct call
+    // would be a full completion that can take a long time. ANY HTTP response proves the endpoint is
+    // there, so we return true on every status and only treat a connection-level failure (refused,
+    // unreachable host, DNS failure, timeout) as not-there. This is stronger than a DNS lookup, which
+    // resolves host.docker.internal inside Docker even when nothing serves there.
     private static async Task<bool> CanReachEndpointAsync(string endpoint)
     {
         try
         {
-            using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, endpoint);
             using HttpResponseMessage response = await _probeClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            Console.WriteLine($"[probe] {endpoint} reachable (HTTP {(int)response.StatusCode})");
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine($"[probe] {endpoint} unreachable: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
     }
 
     // Infers the protocol from the URL route, then resolves the effective endpoint URL.
-    // If nothing answers at host.docker.internal, rewrites to localhost (on-host fallback).
-    // Returns Unknown if the URL route is unrecognized or no server answers at the endpoint.
+    // The only rewrite we ever do is host.docker.internal → localhost, and ONLY on a native host run:
+    // there host.docker.internal does not resolve and localhost is the host. Inside a container the
+    // reverse holds — host.docker.internal IS the host and localhost is the container itself — so the
+    // rewrite would point at the wrong machine and must never fire. Protocol comes from the URL route,
+    // so a transient startup probe miss keeps the endpoint usable rather than disabling it.
     public static async Task<(DetectedProtocol detected, string effectiveEndpoint)> ProbeEndpointAsync(
         string endpoint, CancellationToken ct = default)
     {
@@ -122,14 +135,28 @@ public class ProtocolProxy
         if (await CanReachEndpointAsync(endpoint))
             return (protocol, endpoint);
 
-        if (!endpoint.Contains("host.docker.internal", StringComparison.OrdinalIgnoreCase))
-            return (DetectedProtocol.Unknown, endpoint);
+        // Endpoint did not answer. Only attempt the localhost fallback on a native host run, never in
+        // a container (where localhost is the container, not the host the user runs the LLM on).
+        if (endpoint.Contains("host.docker.internal", StringComparison.OrdinalIgnoreCase) && !RunningInContainer())
+        {
+            string fallback = endpoint.Replace("host.docker.internal", "localhost", StringComparison.OrdinalIgnoreCase);
+            if (await CanReachEndpointAsync(fallback))
+                return (protocol, fallback);
+        }
 
-        string fallback = endpoint.Replace("host.docker.internal", "localhost", StringComparison.OrdinalIgnoreCase);
-        if (await CanReachEndpointAsync(fallback))
-            return (protocol, fallback);
+        // Unreachable at probe time, but the protocol is known from the URL and the server may simply
+        // be starting up. Keep the configured endpoint so the real call can try it (and surface a
+        // concrete connection error) instead of silently dropping a usable endpoint.
+        Console.WriteLine($"[probe] {endpoint} kept as configured ({protocol}); probe did not confirm a server.");
+        return (protocol, endpoint);
+    }
 
-        return (DetectedProtocol.Unknown, endpoint);
+    // True when running inside a container — Docker creates the /.dockerenv marker file. This is a
+    // filesystem check, not an environment variable. It gates the host.docker.internal → localhost
+    // fallback so that rewrite only happens on a native host run, never inside a container.
+    private static bool RunningInContainer()
+    {
+        return System.IO.File.Exists("/.dockerenv");
     }
 
     // Resets detection and discards the protocol instance so the next ExecuteAsync re-probes

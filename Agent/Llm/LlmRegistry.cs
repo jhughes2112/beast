@@ -110,6 +110,7 @@ public class LlmRegistry
 
 			Console.WriteLine($"Probing {originalEndpoint}");
 			(DetectedProtocol detected, string effectiveEndpoint) = await detectionTasks[originalEndpoint];
+			Console.WriteLine($"Probed {originalEndpoint} -> protocol={detected}, effective={effectiveEndpoint}");
 			_probeCache[originalEndpoint] = detected;
 
 			if (effectiveEndpoint != originalEndpoint)
