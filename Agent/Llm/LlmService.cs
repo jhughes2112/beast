@@ -153,9 +153,7 @@ public class LlmService
 
                     if (result.Outcome == ProtocolCallOutcome.Success)
                     {
-                        // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
-                        // which resets pending reservations: the size already includes any prior tool outputs.
-                        conversation.RecordTurnUsage(result.Payload!.Usage, result.Payload.Cost, result.Payload.CurrentContextSize);
+						conversation.RecordCost(result.Payload!.Usage.);
                         break;
                     }
                     else if (result.Outcome == ProtocolCallOutcome.RateLimited)

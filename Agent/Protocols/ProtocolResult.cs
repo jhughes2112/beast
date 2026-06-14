@@ -3,13 +3,13 @@ using System.Collections.Generic;
 
 public enum ProtocolCallOutcome
 {
-    Success,      // A well-formed assistant turn was received and written to session state.
-    RateLimited,  // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
-    Transient,    // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off briefly.
-    Failed,       // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
-    Interrupted,  // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
-    TooManyRetries, // Rate-limited repeatedly; caller should try another model or abort.
-    ContextFull,  // Caller's context budget is exhausted before attempting a call; not a model failure.
+	Success,      // A well-formed assistant turn was received and written to session state.
+	RateLimited,  // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
+	Transient,    // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off briefly.
+	Failed,       // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
+	Interrupted,  // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
+	TooManyRetries, // Rate-limited repeatedly; caller should try another model or abort.
+	ContextFull,  // Caller's context budget is exhausted before attempting a call; not a model failure.
 }
 
 // Normalised payload returned on ProviderCallOutcome.Success.
@@ -20,112 +20,112 @@ public enum ProtocolCallOutcome
 // controls what gets committed via its own Rehydrate/On* methods.
 public class ProtocolCallPayload
 {
-    // Plain assistant text from the turn (empty string if none).
-    public string AssistantText { get; }
-    public string Thinking { get; }
+	// Plain assistant text from the turn (empty string if none).
+	public string AssistantText { get; }
+	public string Thinking { get; }
 
-    // Tool calls the model wants to execute this turn (empty when none).
-    public IReadOnlyList<SemanticToolCall> ToolCalls { get; }
+	// Tool calls the model wants to execute this turn (empty when none).
+	public IReadOnlyList<SemanticToolCall> ToolCalls { get; }
 
-    // Tool results produced by this turn's execution (empty when no tools ran).
-    public IReadOnlyList<ToolResult> ToolResults { get; }
+	// Tool results produced by this turn's execution (empty when no tools ran, gets filled in by the caller after the tools are done running).
+	public List<ToolResult> ToolResults { get; }
 
-    // Finish reason string as reported by the API (e.g. "stop", "tool_calls", "length").
-    public string FinishReason { get; }
+	// Finish reason string as reported by the API (e.g. "stop", "tool_calls", "length").
+	public string FinishReason { get; }
 
-    // Token counts for this call.
-    public TokenUsageInfo Usage { get; }
+	// Token counts for this call.
+	public TokenUsageInfo Usage { get; }
 
-    // Raw prompt + completion tokens as reported by the provider (before subtracting cached tokens).
-    // This represents the actual full context size and is used to track conversation length.
-    public int CurrentContextSize { get; }
+	// Raw prompt + completion tokens as reported by the provider (before subtracting cached tokens).
+	// This represents the actual full context size and is used to track conversation length.
+	public int CurrentContextSize { get; }
 
-    // Cost in USD already computed by the provider using its model config.
-    public decimal Cost { get; }
+	// Cost in USD already computed by the provider using its model config.
+	public decimal Cost { get; }
 
-    // Protocol-specific native objects for raw inspection (not committed to canonical state).
-    // ChatCompletions: JsonArray of message objects. Anthropic: List<Message> from SDK.
-    // Responses: JsonObject representing the response block. Null when not applicable.
-    public object? NativeAnthropic { get; }
-    public object? NativeResponses { get; }
+	// Protocol-specific native objects for raw inspection (not committed to canonical state).
+	// ChatCompletions: JsonArray of message objects. Anthropic: List<Message> from SDK.
+	// Responses: JsonObject representing the response block. Null when not applicable.
+	public object? NativeAnthropic { get; }
+	public object? NativeResponses { get; }
 
-    public ProtocolCallPayload(
-        string assistantText,
-        string thinking,
-        IReadOnlyList<SemanticToolCall> toolCalls,
-        IReadOnlyList<ToolResult> toolResults,
-        string finishReason,
-        TokenUsageInfo usage,
-        decimal cost,
-        object? nativeAnthropic = null,
-        object? nativeResponses = null)
-    {
-        AssistantText = assistantText;
-        Thinking = thinking;
-        ToolCalls = toolCalls;
-        ToolResults = toolResults;
-        FinishReason = finishReason;
-        Usage = usage;
-        Cost = cost;
-        NativeAnthropic = nativeAnthropic;
-        NativeResponses = nativeResponses;
-    }
+	public ProtocolCallPayload(
+		string assistantText,
+		string thinking,
+		IReadOnlyList<SemanticToolCall> toolCalls,
+		List<ToolResult> toolResults,
+		string finishReason,
+		TokenUsageInfo usage,
+		decimal cost,
+		object? nativeAnthropic = null,
+		object? nativeResponses = null)
+	{
+		AssistantText = assistantText;
+		Thinking = thinking;
+		ToolCalls = toolCalls;
+		ToolResults = toolResults;
+		FinishReason = finishReason;
+		Usage = usage;
+		Cost = cost;
+		NativeAnthropic = nativeAnthropic;
+		NativeResponses = nativeResponses;
+	}
 }
 
 // Result of a single provider round-trip. Use the static factory methods to construct.
 public class ProtocolResult
 {
-    public ProtocolCallOutcome Outcome { get; }
+	public ProtocolCallOutcome Outcome { get; }
 
-    // Populated when Outcome == Success.
-    public ProtocolCallPayload? Payload { get; }
+	// Populated when Outcome == Success.
+	public ProtocolCallPayload? Payload { get; }
 
-    // Populated when Outcome == RateLimited; null if the provider had no timing information.
-    public DateTimeOffset? RetryAfter { get; }
+	// Populated when Outcome == RateLimited; null if the provider had no timing information.
+	public DateTimeOffset? RetryAfter { get; }
 
-    // Human-readable detail for non-success outcomes.
-    public string ErrorMessage { get; }
+	// Human-readable detail for non-success outcomes.
+	public string ErrorMessage { get; }
 
-    private ProtocolResult(ProtocolCallOutcome outcome, ProtocolCallPayload? payload, DateTimeOffset? retryAfter, string errorMessage)
-    {
-        Outcome = outcome;
-        Payload = payload;
-        RetryAfter = retryAfter;
-        ErrorMessage = errorMessage;
-    }
+	private ProtocolResult(ProtocolCallOutcome outcome, ProtocolCallPayload? payload, DateTimeOffset? retryAfter, string errorMessage)
+	{
+		Outcome = outcome;
+		Payload = payload;
+		RetryAfter = retryAfter;
+		ErrorMessage = errorMessage;
+	}
 
-    public static ProtocolResult Succeeded(ProtocolCallPayload payload)
-    {
-        return new ProtocolResult(ProtocolCallOutcome.Success, payload, null, "");
-    }
+	public static ProtocolResult Succeeded(ProtocolCallPayload payload)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.Success, payload, null, "");
+	}
 
-    public static ProtocolResult RateLimited(DateTimeOffset? retryAfter)
-    {
-        return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "");
-    }
+	public static ProtocolResult RateLimited(DateTimeOffset? retryAfter)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "");
+	}
 
-    public static ProtocolResult Transient(string errorMessage)
-    {
-        return new ProtocolResult(ProtocolCallOutcome.Transient, null, null, errorMessage);
-    }
+	public static ProtocolResult Transient(string errorMessage)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.Transient, null, null, errorMessage);
+	}
 
-    public static ProtocolResult Failed(string errorMessage)
-    {
-        return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage);
-    }
+	public static ProtocolResult Failed(string errorMessage)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage);
+	}
 
-          public static ProtocolResult Interrupted(string errorMessage, ProtocolCallPayload? payload = null)
-           {
-               return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage);
-           }
+	public static ProtocolResult Interrupted(string errorMessage, ProtocolCallPayload? payload = null)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage);
+	}
 
-                public static ProtocolResult TooManyRetries()
-               {
-                   return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, null, "");
-               }
+	public static ProtocolResult TooManyRetries()
+	{
+		return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, null, "");
+	}
 
-               public static ProtocolResult ContextFull(string errorMessage)
-               {
-                   return new ProtocolResult(ProtocolCallOutcome.ContextFull, null, null, errorMessage);
-               }
-           }
+	public static ProtocolResult ContextFull(string errorMessage)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.ContextFull, null, null, errorMessage);
+	}
+}
