@@ -205,35 +205,4 @@ public class LlmService
         }
         return result;
     }
-
-	// Hard-enforces the per-call output budget. The conversation-loop math assumes every tool
-	// result fits its budget, but raw handlers don't bound themselves and a sub-session reply can
-	// come back over budget after its retries are exhausted. ≈4 chars/token matches the
-	// protocols' streaming estimates. StdErr keeps priority so error text survives truncation.
-	public static ToolResult TruncateToBudget(ToolResult result, int maxOutputTokens)
-    {
-        ToolResult bounded;
-        int maxChars = maxOutputTokens * 4;
-        if (result.StdOut.Length + result.StdErr.Length <= maxChars)
-        {
-            bounded = result;
-        }
-        else
-        {
-            const string marker = "\n[Output truncated: it exceeded the remaining context budget for this tool call.]";
-            string stdErr = result.StdErr;
-            string stdOut = result.StdOut;
-            if (stdErr.Length > maxChars)
-            {
-                stdErr = stdErr.Substring(0, maxChars) + marker;
-                stdOut = string.Empty;
-            }
-            else
-            {
-                stdOut = stdOut.Substring(0, maxChars - stdErr.Length) + marker;
-            }
-            bounded = new ToolResult(stdOut, stdErr, result.ExitCode);
-        }
-        return bounded;
-    }
 }

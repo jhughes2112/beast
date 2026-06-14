@@ -57,7 +57,7 @@ public interface ITransportServer
     // Frame content is "callId\x01text" so Beast can pair by identity.
     void ToolCallWithId(string sessionId, string callId, string text);
     // Frame content is "callId\x01exitCode\x01stdout\x01stderr" so Beast can display results richly.
-    void ToolResponseWithId(string sessionId, string callId, ToolResult result);
+    void ToolResponseWithId(string sessionId, ToolResult result);
     // Announces the session's ID and display name so Beast can show a human-readable label.
     void SessionAnnounce(string sessionId, string json);
     // Streaming: bracket a sequence of incremental chunks with start/end frames.

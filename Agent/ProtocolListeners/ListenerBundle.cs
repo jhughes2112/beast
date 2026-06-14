@@ -55,11 +55,11 @@ public class ListenerBundle
         _transport?.OnAssistantTurn(text, thinking, toolCalls);
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result)
+    public void OnToolResult(ToolResult result)
     {
-        _canonical.OnToolResult(toolCallId, result);
-        _activeProxy?.OnToolResult(toolCallId, result);
-        _transport?.OnToolResult(toolCallId, result);
+        _canonical.OnToolResult(result);
+        _activeProxy?.OnToolResult(result);
+        _transport?.OnToolResult(result);
     }
 
     // Resets the active proxy so the next turn re-probes and rehydrates from canonical.

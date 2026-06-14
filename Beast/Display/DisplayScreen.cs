@@ -352,19 +352,7 @@ public class DisplayScreen : IDisplay
     {
         lock (_consoleLock)
         {
-            if (msg.Type == FrameType.Clear)
-            {
-                _historyScrollOffset = 0f;
-                _scrollTarget = 0f;
-                _blockCache.Clear();
-                _needsErase = true;
-                _lastStack = null;
-                _lastView  = null;
-            }
-            else
-            {
-                _blockCache.Remove(msg.Index);
-            }
+            _blockCache.Remove(msg.Index);
             Redraw();
         }
     }

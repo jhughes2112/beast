@@ -95,12 +95,21 @@ public class LlmRegistry
 			unprobed[ep].modelIds.Add(kv.Key);
 		}
 
+		// Kick off all the probes simultaneously, so they all happen in parallel.
+		Dictionary<string, Task<(DetectedProtocol, string)>> detectionTasks = new Dictionary<string, Task<(DetectedProtocol, string)>>();
 		foreach (KeyValuePair<string, (string apiKey, List<string> modelIds)> entry in unprobed)
 		{
 			string originalEndpoint = entry.Key;
 			string apiKey = entry.Value.apiKey;
 
-			(DetectedProtocol detected, string effectiveEndpoint) = await ProtocolProxy.ProbeEndpointAsync(apiKey, originalEndpoint, ct);
+			detectionTasks.Add(originalEndpoint, ProtocolProxy.ProbeEndpointAsync(apiKey, originalEndpoint, ct));
+		}
+		foreach (KeyValuePair<string, (string apiKey, List<string> modelIds)> entry in unprobed)
+		{
+			string originalEndpoint = entry.Key;
+
+			Console.WriteLine($"Probing {originalEndpoint}");
+			(DetectedProtocol detected, string effectiveEndpoint) = await detectionTasks[originalEndpoint];
 			_probeCache[originalEndpoint] = detected;
 
 			if (effectiveEndpoint != originalEndpoint)

@@ -27,8 +27,8 @@ public class Role
 	public string EndOfTurnPrompt { get; }
 
     // Maps evaluator truth labels to the next role name.
-	[JsonPropertyName("truths")]
-	public Dictionary<string, string> Truths { get; }
+	[JsonPropertyName("statements")]
+	public Dictionary<string, string> Statements { get; }
 
 	[JsonConstructor]
 	public Role(
@@ -38,7 +38,7 @@ public class Role
 		string systemPrompt,
 		string summaryPrompt,
 		string endOfTurnPrompt,
-		Dictionary<string, string> truths)
+		Dictionary<string, string> statements)
 	{
 		Name = name ?? string.Empty;
 		Models = models ?? new List<string>();
@@ -46,7 +46,7 @@ public class Role
 		SystemPrompt = systemPrompt ?? string.Empty;
 		SummaryPrompt = summaryPrompt ?? string.Empty;
 		EndOfTurnPrompt = endOfTurnPrompt ?? string.Empty;
-		Truths = truths ?? new Dictionary<string, string>();
+		Statements = statements ?? new Dictionary<string, string>();
 	}
 
 	public static Role DefaultRole(List<string> toolNames)
@@ -57,12 +57,12 @@ public class Role
             Output only a summary of the conversation retaining the objective, current status, discovered context, and key next steps and exact details that would help perform them.
             """;
         const string endOfTurnPrompt = "Are you finished?";
-        Dictionary<string, string> truths = new Dictionary<string, string>()
+        Dictionary<string, string> statements = new Dictionary<string, string>()
             {
                 { "This task is complete.", "" },
                 { "There is more work to do.", "Default" }
             };
-        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, truths);
+        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, statements);
 	}
 
     public static Role ToolsRole(List<string> toolNames)

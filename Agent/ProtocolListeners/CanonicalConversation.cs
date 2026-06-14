@@ -45,11 +45,11 @@ public class CanonicalConversation
         _messages.Add(new AssistantMessage(text, thinking, toolCalls));
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result)
+    public void OnToolResult(ToolResult result)
     {
         string content = result.StdOut;
         if (!string.IsNullOrEmpty(result.StdErr))
             content = content + "\nstderr: " + result.StdErr;
-        _messages.Add(new ToolResultMessage(toolCallId, content));
+        _messages.Add(new ToolResultMessage(result.Id, content));
     }
 }

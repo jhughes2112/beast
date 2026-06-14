@@ -14,6 +14,7 @@ public static class ShellTools
 		Standard bash command. CWD is /workspace/
 		""")]
 	public static async Task<ToolResult> BashAsync(
+		string toolcallid,
 		[Description("Shell command to execute")] string command,
 		[Description("Optional working directory for the command.")] string? workingDir,
 		[Description("Timeout in seconds (default 60).")] int? timeoutSeconds,
@@ -115,11 +116,11 @@ public static class ShellTools
 
 								if (process.ExitCode == 0)
 								{
-									finalResult = new ToolResult(stdOut, stdErr, 0);
+									finalResult = new ToolResult(toolcallid, stdOut, stdErr, 0, 0);
 								}
 								else
 								{
-									finalResult = new ToolResult(stdOut, stdErr, process.ExitCode);
+									finalResult = new ToolResult(toolcallid, stdOut, stdErr, process.ExitCode, 0);
 								}
 							}
 							else if (timedOut)
@@ -130,33 +131,33 @@ public static class ShellTools
 								string stdErr = string.IsNullOrEmpty(err) ? string.Empty : err;
 
 								string timeoutMessage = $"Error: Command timed out after {timeout} seconds.";
-								finalResult = new ToolResult(stdOut, stdErr + (string.IsNullOrEmpty(stdErr) ? "" : "\n") + timeoutMessage, 1);
+								finalResult = new ToolResult(toolcallid, stdOut, stdErr + (string.IsNullOrEmpty(stdErr) ? "" : "\n") + timeoutMessage, 1, 0);
 							}
 							else
 							{
-								finalResult = new ToolResult(string.Empty, "Error: Process termination failed for unknown reason.", 1);
+								finalResult = new ToolResult(toolcallid, string.Empty, "Error: Process termination failed for unknown reason.", 1, 0);
 							}
 						}
 					}
 				}
-						catch (OperationCanceledException)
-						{
-							throw;
-						}
-						catch (Exception ex)
-						{
-							finalResult = new ToolResult(string.Empty, $"Error: Failed to execute command. {ex.GetType().Name}: {ex.Message}", 1);
-						}
-					}
-					else
-					{
-						finalResult = new ToolResult(string.Empty, $"Error: Working directory does not exist: {cwd}", 1);
-					}
-				}
-				else
+				catch (OperationCanceledException)
 				{
-					finalResult = new ToolResult(string.Empty, "Error: Command cannot be empty or whitespace.", 1);
+					throw;
 				}
+				catch (Exception ex)
+				{
+					finalResult = new ToolResult(toolcallid, string.Empty, $"Error: Failed to execute command. {ex.GetType().Name}: {ex.Message}", 1, 0);
+				}
+			}
+			else
+			{
+				finalResult = new ToolResult(toolcallid, string.Empty, $"Error: Working directory does not exist: {cwd}", 1, 0);
+			}
+		}
+		else
+		{
+			finalResult = new ToolResult(toolcallid, string.Empty, "Error: Command cannot be empty or whitespace.", 1, 0);
+		}
 
 		return finalResult;
 	}

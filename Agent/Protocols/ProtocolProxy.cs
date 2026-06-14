@@ -160,11 +160,11 @@ public class ProtocolProxy
         _protocolAnthropic?.OnAssistantTurn(text, thinking, toolCalls);
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result)
+    public void OnToolResult(ToolResult result)
     {
-        _protocolChatCompletions?.OnToolResult(toolCallId, result);
-        _protocolResponses?.OnToolResult(toolCallId, result);
-        _protocolAnthropic?.OnToolResult(toolCallId, result);
+        _protocolChatCompletions?.OnToolResult(result);
+        _protocolResponses?.OnToolResult(result);
+        _protocolAnthropic?.OnToolResult(result);
     }
 
     public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)

@@ -17,10 +17,10 @@ public static class ToolFactory
             "Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.",
             Params(
                 Req("url", "string", "The fully-formed URL to fetch content from.")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string url = Str(args, "url");
-                return await webFetch.FetchPageAsync(url, ct);
+                return await webFetch.FetchPageAsync(toolCallId, url, ct);
             });
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
@@ -30,10 +30,10 @@ public static class ToolFactory
                 "Search the web using OpenRouter's web search plugin. The query can be a natural language question or instruction, not just keywords — e.g. 'Show me how to call the Foo API and explain each parameter'.",
                 Params(
                     Req("query", "string", "The search query or natural language question to answer using the web.")),
-                async (args, ct, transport, sessionId) =>
+                async (args, toolCallId, ct, transport, sessionId) =>
                 {
                     string query = Str(args, "query");
-                    return await webSearch.SearchWebAsync(query, transport, sessionId, ct);
+                    return await webSearch.SearchWebAsync(toolCallId, query, transport, sessionId, ct);
                 });
         }
 
@@ -43,12 +43,12 @@ public static class ToolFactory
                 Req("command", "string", "Shell command to execute"),
                 Opt("working_dir", "string", "Optional working directory for the command."),
                 Opt("timeout_seconds", "integer", "Timeout in seconds (default 60).")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string command = Str(args, "command");
                 string workingDir = Str(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
+                return await ShellTools.BashAsync(toolCallId, command, workingDir, timeoutSeconds, ct);
             });
 
         Register(tools, "read_file",
@@ -57,12 +57,12 @@ public static class ToolFactory
                 Req("file_path", "string", "File path"),
                 Opt("offset", "string", "Starting line number (1 based)"),
                 Opt("lines", "string", "Number of lines to read. Empty means to the end of the file.")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string filePath = Str(args, "file_path");
                 string offset = Str(args, "offset");
                 string lines = Str(args, "lines");
-                return await FileTools.ReadFileAsync(filePath, offset, lines, ct);
+                return await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ct);
             });
 
         Register(tools, "write_file",
@@ -70,11 +70,11 @@ public static class ToolFactory
             Params(
                 Req("file_path", "string", "File path"),
                 Req("content", "string", "Complete file contents")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string filePath = Str(args, "file_path");
                 string content = Str(args, "content");
-                return await FileTools.WriteFileAsync(filePath, content, ct);
+                return await FileTools.WriteFileAsync(toolCallId, filePath, content, ct);
             });
 
         Register(tools, "edit_file",
@@ -83,12 +83,12 @@ public static class ToolFactory
                 Req("file_path", "string", "File path"),
                 Req("old_text", "string", "Text to find and replace"),
                 Req("new_text", "string", "Replacement text")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string filePath = Str(args, "file_path");
                 string oldText = Str(args, "old_text");
                 string newText = Str(args, "new_text");
-                return await FileTools.EditFileAsync(filePath, oldText, newText, ct);
+                return await FileTools.EditFileAsync(toolCallId, filePath, oldText, newText, ct);
             });
 
         return tools;
@@ -102,16 +102,16 @@ public static class ToolFactory
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
-        WebFetch webFetch = new();
+        WebFetch webFetch = new WebFetch();
         SubagentRegister(tools, "fetch_page",
             "Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.",
             Params(
                 Req("url", "string", "The fully-formed URL to fetch content from."),
                 Req("goal", "string", "Describe the desired result — what you want this tool call to return or accomplish.")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string url = Str(args, "url");
-                return await webFetch.FetchPageAsync(url, ct);
+                return await webFetch.FetchPageAsync(toolCallId, url, ct);
             },
             runSubSession);
 
@@ -123,10 +123,10 @@ public static class ToolFactory
                 Params(
                     Req("query", "string", "The search query or natural language question to answer using the web."),
                     Req("goal", "string", "Describe the desired result — what you want this tool call to return or accomplish.")),
-                async (args, ct, transport, sessionId) =>
+                async (args, toolCallId, ct, transport, sessionId) =>
                 {
                     string query = Str(args, "query");
-                    return await webSearch.SearchWebAsync(query, transport, sessionId, ct);
+                    return await webSearch.SearchWebAsync(toolCallId, query, transport, sessionId, ct);
                 },
                 runSubSession);
         }
@@ -138,12 +138,12 @@ public static class ToolFactory
                 Opt("working_dir", "string", "Optional working directory for the command."),
                 Opt("timeout_seconds", "integer", "Timeout in seconds (default 60)."),
                 Req("goal", "string", "Describe the desired result — what you want this tool call to return or accomplish.")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string command = Str(args, "command");
                 string workingDir = Str(args, "working_dir");
                 int? timeoutSeconds = IntOpt(args, "timeout_seconds");
-                return await ShellTools.BashAsync(command, workingDir, timeoutSeconds, ct);
+                return await ShellTools.BashAsync(toolCallId, command, workingDir, timeoutSeconds, ct);
             },
             runSubSession);
 
@@ -154,12 +154,12 @@ public static class ToolFactory
                 Opt("offset", "string", "Starting line number (1 based)"),
                 Opt("lines", "string", "Number of lines to read. Empty means to the end of the file."),
                 Req("goal", "string", "Describe the desired result — what you want this tool call to return or accomplish.")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string filePath = Str(args, "file_path");
                 string offset = Str(args, "offset");
                 string lines = Str(args, "lines");
-                return await FileTools.ReadFileAsync(filePath, offset, lines, ct);
+                return await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ct);
             },
             runSubSession);
 
@@ -168,11 +168,11 @@ public static class ToolFactory
             Params(
                 Req("file_path", "string", "File path"),
                 Req("content", "string", "Complete file contents")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string filePath = Str(args, "file_path");
                 string content = Str(args, "content");
-                return await FileTools.WriteFileAsync(filePath, content, ct);
+                return await FileTools.WriteFileAsync(toolCallId, filePath, content, ct);
             });
 
         SubagentRegister(tools, "edit_file",
@@ -182,12 +182,12 @@ public static class ToolFactory
                 Req("old_text", "string", "Text to find and replace"),
                 Req("new_text", "string", "Replacement text"),
                 Req("goal", "string", "Describe the desired result — what you want this tool call to return or accomplish.")),
-            async (args, ct, transport, sessionId) =>
+            async (args, toolCallId, ct, transport, sessionId) =>
             {
                 string filePath = Str(args, "file_path");
                 string oldText = Str(args, "old_text");
                 string newText = Str(args, "new_text");
-                return await FileTools.EditFileAsync(filePath, oldText, newText, ct);
+                return await FileTools.EditFileAsync(toolCallId, filePath, oldText, newText, ct);
             },
             runSubSession);
 
@@ -199,7 +199,7 @@ public static class ToolFactory
         string name,
         string description,
         JsonObject parameters,
-        Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> handler,
+        Func<JsonObject, string, CancellationToken, ITransportServer, string, Task<ToolResult>> handler,
         Func<string, JsonObject, string, int, CancellationToken, Task<(string? text, int responseTokens)>> runSubSession)
     {
         tools[name] = new Tool
@@ -209,18 +209,18 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
             },
-            Handler = async (args, ct, transport, sessionId, maxOutputTokens) =>
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
                 string goal = Str(args, "goal");
                 (string? subResult, int responseTokens) = await runSubSession(name, args, goal, maxOutputTokens, ct);
                 if (subResult != null)
-                    return new ToolResult(subResult, string.Empty, 0, responseTokens);
-                return await handler(args, ct, transport, sessionId);
+                    return new ToolResult(toolCallId, subResult, string.Empty, 0, responseTokens);
+                return await handler(args, toolCallId, ct, transport, sessionId);
             }
         };
     }
 
-    private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, CancellationToken, ITransportServer, string, Task<ToolResult>> handler)
+    private static void Register(Dictionary<string, Tool> tools, string name, string description, JsonObject parameters, Func<JsonObject, string, CancellationToken, ITransportServer, string, Task<ToolResult>> handler)
     {
         tools[name] = new Tool
         {
@@ -229,7 +229,7 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
             },
-            Handler = (args, ct, transport, sessionId, maxOutputTokens) => handler(args, ct, transport, sessionId)
+            Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) => handler(args, toolCallId, ct, transport, sessionId)
         };
     }
 

@@ -37,14 +37,9 @@ public class ToolResult
 	// Exact token size of this result, as measured by a sub-session's provider response. Null when
 	// the result came from a raw handler that performs no server call: there is nothing to measure,
 	// so its reservation stays pending until the next parent response reconciles it exactly.
-	public int? MeasuredOutputTokens { get; }
+	public int MeasuredOutputTokens { get; }
 
-	public ToolResult(string id, string stdOut, string stdErr, int exitCode)
-		: this(id, stdOut, stdErr, exitCode, null)
-	{
-	}
-
-	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int? measuredOutputTokens)
+	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens)
 	{
 		Id = id;
 		StdOut = stdOut;

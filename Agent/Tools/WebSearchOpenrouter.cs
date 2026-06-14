@@ -23,13 +23,14 @@ public class WebSearchOpenrouter
 
     [Description("Search the web using OpenRouter's web search plugin. The query can be a natural language question or instruction, not just keywords — e.g. 'Show me how to call the Foo API and explain each parameter'.")]
     public async Task<ToolResult> SearchWebAsync(
+		string toolCallId,
         [Description("The search query or natural language question to answer using the web.")] string query,
         ITransportServer transport,
         string sessionId,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return new ToolResult(string.Empty, "Error: Search query cannot be empty.", 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Search query cannot be empty.", 1, 0);
 
         try
         {
@@ -45,28 +46,28 @@ public class WebSearchOpenrouter
             if (result.Outcome == ProtocolCallOutcome.Success)
             {
                 string content = result.Payload!.AssistantText ?? string.Empty;
-                return new ToolResult(string.IsNullOrWhiteSpace(content) ? "No search results found." : content, string.Empty, 0);
+                return new ToolResult(toolCallId, string.IsNullOrWhiteSpace(content) ? "No search results found." : content, string.Empty, 0, 0);
             }
             else if (result.Outcome == ProtocolCallOutcome.RateLimited)
             {
-                return new ToolResult(string.Empty, "Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, 1);
+                return new ToolResult(toolCallId, string.Empty, "Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, 1, 0);
             }
             else
             {
-                return new ToolResult(string.Empty, "Error: OpenRouter search failed: " + result.ErrorMessage, 1);
+                return new ToolResult(toolCallId, string.Empty, "Error: OpenRouter search failed: " + result.ErrorMessage, 1, 0);
             }
         }
         catch (OperationCanceledException)
         {
-            return new ToolResult(string.Empty, "Error: Search request timed out or cancelled for query: " + query, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Search request timed out or cancelled for query: " + query, 1, 0);
         }
         catch (HttpRequestException ex)
         {
-            return new ToolResult(string.Empty, "Error: Network error during search: " + ex.Message, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Network error during search: " + ex.Message, 1, 0);
         }
         catch (Exception ex)
         {
-            return new ToolResult(string.Empty, "Error: Search failed: " + ex.Message, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Search failed: " + ex.Message, 1, 0);
         }
     }
 

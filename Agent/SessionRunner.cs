@@ -41,10 +41,10 @@ public class SessionRunner
 
     private bool _wantsCompact = false;
 
-    // Set by the always-available Answer tool's handler when the model opts to transition. Read and
+    // Set by the always-available state_transition tool's handler when the model opts to transition. Read and
     // cleared by RunAsync after each turn; non-null _pendingTruth means a transition is pending.
-    private string? _pendingTruth;
-    private string? _pendingAnswer;
+    private string? _pendingStatement;
+    private string? _pendingContext;
 
     private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
@@ -193,17 +193,17 @@ public class SessionRunner
 								}
                         }
 
-                        // A model-initiated Answer call records a pending transition. Apply it
+                        // A model-initiated state_transition call records a pending transition. Apply it
                         // regardless of how the turn ended — the model opted to transition, so it
                         // takes precedence over context-full/failed handling for this turn.
-                        if (_pendingTruth != null)
+                        if (_pendingStatement != null)
                         {
-                            string truth = _pendingTruth;
-                            string answer = _pendingAnswer ?? string.Empty;
-                            _pendingTruth = null;
-                            _pendingAnswer = null;
+                            string statement = _pendingStatement;
+                            string newContext = _pendingContext ?? string.Empty;
+                            _pendingStatement = null;
+                            _pendingContext = null;
 
-                            Session? advanced = await ApplyTransitionAsync(session, role, truth, answer, _cancellationTokenSource.Token);
+                            Session? advanced = await ApplyTransitionAsync(session, role, statement, newContext, _cancellationTokenSource.Token);
                             if (advanced != null)
                             {
                                 session = advanced;
@@ -471,7 +471,7 @@ public class SessionRunner
     {
         List<string> candidates = new List<string>
         {
-            "/compact", "/clear", "/reload", "/role", "/model",
+            "/compact", "/reload", "/role", "/model",
             "/session", "/help"
         };
 
@@ -551,15 +551,15 @@ public class SessionRunner
     // compaction is needed — the full conversation is already in context, so the model writes its
     // briefing from its own working memory. The Answer call lands in the current conversation;
     // CreateNextRoleSession then continues this session (same role) or hands off to a fresh one
-    // (different role). If the role defines no EndOfTurnPrompt + Truths, there is nothing to confront.
+    // (different role). If the role defines no EndOfTurnPrompt + Statements, there is nothing to confront.
     private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, LlmService service, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Truths.Count == 0)
+        if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Statements.Count == 0)
             return null;
 
-        string? selectedTruth = null;
-        string? selectedAnswer = null;
-        Tool answerTool = BuildAnswerTool(currentRole.EndOfTurnPrompt, currentRole.Truths.Keys, (truth, answer) => { selectedTruth = truth; selectedAnswer = answer; });
+        string? selectedStatement = null;
+        string? selectedContext = null;
+        Tool answerTool = BuildStateTransitionTool(currentRole.EndOfTurnPrompt, currentRole.Statements.Keys, (statement, context) => { selectedStatement = statement; selectedContext = context; });
 
         // Run the confrontation in the current session with only the Answer tool, forcing the model to
         // call it, and reusing the session's service so the conversation continues uninterrupted. Retry
@@ -568,29 +568,29 @@ public class SessionRunner
 
         // Cap the answer to whatever space remains in the window so the briefing always fits.
         int answerCap = session.Budget.MaxCompletionTokens() ?? 0;
-        ProtocolResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { answerTool }, "Answer", 0, answerCap, _transport, ct);
-        if (selectedTruth == null)
+        ProtocolResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { answerTool }, "state_transition", 0, answerCap, _transport, ct);
+        if (selectedStatement == null)
         {
             _transport.Error(session.Id, "[Role] Completed session failed to call Answer tool; staying in current role.");
             return null;
         }
 
-        return CreateNextRoleSession(session, currentRole, selectedTruth, selectedAnswer!);
+        return CreateNextRoleSession(session, currentRole, selectedStatement, selectedContext!);
     }
 
     // Maps the chosen truth label to the next role and returns the successor session. The Answer tool
-    // handler only accepts answers beginning with one of the Truths keys, so the lookup always hits.
+    // handler only accepts answers beginning with one of the Statement keys, so the lookup always hits.
     // Empty next-role = task finished; returns null and control goes back to the user. Same role =
     // continue in place: the answer becomes the next user prompt and null is returned so the caller
     // keeps the current session. Different role = save the current session and start a fresh one whose
     // first user prompt is the model's full answer.
-    private Session? CreateNextRoleSession(Session session, Role currentRole, string selectedTruth, string selectedAnswer)
+    private Session? CreateNextRoleSession(Session session, Role currentRole, string selectedStatement, string newContext)
     {
-        currentRole.Truths.TryGetValue(selectedTruth, out string? nextRoleName);
+        currentRole.Statements.TryGetValue(selectedStatement, out string? nextRoleName);
 
         if (string.IsNullOrEmpty(nextRoleName))
         {
-            _transport.Status(session.Id, $"[Role] {selectedTruth} → done.");
+            _transport.Error(session.Id, $"[Role] {selectedStatement} → done.");
             return null;
         }
 
@@ -600,8 +600,8 @@ public class SessionRunner
         // model keeps working in place; no new session is created and the caller keeps this session.
         if (string.Equals(nextRole.Name, currentRole.Name, StringComparison.OrdinalIgnoreCase))
         {
-            session.AddUserMessage(selectedAnswer);
-            _transport.Status(session.Id, $"[Role] {selectedTruth} → continue ({currentRole.Name}).");
+            session.AddUserMessage(newContext);
+            _transport.Status(session.Id, $"[Role] {selectedStatement} → continue ({currentRole.Name}).");
             return null;
         }
 
@@ -611,9 +611,9 @@ public class SessionRunner
         BeastSession freshData = new BeastSession(session.AllocateChildId(), session.DisplayName, session.Model, nextRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
         Session next = new Session(freshData, nextRole.SystemPrompt, _transport, false);
 
-        next.AddUserMessage(selectedAnswer);
+        next.AddUserMessage(newContext);
 
-        _transport.Status(session.Id, $"[Role] {selectedTruth} → {nextRole.Name}");
+		_transport.Error(session.Id, $"[Role] {selectedStatement} → {nextRole.Name}");
         return next;
     }
 
@@ -622,20 +622,25 @@ public class SessionRunner
     // The answer must begin with one of the truth statements verbatim and continues with a briefing
     // for the next phase; onAnswer receives (matched statement, full answer). A non-matching answer
     // returns an error result so the model can correct itself within the same turn.
-    private static Tool BuildAnswerTool(string endOfTurnPrompt, IEnumerable<string> truthLabels, Action<string, string> onAnswer)
+    private static Tool BuildStateTransitionTool(string endOfTurnPrompt, IEnumerable<string> truthLabels, Action<string, string> onAnswer)
     {
         List<string> labels = new List<string>(truthLabels);
         string optionList = string.Join("\n", labels);
 
-        JsonObject answerProp = new JsonObject();
-        answerProp["type"] = "string";
-        answerProp["description"] = $"Your full answer. It must begin with exactly one of these statements, verbatim: {optionList}\n\nAfter the statement, continue with the context the next phase needs to start working: what has been accomplished, what remains, and any constraints or decisions it must know about. The entire answer becomes the next phase's first prompt.";
+        JsonObject statementProp = new JsonObject();
+        statementProp["type"] = "string";
+        statementProp["description"] = $"Your selection either ends this conversation, continues it, or sends it to another worker to continue. Must be exactly one of these statements, verbatim:\n{optionList}";
+
+        JsonObject contextProp = new JsonObject();
+        contextProp["type"] = "string";
+        contextProp["description"] = $"Provide any context the next phase needs to start working: what has been accomplished, what remains, and any constraints or decisions it must know about. This becomes the next model's first prompt, so be informative and provide actionable direction as the final statement.";
 
         JsonObject properties = new JsonObject();
-        properties["answer"] = answerProp;
+        properties["statement"] = statementProp;
+        properties["context"] = contextProp;  // optional
 
         JsonArray required = new JsonArray();
-        required.Add(JsonValue.Create("answer"));
+        required.Add(JsonValue.Create("statement"));
 
         JsonObject parameters = new JsonObject();
         parameters["type"] = "object";
@@ -648,32 +653,28 @@ public class SessionRunner
             {
                 Function = new FunctionDefinition
                 {
-                    Name = "Answer",
-                    Description = $"{endOfTurnPrompt} Call this tool the moment that can be answered to record your determination and move to the next phase — you need not finish anything else first. Begin your answer with exactly one of the provided statements verbatim, then continue with a briefing that gives the next phase its goal and context.",
+                    Name = "state_transition",
+                    Description = $"{endOfTurnPrompt} Use this tool to end the conversation or transition the task to another worker.",
                     Parameters = parameters
                 }
             },
-            Handler = (JsonObject args, CancellationToken ct, ITransportServer transport, string sessionId, int maxOutputTokens) =>
+            Handler = (JsonObject args, string toolCallId, CancellationToken ct, ITransportServer transport, string sessionId, int maxOutputTokens) =>
             {
-                string answer = (args["answer"]?.GetValue<string>() ?? string.Empty).TrimStart();
+                string statement = (args["statement"]?.GetValue<string>() ?? string.Empty).TrimStart();
+                string context = (args["context"]?.GetValue<string>() ?? string.Empty).TrimStart();
 
-                // Longest prefix match so one statement being a prefix of another resolves correctly.
-                string? matched = null;
-                foreach (string label in labels)
-                {
-                    if (answer.StartsWith(label, StringComparison.OrdinalIgnoreCase) && (matched == null || label.Length > matched.Length))
-                        matched = label;
-                }
+				// Try to find the closest match.
+				string? matched= FixJson.FuzzyMatchToolName(statement, labels.ToArray(), 5, null);
 
                 ToolResult result;
                 if (matched != null)
                 {
-                    onAnswer(matched, answer);
-                    result = new ToolResult("Answer recorded.", string.Empty, 0);
+                    onAnswer(matched, context);
+                    result = new ToolResult(toolCallId, "OK.", string.Empty, 0, 0);
                 }
                 else
                 {
-                    result = new ToolResult(string.Empty, $"Your answer must begin with exactly one of these statements, verbatim: {optionList}", 1);
+                    result = new ToolResult(toolCallId, string.Empty, $"Your statement must be exactly one of these statements, verbatim: {optionList}", 1, 0);
                 }
                 return Task.FromResult(result);
             }
@@ -722,16 +723,16 @@ public class SessionRunner
         await Task.WhenAll(tasks);
 
         for (int i = 0; i < completedTools.Length; i++)
-        {
-            ToolResult result = completedTools[i].toolResult;
+         {
+             ToolResult result = completedTools[i].toolResult;
+             string callId = toolCalls[i].Id;
 
-            // A sub-session tool reports its reply's exact size; free the unused part of its
-            // reservation so the next request can size against the real remaining room.
-            if (result.MeasuredOutputTokens.HasValue)
-                session.Budget.SettleToolResponse(perToolBudget, result.MeasuredOutputTokens.Value);
+             // A sub-session tool reports its reply's exact size; free the unused part of its
+             // reservation so the next request can size against the real remaining room.
+              session.Budget.SettleToolResponse(perToolBudget, result.MeasuredOutputTokens);
 
-            session.Bundle.OnToolResult(toolCalls[i].Id, result);
-        }
+             session.Bundle.OnToolResult(result);
+         }
 
         return true;
     }
@@ -773,14 +774,14 @@ public class SessionRunner
 
         if (matchedTool == null)
         {
-            return new ToolResult(string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1);
+            return new ToolResult(toolCall.Id, string.Empty, $"Error: Tool '{toolCall.Name}' not found in available tools.", 1, 0);
         }
 
         (JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, fixLog);
 
         if (argsObj == null || argError != null)
         {
-            return new ToolResult(string.Empty, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1);
+            return new ToolResult(toolCall.Id, string.Empty, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}", 1, 0);
         }
 
         // ToolCall framing is already emitted by the TransportListener when the assistant turn
@@ -789,7 +790,7 @@ public class SessionRunner
         ToolResult result;
         try
         {
-            result = await matchedTool.Handler(argsObj, ct, _transport, sessionId, maxOutputTokens);
+            result = await matchedTool.Handler(argsObj, toolCall.Id, ct, _transport, sessionId, maxOutputTokens);
         }
         catch (OperationCanceledException)
         {
@@ -797,9 +798,9 @@ public class SessionRunner
         }
         catch (Exception ex)
         {
-            result = new ToolResult(string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1);
+            result = new ToolResult(toolCall.Id, string.Empty, $"Tool '{toolCall.Name}' threw exception: {ex.Message}", 1, 0);
         }
-        return LlmService.TruncateToBudget(result, maxOutputTokens);
+        return result;
     }
 
     // ---- Helpers ----
@@ -827,14 +828,14 @@ public class SessionRunner
         // The root agent always carries the Answer tool when its role defines transitions, so the
         // model can opt to transition at any point in a turn rather than only after it completes.
         // Its handler records the decision into _pendingTruth/_pendingAnswer for RunAsync to apply.
-        if (!isSubagent && !string.IsNullOrEmpty(role.EndOfTurnPrompt) && role.Truths.Count > 0)
+        if (!isSubagent && !string.IsNullOrEmpty(role.EndOfTurnPrompt) && role.Statements.Count > 0)
         {
-            Tool answerTool = BuildAnswerTool(role.EndOfTurnPrompt, role.Truths.Keys, (truth, answer) =>
+            Tool stateTransitionTool = BuildStateTransitionTool(role.EndOfTurnPrompt, role.Statements.Keys, (statement, context) =>
             {
-                _pendingTruth = truth;
-                _pendingAnswer = answer;
+                _pendingStatement = statement;
+                _pendingContext = context;
             });
-            toolList.Add(answerTool);
+            toolList.Add(stateTransitionTool);
         }
 
         Tool[] tools = toolList.ToArray();

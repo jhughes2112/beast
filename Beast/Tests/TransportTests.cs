@@ -107,7 +107,6 @@ public static class TransportTests
             FrameType.StreamStart,
             FrameType.StreamChunk,
             FrameType.StreamEnd,
-            FrameType.Clear
         };
 
         foreach (FrameType t in types)

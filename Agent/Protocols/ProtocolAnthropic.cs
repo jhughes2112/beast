@@ -114,7 +114,7 @@ public class ProtocolAnthropic
         }
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result)
+    public void OnToolResult(ToolResult result)
     {
         string content = result.StdOut;
         if (!string.IsNullOrEmpty(result.StdErr))
@@ -123,7 +123,7 @@ public class ProtocolAnthropic
         }
         ToolResultContent toolResult = new ToolResultContent
         {
-            ToolUseId = toolCallId,
+            ToolUseId = result.Id,
             Content = new List<ContentBase> { new TextContent { Text = content } }
         };
         AppendContent(RoleType.User, toolResult);

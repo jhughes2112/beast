@@ -161,7 +161,7 @@ public class ProtocolChatCompletions
         _native.Add(msg);
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result)
+    public void OnToolResult(ToolResult result)
     {
         JsonObject msg = new JsonObject();
         msg["role"] = "tool";
@@ -171,7 +171,7 @@ public class ProtocolChatCompletions
             content = content + "\nstderr: " + result.StdErr;
         }
         msg["content"] = content;
-        msg["tool_call_id"] = toolCallId;
+        msg["tool_call_id"] = result.Id;
         _native.Add(msg);
     }
 

@@ -29,7 +29,7 @@ public static class ShellToolsTests
 	private static void TestEdgeCases(TestContext ctx)
 	{
 		// Empty command.
-		ToolResult emptyCmd = ShellTools.BashAsync("", null, null, CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult emptyCmd = ShellTools.BashAsync("testid", "", null, null, CancellationToken.None).GetAwaiter().GetResult();
 		ctx.Assert(emptyCmd.StdErr.Contains("Error") && emptyCmd.StdErr.Contains("empty"), "ShellTools: empty command returns error");
 
 		// Non-existent working directory - can't test this easily without changing CWD
@@ -38,7 +38,7 @@ public static class ShellToolsTests
 	private static void TestRunCommand(TestContext ctx)
 	{
 		// Simple echo — may or may not work depending on WSL/bash availability.
-		ToolResult echoResult = ShellTools.BashAsync("echo hello", null, null, CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult echoResult = ShellTools.BashAsync("testid2", "echo hello", null, null, CancellationToken.None).GetAwaiter().GetResult();
 		// Successful run has output in stdout; failures have errors in stderr.
 		bool validResponse = echoResult.StdOut.Contains("hello") || !string.IsNullOrEmpty(echoResult.StdErr);
 		ctx.Assert(validResponse, "ShellTools: echo returns valid response format");

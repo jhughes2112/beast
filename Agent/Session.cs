@@ -260,8 +260,8 @@ public class Session
             }
             else if (msg is ToolResultMessage tr)
             {
-                if (toClient) _bundle.OnToolResult(tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
-                else _bundle.Canonical.OnToolResult(tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
+                if (toClient) _bundle.OnToolResult(new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0));
+                else _bundle.Canonical.OnToolResult(new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0));
             }
         }
     }
@@ -294,7 +294,7 @@ public class Session
             else if (msg is ToolResultMessage tr)
             {
                 if (!string.IsNullOrEmpty(tr.Content))
-                    _transport.ToolResponseWithId(id, tr.ToolCallId, new ToolResult(tr.Content, string.Empty, 0));
+                    _transport.ToolResponseWithId(id, new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0));
             }
         }
     }
@@ -360,7 +360,7 @@ public class Session
         }
 
         foreach (string id in danglingIds)
-            _bundle.OnToolResult(id, new ToolResult(string.Empty, "Tool call was interrupted before it completed.", 1));
+            _bundle.OnToolResult(new ToolResult(id, string.Empty, "Tool call was interrupted before it completed.", 1, 0));
     }
 
     // Cleans up after a turn. If interrupted, sets the wait state so NeedsAttention() stays

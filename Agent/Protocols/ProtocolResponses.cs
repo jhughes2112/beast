@@ -122,11 +122,11 @@ public class ProtocolResponses
         }
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result)
+    public void OnToolResult(ToolResult result)
     {
         JsonObject item = new JsonObject();
         item["type"] = "function_call_output";
-        item["call_id"] = ProtocolHelpers.NormalizeToolCallId(toolCallId);
+        item["call_id"] = ProtocolHelpers.NormalizeToolCallId(result.Id);
         string output = result.StdOut;
         if (!string.IsNullOrEmpty(result.StdErr))
         {

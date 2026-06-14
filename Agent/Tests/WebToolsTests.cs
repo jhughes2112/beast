@@ -33,7 +33,7 @@ public static class WebToolsTests
             WebSearchOpenrouter searcher = new WebSearchOpenrouter(config.BuildModel());
 
             using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            ToolResult result = await searcher.SearchWebAsync("What is the capital of France?", captureTransport, "test", cts.Token);
+            ToolResult result = await searcher.SearchWebAsync("testSearchId", "What is the capital of France?", captureTransport, "test", cts.Token);
 
             string response = result.ExitCode == 0 ? result.StdOut : result.StdErr;
             ctx.Log($"    response: {response}");

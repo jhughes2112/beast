@@ -286,8 +286,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     // StreamEnd are excluded so concurrent streams auto-track per message, not per chunk.
     private static bool IsMessageFrame(FrameType type)
     {
-        bool plumbing = type == FrameType.Busy || type == FrameType.Idle || type == FrameType.Clear
-            || type == FrameType.StreamChunk || type == FrameType.StreamEnd || type == FrameType.SessionAnnounce;
+        bool plumbing = type == FrameType.Busy || type == FrameType.Idle || type == FrameType.StreamChunk || type == FrameType.StreamEnd || type == FrameType.SessionAnnounce;
         return !plumbing;
     }
 
@@ -396,16 +395,6 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 // Content "subagent" marks a sub-session completion; it gets its own sound.
                 PlaySound(content == "subagent" ? _subagentSoundFile : _idleSoundFile);
                 NotifySessionList();
-                break;
-
-            case FrameType.Clear:
-                session.Model.Clear();
-                session.NextIndex = 0;
-                session.StreamIndex = -1;
-                session.StreamContent = "";
-                session.StreamTagToSlot.Clear();
-                session.SlotTypes.Clear();
-                session.PendingCommit.Clear();
                 break;
 
             case FrameType.StreamStart:

@@ -183,13 +183,6 @@ public class ConversationModel
         MessageUpdated?.Invoke(msg);
     }
 
-    public void Clear()
-    {
-        _messages.Clear();
-        _pendingToolCallById.Clear();
-        MessageUpdated?.Invoke(new DisplayMessage(0, FrameType.Clear, string.Empty));
-    }
-
     // Returns whether a message of the given type should be hidden entirely in the given mode.
     public static bool ShouldHide(FrameType type, CollapseMode mode)
     {

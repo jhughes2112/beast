@@ -27,15 +27,16 @@ public class WebFetch
 
     [Description("Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.")]
     public async Task<ToolResult> FetchPageAsync(
+		string toolCallId,
         [Description("The fully-formed URL to fetch content from.")] string url,
         CancellationToken cancellationToken)
     {
 
         if (string.IsNullOrWhiteSpace(url))
-            return new ToolResult(string.Empty, "Error: URL cannot be empty.", 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: URL cannot be empty.", 1, 0);
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
-            return new ToolResult(string.Empty, "Error: Invalid URL format: " + url, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Invalid URL format: " + url, 1, 0);
 
         try
         {
@@ -43,35 +44,35 @@ public class WebFetch
             cts.CancelAfter(DefaultTimeout);
 
             if (_cache.TryGetValue(url, out CacheEntry? entry) && DateTime.UtcNow < entry.ExpiresAt)
-                return new ToolResult(entry.Content, string.Empty, 0);
+                return new ToolResult(toolCallId, entry.Content, string.Empty, 0, 0);
 
             _cache.TryRemove(url, out _);
 
             HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, cts.Token);
 
             if (!response.IsSuccessStatusCode)
-                return new ToolResult(string.Empty, "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, 1);
+                return new ToolResult(toolCallId, string.Empty, "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, 1, 0);
 
             string html = await response.Content.ReadAsStringAsync(cts.Token);
             string text = StripHtmlTags(html);
 
             if (string.IsNullOrWhiteSpace(text))
-                return new ToolResult(string.Empty, "Error: No readable text content found at URL: " + url, 1);
+                return new ToolResult(toolCallId, string.Empty, "Error: No readable text content found at URL: " + url, 1, 0);
 
             _cache[url] = new CacheEntry(text, DateTime.UtcNow + CacheTtl);
-            return new ToolResult(text, string.Empty, 0);
+            return new ToolResult(toolCallId, text, string.Empty, 0, 0);
         }
         catch (OperationCanceledException)
         {
-            return new ToolResult(string.Empty, "Error: Request timed out or cancelled for URL: " + url, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Request timed out or cancelled for URL: " + url, 1, 0);
         }
         catch (HttpRequestException ex)
         {
-            return new ToolResult(string.Empty, "Error: Network error fetching URL " + url + ": " + ex.Message, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Network error fetching URL " + url + ": " + ex.Message, 1, 0);
         }
         catch (Exception ex)
         {
-            return new ToolResult(string.Empty, "Error: Failed to fetch URL " + url + ": " + ex.Message, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + ex.Message, 1, 0);
         }
     }
 

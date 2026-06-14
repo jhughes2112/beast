@@ -33,5 +33,5 @@ public class FunctionDefinition
 public class Tool
 {
 	public ToolDefinition Definition { get; set; } = new();
-	public Func<JsonObject, CancellationToken, ITransportServer, string, int, Task<ToolResult>> Handler { get; set; } = null!;
+	public Func<JsonObject, string, CancellationToken, ITransportServer, string, int, Task<ToolResult>> Handler { get; set; } = null!;
 }

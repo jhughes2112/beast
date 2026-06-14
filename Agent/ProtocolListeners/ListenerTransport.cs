@@ -24,8 +24,8 @@ public class ListenerTransport
             _transport.ToolCallWithId(_sessionId, tc.Id, tc.Name + "(" + tc.ArgumentsJson + ")");
     }
 
-    public void OnToolResult(string toolCallId, ToolResult result) =>
-        _transport.ToolResponseWithId(_sessionId, toolCallId, result);
+    public void OnToolResult(ToolResult result) =>
+        _transport.ToolResponseWithId(_sessionId, result);
 
     public void OnStreamStart(string tag) => _transport.StreamStart(_sessionId, tag);
 
