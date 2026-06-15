@@ -31,7 +31,7 @@ public class SessionRunner
 	private LlmService? _service;
 
 	// Keyed by "agent:{roleName}" or "sub:{roleName}". Populated lazily, cleared on /reload.
-	// Safe because ToolFactory.BuildSubagent captures _subagent.RunSubSessionAsync, and the
+	// Safe because ToolFactory.BuildSubagent captures _subagent.RunFilterAsync, and the
 	// SubagentRunner reads the live current session through its accessor, so the delegate stays
 	// valid for the runner's lifetime.
 	private readonly Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
@@ -78,6 +78,9 @@ public class SessionRunner
 		Session session = _currentSession;
 		session.ReplayToTransport();
 		session.SendStats();
+		// A resumed or switched-in session already carries its display name; announce it so the
+		// client's session list and status show the name rather than the raw ID.
+		session.AnnounceToClient();
 
 		_cachedSessions = SessionService.List();
 		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
@@ -94,6 +97,7 @@ public class SessionRunner
 					// Send history to the client whenever the active session changes.
 					session.ReplayToTransport();
 					session.SendStats();
+					session.AnnounceToClient();
 					SaveRoot(_currentSession);
 					_currentSession = session;
 				}
@@ -337,7 +341,10 @@ public class SessionRunner
 	// lastSession.json tracks the top-level conversation, never a subagent tool session.
 	private static void SaveRoot(Session session)
 	{
-		session.InferDisplayName();
+		// The root is created nameless; the first user message gives it a name here. Announce the
+		// instant it is assigned so the client switches from showing the raw ID to the display name.
+		if (session.InferDisplayName())
+			session.AnnounceToClient();
 		SessionService.Save(session.Data, true);
 	}
 
@@ -470,6 +477,9 @@ public class SessionRunner
 						session.UpdateRole(args);
 						_service = null;  // new role may use a different model
 						_transport.Status(session.Id, $"Role set to {args}");
+						// Push the new role to the client status line now; without a turn running no
+						// Stats frame would otherwise be sent until the next message.
+						session.SendStats();
 					}
 					break;
 				case "model":
@@ -485,6 +495,9 @@ public class SessionRunner
 							_registry.ResetAvailability(args);
 							_service = null;  // force fresh service with new model next turn
 							_transport.Status(session.Id, $"Model set to {args}");
+							// Reflect the new model on the client status line immediately rather than
+							// waiting for the next turn's Stats frame.
+							session.SendStats();
 						}
 					}
 					break;
@@ -731,7 +744,7 @@ public class SessionRunner
 
 		bool hasToolsRole = _roleService.GetRole("Tools") != null;
 		Dictionary<string, Tool> allTools = (!isSubagent && hasToolsRole)
-			? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, _subagent.RunSubSessionAsync)
+			? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, _subagent.RunFilterAsync)
 			: ToolFactory.Build(_settings.Settings.WebSearch);
 
 		List<Tool> toolList = new List<Tool>();

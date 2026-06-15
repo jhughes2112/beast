@@ -118,6 +118,13 @@ public class DisplayScreen : IDisplay
 
     private const float ScrollAlpha = 0.22f;
 
+    // Auto-follow gating: following the active session is re-enabled only after the viewed session
+    // has been idle and pinned to the bottom continuously for FollowDelayMs. _followReadyTick holds
+    // the tick when that stable state began (0 = not stable). The viewed session going busy, leaving
+    // the bottom, or any scroll gesture resets it. The F10 overlay being open does not block it.
+    private long _followReadyTick = 0;
+    private const int FollowDelayMs = 5000;
+
     private int _streamingSlot = -1;
 
     // Per-slot cached BlockLayer (collapsed + expanded Screens). Invalidated on width change or message update.
@@ -183,6 +190,8 @@ public class DisplayScreen : IDisplay
             _blockCache.Clear();
             _historyScrollOffset = 0f;
             _scrollTarget = 0f;
+            // Viewing a new session restarts the follow timer from scratch.
+            _followReadyTick = 0;
             _needsErase = true;
             // New conversation model — the previous layout is not a valid anchoring basis.
             _lastStack = null;
@@ -269,8 +278,31 @@ public class DisplayScreen : IDisplay
     public bool IsAutoTrackSuppressed()
     {
         lock (_consoleLock)
-            // Same pinned-to-bottom threshold as ApplyLayoutAnchoring.
-            return _sessionTreeOpen || _scrollTarget >= 0.5f;
+        {
+            // Following is allowed only when the viewed session is idle, the view is pinned to the
+            // bottom (same threshold as ApplyLayoutAnchoring), and it has held that way for the full
+            // delay. The F10 overlay being open does not suppress following.
+            if (_agentBusy) return true;
+            if (_scrollTarget >= 0.5f) return true;
+            if (_followReadyTick == 0) return true;
+            return Environment.TickCount64 - _followReadyTick < FollowDelayMs;
+        }
+    }
+
+    // Maintains the auto-follow timer: starts it when the viewed session is idle and pinned to the
+    // bottom, clears it the instant either condition breaks. Called every input tick under the lock.
+    private void UpdateFollowTimer()
+    {
+        bool stable = !_agentBusy && _scrollTarget < 0.5f;
+        if (stable)
+        {
+            if (_followReadyTick == 0)
+                _followReadyTick = Environment.TickCount64;
+        }
+        else
+        {
+            _followReadyTick = 0;
+        }
     }
 
     public void SetSessionCounts(int active, int total)
@@ -781,6 +813,9 @@ public class DisplayScreen : IDisplay
                 bool needRedraw = false;
                 lock (_consoleLock)
                 {
+                    // Update the follow timer before draining frames so the suppression check the
+                    // drained frames trigger sees the current idle/at-bottom state.
+                    UpdateFollowTimer();
                     _frameDrain?.Invoke();
                     int curW = Console.WindowWidth;
                     int curH = Console.WindowHeight;
@@ -858,6 +893,8 @@ public class DisplayScreen : IDisplay
                     _mouseRow = inputEv.Row;
                     _mouseCol = inputEv.Col;
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                    // Any scroll gesture resets the follow timer, even one that lands back at the bottom.
+                    _followReadyTick = 0;
                     _scrollTarget = Math.Max(0, _scrollTarget + (inputEv.WheelDelta > 0 ? 3 : -3));
                 }
                 continue;
@@ -875,6 +912,7 @@ public class DisplayScreen : IDisplay
                         && inputEv.Row < _scrollbarTopRow + _scrollbarHeight)
                     {
                         _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                        _followReadyTick = 0;
                         float fraction = (float)(inputEv.Row - _scrollbarTopRow) / Math.Max(1, _scrollbarHeight - 1);
                         _scrollTarget = (1f - fraction) * _scrollbarMaxOffset;
                         _scrollTarget = Math.Max(0f, Math.Min(_scrollbarMaxOffset, _scrollTarget));
@@ -1208,6 +1246,7 @@ public class DisplayScreen : IDisplay
                 lock (_consoleLock)
                 {
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                    _followReadyTick = 0;
                     int pageH = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
                     _scrollTarget += Math.Max(1, pageH - 1);
                 }
@@ -1218,6 +1257,7 @@ public class DisplayScreen : IDisplay
                 lock (_consoleLock)
                 {
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                    _followReadyTick = 0;
                     int pageH = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
                     _scrollTarget = Math.Max(0f, _scrollTarget - Math.Max(1, pageH - 1));
                 }

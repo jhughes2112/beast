@@ -5,21 +5,20 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Fulfills one subagent-wrapped tool call by running an ephemeral "Tools"-role sub-session whose
-// result is returned to the calling agent and inserted into its context.
+// Runs an optional post-filter over a tool's real output. The wrapped tool always executes directly
+// in the calling agent; only when that call carries subagent_instructions is the literal output
+// handed to an ephemeral "Tools"-role sub-session, which summarizes or filters it per those
+// instructions. Only the sub-session's reply is returned to the caller — the raw output is dropped.
 //
-// The sub-session is a real, continuous conversation (like the root SessionRunner drives): it is
-// announced, it dispatches its own tool calls through the shared ToolDispatch, and it is saved as a
-// durable record. There is no forking — the reply is measured and judged for fit BEFORE it is
-// returned, so the work can simply accumulate in the one sub-session.
-//
-// Termination is explicit: a dedicated return_to_caller tool carries the result. The subagent must
-// call it to finish; a turn that ends with no tool call is re-prompted to use it. This removes the
-// guesswork of treating trailing assistant text as "the answer".
+// The sub-session is a real, announced, saved conversation. It is seeded with the raw output and the
+// instructions and carries the full tool complement, so it can research the output and correct errors
+// in the original tool call as needed before finishing. Termination is explicit through the
+// return_to_caller tool; a turn that ends with no tool call is re-prompted to use it. The reply is
+// measured and judged for fit BEFORE it is returned.
 //
 // Ownership / accounting rules:
-//   - The subagent reasons and uses tools freely up to its OWN model's context window; only the
-//     returned result must fit the calling agent's remaining room (outputBudgetTokens).
+//   - The returned summary must fit the calling agent's remaining room (outputBudgetTokens); the
+//     fit loop re-prompts for a shorter reply and hard-caps as a last resort.
 //   - Cost is spent the moment each call is made, so every turn's cost accumulates in the
 //     sub-session and the whole sum is rolled up into the calling (root) session at the end.
 //   - currentSession is read at call time because the owning runner's active session changes across
@@ -48,28 +47,31 @@ public class SubagentRunner
         public bool Returned;
     }
 
-    private static string BuildSubSessionMessage(string toolName, JsonObject args, string goal, int outputBudgetTokens)
+    private static string BuildFilterMessage(string toolName, JsonObject args, string rawOutput, string instructions, int outputBudgetTokens)
     {
         JsonObject displayArgs = new JsonObject();
         foreach (KeyValuePair<string, JsonNode?> kv in args)
         {
-            if (kv.Key != "goal")
+            if (kv.Key != "subagent_instructions")
                 displayArgs[kv.Key] = kv.Value?.DeepClone();
         }
 
-        return $"Use tools such as {toolName} with parameters {displayArgs.ToJsonString()} to accomplish: {goal}\n"
-            + $"When you are finished, call the return_to_caller tool with your result as the output. That output is the entire response the calling agent receives and is inserted into its context, so it must fit within approximately {outputBudgetTokens} tokens. "
-            + "If your raw findings are larger, summarize them to fit while preserving the exact details requested (file paths, line numbers, names, key output).";
+        return $"Tool: {toolName}\n"
+			+ $"Args: {displayArgs.ToJsonString()}\n\n"
+            + $"--- BEGIN OUTPUT ---\n{rawOutput}\n--- END OUTPUT ---\n\n"
+			+ $"{instructions}\n\n"
+			+ "If the original tool call resulted in an error, that has already been provided to the caller. "
+            + "Call the return_to_caller tool with only the content the caller asked for as the final result.";
     }
 
-    // Runs the sub-session until it calls return_to_caller with a result that fits outputBudgetTokens,
-    // then returns it for the calling agent to commit or discard. Returns null (caller falls back to
-    // the raw handler) when there is no budget, no Tools role, no available model, or the sub-session
-    // never returned a result.
-    public async Task<(string? text, int responseTokens)> RunSubSessionAsync(string toolName, JsonObject args, string goal, int outputBudgetTokens, CancellationToken ct)
+    // Runs the filter sub-session until it calls return_to_caller with a summary that fits
+    // outputBudgetTokens, then returns it for the calling agent to insert in place of the raw tool
+    // output. Returns null (caller falls back to the literal output) when there is no budget, no Tools
+    // role, no available model, or the sub-session never returned a result.
+    public async Task<(string? text, int responseTokens)> RunFilterAsync(string toolName, JsonObject args, string rawOutput, string instructions, int outputBudgetTokens, CancellationToken ct)
     {
         // No budget left for any reply (window nearly full): a sub-session is pointless. Fall back to
-        // the raw handler, whose output the tool dispatcher truncates to the budget.
+        // the literal output, which the tool dispatcher truncates to the budget.
         if (outputBudgetTokens <= 0)
             return (null, 0);
 
@@ -81,41 +83,39 @@ public class SubagentRunner
         if (service == null)
             return (null, 0);
 
-        Tool[] innerTools = _registry.GetToolsForRole(toolsRole);
-
-        string displayName = goal.Length > 80 ? goal.Substring(0, 80) : goal;
+        string displayName = instructions.Length > 80 ? instructions.Substring(0, 80) : instructions;
 
         Session parent = _currentSession();
         BeastSession subData = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, "Tools", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
         Session subSession = new Session(subData, toolsRole.SystemPrompt, _transport, true);
-        subSession.AddUserMessage(BuildSubSessionMessage(toolName, args, goal, outputBudgetTokens));
+        subSession.AddUserMessage(BuildFilterMessage(toolName, args, rawOutput, instructions, outputBudgetTokens));
         subSession.AnnounceToClient();
         parent.AddChild(subSession);
 
-        // The first turn forces a tool and omits return_to_caller, so the subagent must actually do
-        // work before it can finish. Every later turn offers the full set, return_to_caller included.
+        // Early turns carry the full tool complement plus return_to_caller, so the filter can research
+        // the output and correct errors in the original call. The final turn offers return_to_caller
+        // alone and forces it — the sub-session must report its result, it is not free to keep working.
         ReturnSink sink = new ReturnSink();
-        List<Tool> withReturn = new List<Tool>(innerTools);
-        withReturn.Add(BuildReturnToCallerTool(sink));
+        Tool returnTool = BuildReturnToCallerTool(sink);
+        List<Tool> withReturn = new List<Tool>(_registry.GetToolsForRole(toolsRole));
+        withReturn.Add(returnTool);
         Tool[] fullTools = withReturn.ToArray();
+        Tool[] returnOnlyTools = new Tool[] { returnTool };
 
         subSession.SendBusy();
         try
         {
-            const int kMaxFitAttempts = 3;
-            int fitAttempts = 0;
+            const int kMaxTurns = 3;
             int responseTokens = 0;
-            bool forceTool = true;
 
-            for (; ; )
+            for (int turn = 1; turn <= kMaxTurns; turn++)
             {
-                Tool[] turnTools = forceTool ? innerTools : fullTools;
-                string? forcedToolName = forceTool ? ProtocolProxy.AnyTool : null;
-                forceTool = false;
-
-                // Output is uncapped so the subagent can work up to its own context window; only after
-                // it repeatedly overruns the caller's budget do we force a hard cap as a last resort.
-                int outputCap = fitAttempts >= kMaxFitAttempts ? outputBudgetTokens : 0;
+                // On the last allotted turn return_to_caller is the only tool and is required, and the
+                // output is hard-capped to the budget since there is no further turn to shorten it.
+                bool lastTurn = turn == kMaxTurns;
+                Tool[] turnTools = lastTurn ? returnOnlyTools : fullTools;
+                string? forcedToolName = lastTurn ? "return_to_caller" : null;
+                int outputCap = lastTurn ? outputBudgetTokens : 0;
 
                 ProtocolResult result = await service.RunToCompletionAsync(subSession, turnTools, forcedToolName, 0, outputCap, _transport, ct);
                 if (result.Outcome != ProtocolCallOutcome.Success)
@@ -131,30 +131,29 @@ public class SubagentRunner
                     // The return_to_caller call carries the reply; its turn's completion tokens are
                     // the server-measured size we charge against the caller's budget.
                     responseTokens = subSession.LastTokenUsage?.CompletionTokens ?? 0;
-                    if (responseTokens <= outputBudgetTokens || fitAttempts >= kMaxFitAttempts)
+                    if (responseTokens <= outputBudgetTokens || lastTurn)
                         break;
 
-                    // Complete but over budget: ask for a shorter return and try again.
+                    // Complete but over budget with turns remaining: ask for a shorter return next turn.
                     sink.Returned = false;
-                    fitAttempts++;
                     subSession.AddUserMessage(
                         $"That output is about {responseTokens} tokens but must fit within {outputBudgetTokens} tokens. "
-                        + "Call return_to_caller again with a shorter output, preserving the exact details requested (file paths, line numbers, names, key output).");
+                        + "Call return_to_caller again with a shorter output, preserving the exact details the instructions asked for (file paths, line numbers, names, key output).");
                     continue;
                 }
 
-                if (!hasToolCalls)
+                if (!hasToolCalls && !lastTurn)
                 {
-                    // A turn that ends with no tool call cannot terminate the sub-session: require the
-                    // model to finish explicitly through return_to_caller.
-                    subSession.AddUserMessage("You must call the return_to_caller tool with your desired output to finish.");
+                    // A turn that ends with no tool call cannot terminate the sub-session: nudge the
+                    // model to finish its work and report through return_to_caller.
+                    subSession.AddUserMessage("Continue toward the result, then call the return_to_caller tool with your filtered output to finish.");
                 }
             }
 
             // Cost is spent regardless of whether the subagent ever returned a usable result: roll the
-            // sub-session's entire spend (every turn, including fit retries) up into the calling agent
-            // so the root's cost reflects total spend. The reply is returned for the caller to use or
-            // discard; an over-budget reply is acceptable — the last fit attempt is hard-capped.
+            // sub-session's entire spend (every turn) up into the calling agent so the root's cost
+            // reflects total spend. The reply is returned for the caller to use or discard; an
+            // over-budget reply is acceptable — the final turn's output is hard-capped.
             parent.RecordCost(subSession.TotalCost);
             return (sink.Value, responseTokens);
         }
