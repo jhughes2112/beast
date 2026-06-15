@@ -30,21 +30,19 @@ public class SessionRunner
 	// with other sessions. Replaced when the model or role changes, or after a permanent failure.
 	private LlmService? _service;
 
-	// Keyed by "agent:{roleName}" or "sub:{roleName}". Populated lazily, cleared on /reload.
-	// Safe because ToolFactory.BuildSubagent captures _subagent.RunFilterAsync, and the
-	// SubagentRunner reads the live current session through its accessor, so the delegate stays
-	// valid for the runner's lifetime.
-	private readonly Dictionary<string, Tool[]> _toolsByRole = new(StringComparer.OrdinalIgnoreCase);
-
-	// Handles subagent-wrapped tool calls by running ephemeral "Tools"-role sub-sessions.
+	// Runs child sub-sessions on behalf of the root's subagent tool.
 	private readonly SubagentRunner _subagent;
 
-	private bool _wantsCompact = false;
+	// The root agent's delegation tool. Appended to the root's bound tools each turn; child agents never
+	// receive it, so nesting stops at one level. Rebuilt on /reload so its role-name list stays current.
+	private Tool _subagentTool;
 
-	// Set by the always-available state_transition tool's handler when the model opts to transition. Read and
-	// cleared by RunAsync after each turn; non-null _pendingTruth means a transition is pending.
-	private string? _pendingStatement;
-	private string? _pendingContext;
+	// The root agent's termination tool. Its handler sets _taskComplete, which stops the end-of-turn
+	// reminder loop so the root idles and waits for the user instead of being kept on task.
+	private readonly Tool _taskCompleteTool;
+	private bool _taskComplete = false;
+
+	private bool _wantsCompact = false;
 
 	private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
@@ -63,6 +61,13 @@ public class SessionRunner
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
+		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.Roles.Keys, _subagent.RunSubagentAsync);
+		_taskCompleteTool = ToolFactory.CreateTaskCompleteTool(status =>
+		{
+			_taskComplete = true;
+			if (!string.IsNullOrEmpty(status))
+				_transport.Output(_currentSession.Id, status);
+		});
 	}
 
 	// Routes inbound input to the session tree by ID.
@@ -140,7 +145,8 @@ public class SessionRunner
 					session.SendBusy();
 					try
 					{
-						Tool[] tools = GetOrBuildTools(role, session.IsSubagent);
+						Tool[] tools = ToolsForTurn(role, session.IsSubagent);
+						_taskComplete = false;
 
 						// Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
 						bool completed = false;
@@ -155,21 +161,39 @@ public class SessionRunner
 
 								// Process the assistant response and dispatch any tool calls.
 								bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, _transport, _cancellationTokenSource.Token);
-								if (!hasToolCalls)
-								{
-									// No tool calls means the assistant has finished.
-									completed = true;
-								}
-								else
+								if (hasToolCalls)
 								{
 									session.CommitToolResults(result.Payload!);
 								}
 
-								// Check for pending user input before next turn.  If we add something, we definitely are not done yet.
+								// Decide whether to keep going. User input always continues the turn. Otherwise
+								// task_complete stops it; a turn that ran tools (but not task_complete) keeps going;
+								// a turn with no tool calls is reminded by the role's end-of-turn prompt to call its
+								// terminator and keeps going, or — when the role defines no such prompt — completes.
 								string? newUserInput = session.TryGetPendingInput();
 								if (!string.IsNullOrEmpty(newUserInput))
 								{
 									session.Bundle.OnUserMessage(newUserInput);
+									completed = false;
+								}
+								else if (_taskComplete)
+								{
+									completed = true;
+								}
+								else if (!hasToolCalls)
+								{
+									if (!string.IsNullOrEmpty(role.EndOfTurnPrompt))
+									{
+										session.AddUserMessage(role.EndOfTurnPrompt);
+										completed = false;
+									}
+									else
+									{
+										completed = true;
+									}
+								}
+								else
+								{
 									completed = false;
 								}
 
@@ -197,35 +221,6 @@ public class SessionRunner
 								// Failed, transient, or other error.
 								_transport.Error(session.Id, result.ErrorMessage);
 								completed = true;
-							}
-						}
-
-						// A model-initiated state_transition call records a pending transition. Apply it
-						// regardless of how the turn ended — the model opted to transition, so it
-						// takes precedence over context-full/failed handling for this turn.
-						if (_pendingStatement != null)
-						{
-							string statement = _pendingStatement;
-							string newContext = _pendingContext ?? string.Empty;
-							_pendingStatement = null;
-							_pendingContext = null;
-
-							Session? advanced = await ApplyTransitionAsync(session, role, statement, newContext, _cancellationTokenSource.Token);
-							if (advanced != null)
-							{
-								session = advanced;
-								_service = null;  // new role may use a different model
-							}
-						}
-						else
-						{
-							// The model finished without opting to transition. Confront it with the
-							// role's end-of-turn question and require an explicit Answer-tool call.
-							Session? advanced = await AdvanceRoleAsync(session, role, _service, _cancellationTokenSource.Token);
-							if (advanced != null)
-							{
-								session = advanced;
-								_service = null;  // new role may use a different model
 							}
 						}
 						// Interrupted: _interruptedAndWaiting is set in EndTurn;
@@ -468,18 +463,33 @@ public class SessionRunner
 					await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
 					_registry.ResetAllAvailability();
 					_service = null;
-					_toolsByRole.Clear();
+					_subagentTool = ToolFactory.CreateSubagentTool(_roleService.Roles.Keys, _subagent.RunSubagentAsync);
 					_transport.Status(session.Id, "Config files reloaded.");
 					break;
 				case "role":
 					if (args != null)
 					{
-						session.UpdateRole(args);
-						_service = null;  // new role may use a different model
-						_transport.Status(session.Id, $"Role set to {args}");
-						// Push the new role to the client status line now; without a turn running no
-						// Stats frame would otherwise be sent until the next message.
-						session.SendStats();
+						Role? newRole = _roleService.GetRole(args);
+						if (newRole == null)
+						{
+							_transport.Error(session.Id, $"Unknown role: {args}");
+						}
+						else
+						{
+							// Changing role closes the current root session and starts a fresh one bound
+							// to the new role's system prompt and tools, then waits for instructions. The
+							// prompt and tool set are fixed at session creation, so mutating the role in
+							// place would leave the old prompt and conversation history in effect.
+							if (!session.Ephemeral)
+								SaveRoot(session);
+							session = CreateFreshSession(newRole.Name, session.Ephemeral);
+							_service = null;  // new role may use a different model
+							_cachedSessions = SessionService.List();
+							_transport.Status(session.Id, $"Role set to {newRole.Name}. New session started.");
+							// Push the new role to the client status line now; without a turn running no
+							// Stats frame would otherwise be sent until the next message.
+							session.SendStats();
+						}
 					}
 					break;
 				case "model":
@@ -584,192 +594,22 @@ public class SessionRunner
 		_transport.Output(sessionId, $"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 	}
 
-	// ---- Role transition ----
-
-	// Applies a model-initiated role transition. The model called the always-available Answer tool
-	// mid-turn, selecting one of the role's truth statements; selectedAnswer is the full briefing
-	// that becomes the next phase's first prompt. Runs end-of-turn bookkeeping, then maps the truth.
-	private Task<Session?> ApplyTransitionAsync(Session session, Role currentRole, string selectedTruth, string selectedStatement, CancellationToken ct)
-	{
-		// The model already provided a full briefing via the Answer tool's answer argument.
-		// No summary needed: selectedAnswer IS the handoff context for the next phase.
-		return Task.FromResult(CreateNextRoleSession(session, currentRole, selectedTruth, selectedStatement));
-	}
-
-	// Called after a completed worker turn when the model did NOT already opt to transition via the
-	// Answer tool. Confronts the model in the SAME session: appends a user prompt requiring an explicit
-	// Answer-tool call and exposes only the Answer tool, so it cannot keep working. No summary or
-	// compaction is needed — the full conversation is already in context, so the model writes its
-	// briefing from its own working memory. The Answer call lands in the current conversation;
-	// CreateNextRoleSession then continues this session (same role) or hands off to a fresh one
-	// (different role). If the role defines no EndOfTurnPrompt + Statements, there is nothing to confront.
-	private async Task<Session?> AdvanceRoleAsync(Session session, Role currentRole, LlmService service, CancellationToken ct)
-	{
-		if (string.IsNullOrEmpty(currentRole.EndOfTurnPrompt) || currentRole.Statements.Count == 0)
-			return null;
-
-		string? selectedStatement = null;
-		string? selectedContext = null;
-		Tool stateTransitionTool = BuildStateTransitionTool(currentRole.EndOfTurnPrompt, currentRole.Statements.Keys, (statement, context) => { selectedStatement = statement; selectedContext = context; });
-
-		// Run the confrontation in the current session with only the Answer tool, forcing the model to
-		// call it, and reusing the session's service so the conversation continues uninterrupted. Retry
-		// on a bad answer (the tool rejects an answer that does not begin with a truth statement).
-		session.AddUserMessage(currentRole.EndOfTurnPrompt);
-
-		// Cap the answer to whatever space remains in the window so the briefing always fits.
-		int answerCap = session.Budget.MaxCompletionTokens() ?? 0;
-		ProtocolResult evalResult = await service.RunToCompletionAsync(session, new Tool[] { stateTransitionTool }, "state_transition", 0, answerCap, _transport, ct);
-		if (selectedStatement == null)
-		{
-			_transport.Error(session.Id, "[Role] Completed session failed to call state_transition tool; staying in current role.");
-			return null;
-		}
-
-		return CreateNextRoleSession(session, currentRole, selectedStatement, selectedContext!);
-	}
-
-	// Maps the chosen truth label to the next role and returns the successor session. The Answer tool
-	// handler only accepts answers beginning with one of the Statement keys, so the lookup always hits.
-	// Empty next-role = task finished; returns null and control goes back to the user. Same role =
-	// continue in place: the answer becomes the next user prompt and null is returned so the caller
-	// keeps the current session. Different role = save the current session and start a fresh one whose
-	// first user prompt is the model's full answer.
-	private Session? CreateNextRoleSession(Session session, Role currentRole, string selectedStatement, string newContext)
-	{
-		currentRole.Statements.TryGetValue(selectedStatement, out string? nextRoleName);
-
-		if (string.IsNullOrEmpty(nextRoleName))
-		{
-			_transport.Error(session.Id, $"[Role] {selectedStatement} → done.");
-			return null;
-		}
-
-		Role nextRole = _roleService.GetRole(nextRoleName) ?? currentRole;
-
-		// Same role: stay in the current conversation. The briefing becomes the next user prompt so the
-		// model keeps working in place; no new session is created and the caller keeps this session.
-		if (string.Equals(nextRole.Name, currentRole.Name, StringComparison.OrdinalIgnoreCase))
-		{
-			session.AddUserMessage(newContext);
-			_transport.Status(session.Id, $"[Role] {selectedStatement} → continue ({currentRole.Name}).");
-			return null;
-		}
-
-		if (!session.Ephemeral)
-			SaveRoot(session);
-
-		BeastSession freshData = new BeastSession(session.AllocateChildId(), session.DisplayName, session.Model, nextRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, session.Ephemeral, 0);
-		Session next = new Session(freshData, nextRole.SystemPrompt, _transport, false);
-
-		next.AddUserMessage(newContext);
-
-		_transport.Error(session.Id, $"[Role] {selectedStatement} → {nextRole.Name}");
-		return next;
-	}
-
-	// Builds the always-available Answer tool. Its description is the role's EndOfTurnPrompt, so the
-	// model knows the question that, once answerable, lets it transition at any point in a turn.
-	// The answer must begin with one of the truth statements verbatim and continues with a briefing
-	// for the next phase; onAnswer receives (matched statement, full answer). A non-matching answer
-	// returns an error result so the model can correct itself within the same turn.
-	private static Tool BuildStateTransitionTool(string endOfTurnPrompt, IEnumerable<string> truthLabels, Action<string, string> onAnswer)
-	{
-		List<string> labels = new List<string>(truthLabels);
-		string optionList = string.Join("\n", labels);
-
-		JsonObject statementProp = new JsonObject();
-		statementProp["type"] = "string";
-		statementProp["description"] = $"Your selection either ends this conversation, continues it, or sends it to another worker to continue. Must be exactly one of these statements, verbatim:\n{optionList}";
-
-		JsonObject contextProp = new JsonObject();
-		contextProp["type"] = "string";
-		contextProp["description"] = $"Provide any context the next phase needs to start working: what has been accomplished, what remains, and any constraints or decisions it must know about. This becomes the next model's first prompt, so be informative and provide actionable direction as the final statement.";
-
-		JsonObject properties = new JsonObject();
-		properties["statement"] = statementProp;
-		properties["context"] = contextProp;  // optional
-
-		JsonArray required = new JsonArray();
-		required.Add(JsonValue.Create("statement"));
-
-		JsonObject parameters = new JsonObject();
-		parameters["type"] = "object";
-		parameters["properties"] = properties;
-		parameters["required"] = required;
-
-		return new Tool
-		{
-			Definition = new ToolDefinition
-			{
-				Function = new FunctionDefinition
-				{
-					Name = "state_transition",
-					Description = $"{endOfTurnPrompt} Use this tool to end the conversation or transition the task to another worker.",
-					Parameters = parameters
-				}
-			},
-			Handler = (JsonObject args, string toolCallId, CancellationToken ct, ITransportServer transport, string sessionId, int maxOutputTokens) =>
-			{
-				string statement = (args["statement"]?.GetValue<string>() ?? string.Empty).TrimStart();
-				string context = (args["context"]?.GetValue<string>() ?? string.Empty).TrimStart();
-
-				// Try to find the closest match.
-				string? matched= FixJson.FuzzyMatchToolName(statement, labels.ToArray(), 5, null);
-
-				ToolResult result;
-				if (matched != null)
-				{
-					onAnswer(matched, context);
-					result = new ToolResult(toolCallId, "OK.", string.Empty, 0, 0);
-				}
-				else
-				{
-					result = new ToolResult(toolCallId, string.Empty, $"Your statement must be exactly one of these statements, verbatim: {optionList}", 1, 0);
-				}
-				return Task.FromResult(result);
-			}
-		};
-	}
-
 	// ---- Helpers ----
 
-	// Returns the cached Tool[] for the role+mode combination, building on first call.
-	// Cleared on /reload so config changes (new tools, webSearch) take effect immediately.
-	private Tool[] GetOrBuildTools(Role role, bool isSubagent)
+	// Returns the tools for this turn. Child agents (isSubagent) get only their role's bound tools, so
+	// they cannot spawn subagents; SubagentRunner adds return_to_caller to them. The root additionally
+	// gets the subagent and task_complete tools.
+	private Tool[] ToolsForTurn(Role role, bool isSubagent)
 	{
-		string key = isSubagent ? $"sub:{role.Name}" : $"agent:{role.Name}";
-		if (_toolsByRole.TryGetValue(key, out Tool[]? cached))
-			return cached;
+		if (isSubagent)
+			return role.BuiltTools;
 
-		bool hasToolsRole = _roleService.GetRole("Tools") != null;
-		Dictionary<string, Tool> allTools = (!isSubagent && hasToolsRole)
-			? ToolFactory.BuildSubagent(_settings.Settings.WebSearch, _subagent.RunFilterAsync)
-			: ToolFactory.Build(_settings.Settings.WebSearch);
-
-		List<Tool> toolList = new List<Tool>();
-		foreach (string toolName in role.Tools)
-		{
-			if (allTools.TryGetValue(toolName, out Tool? tool))
-				toolList.Add(tool);
-		}
-
-		// The root agent always carries the Answer tool when its role defines transitions, so the
-		// model can opt to transition at any point in a turn rather than only after it completes.
-		// Its handler records the decision into _pendingTruth/_pendingAnswer for RunAsync to apply.
-		if (!isSubagent && !string.IsNullOrEmpty(role.EndOfTurnPrompt) && role.Statements.Count > 0)
-		{
-			Tool stateTransitionTool = BuildStateTransitionTool(role.EndOfTurnPrompt, role.Statements.Keys, (statement, context) =>
-			{
-				_pendingStatement = statement;
-				_pendingContext = context;
-			});
-			toolList.Add(stateTransitionTool);
-		}
-
-		Tool[] tools = toolList.ToArray();
-		_toolsByRole[key] = tools;
-		return tools;
+		Tool[] baseTools = role.BuiltTools;
+		Tool[] withRootTools = new Tool[baseTools.Length + 2];
+		Array.Copy(baseTools, withRootTools, baseTools.Length);
+		withRootTools[baseTools.Length] = _subagentTool;
+		withRootTools[baseTools.Length + 1] = _taskCompleteTool;
+		return withRootTools;
 	}
 
 	// Replaces _service when the model or role has changed, or when the service has permanently

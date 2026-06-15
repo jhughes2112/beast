@@ -29,9 +29,6 @@ public class LlmRegistry
 	// (rate-limit timers, permanently-down flags) survives /reload and session restarts.
 	private readonly Dictionary<string, ModelAvailability> _availability = new(StringComparer.OrdinalIgnoreCase);
 
-	// Stored at load time so GetToolsForRole can rebuild the tool set on demand.
-	private WebSearchConfig? _webSearch;
-
 	public LlmRegistry()
 	{
 	}
@@ -40,7 +37,6 @@ public class LlmRegistry
 	// Models already in _availability keep their existing down/rate-limit state across reloads.
 	public void LoadFromConfigs(SettingsService settings, RoleService roles)
 	{
-		_webSearch = settings.Settings.WebSearch;
 		_models.Clear();
 
 		foreach (ProviderConfig provider in settings.Settings.Providers)
@@ -75,6 +71,19 @@ public class LlmRegistry
 						role.Models.Insert(starIdx++, id);
 				}
 			}
+		}
+
+		// Resolve each role's tool names to instances once, here, so they are not rebuilt every turn.
+		Dictionary<string, Tool> allTools = ToolFactory.Build(settings.Settings.WebSearch);
+		foreach (Role role in roles.Roles.Values)
+		{
+			List<Tool> bound = new List<Tool>();
+			foreach (string toolName in role.Tools)
+			{
+				if (allTools.TryGetValue(toolName, out Tool? tool))
+					bound.Add(tool);
+			}
+			role.BindTools(bound.ToArray());
 		}
 	}
 
@@ -169,21 +178,6 @@ public class LlmRegistry
 	public LlmModel? GetModelForRole(Role? role, string preferredModelId, int minContextRequired)
 	{
 		return PickModel(role, preferredModelId, minContextRequired);
-	}
-
-	// Builds a fresh Tool array for the role. Output limits are dynamic per call (LlmService
-	// passes each tool its token budget), so no context window scaling is needed here.
-	// Called per sub-session turn, not per tool call, so rebuilding on demand is cheap.
-	public Tool[] GetToolsForRole(Role role)
-	{
-		Dictionary<string, Tool> allTools = ToolFactory.Build(_webSearch);
-		List<Tool> allowed = new List<Tool>();
-		foreach (string name in role.Tools)
-		{
-			if (allTools.TryGetValue(name, out Tool? tool))
-				allowed.Add(tool);
-		}
-		return allowed.ToArray();
 	}
 
 	// Returns the role's models filtered to those currently registered (enabled in settings).

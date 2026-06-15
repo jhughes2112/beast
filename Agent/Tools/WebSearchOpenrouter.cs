@@ -21,10 +21,10 @@ public class WebSearchOpenrouter
         _model = model;
     }
 
-    [Description("Search the web using OpenRouter's web search plugin. The query can be a natural language question or instruction, not just keywords — e.g. 'Show me how to call the Foo API and explain each parameter'.")]
+    [Description("Search the web using a natural language query.")]
     public async Task<ToolResult> SearchWebAsync(
 		string toolCallId,
-        [Description("The search query or natural language question to answer using the web.")] string query,
+        [Description("Query or natural language question to answer using the web.")] string query,
         ITransportServer transport,
         string sessionId,
         CancellationToken cancellationToken)

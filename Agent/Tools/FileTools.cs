@@ -118,165 +118,160 @@ public static class FileTools
 		return result;
 	}
 
-public static async Task<ToolResult> EditFileAsync(
-	string toolCallId,
-	string filePath,
-	string oldText,
-	string newText,
-	CancellationToken cancellationToken)
-{
-	ToolResult result;
+	public static async Task<ToolResult> EditFileAsync(
+		string toolCallId,
+		string filePath,
+		string oldText,
+		string newText,
+		CancellationToken cancellationToken)
+	{
+		ToolResult result;
 
-	if (string.IsNullOrWhiteSpace(filePath))
-	{
-		result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
-	}
-	else if (string.IsNullOrEmpty(oldText))
-	{
-		result = new ToolResult(toolCallId, string.Empty, "Error: old_text cannot be empty", 1, 0);
-	}
-	else
-	{
-		string fullPath = Path.GetFullPath(filePath);
-
-		try
+		if (string.IsNullOrWhiteSpace(filePath))
 		{
-			if (File.Exists(fullPath))
+			result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
+		}
+		else if (string.IsNullOrEmpty(oldText))
+		{
+			result = new ToolResult(toolCallId, string.Empty, "Error: old_text cannot be empty", 1, 0);
+		}
+		else
+		{
+			string fullPath = Path.GetFullPath(filePath);
+
+			try
 			{
-				using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-				cts.CancelAfter(DefaultTimeout);
-
-				await FileLock.WaitAsync(cts.Token);
-				try
+				if (File.Exists(fullPath))
 				{
-					string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
-					string replacement = newText ?? string.Empty;
+					using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+					cts.CancelAfter(DefaultTimeout);
 
-					// Exact match first
-					int exactIdx = fileContent.IndexOf(oldText, StringComparison.Ordinal);
-					if (exactIdx >= 0)
+					await FileLock.WaitAsync(cts.Token);
+					try
 					{
-						string newContent = fileContent.Substring(0, exactIdx) + replacement + fileContent.Substring(exactIdx + oldText.Length);
-						await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
-						result = new ToolResult(toolCallId, BuildEditEcho(newContent, exactIdx, replacement.Length), string.Empty, 0, 0);
-					}
-					else
-					{
-						// Fuzzy match: strip all whitespace from old_text and file, find the span,
-						// map back to original positions and replace.
-						List<int> posMap = new List<int>(fileContent.Length);
-						StringBuilder strippedFileBuilder = new StringBuilder(fileContent.Length);
-						for (int i = 0; i < fileContent.Length; i++)
-						{
-							if (!char.IsWhiteSpace(fileContent[i]))
-							{
-								posMap.Add(i);
-								strippedFileBuilder.Append(fileContent[i]);
-							}
-						}
-						string strippedFile = strippedFileBuilder.ToString();
+						string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
+						string replacement = newText ?? string.Empty;
 
-						StringBuilder strippedOldBuilder = new StringBuilder(oldText.Length);
-						foreach (char c in oldText)
+						// Exact match first
+						int exactIdx = fileContent.IndexOf(oldText, StringComparison.Ordinal);
+						if (exactIdx >= 0)
 						{
-							if (!char.IsWhiteSpace(c))
-							{
-								strippedOldBuilder.Append(c);
-							}
-						}
-						string strippedOld = strippedOldBuilder.ToString();
-
-						if (strippedOld.Length == 0)
-						{
-							result = new ToolResult(toolCallId, string.Empty, "Error: old_text contains only whitespace.", 1, 0);
+							string newContent = fileContent.Substring(0, exactIdx) + replacement + fileContent.Substring(exactIdx + oldText.Length);
+							await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
+							result = new ToolResult(toolCallId, BuildEditEcho(newContent, exactIdx, replacement.Length), string.Empty, 0, 0);
 						}
 						else
 						{
-							int matchIdx = strippedFile.IndexOf(strippedOld, StringComparison.Ordinal);
-							if (matchIdx >= 0)
+							// Fuzzy match: strip all whitespace from old_text and file, find the span,
+							// map back to original positions and replace.
+							List<int> posMap = new List<int>(fileContent.Length);
+							StringBuilder strippedFileBuilder = new StringBuilder(fileContent.Length);
+							for (int i = 0; i < fileContent.Length; i++)
 							{
-								int origStart = posMap[matchIdx];
-								int origEnd = posMap[matchIdx + strippedOld.Length - 1] + 1;
-								string newContent = fileContent.Substring(0, origStart) + replacement + fileContent.Substring(origEnd);
-								await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
-								result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, replacement.Length), string.Empty, 0, 0);
+								if (!char.IsWhiteSpace(fileContent[i]))
+								{
+									posMap.Add(i);
+									strippedFileBuilder.Append(fileContent[i]);
+								}
+							}
+							string strippedFile = strippedFileBuilder.ToString();
+
+							StringBuilder strippedOldBuilder = new StringBuilder(oldText.Length);
+							foreach (char c in oldText)
+							{
+								if (!char.IsWhiteSpace(c))
+								{
+									strippedOldBuilder.Append(c);
+								}
+							}
+							string strippedOld = strippedOldBuilder.ToString();
+
+							if (strippedOld.Length == 0)
+							{
+								result = new ToolResult(toolCallId, string.Empty, "Error: old_text contains only whitespace.", 1, 0);
 							}
 							else
 							{
-								result = new ToolResult(toolCallId, string.Empty, "Error: old_text not found in file (exact and whitespace-normalized search both failed).", 1, 0);
+								int matchIdx = strippedFile.IndexOf(strippedOld, StringComparison.Ordinal);
+								if (matchIdx >= 0)
+								{
+									int origStart = posMap[matchIdx];
+									int origEnd = posMap[matchIdx + strippedOld.Length - 1] + 1;
+									string newContent = fileContent.Substring(0, origStart) + replacement + fileContent.Substring(origEnd);
+									await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
+									result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, replacement.Length), string.Empty, 0, 0);
+								}
+								else
+								{
+									result = new ToolResult(toolCallId, string.Empty, "Error: old_text not found in file (exact and whitespace-normalized search both failed).", 1, 0);
+								}
 							}
 						}
 					}
+					finally
+					{
+						FileLock.Release();
+					}
 				}
-				finally
+				else
 				{
-					FileLock.Release();
+					result = new ToolResult(toolCallId, string.Empty, $"Error: File not found: {filePath}", 1, 0);
 				}
 			}
-			else
+			catch (OperationCanceledException)
 			{
-				result = new ToolResult(toolCallId, string.Empty, $"Error: File not found: {filePath}", 1, 0);
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Timed out or cancelled editing file: {filePath}", 1, 0);
+			}
+			catch (Exception ex)
+			{
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to edit file: {ex.Message}", 1, 0);
 			}
 		}
-		catch (OperationCanceledException)
-		{
-			result = new ToolResult(toolCallId, string.Empty, $"Error: Timed out or cancelled editing file: {filePath}", 1, 0);
-		}
-		catch (Exception ex)
-		{
-			result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to edit file: {ex.Message}", 1, 0);
-		}
+
+		return result;
 	}
 
-	return result;
-}
-
-// Echoes the edited region of the new file content back to the model: the changed lines plus
-	// three lines of context on each side, with 1-based line numbers and a ">" marker on changed
-	// lines. This lets the model confirm the edit landed where it intended — important because the
-	// whitespace-normalized fallback can match a different region than the model pictured. A large
-	// changed span has its middle collapsed so the echo stays bounded.
+	// Echoes where the edit landed: three lines before the change, a [hunk inserted]/[hunk deleted]
+	// marker in place of the new text (the model already knows what it changed), then three lines after.
+	// This confirms placement, which matters because the whitespace-normalized fallback can land
+	// on a different region than the model pictured.
 	private static string BuildEditEcho(string content, int replaceStart, int replaceLength)
 	{
 		const int contextLines = 3;
-		const int maxChangedShown = 8;
 
 		string[] lines = content.Split('\n');
-
 		int startLine = LineOfIndex(content, replaceStart);
 		int lastIdx = replaceLength > 0 ? replaceStart + replaceLength - 1 : replaceStart;
 		int endLine = LineOfIndex(content, lastIdx);
 
-		int firstShown = Math.Max(0, startLine - contextLines);
-		int lastShown = Math.Min(lines.Length - 1, endLine + contextLines);
+		int firstBefore = Math.Max(0, startLine - contextLines);
+		int lastAfter = Math.Min(lines.Length - 1, endLine + contextLines);
 
 		StringBuilder sb = new StringBuilder();
-		sb.Append("Edit applied. Result context (\">\" marks changed lines):\n");
+		sb.Append($"Edit applied at line {startLine + 1}:\n");
 
-		bool collapse = (endLine - startLine + 1) > maxChangedShown;
-		int headEnd = startLine + (contextLines + 1);   // last changed line shown before the gap
-		int tailStart = endLine - (contextLines + 1);   // first changed line shown after the gap
-
-		for (int i = firstShown; i <= lastShown; i++)
+		for (int i = firstBefore; i < startLine; i++)
 		{
-			if (collapse && i > headEnd && i < tailStart)
-			{
-				if (i == headEnd + 1)
-					sb.Append($"        | … {tailStart - headEnd - 1} more changed lines …\n");
-				continue;
-			}
+			AppendNumbered(sb, i + 1, lines[i]);
+		}
 
-			char marker = (i >= startLine && i <= endLine) ? '>' : ' ';
-			string text = lines[i].TrimEnd('\r');
-			sb.Append(marker);
-			sb.Append(' ');
-			sb.Append((i + 1).ToString().PadLeft(5));
-			sb.Append(" | ");
-			sb.Append(text);
-			sb.Append('\n');
+		sb.Append(replaceLength > 0 ? "      | [hunk inserted]\n" : "      | [hunk deleted]\n");
+
+		for (int i = endLine + 1; i <= lastAfter; i++)
+		{
+			AppendNumbered(sb, i + 1, lines[i]);
 		}
 
 		return sb.ToString();
+	}
+
+	// Appends one right-aligned, line-numbered row matching the marker column width.
+	private static void AppendNumbered(StringBuilder sb, int lineNumber, string text)
+	{
+		sb.Append(lineNumber.ToString().PadLeft(5));
+		sb.Append(" | ");
+		sb.Append(text.TrimEnd('\r'));
+		sb.Append('\n');
 	}
 
 	// Counts the lines preceding a character offset (the 0-based line the offset falls on).
@@ -297,50 +292,50 @@ public static async Task<ToolResult> EditFileAsync(
 	string filePath,
 	string content,
 	CancellationToken cancellationToken)
-{
-	ToolResult result;
-
-	if (string.IsNullOrWhiteSpace(filePath))
 	{
-		result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
-	}
-	else
-	{
-		string fullPath = Path.GetFullPath(filePath);
+		ToolResult result;
 
-		try
+		if (string.IsNullOrWhiteSpace(filePath))
 		{
-			string? directory = Path.GetDirectoryName(fullPath);
-			if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-			{
-				Directory.CreateDirectory(directory);
-			}
+			result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
+		}
+		else
+		{
+			string fullPath = Path.GetFullPath(filePath);
 
-			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-			cts.CancelAfter(DefaultTimeout);
-
-			await FileLock.WaitAsync(cts.Token);
 			try
 			{
-				await File.WriteAllTextAsync(fullPath, content ?? string.Empty, cts.Token);
+				string? directory = Path.GetDirectoryName(fullPath);
+				if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+				{
+					Directory.CreateDirectory(directory);
+				}
+
+				using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+				cts.CancelAfter(DefaultTimeout);
+
+				await FileLock.WaitAsync(cts.Token);
+				try
+				{
+					await File.WriteAllTextAsync(fullPath, content ?? string.Empty, cts.Token);
+				}
+				finally
+				{
+					FileLock.Release();
+				}
+
+				result = new ToolResult(toolCallId, "OK", string.Empty, 0, 0);
 			}
-			finally
+			catch (OperationCanceledException)
 			{
-				FileLock.Release();
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Timed out or interrupted writing: {filePath}", 1, 0);
 			}
+			catch (Exception ex)
+			{
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to write file: {ex.Message}", 1, 0);
+			}
+		}
 
-			result = new ToolResult(toolCallId, "OK", string.Empty, 0, 0);
-		}
-		catch (OperationCanceledException)
-		{
-			result = new ToolResult(toolCallId, string.Empty, $"Error: Timed out or interrupted writing: {filePath}", 1, 0);
-		}
-		catch (Exception ex)
-		{
-			result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to write file: {ex.Message}", 1, 0);
-		}
+		return result;
 	}
-
-	return result;
-}
 }

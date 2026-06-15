@@ -1,9 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 
-// Defines an LLM role: model preferences, allowed tools, system prompt,
-// and optional state-transition logic (query, evaluatorRole, truths).
+// Defines an LLM role: model preferences, allowed tools, and system prompt.
 public class Role
 {
 	[JsonPropertyName("name")]
@@ -22,13 +22,18 @@ public class Role
 	[JsonPropertyName("summary_prompt")]
 	public string SummaryPrompt { get; }
 
-    // Prompt given to the evaluator after each completed turn. Null or empty = no automatic transitions.
+	// Reminder appended after a turn that ends without the agent calling its terminator tool (the root's
+	// task_complete, a subagent's return_to_caller). Empty = no reminder: the agent idles and waits for
+	// the user instead of being kept on task. Data-drives how each role tells the model to finish.
 	[JsonPropertyName("end_of_turn_prompt")]
 	public string EndOfTurnPrompt { get; }
 
-    // Maps evaluator truth labels to the next role name.
-	[JsonPropertyName("statements")]
-	public Dictionary<string, string> Statements { get; }
+	// The role's Tools names resolved to Tool instances, bound once at load time (see BindTools) so the
+	// set is not rebuilt every turn. Not serialized.
+	private Tool[] _builtTools = Array.Empty<Tool>();
+
+	[JsonIgnore]
+	public Tool[] BuiltTools => _builtTools;
 
 	[JsonConstructor]
 	public Role(
@@ -37,8 +42,7 @@ public class Role
 		List<string> tools,
 		string systemPrompt,
 		string summaryPrompt,
-		string endOfTurnPrompt,
-		Dictionary<string, string> statements)
+		string endOfTurnPrompt)
 	{
 		Name = name ?? string.Empty;
 		Models = models ?? new List<string>();
@@ -46,7 +50,12 @@ public class Role
 		SystemPrompt = systemPrompt ?? string.Empty;
 		SummaryPrompt = summaryPrompt ?? string.Empty;
 		EndOfTurnPrompt = endOfTurnPrompt ?? string.Empty;
-		Statements = statements ?? new Dictionary<string, string>();
+	}
+
+	// Resolves and stores the role's tool instances. Called after roles and models are loaded.
+	public void BindTools(Tool[] tools)
+	{
+		_builtTools = tools;
 	}
 
 	public static Role DefaultRole(List<string> toolNames)
@@ -55,9 +64,9 @@ public class Role
         const string summaryPrompt = """
             Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
             """;
+        // Conversational steady state: no end-of-turn reminder, so the assistant simply waits for the user.
         const string endOfTurnPrompt = "";
-        Dictionary<string, string> statements = new Dictionary<string, string>();
-        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, statements);
+        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
 	public static Role TaskRole(List<string> toolNames)
@@ -67,13 +76,8 @@ public class Role
             Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
             Output only a summary of the preceding conversation retaining the objective, critical concepts, current status, discovered context, key next steps, and exact details that would help perform them. Be concise. Retain only that which will help complete the task.
             """;
-        const string endOfTurnPrompt = "Conversation will continue until you call the state_transition tool to end it.";
-        Dictionary<string, string> statements = new Dictionary<string, string>()
-            {
-                { "This task is complete.", "Default" },
-                { "There is more work to do.", "Task" }
-            };
-        return new Role("Task", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt, statements);
+        const string endOfTurnPrompt = "If the task is finished, call the task_complete tool with the final status. Otherwise keep working.";
+        return new Role("Task", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
     public static Role ToolsRole(List<string> toolNames)
@@ -85,6 +89,7 @@ public class Role
 			Do not interpret the results unless asked.
 			If the goal cannot be achieved, be very brief and report this and list any commands attempted, in addition to the exact output from the original command.
 			""";
-        return new Role("Tools", new List<string> { "*" }, toolNames, systemPrompt, string.Empty, string.Empty, new Dictionary<string, string>());
+        const string endOfTurnPrompt = "If you have achieved the goal, call the return_to_caller tool with the result. Otherwise keep working.";
+        return new Role("Tools", new List<string> { "*" }, toolNames, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 }

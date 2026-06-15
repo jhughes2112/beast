@@ -1,24 +1,18 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-// Runs an optional post-filter over a tool's real output. The wrapped tool always executes directly
-// in the calling agent; only when that call carries subagent_instructions is the literal output
-// handed to an ephemeral "Tools"-role sub-session, which summarizes or filters it per those
-// instructions. Only the sub-session's reply is returned to the caller — the raw output is dropped.
-//
-// The sub-session is a real, announced, saved conversation. It is seeded with the raw output and the
-// instructions and carries the full tool complement, so it can research the output and correct errors
-// in the original tool call as needed before finishing. Termination is explicit through the
-// return_to_caller tool; a turn that ends with no tool call is re-prompted to use it. The reply is
-// measured and judged for fit BEFORE it is returned.
+// Spawns child agents on behalf of the root agent's subagent tool. A child is a real, announced,
+// saved sub-session assigned a named role — its system prompt, model, and tools — seeded with a
+// natural-language task. It runs to completion, terminating only when the model calls return_to_caller;
+// a turn that ends with no tool call is re-prompted to use it. The reply is measured and fit to the
+// caller's budget before it is returned.
 //
 // Ownership / accounting rules:
-//   - The returned summary must fit the calling agent's remaining room (outputBudgetTokens); the
-//     fit loop re-prompts for a shorter reply and hard-caps as a last resort.
+//   - The returned result must fit the calling agent's remaining room (outputBudgetTokens); the fit
+//     loop re-prompts for a shorter reply and hard-caps as a last resort.
 //   - Cost is spent the moment each call is made, so every turn's cost accumulates in the
 //     sub-session and the whole sum is rolled up into the calling (root) session at the end.
 //   - currentSession is read at call time because the owning runner's active session changes across
@@ -47,57 +41,39 @@ public class SubagentRunner
         public bool Returned;
     }
 
-    private static string BuildFilterMessage(string toolName, JsonObject args, string rawOutput, string instructions, int outputBudgetTokens)
+    // Runs an explicitly-invoked subagent: a child session assigned the named role, seeded with the
+    // caller's natural-language prompt, carrying that role's own tools plus return_to_caller. Unlike
+    // the filter path this is not wrapping a tool's output — it is a fresh task. The session runs to
+    // completion, terminating only when the model calls return_to_caller, and the result is fit to the
+    // caller's outputBudgetTokens. Returns null when the role is unknown, no model is available, or
+    // there is no output budget; the calling handler turns that into an error for the caller.
+    public async Task<(string? text, int responseTokens)> RunSubagentAsync(string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
     {
-        JsonObject displayArgs = new JsonObject();
-        foreach (KeyValuePair<string, JsonNode?> kv in args)
-        {
-            if (kv.Key != "subagent_instructions")
-                displayArgs[kv.Key] = kv.Value?.DeepClone();
-        }
-
-        return $"Tool: {toolName}\n"
-			+ $"Args: {displayArgs.ToJsonString()}\n\n"
-            + $"--- BEGIN OUTPUT ---\n{rawOutput}\n--- END OUTPUT ---\n\n"
-			+ $"{instructions}\n\n"
-			+ "If the original tool call resulted in an error, that has already been provided to the caller. "
-            + "Call the return_to_caller tool with only the content the caller asked for as the final result.";
-    }
-
-    // Runs the filter sub-session until it calls return_to_caller with a summary that fits
-    // outputBudgetTokens, then returns it for the calling agent to insert in place of the raw tool
-    // output. Returns null (caller falls back to the literal output) when there is no budget, no Tools
-    // role, no available model, or the sub-session never returned a result.
-    public async Task<(string? text, int responseTokens)> RunFilterAsync(string toolName, JsonObject args, string rawOutput, string instructions, int outputBudgetTokens, CancellationToken ct)
-    {
-        // No budget left for any reply (window nearly full): a sub-session is pointless. Fall back to
-        // the literal output, which the tool dispatcher truncates to the budget.
         if (outputBudgetTokens <= 0)
             return (null, 0);
 
-        Role? toolsRole = _roleService.GetRole("Tools");
-        if (toolsRole == null)
+        Role? role = _roleService.GetRole(roleName);
+        if (role == null)
             return (null, 0);
 
-        LlmService? service = _registry.CreateService(toolsRole, string.Empty, 0);
+        LlmService? service = _registry.CreateService(role, string.Empty, 0);
         if (service == null)
             return (null, 0);
 
-        string displayName = instructions.Length > 80 ? instructions.Substring(0, 80) : instructions;
+        string displayName = prompt.Length > 80 ? prompt.Substring(0, 80) : prompt;
 
         Session parent = _currentSession();
-        BeastSession subData = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, "Tools", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
-        Session subSession = new Session(subData, toolsRole.SystemPrompt, _transport, true);
-        subSession.AddUserMessage(BuildFilterMessage(toolName, args, rawOutput, instructions, outputBudgetTokens));
+        BeastSession subData = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+        Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
+        subSession.AddUserMessage(prompt);
         subSession.AnnounceToClient();
         parent.AddChild(subSession);
 
-        // Early turns carry the full tool complement plus return_to_caller, so the filter can research
-        // the output and correct errors in the original call. The final turn offers return_to_caller
-        // alone and forces it — the sub-session must report its result, it is not free to keep working.
+        // The child carries only its role's bound tools (no subagent tool), so nesting stops here.
+        // return_to_caller is created in ToolFactory and added here as the explicit terminator.
         ReturnSink sink = new ReturnSink();
-        Tool returnTool = BuildReturnToCallerTool(sink);
-        List<Tool> withReturn = new List<Tool>(_registry.GetToolsForRole(toolsRole));
+        Tool returnTool = ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
+        List<Tool> withReturn = new List<Tool>(role.BuiltTools);
         withReturn.Add(returnTool);
         Tool[] fullTools = withReturn.ToArray();
         Tool[] returnOnlyTools = new Tool[] { returnTool };
@@ -105,7 +81,8 @@ public class SubagentRunner
         subSession.SendBusy();
         try
         {
-            const int kMaxTurns = 3;
+            // Generous turn cap so a working subagent can iterate, while still bounding runaway loops.
+            const int kMaxTurns = 50;
             int responseTokens = 0;
 
             for (int turn = 1; turn <= kMaxTurns; turn++)
@@ -128,8 +105,8 @@ public class SubagentRunner
 
                 if (sink.Returned)
                 {
-                    // The return_to_caller call carries the reply; its turn's completion tokens are
-                    // the server-measured size we charge against the caller's budget.
+                    // The return_to_caller call carries the reply; its turn's completion tokens are the
+                    // server-measured size we charge against the caller's budget.
                     responseTokens = subSession.LastTokenUsage?.CompletionTokens ?? 0;
                     if (responseTokens <= outputBudgetTokens || lastTurn)
                         break;
@@ -138,22 +115,23 @@ public class SubagentRunner
                     sink.Returned = false;
                     subSession.AddUserMessage(
                         $"That output is about {responseTokens} tokens but must fit within {outputBudgetTokens} tokens. "
-                        + "Call return_to_caller again with a shorter output, preserving the exact details the instructions asked for (file paths, line numbers, names, key output).");
+                        + "Call return_to_caller again with a shorter output, preserving the key details (file paths, line numbers, names, key output).");
                     continue;
                 }
 
                 if (!hasToolCalls && !lastTurn)
                 {
-                    // A turn that ends with no tool call cannot terminate the sub-session: nudge the
-                    // model to finish its work and report through return_to_caller.
-                    subSession.AddUserMessage("Continue toward the result, then call the return_to_caller tool with your filtered output to finish.");
+                    // A turn that ends with no tool call cannot terminate the subagent: nudge it with the
+                    // role's end-of-turn prompt (data-driven) to keep working and finish via return_to_caller.
+                    string nudge = string.IsNullOrEmpty(role.EndOfTurnPrompt)
+                        ? "Continue the task, then call the return_to_caller tool with your final result to finish."
+                        : role.EndOfTurnPrompt;
+                    subSession.AddUserMessage(nudge);
                 }
             }
 
             // Cost is spent regardless of whether the subagent ever returned a usable result: roll the
-            // sub-session's entire spend (every turn) up into the calling agent so the root's cost
-            // reflects total spend. The reply is returned for the caller to use or discard; an
-            // over-budget reply is acceptable — the final turn's output is hard-capped.
+            // sub-session's entire spend up into the calling agent so the root's cost reflects total spend.
             parent.RecordCost(subSession.TotalCost);
             return (sink.Value, responseTokens);
         }
@@ -163,46 +141,5 @@ public class SubagentRunner
                 SessionService.Save(subSession.Data, false);
             subSession.SendIdle();
         }
-    }
-
-    // The explicit termination tool. Its handler records the output into the sink and returns a
-    // trivial result; the drive loop reads the sink to decide whether the sub-session is finished.
-    private static Tool BuildReturnToCallerTool(ReturnSink sink)
-    {
-        JsonObject outputProp = new JsonObject();
-        outputProp["type"] = "string";
-        outputProp["description"] = "The complete result to return to the calling agent. This string is the entire response the caller receives.";
-
-        JsonObject properties = new JsonObject();
-        properties["output"] = outputProp;
-
-        JsonArray required = new JsonArray();
-        required.Add(JsonValue.Create("output"));
-
-        JsonObject parameters = new JsonObject();
-        parameters["type"] = "object";
-        parameters["properties"] = properties;
-        parameters["required"] = required;
-
-        return new Tool
-        {
-            Definition = new ToolDefinition
-            {
-                Function = new FunctionDefinition
-                {
-                    Name = "return_to_caller",
-                    Description = "Return your final result to the calling agent and finish the task. Call this once the requested work is complete; the output string is the entire response the caller receives.",
-                    Parameters = parameters
-                }
-            },
-            Handler = (JsonObject args, string toolCallId, CancellationToken ct, ITransportServer transport, string sessionId, int maxOutputTokens) =>
-            {
-                string output = args["output"]?.GetValue<string>() ?? string.Empty;
-                sink.Value = output;
-                sink.Returned = true;
-                string ack = "Returned to caller.";
-                return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
-            }
-        };
     }
 }

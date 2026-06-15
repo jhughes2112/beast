@@ -121,8 +121,6 @@ public class Session
 	// requires discarding the in-progress protocol (e.g. via the /model command).
 	public void UpdateModel(LlmModel model) { _data.Model = model.ConfigId; _data.ContextWindow = model.Config.ContextWindow; }
 
-	public void UpdateRole(string role) => _data.Role = role;
-
 	// Signals the bundle that the active protocol should be discarded on next turn.
 	public void InvalidateProtocol() => _bundle.InvalidateProtocol();
 
