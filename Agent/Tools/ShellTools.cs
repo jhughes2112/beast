@@ -10,6 +10,16 @@ using System.Threading.Tasks;
 // Shell tools — all static methods.
 public static class ShellTools
 {
+	// Lists a folder in `ls -al` form. Empty folder lists the current directory. Implemented over the
+	// shell so the output format matches `ls -al` exactly.
+	public static Task<ToolResult> LsAsync(string toolCallId, string folder, CancellationToken cancellationToken)
+	{
+		string target = string.IsNullOrWhiteSpace(folder) ? "." : folder;
+		string escaped = target.Replace("'", "'\\''");
+		string command = $"ls -al -- '{escaped}'";
+		return BashAsync(toolCallId, command, null, cancellationToken);
+	}
+
 	[Description("""
 		Standard bash command. CWD is /workspace/
 		""")]

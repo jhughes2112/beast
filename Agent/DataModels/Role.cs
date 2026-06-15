@@ -1,13 +1,28 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 
+
+// Whether a role drives the top-level (root) session the user talks to, or is a worker spawned by the
+// subagent tool. The two never mix: a root session only runs Agent roles, a SubagentSession only runs
+// Subagent roles.
+public enum RoleKind
+{
+	Agent,
+	Subagent
+}
 
 // Defines an LLM role: model preferences, allowed tools, and system prompt.
 public class Role
 {
 	[JsonPropertyName("name")]
 	public string Name { get; }
+
+	[JsonPropertyName("kind")]
+	public RoleKind Kind { get; }
 
     // '*' expands at load time to all enabled model IDs at that position. Order is still respected.
 	[JsonPropertyName("models")]
@@ -28,6 +43,15 @@ public class Role
 	[JsonPropertyName("end_of_turn_prompt")]
 	public string EndOfTurnPrompt { get; }
 
+	// Bash commands run when a session of this role is entered / left. Empty = no hook. A nonzero exit
+	// blocks the transition and the captured output becomes the error reported to the caller (see
+	// EnterAsync / ExitAsync).
+	[JsonPropertyName("on_enter")]
+	public string OnEnter { get; }
+
+	[JsonPropertyName("on_exit")]
+	public string OnExit { get; }
+
 	// The role's Tools names resolved to Tool instances, bound once at load time (see BindTools) so the
 	// set is not rebuilt every turn. Not serialized.
 	private Tool[] _builtTools = Array.Empty<Tool>();
@@ -38,18 +62,24 @@ public class Role
 	[JsonConstructor]
 	public Role(
 		string name,
+		RoleKind kind,
 		List<string> models,
 		List<string> tools,
 		string systemPrompt,
 		string summaryPrompt,
-		string endOfTurnPrompt)
+		string endOfTurnPrompt,
+		string onEnter,
+		string onExit)
 	{
 		Name = name ?? string.Empty;
+		Kind = kind;
 		Models = models ?? new List<string>();
 		Tools = tools ?? new List<string>();
 		SystemPrompt = systemPrompt ?? string.Empty;
 		SummaryPrompt = summaryPrompt ?? string.Empty;
 		EndOfTurnPrompt = endOfTurnPrompt ?? string.Empty;
+		OnEnter = onEnter ?? string.Empty;
+		OnExit = onExit ?? string.Empty;
 	}
 
 	// Resolves and stores the role's tool instances. Called after roles and models are loaded.
@@ -58,38 +88,36 @@ public class Role
 		_builtTools = tools;
 	}
 
-	public static Role DefaultRole(List<string> toolNames)
-	{
-        const string systemPrompt = "You are a helpful assistant.";
-        const string summaryPrompt = """
-            Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
-            """;
-        // Conversational steady state: no end-of-turn reminder, so the assistant simply waits for the user.
-        const string endOfTurnPrompt = "";
-        return new Role("Default", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt);
-	}
+	// Runs the entry hook on the bash command line. variables substitutes {key} placeholders in the
+	// command first (e.g. {branch}). Returns string.Empty on success (exit 0); otherwise the command
+	// followed by its stdout and stderr so the caller can report why entry was refused.
+	public Task<string> EnterAsync(CancellationToken ct, IReadOnlyDictionary<string, string>? variables) => RunHookAsync(OnEnter, variables, ct);
 
-	public static Role TaskRole(List<string> toolNames)
-	{
-        const string systemPrompt = "You are a capable assistant. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress. Perform the requested task, asking clarifying questions as needed before getting started.";
-        const string summaryPrompt = """
-            Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
-            Output only a summary of the preceding conversation retaining the objective, critical concepts, current status, discovered context, key next steps, and exact details that would help perform them. Be concise. Retain only that which will help complete the task.
-            """;
-        const string endOfTurnPrompt = "If the task is finished, call the task_complete tool with the final status. Otherwise keep working.";
-        return new Role("Task", new List<string> { "*" }, toolNames, systemPrompt, summaryPrompt, endOfTurnPrompt);
-	}
+	// Runs the exit hook. Same contract as EnterAsync.
+	public Task<string> ExitAsync(CancellationToken ct, IReadOnlyDictionary<string, string>? variables) => RunHookAsync(OnExit, variables, ct);
 
-    public static Role ToolsRole(List<string> toolNames)
-    {
-        const string systemPrompt = 
-            """
-			You are a research agent performing a single tool call. Your purpose is to minimize noise in the main agent's context.
-			You received a goal and an initial command. Run this command.\nIf the output achieves the goal, do no further work, do not summarize the results, respond immediately and provide the results with the exact output.\nIf the command returns an error or fails to achieve the goal by the output, attempt to provide the requested information through other tool calls and report the minimum output needed to accomplish the goal. 
-			Do not interpret the results unless asked.
-			If the goal cannot be achieved, be very brief and report this and list any commands attempted, in addition to the exact output from the original command.
-			""";
-        const string endOfTurnPrompt = "If you have achieved the goal, call the return_to_caller tool with the result. Otherwise keep working.";
-        return new Role("Tools", new List<string> { "*" }, toolNames, systemPrompt, string.Empty, endOfTurnPrompt);
-    }
+	private static async Task<string> RunHookAsync(string command, IReadOnlyDictionary<string, string>? variables, CancellationToken ct)
+	{
+		if (string.IsNullOrWhiteSpace(command))
+			return string.Empty;
+
+		string expanded = command;
+		if (variables != null)
+		{
+			foreach (KeyValuePair<string, string> kv in variables)
+				expanded = expanded.Replace("{" + kv.Key + "}", kv.Value);
+		}
+
+		ToolResult result = await ShellTools.BashAsync("role_hook", expanded, null, ct);
+		if (result.ExitCode == 0)
+			return string.Empty;
+
+		StringBuilder sb = new StringBuilder();
+		sb.Append("$ ").Append(expanded);
+		if (!string.IsNullOrEmpty(result.StdOut))
+			sb.Append('\n').Append(result.StdOut);
+		if (!string.IsNullOrEmpty(result.StdErr))
+			sb.Append('\n').Append(result.StdErr);
+		return sb.ToString();
+	}
 }

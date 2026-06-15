@@ -42,23 +42,32 @@ public class SubagentRunner
     }
 
     // Runs an explicitly-invoked subagent: a child session assigned the named role, seeded with the
-    // caller's natural-language prompt, carrying that role's own tools plus return_to_caller. Unlike
-    // the filter path this is not wrapping a tool's output — it is a fresh task. The session runs to
-    // completion, terminating only when the model calls return_to_caller, and the result is fit to the
-    // caller's outputBudgetTokens. Returns null when the role is unknown, no model is available, or
-    // there is no output budget; the calling handler turns that into an error for the caller.
-    public async Task<(string? text, int responseTokens)> RunSubagentAsync(string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
+    // caller's natural-language prompt, carrying that role's own tools plus return_to_caller. The session
+    // runs to completion, terminating only when the model calls return_to_caller, and the result is fit to
+    // the caller's outputBudgetTokens. Returns ok=false with the error text as the result when the role is
+    // unknown/ineligible, no model is available, there is no budget, the role's enter/exit hook fails, or
+    // the subagent never returned a result; the calling handler surfaces that text to the caller.
+    public async Task<(bool ok, string text, int responseTokens)> RunSubagentAsync(string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
     {
         if (outputBudgetTokens <= 0)
-            return (null, 0);
+            return (false, "No output budget remaining for a subagent.", 0);
 
         Role? role = _roleService.GetRole(roleName);
         if (role == null)
-            return (null, 0);
+            return (false, $"Unknown role '{roleName}'.", 0);
+
+        // Only Subagent-kind roles may run in a SubagentSession; an Agent role here is a caller error.
+        if (role.Kind != RoleKind.Subagent)
+            return (false, $"Role '{roleName}' is not a subagent role.", 0);
 
         LlmService? service = _registry.CreateService(role, string.Empty, 0);
         if (service == null)
-            return (null, 0);
+            return (false, $"No model available for role '{roleName}'.", 0);
+
+        // Entry hook gates the session: a nonzero exit aborts before any session is created.
+        string enterError = await role.EnterAsync(ct, null);
+        if (!string.IsNullOrEmpty(enterError))
+            return (false, enterError, 0);
 
         string displayName = prompt.Length > 80 ? prompt.Substring(0, 80) : prompt;
 
@@ -133,7 +142,17 @@ public class SubagentRunner
             // Cost is spent regardless of whether the subagent ever returned a usable result: roll the
             // sub-session's entire spend up into the calling agent so the root's cost reflects total spend.
             parent.RecordCost(subSession.TotalCost);
-            return (sink.Value, responseTokens);
+
+            // Exit hook gates the result: a nonzero exit means the result returned to the caller is the
+            // hook error rather than the subagent's output.
+            string exitError = await role.ExitAsync(ct, null);
+            if (!string.IsNullOrEmpty(exitError))
+                return (false, exitError, responseTokens);
+
+            if (sink.Value == null)
+                return (false, "The subagent finished without returning a result.", responseTokens);
+
+            return (true, sink.Value, responseTokens);
         }
         finally
         {

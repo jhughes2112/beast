@@ -39,7 +39,7 @@ public class Program
 			return 1;
 		}
 
-		RoleService roleService = new RoleService(Environment.CurrentDirectory, settingsService.Settings);
+		RoleService roleService = new RoleService();
 		LlmRegistry registry = new LlmRegistry();
 		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);

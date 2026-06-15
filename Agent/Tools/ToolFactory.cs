@@ -92,6 +92,16 @@ public static class ToolFactory
                 return await FileTools.EditFileAsync(toolCallId, filePath, oldText, newText, ct);
             });
 
+        Register(tools, "ls",
+            "List a folder's contents. CWD is the repo root at /workspace/.",
+            Params(
+                Req("folder", "string", "Folder to list.")),
+            async (args, toolCallId, ct, transport, sessionId) =>
+            {
+                string folder = Str(args, "folder");
+                return await ShellTools.LsAsync(toolCallId, folder, ct);
+            });
+
         return tools;
     }
 
@@ -99,7 +109,7 @@ public static class ToolFactory
     // and never given to a child, so subagents cannot recursively spawn). runSubagent launches the child
     // session, runs it to completion, and returns its final result fit to the caller's budget. roleNames
     // is listed in the role argument description so the model picks a valid role.
-    public static Tool CreateSubagentTool(IEnumerable<string> roleNames, Func<string, string, int, CancellationToken, Task<(string? text, int responseTokens)>> runSubagent)
+    public static Tool CreateSubagentTool(IEnumerable<string> roleNames, Func<string, string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runSubagent)
     {
         string roleList = string.Join(", ", roleNames);
 
@@ -124,16 +134,16 @@ public static class ToolFactory
                 if (string.IsNullOrWhiteSpace(role) || string.IsNullOrWhiteSpace(prompt))
                     return new ToolResult(toolCallId, string.Empty, "Error: subagent requires both 'role' and 'prompt'.", 1, 0);
 
-                (string? text, int responseTokens) = await runSubagent(role, prompt, maxOutputTokens, ct);
-                if (text == null)
-                    return new ToolResult(toolCallId, string.Empty, $"Error: could not start subagent for role '{role}' (unknown role or no available model).", 1, 0);
+                (bool ok, string text, int responseTokens) = await runSubagent(role, prompt, maxOutputTokens, ct);
+                if (!ok)
+                    return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
                 return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
             }
         };
     }
 
-    // Creates the root agent's termination tool. onComplete receives the final status; SessionRunner
+    // Creates the Task agent's termination tool. onComplete receives the final status; SessionRunner
     // adds this to the root's tool list and stops keeping the model on task once it is called.
     public static Tool CreateTaskCompleteTool(Action<string> onComplete)
     {
@@ -156,6 +166,46 @@ public static class ToolFactory
                 onComplete(status);
                 string ack = "Task marked complete.";
                 return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
+            }
+        };
+    }
+
+    // Creates the Default agent's tool for kicking off a task. onStart receives the objective and the new
+    // branch name and runs the role transition's exit/enter hooks; it returns string.Empty on success or
+    // the hook error otherwise. On error the task does not start and the error is returned to the model as
+    // the tool result. branchContext (current branch + existing worktrees) goes in the branch argument's
+    // description so the model picks a name that does not collide.
+    public static Tool CreateStartTaskTool(string branchContext, Func<string, string, CancellationToken, Task<string>> onStart)
+    {
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "start_task",
+                    Description = "Begin working a task. This starts a new Task session, providing an objective that it will work on.",
+                    Parameters = Params(
+                        Req("objective", "string", "Describe the task, written as a clear instruction for the agent that will carry it out."),
+                        Req("branch", "string", "Name for the git worktree branch this task should run on. Choose one of these to continue work, or a different name to start fresh:\n" + branchContext))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string objective = Str(args, "objective");
+                string branch = Str(args, "branch");
+                if (string.IsNullOrWhiteSpace(objective))
+                    return new ToolResult(toolCallId, string.Empty, "Error: start_task requires an objective.", 1, 0);
+                if (string.IsNullOrWhiteSpace(branch))
+                    return new ToolResult(toolCallId, string.Empty, "Error: start_task requires a branch name.", 1, 0);
+
+                string error = await onStart(objective, branch, ct);
+                if (!string.IsNullOrEmpty(error))
+                    return new ToolResult(toolCallId, string.Empty, error, 1, ToolDispatch.EstimateTokens(error));
+
+                string ack = "Starting task.";
+                return new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack));
             }
         };
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -37,10 +38,15 @@ public class SessionRunner
 	// receive it, so nesting stops at one level. Rebuilt on /reload so its role-name list stays current.
 	private Tool _subagentTool;
 
-	// The root agent's termination tool. Its handler sets _taskComplete, which stops the end-of-turn
+	// The Task agent's termination tool. Its handler sets _taskCompleteCalled, which stops the end-of-turn
 	// reminder loop so the root idles and waits for the user instead of being kept on task.
 	private readonly Tool _taskCompleteTool;
-	private bool _taskComplete = false;
+	private bool _taskCompleteCalled = false;
+
+	// Set by start_task (via StartTaskAsync) once its hooks succeed; after the turn the root switches to a
+	// fresh Task session seeded with it. Null = no pending start. The start_task tool is built per turn
+	// (in ToolsForTurnAsync) so its branch-argument description carries live git worktree context.
+	private string? _pendingTaskObjective;
 
 	private bool _wantsCompact = false;
 
@@ -61,13 +67,118 @@ public class SessionRunner
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
-		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.Roles.Keys, _subagent.RunSubagentAsync);
+		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoleNames(), _subagent.RunSubagentAsync);
 		_taskCompleteTool = ToolFactory.CreateTaskCompleteTool(status =>
 		{
-			_taskComplete = true;
+			_taskCompleteCalled = true;
 			if (!string.IsNullOrEmpty(status))
 				_transport.Output(_currentSession.Id, status);
 		});
+	}
+
+	// start_task callback: exit the current role, create (or attach to) the git worktree for the chosen
+	// branch, switch the working directory into it, then enter the Task role. Any step failing aborts the
+	// switch and its message becomes the start_task tool result, so the Default session sees why. On
+	// success the objective is queued for the role switch after the turn.
+	private async Task<string> StartTaskAsync(string objective, string branch, CancellationToken ct)
+	{
+		if (!IsValidBranchName(branch))
+			return $"Invalid branch name '{branch}'. Use only letters, digits, '.', '_', '-', and '/'.";
+
+		Role? taskRole = _roleService.GetRole("Task");
+		if (taskRole == null)
+			return "Error: Task role is not defined.";
+
+		Role? current = _roleService.GetRole(_currentSession.Role);
+		if (current != null)
+		{
+			string exitError = await current.ExitAsync(ct, null);
+			if (!string.IsNullOrEmpty(exitError))
+				return exitError;
+		}
+
+		(string? worktreePath, string? worktreeError) = await CreateOrAttachWorktreeAsync(branch, ct);
+		if (worktreeError != null)
+			return worktreeError;
+
+		// A git worktree is just a separate checkout directory; "switching" to it means working there.
+		// The process CWD drives every tool's working directory, so the Task session and its subagents
+		// now operate inside the worktree.
+		try
+		{
+			Directory.SetCurrentDirectory(worktreePath!);
+		}
+		catch (Exception ex)
+		{
+			return $"Failed to switch to worktree '{worktreePath}': {ex.Message}";
+		}
+
+		Dictionary<string, string> variables = new Dictionary<string, string> { ["branch"] = branch };
+		string enterError = await taskRole.EnterAsync(ct, variables);
+		if (!string.IsNullOrEmpty(enterError))
+			return enterError;
+
+		_pendingTaskObjective = objective;
+		return string.Empty;
+	}
+
+	// Creates a git worktree for the branch under the bind-mounted config dir, namespaced by repo
+	// (~/.beast/worktrees/<repo>/<branch>) so it persists to the host and never nests in /workspace. The
+	// repo name is derived from git (remote URL, else the root-commit SHA) inside the script, which then
+	// echoes the chosen path as its only stdout line. An existing worktree for that branch — or an existing
+	// directory at the target path — is accepted as-is rather than treated as an error. Returns (path, null)
+	// on success or (null, error) with the git output.
+	private static async Task<(string? path, string? error)> CreateOrAttachWorktreeAsync(string branch, CancellationToken ct)
+	{
+		string dirName = branch.Replace('/', '-');
+
+		// branch and dirName are validated to a shell-safe charset before this runs, so single-quoting is
+		// sufficient. git output goes to stderr (1>&2); the final path is the only thing on stdout.
+		string script =
+			"branch='" + branch + "'\n" +
+			"dir='" + dirName + "'\n" +
+			"repo=$(basename -s .git \"$(git config --get remote.origin.url 2>/dev/null)\" 2>/dev/null)\n" +
+			"if [ -z \"$repo\" ]; then repo=$(git rev-list --max-parents=0 HEAD 2>/dev/null | head -n1 | cut -c1-12); fi\n" +
+			"if [ -z \"$repo\" ]; then repo=repo; fi\n" +
+			"path=\"$HOME/.beast/worktrees/$repo/$dir\"\n" +
+			"existing=$(git worktree list --porcelain | awk -v b=\"refs/heads/$branch\" '$1==\"worktree\"{p=$2} $1==\"branch\"&&$2==b{print p}')\n" +
+			"if [ -n \"$existing\" ]; then echo \"$existing\"; exit 0; fi\n" +
+			"if [ -d \"$path\" ]; then echo \"$path\"; exit 0; fi\n" +
+			"mkdir -p \"$(dirname \"$path\")\"\n" +
+			"if git show-ref --verify --quiet \"refs/heads/$branch\"; then\n" +
+			"  git worktree add \"$path\" \"$branch\" 1>&2 || exit 1\n" +
+			"else\n" +
+			"  git worktree add \"$path\" -b \"$branch\" 1>&2 || exit 1\n" +
+			"fi\n" +
+			"echo \"$path\"\n";
+
+		ToolResult result = await ShellTools.BashAsync("start_task_worktree", script, null, ct);
+		if (result.ExitCode != 0)
+		{
+			string detail = result.StdErr;
+			if (!string.IsNullOrEmpty(result.StdOut))
+				detail = string.IsNullOrEmpty(detail) ? result.StdOut : detail + "\n" + result.StdOut;
+			return (null, $"Failed to create git worktree for branch '{branch}':\n{detail}");
+		}
+
+		string path = result.StdOut.Trim();
+		if (string.IsNullOrEmpty(path))
+			return (null, $"Worktree creation produced no path for branch '{branch}'.");
+		return (path, null);
+	}
+
+	// Branch names are restricted to a shell-safe charset so they can be embedded in the worktree script.
+	private static bool IsValidBranchName(string branch)
+	{
+		if (string.IsNullOrWhiteSpace(branch))
+			return false;
+		foreach (char c in branch)
+		{
+			bool ok = char.IsLetterOrDigit(c) || c == '.' || c == '_' || c == '-' || c == '/';
+			if (!ok)
+				return false;
+		}
+		return true;
 	}
 
 	// Routes inbound input to the session tree by ID.
@@ -145,8 +256,9 @@ public class SessionRunner
 					session.SendBusy();
 					try
 					{
-						Tool[] tools = ToolsForTurn(role, session.IsSubagent);
-						_taskComplete = false;
+						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, _cancellationTokenSource.Token);
+						_taskCompleteCalled = false;
+						_pendingTaskObjective = null;
 
 						// Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
 						bool completed = false;
@@ -167,16 +279,17 @@ public class SessionRunner
 								}
 
 								// Decide whether to keep going. User input always continues the turn. Otherwise
-								// task_complete stops it; a turn that ran tools (but not task_complete) keeps going;
-								// a turn with no tool calls is reminded by the role's end-of-turn prompt to call its
-								// terminator and keeps going, or — when the role defines no such prompt — completes.
+								// task_complete or start_task stops this turn (start_task then switches roles below);
+								// a turn that ran other tools keeps going; a turn with no tool calls is reminded by
+								// the role's end-of-turn prompt and keeps going, or — when the role defines no such
+								// prompt — completes and idles.
 								string? newUserInput = session.TryGetPendingInput();
 								if (!string.IsNullOrEmpty(newUserInput))
 								{
 									session.Bundle.OnUserMessage(newUserInput);
 									completed = false;
 								}
-								else if (_taskComplete)
+								else if (_taskCompleteCalled || _pendingTaskObjective != null)
 								{
 									completed = true;
 								}
@@ -245,6 +358,23 @@ public class SessionRunner
 					// force a fresh service so the compacted session rehydrates from its own canonical.
 					_service = null;
 				}
+
+					// start_task switches the root into a fresh Task session seeded with the objective. The
+					// loop restarts immediately on the new session (the top of the loop announces the switch).
+					if (_pendingTaskObjective != null)
+					{
+						string objective = _pendingTaskObjective;
+						_pendingTaskObjective = null;
+
+						if (!session.Ephemeral)
+							SaveRoot(session);
+
+						session = CreateFreshSession("Task", session.Ephemeral);
+						session.AddUserMessage(objective);
+						_service = null;  // the Task role may use a different model
+						_transport.Status(session.Id, "Started task.");
+						continue;
+					}
 
 				if (role != null)
 				{
@@ -463,34 +593,8 @@ public class SessionRunner
 					await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
 					_registry.ResetAllAvailability();
 					_service = null;
-					_subagentTool = ToolFactory.CreateSubagentTool(_roleService.Roles.Keys, _subagent.RunSubagentAsync);
+					_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoleNames(), _subagent.RunSubagentAsync);
 					_transport.Status(session.Id, "Config files reloaded.");
-					break;
-				case "role":
-					if (args != null)
-					{
-						Role? newRole = _roleService.GetRole(args);
-						if (newRole == null)
-						{
-							_transport.Error(session.Id, $"Unknown role: {args}");
-						}
-						else
-						{
-							// Changing role closes the current root session and starts a fresh one bound
-							// to the new role's system prompt and tools, then waits for instructions. The
-							// prompt and tool set are fixed at session creation, so mutating the role in
-							// place would leave the old prompt and conversation history in effect.
-							if (!session.Ephemeral)
-								SaveRoot(session);
-							session = CreateFreshSession(newRole.Name, session.Ephemeral);
-							_service = null;  // new role may use a different model
-							_cachedSessions = SessionService.List();
-							_transport.Status(session.Id, $"Role set to {newRole.Name}. New session started.");
-							// Push the new role to the client status line now; without a turn running no
-							// Stats frame would otherwise be sent until the next message.
-							session.SendStats();
-						}
-					}
 					break;
 				case "model":
 					if (args != null)
@@ -512,7 +616,7 @@ public class SessionRunner
 					}
 					break;
 				case "help":
-					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /role <id>, /model <id>, /session new, /session none, /session <id>, /session delete <id>, /test, /quit");
+					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /session new, /session none, /session <id>, /session delete <id>, /test, /quit");
 					break;
 				case "test":
 					await RunTestsAsync(session.Id, args);
@@ -526,12 +630,12 @@ public class SessionRunner
 		return session;
 	}
 
-	// Returns all completable tokens: slash commands, role names, model names, and session ids.
+	// Returns all completable tokens: slash commands, model names, and session ids.
 	private List<string> BuildCompletionCandidates(Session session)
 	{
 		List<string> candidates = new List<string>
 		{
-			"/compact", "/reload", "/role", "/model",
+			"/compact", "/reload", "/model",
 			"/session", "/help"
 		};
 
@@ -539,9 +643,6 @@ public class SessionRunner
 		LlmModel? activeModel = activeRole != null
 			? _registry.GetModelForRole(activeRole, session.Model, session.ContextLength + _settings.Settings.CompactionReserveTokens)
 			: null;
-
-		string currentRoleName = activeRole != null ? activeRole.Name : session.Role;
-		AddCurrentFirst(candidates, "/role ", currentRoleName, _roleService.Roles.Keys);
 
 		if (activeRole != null)
 		{
@@ -596,20 +697,41 @@ public class SessionRunner
 
 	// ---- Helpers ----
 
-	// Returns the tools for this turn. Child agents (isSubagent) get only their role's bound tools, so
-	// they cannot spawn subagents; SubagentRunner adds return_to_caller to them. The root additionally
-	// gets the subagent and task_complete tools.
-	private Tool[] ToolsForTurn(Role role, bool isSubagent)
+	// Returns the tools for this turn. role.BuiltTools holds the role's regular tools; the in-code special
+	// tools are injected here for the root: start_task and subagent when the role declares them by name,
+	// and task_complete for any Agent role kept on task by an end-of-turn prompt. Child agents
+	// (isSubagent) get only their regular tools — SubagentRunner adds return_to_caller — so they cannot
+	// spawn subagents or start tasks. start_task is built per call so its branch-argument description
+	// carries the current git branch and worktrees.
+	private async Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
 	{
 		if (isSubagent)
 			return role.BuiltTools;
 
-		Tool[] baseTools = role.BuiltTools;
-		Tool[] withRootTools = new Tool[baseTools.Length + 2];
-		Array.Copy(baseTools, withRootTools, baseTools.Length);
-		withRootTools[baseTools.Length] = _subagentTool;
-		withRootTools[baseTools.Length + 1] = _taskCompleteTool;
-		return withRootTools;
+		List<Tool> tools = new List<Tool>(role.BuiltTools);
+		if (role.Tools.Contains("start_task"))
+		{
+			string branchContext = await GitWorktreeContextAsync(ct);
+			tools.Add(ToolFactory.CreateStartTaskTool(branchContext, StartTaskAsync));
+		}
+		if (role.Tools.Contains("subagent"))
+			tools.Add(_subagentTool);
+		if (!string.IsNullOrEmpty(role.EndOfTurnPrompt))
+			tools.Add(_taskCompleteTool);
+		return tools.ToArray();
+	}
+
+	// Current branch and existing worktrees, for the start_task branch-argument description so the model
+	// picks a name that does not collide. Best-effort: any stderr is appended; failure yields a notice.
+	private static async Task<string> GitWorktreeContextAsync(CancellationToken ct)
+	{
+		string command = "echo \"Current branch: $(git rev-parse --abbrev-ref HEAD)\"; echo \"Existing worktrees:\"; git worktree list";
+		ToolResult result = await ShellTools.BashAsync("git_worktree_context", command, null, ct);
+
+		string text = result.StdOut;
+		if (!string.IsNullOrEmpty(result.StdErr))
+			text = string.IsNullOrEmpty(text) ? result.StdErr : text + "\n" + result.StdErr;
+		return string.IsNullOrEmpty(text) ? "(git worktree information unavailable)" : text;
 	}
 
 	// Replaces _service when the model or role has changed, or when the service has permanently
