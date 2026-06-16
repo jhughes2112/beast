@@ -56,7 +56,7 @@ public class SettingsService
             if (string.IsNullOrWhiteSpace(json))
                 return null;
 
-            BeastSettings? result = JsonSerializer.Deserialize<BeastSettings>(json);
+            BeastSettings? result = JsonSerializer.Deserialize<BeastSettings>(json, ConfigJson.Options);
             return result; // may be null if JSON was empty or only null
         }
         catch (JsonException ex)
@@ -65,17 +65,17 @@ public class SettingsService
             Console.Error.WriteLine($"       {ex.Message}");
             if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
             {
-                Console.Error.WriteLine($"       Line {ex.LineNumber}, column {ex.BytePositionInLine}");
+                Console.Error.WriteLine($"       Line {ex.LineNumber + 1}, column {ex.BytePositionInLine + 1}");
             }
             Console.Error.WriteLine("Fix it, or delete the file to use defaults.");
-            throw;
+            throw new ConfigException("settings.json parse error");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"ERROR: Failed to load settings.json from {path}");
             Console.Error.WriteLine($"       {ex.Message}");
             Console.Error.WriteLine("Fix it, or delete the file to use defaults.");
-            throw;
+            throw new ConfigException("settings.json load error");
         }
     }
 

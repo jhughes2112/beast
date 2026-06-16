@@ -119,14 +119,25 @@ public class RoleService
             string json = File.ReadAllText(path);
             if (string.IsNullOrWhiteSpace(json))
                 return;
-            file = JsonSerializer.Deserialize<RolesFile>(json);
+            file = JsonSerializer.Deserialize<RolesFile>(json, ConfigJson.Options);
+        }
+        catch (JsonException ex)
+        {
+            Console.Error.WriteLine($"ERROR: Failed to parse roles.json at {path}");
+            Console.Error.WriteLine($"       {ex.Message}");
+            if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
+            {
+                Console.Error.WriteLine($"       Line {ex.LineNumber + 1}, column {ex.BytePositionInLine + 1}");
+            }
+            Console.Error.WriteLine("Fix it, or delete the file to regenerate defaults.");
+            throw new ConfigException("roles.json parse error");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"ERROR: Failed to load roles.json from {path}");
             Console.Error.WriteLine($"       {ex.Message}");
             Console.Error.WriteLine("Fix it, or delete the file to regenerate defaults.");
-            throw;
+            throw new ConfigException("roles.json load error");
         }
 
         if (file == null)

@@ -578,14 +578,22 @@ public class SessionRunner
 					}
 					break;
 				case "reload":
-					_roleService.Reload();
-					_settings.LoadSettings();
-					_registry.LoadFromConfigs(_settings, _roleService);
-					await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
-					_registry.ResetAllAvailability();
-					_service = null;
-					_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
-					_transport.Status(session.Id, "Config files reloaded.");
+					try
+					{
+						_roleService.Reload();
+						_settings.LoadSettings();
+						_registry.LoadFromConfigs(_settings, _roleService);
+						await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
+						_registry.ResetAllAvailability();
+						_service = null;
+						_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
+						_transport.Status(session.Id, "Config files reloaded.");
+					}
+					catch (ConfigException)
+					{
+						// Parse error already detailed in the agent log; keep the previous config running.
+						_transport.Error(session.Id, "Reload failed: config did not parse. Keeping the previous config — see the agent log for the line and column.");
+					}
 					break;
 				case "model":
 					if (args != null)

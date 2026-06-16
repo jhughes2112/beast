@@ -104,9 +104,17 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetSessionDeleteCallback(DeleteSession);
 
         // Load settings to pick up the optional notification sound paths.
-        SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
-        _idleSoundFile = settings.Settings.IdleSoundFile;
-        _subagentSoundFile = settings.Settings.SubagentSoundFile;
+        try
+        {
+            SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
+            _idleSoundFile = settings.Settings.IdleSoundFile;
+            _subagentSoundFile = settings.Settings.SubagentSoundFile;
+        }
+        catch (ConfigException)
+        {
+            // SettingsService already printed a friendly parse error; bail before launching the agent.
+            return 1;
+        }
 
         int exitCode = 0;
         try

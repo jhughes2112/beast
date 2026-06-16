@@ -29,17 +29,18 @@ public class Program
 		}
 
 		SettingsService settingsService;
+		RoleService roleService;
 		try
 		{
 			settingsService = new SettingsService(Environment.CurrentDirectory);
+			roleService = new RoleService(Environment.CurrentDirectory);
 		}
-		catch (InvalidOperationException ex)
+		catch (ConfigException)
 		{
-			Console.Error.WriteLine(ex.Message);
+			// The service already printed a friendly parse/load error; exit without a call stack.
 			return 1;
 		}
 
-		RoleService roleService = new RoleService(Environment.CurrentDirectory);
 		LlmRegistry registry = new LlmRegistry();
 		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
