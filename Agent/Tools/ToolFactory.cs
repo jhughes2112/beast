@@ -211,12 +211,12 @@ public static class ToolFactory
         };
     }
 
-    // Creates the Default agent's tool for kicking off a task. onStart receives the objective and the new
-    // branch name and runs the role transition's exit/enter hooks; it returns string.Empty on success or
-    // the hook error otherwise. On error the task does not start and the error is returned to the model as
-    // the tool result. branchContext (current branch + existing worktrees) goes in the branch argument's
-    // description so the model picks a name that does not collide.
-    public static Tool CreateStartTaskTool(string branchContext, Func<string, string, CancellationToken, Task<string>> onStart)
+    // Creates the Default agent's tool for kicking off a task. onStart receives the objective and runs the
+    // role transition into the Task role; it returns string.Empty on success or an error otherwise. On error
+    // the task does not start and the error is returned to the model as the tool result. There is no branch
+    // argument: the whole launch runs in one worktree (chosen at launch, bound to /workspace), so a task
+    // never picks or creates a branch.
+    public static Tool CreateStartTaskTool(Func<string, CancellationToken, Task<string>> onStart)
     {
         return new Tool
         {
@@ -228,20 +228,16 @@ public static class ToolFactory
                     Name = "start_task",
                     Description = "Begin working a task. This starts a new Task session, providing an objective that it will work on.",
                     Parameters = Params(
-                        Req("objective", "string", "Describe the task, written as a clear instruction for the agent that will carry it out."),
-                        Req("branch", "string", "Name for the git worktree branch this task should run on. Choose one of these to continue work, or a different name to start fresh:\n" + branchContext))
+                        Req("objective", "string", "Describe the task, written as a clear instruction for the agent that will carry it out."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
                 string objective = Str(args, "objective");
-                string branch = Str(args, "branch");
                 if (string.IsNullOrWhiteSpace(objective))
                     return new ToolResult(toolCallId, string.Empty, "Error: start_task requires an objective.", 1, 0);
-                if (string.IsNullOrWhiteSpace(branch))
-                    return new ToolResult(toolCallId, string.Empty, "Error: start_task requires a branch name.", 1, 0);
 
-                string error = await onStart(objective, branch, ct);
+                string error = await onStart(objective, ct);
                 if (!string.IsNullOrEmpty(error))
                     return new ToolResult(toolCallId, string.Empty, error, 1, ToolDispatch.EstimateTokens(error));
 
@@ -253,7 +249,7 @@ public static class ToolFactory
 
     // Creates the Reviewer's termination tool. onFinish receives the approval flag and the review comments;
     // SubagentRunner adds this to a Reviewer child's tool list, reads what onFinish captured, and on approval
-    // integrates the worktree branch into main before returning the review to the caller.
+    // integrates the worktree branch onto its base branch before returning the review to the caller.
     public static Tool CreateFinishReviewTool(Action<bool, string> onFinish)
     {
         return new Tool
@@ -264,7 +260,7 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "finish_review",
-                    Description = "Call this to finish the review. approved=true accepts the change and triggers an automatic commit and rebase of the worktree branch onto main (linear history, no merge commit — you do not run any git yourself); approved=false rejects it for the developer to fix.",
+                    Description = "Call this to finish the review. approved=true accepts the change and triggers an automatic commit and rebase of the worktree branch onto its base branch (linear history, no merge commit — you do not run any git yourself); approved=false rejects it for the developer to fix.",
                     Parameters = Params(
                         Req("approved", "boolean", "True to accept the change, false to reject it."),
                         Req("comments", "string", "Your review: what you checked and why you approved, or exactly what the developer must fix. This string is the entire response the caller receives."))

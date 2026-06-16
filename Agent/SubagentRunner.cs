@@ -71,7 +71,12 @@ public class SubagentRunner
         Session parent = _currentSession();
         BeastSession subData = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
         Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
-        subSession.AddUserMessage(prompt);
+
+        // Inject the worktree context at the top of the first prompt so the subagent knows where it is
+        // operating (branch + path) rather than inferring it. Empty when the CWD is not a git checkout.
+        string banner = await WorktreeBannerAsync(ct);
+        string seededPrompt = string.IsNullOrEmpty(banner) ? prompt : $"{banner}\n\n{prompt}";
+        subSession.AddUserMessage(seededPrompt);
         subSession.AnnounceToClient();
         parent.AddChild(subSession);
 
@@ -158,14 +163,17 @@ public class SubagentRunner
 
             string output = sink.Value;
 
-            // An approved review integrates the work: commit the worktree, then fast-forward main onto its
-            // branch. The git transcript is appended to the review regardless of outcome — on failure the
-            // Developer (the only role with write access) sees exactly what must be resolved.
+            // An approved review integrates the work: commit the worktree, then fast-forward the base branch
+            // onto its feature branch. The git transcript is appended to the review regardless of outcome. A
+            // failed integration (typically a rebase conflict) returns ok=false so the caller sees it as a
+            // failure — the Task then gives the Developer (the only role with write access) another turn to
+            // rebase and resolve, with the transcript naming exactly what must be fixed.
             if (isReview && sink.Approved)
             {
-                string integration = await IntegrateApprovedBranchAsync(ct);
+                (bool integrated, string integration) = await IntegrateApprovedBranchAsync(ct);
                 output = $"{output}\n\n--- Integration ---\n{integration}";
                 responseTokens = Math.Max(responseTokens, ToolDispatch.EstimateTokens(output));
+                return (integrated, output, responseTokens);
             }
 
             return (true, output, responseTokens);
@@ -179,34 +187,37 @@ public class SubagentRunner
     }
 
     // Integrates an approved review with a strictly linear, rebase-based flow — never a merge commit, and
-    // never left to the LLM. It commits everything in the current worktree onto its branch, fast-forwards
-    // the repo's default branch from its remote, rebases the feature branch onto that default branch, then
-    // fast-forwards the default branch onto the now-linear feature branch. After the rebase the feature
-    // branch is a strict descendant of the default, so the final step can only ever fast-forward. It runs
-    // from the worktree's CWD and reaches the default branch's checkout with git -C, since that branch is
-    // checked out in another worktree and cannot be switched here. A rebase that hits conflicts is aborted
-    // cleanly and reported: that is the Developer's to rebase and resolve, never an automatic merge.
-    // Returns the combined git transcript — success or failure — so it can be appended to the review.
-    private static async Task<string> IntegrateApprovedBranchAsync(CancellationToken ct)
+    // never left to the LLM. It commits everything in the current worktree onto its feature branch, finds
+    // the base branch (the branch checked out in the primary worktree — the one the task was started from),
+    // fast-forwards that base from its remote, rebases the feature branch onto it, then fast-forwards the
+    // base onto the now-linear feature branch. After the rebase the feature branch is a strict descendant of
+    // the base, so the final step can only ever fast-forward. It runs from the worktree's CWD and reaches the
+    // base branch's checkout with git -C, since that branch is checked out in the primary worktree and cannot
+    // be switched here. The base is derived from the primary worktree (git --git-common-dir), not guessed as
+    // "main" or read from origin/HEAD, so it is correct for any base branch (master, develop, ...) and with
+    // or without a remote. A rebase that hits conflicts is aborted cleanly and reported: that is the
+    // Developer's to rebase and resolve, never an automatic merge. Returns (ok, transcript): ok is false on
+    // any git failure, and the combined transcript is appended to the review either way.
+    private static async Task<(bool ok, string transcript)> IntegrateApprovedBranchAsync(CancellationToken ct)
     {
         string script =
             "branch=$(git rev-parse --abbrev-ref HEAD)\n" +
+            "common=$(git rev-parse --git-common-dir)\n" +
+            "main_wt=$(cd \"$common\" && cd .. && pwd)\n" +
+            "base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
+            "if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Could not determine a distinct base branch (base='$base', feature='$branch').\"; exit 1; fi\n" +
             "echo \"Committing work on '$branch'...\"\n" +
             "git add -A\n" +
             "git commit -m \"Approved by reviewer on $branch\" || echo '(nothing to commit)'\n" +
-            "main=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')\n" +
-            "[ -z \"$main\" ] && main=main\n" +
-            "main_wt=$(git worktree list --porcelain | awk -v b=\"refs/heads/$main\" '$1==\"worktree\"{p=$2} $1==\"branch\" && $2==b{print p}')\n" +
-            "if [ -z \"$main_wt\" ]; then echo \"Could not locate a worktree for '$main'.\"; exit 1; fi\n" +
-            "echo \"Fast-forwarding '$main' from its remote...\"\n" +
-            "git -C \"$main_wt\" pull --ff-only || echo \"Note: could not pull '$main' (continuing with local '$main').\"\n" +
-            "echo \"Rebasing '$branch' onto '$main' (linear history, no merge commit)...\"\n" +
-            "if ! git rebase \"$main\"; then\n" +
+            "echo \"Fast-forwarding base '$base' from its remote...\"\n" +
+            "git -C \"$main_wt\" pull --ff-only || echo \"Note: could not pull '$base' (continuing with local '$base').\"\n" +
+            "echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +
+            "if ! git rebase \"$base\"; then\n" +
             "  git rebase --abort 2>/dev/null\n" +
-            "  echo \"Rebase of '$branch' onto '$main' hit conflicts and was aborted. The Developer must rebase onto '$main' and resolve them.\"\n" +
+            "  echo \"Rebase of '$branch' onto '$base' hit conflicts and was aborted. The Developer must rebase onto '$base' and resolve them.\"\n" +
             "  exit 1\n" +
             "fi\n" +
-            "echo \"Fast-forwarding '$main' onto '$branch'...\"\n" +
+            "echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
             "git -C \"$main_wt\" merge --ff-only \"$branch\"\n";
 
         ToolResult result = await ShellTools.BashAsync("review_integrate", script, null, ct);
@@ -220,13 +231,43 @@ public class SubagentRunner
                 sb.Append('\n');
             sb.Append(result.StdErr);
         }
-        if (result.ExitCode != 0)
+
+        bool ok = result.ExitCode == 0;
+        if (!ok)
         {
             if (sb.Length > 0)
                 sb.Append('\n');
             sb.Append($"[integration failed: git exited {result.ExitCode}; the Developer must resolve this]");
         }
 
-        return sb.Length > 0 ? sb.ToString() : "[integration produced no output]";
+        string transcript = sb.Length > 0 ? sb.ToString() : "[integration produced no output]";
+        return (ok, transcript);
+    }
+
+    // Builds the worktree context line injected at the top of a subagent's first prompt: the branch and
+    // working directory it operates in. Returns empty when the CWD is not a git checkout so non-git tasks
+    // are unaffected. Role-neutral phrasing: the Developer works here, the Reviewer reads here.
+    private static async Task<string> WorktreeBannerAsync(CancellationToken ct)
+    {
+        string script =
+            "branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\n" +
+            "[ -z \"$branch\" ] && exit 0\n" +
+            "echo \"$branch\"\n" +
+            "pwd\n";
+
+        ToolResult result = await ShellTools.BashAsync("subagent_worktree", script, null, ct);
+        if (result.ExitCode != 0)
+            return string.Empty;
+
+        string[] lines = result.StdOut.Trim().Split('\n');
+        if (lines.Length < 2)
+            return string.Empty;
+
+        string branch = lines[0].Trim();
+        string path = lines[1].Trim();
+        if (string.IsNullOrEmpty(branch) || string.IsNullOrEmpty(path))
+            return string.Empty;
+
+        return $"[Worktree] Your working directory is the git worktree '{path}', on branch '{branch}'. All file reads, edits, and commands operate here.";
     }
 }

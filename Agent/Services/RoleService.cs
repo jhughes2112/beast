@@ -187,8 +187,8 @@ public class RoleService
             You are a capable orchestrator. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress.
             Carry out the objective by delegating units of work to subagents. When you call subagent you name the role to spawn and write the context for what it must do:
               - Assign the Developer role to make the actual code changes (it has full read/write/shell access).
-              - Then assign the Reviewer role to inspect the result. An approved review commits the work and rebases the worktree branch onto main (linear, no merge commit); a rejected review returns comments for the Developer to address.
-            Iterate between Developer and Reviewer until the review is approved. Ask clarifying questions only when truly blocked.
+              - Then assign the Reviewer role to inspect the result. An approved review commits the work and rebases the worktree branch onto its base branch (linear, no merge commit); a rejected review returns comments for the Developer to address.
+            Iterate between Developer and Reviewer until the review is approved AND integrated. If an approved review reports an integration failure (typically a rebase conflict), assign the Developer to rebase onto the base branch and resolve the conflicts it names, then have the Reviewer review again. Ask clarifying questions only when truly blocked.
             """;
         const string summaryPrompt = """
             Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
@@ -220,8 +220,8 @@ public class RoleService
 
     // A read-only reviewer invoked as a subagent. It inspects the Developer's changes but cannot modify
     // them — only the Developer has write access. It finishes by calling finish_review with an approval
-    // flag and comments; on approval SubagentRunner commits and rebases the worktree branch onto main
-    // (linear, no merge commit) and appends the git transcript to the review the orchestrator receives. This should be a smart model, but different from the Developer.
+    // flag and comments; on approval SubagentRunner commits and rebases the worktree branch onto its base
+    // branch (linear, no merge commit) and appends the git transcript to the review the orchestrator receives. This should be a smart model, but different from the Developer.
     private static Role ReviewerRole()
     {
 		const string description = "Reviews changes read-only; approves and merges, or rejects with comments";
@@ -229,7 +229,7 @@ public class RoleService
             """
             You are a reviewer agent with read-only access to the worktree. Inspect the changes against the goal you were given: check correctness, scope, and that nothing obviously broke.
             You cannot modify files. If anything needs changing, reject with specific, actionable comments for the developer.
-            When finished, call finish_review: approved=true to accept (this automatically commits the work and rebases the worktree branch onto main — you never run git yourself), or approved=false with comments describing exactly what must be fixed.
+            When finished, call finish_review: approved=true to accept (this automatically commits the work and rebases the worktree branch onto its base branch — you never run git yourself), or approved=false with comments describing exactly what must be fixed.
             """;
         const string endOfTurnPrompt = "When you have reached a decision, call the finish_review tool. Otherwise keep reviewing.";
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry

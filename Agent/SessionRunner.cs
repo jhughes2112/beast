@@ -85,96 +85,130 @@ public class SessionRunner
 		});
 	}
 
-	// start_task callback: create (or attach to) the git worktree for the chosen branch and switch the
-	// working directory into it, ready for the Task role. Any step failing aborts the switch and its
-	// message becomes the start_task tool result, so the Default session sees why. On success the
-	// objective is queued for the role switch after the turn.
-	private async Task<string> StartTaskAsync(string objective, string branch, CancellationToken ct)
+	// start_task callback: kick off the Task role with the objective. The worktree already exists — the
+	// whole launch runs in one worktree (created at startup, bound to /workspace), so there is no per-task
+	// worktree to create or switch into. The objective is prefixed with the worktree banner and queued for
+	// the role switch after the turn. Returns string.Empty on success or an error for the Default session.
+	private async Task<string> StartTaskAsync(string objective, CancellationToken ct)
 	{
-		if (!IsValidBranchName(branch))
-			return $"Invalid branch name '{branch}'. Use only letters, digits, '.', '_', '-', and '/'.";
-
 		Role? taskRole = _roleService.GetRole("Task");
 		if (taskRole == null)
 			return "Error: Task role is not defined.";
 
-		(string? worktreePath, string? worktreeError) = await CreateOrAttachWorktreeAsync(branch, ct);
-		if (worktreeError != null)
-			return worktreeError;
-
-		// A git worktree is just a separate checkout directory; "switching" to it means working there.
-		// The process CWD drives every tool's working directory, so the Task session and its subagents
-		// now operate inside the worktree.
-		try
-		{
-			Directory.SetCurrentDirectory(worktreePath!);
-		}
-		catch (Exception ex)
-		{
-			return $"Failed to switch to worktree '{worktreePath}': {ex.Message}";
-		}
-
-		_pendingTaskObjective = objective;
+		// Inject the worktree context at the top of the Task's first prompt so it is explicit, not silent:
+		// where work happens, which branch, and the base an approved review folds it into.
+		string banner = await WorktreeBannerAsync(ct);
+		_pendingTaskObjective = string.IsNullOrEmpty(banner) ? objective : $"{banner}\n\n{objective}";
 		return string.Empty;
 	}
 
-	// Creates a git worktree for the branch under the bind-mounted config dir, namespaced by repo
-	// (~/.beast/worktrees/<repo>/<branch>) so it persists to the host and never nests in /workspace. The
-	// repo name is derived from git (remote URL, else the root-commit SHA) inside the script, which then
-	// echoes the chosen path as its only stdout line. An existing worktree for that branch — or an existing
-	// directory at the target path — is accepted as-is rather than treated as an error. Returns (path, null)
-	// on success or (null, error) with the git output.
-	private static async Task<(string? path, string? error)> CreateOrAttachWorktreeAsync(string branch, CancellationToken ct)
+	// One line describing the current worktree for a first prompt: branch, working directory, and the base
+	// branch (checked out in the primary /git worktree) an approved review folds into. Empty when the CWD is
+	// not a git checkout so non-git runs are unaffected.
+	private static async Task<string> WorktreeBannerAsync(CancellationToken ct)
 	{
-		string dirName = branch.Replace('/', '-');
-
-		// branch and dirName are validated to a shell-safe charset before this runs, so single-quoting is
-		// sufficient. git output goes to stderr (1>&2); the final path is the only thing on stdout.
 		string script =
-			"branch='" + branch + "'\n" +
-			"dir='" + dirName + "'\n" +
-			"repo=$(basename -s .git \"$(git config --get remote.origin.url 2>/dev/null)\" 2>/dev/null)\n" +
-			"if [ -z \"$repo\" ]; then repo=$(git rev-list --max-parents=0 HEAD 2>/dev/null | head -n1 | cut -c1-12); fi\n" +
-			"if [ -z \"$repo\" ]; then repo=repo; fi\n" +
-			"path=\"$HOME/.beast/worktrees/$repo/$dir\"\n" +
-			"existing=$(git worktree list --porcelain | awk -v b=\"refs/heads/$branch\" '$1==\"worktree\"{p=$2} $1==\"branch\"&&$2==b{print p}')\n" +
-			"if [ -n \"$existing\" ]; then echo \"$existing\"; exit 0; fi\n" +
-			"if [ -d \"$path\" ]; then echo \"$path\"; exit 0; fi\n" +
-			"mkdir -p \"$(dirname \"$path\")\"\n" +
-			"if git show-ref --verify --quiet \"refs/heads/$branch\"; then\n" +
-			"  git worktree add \"$path\" \"$branch\" 1>&2 || exit 1\n" +
-			"else\n" +
-			"  git worktree add \"$path\" -b \"$branch\" 1>&2 || exit 1\n" +
-			"fi\n" +
-			"echo \"$path\"\n";
+			"branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0\n" +
+			"[ -z \"$branch\" ] && exit 0\n" +
+			"common=$(git rev-parse --git-common-dir 2>/dev/null)\n" +
+			"base=\"\"\n" +
+			"if [ -n \"$common\" ]; then prim=$(cd \"$common\" && cd .. && pwd); base=$(git -C \"$prim\" rev-parse --abbrev-ref HEAD 2>/dev/null); fi\n" +
+			"echo \"$branch\"\n" +
+			"pwd\n" +
+			"echo \"$base\"\n";
 
-		ToolResult result = await ShellTools.BashAsync("start_task_worktree", script, null, ct);
+		ToolResult result = await ShellTools.BashAsync("start_task_worktree_banner", script, null, ct);
 		if (result.ExitCode != 0)
-		{
-			string detail = result.StdErr;
-			if (!string.IsNullOrEmpty(result.StdOut))
-				detail = string.IsNullOrEmpty(detail) ? result.StdOut : detail + "\n" + result.StdOut;
-			return (null, $"Failed to create git worktree for branch '{branch}':\n{detail}");
-		}
+			return string.Empty;
 
-		string path = result.StdOut.Trim();
-		if (string.IsNullOrEmpty(path))
-			return (null, $"Worktree creation produced no path for branch '{branch}'.");
-		return (path, null);
+		string[] lines = result.StdOut.Trim().Split('\n');
+		if (lines.Length < 2)
+			return string.Empty;
+
+		string branch = lines[0].Trim();
+		string path = lines[1].Trim();
+		string baseBranch = lines.Length >= 3 ? lines[2].Trim() : string.Empty;
+		if (string.IsNullOrEmpty(branch) || string.IsNullOrEmpty(path))
+			return string.Empty;
+
+		string foldInto = string.IsNullOrEmpty(baseBranch) || baseBranch == branch
+			? "its base branch"
+			: $"'{baseBranch}'";
+		return $"[Worktree] This task runs in the git worktree '{path}', on branch '{branch}'. All work you delegate happens here; an approved review rebases this branch onto {foldInto} and fast-forwards it.";
 	}
 
-	// Branch names are restricted to a shell-safe charset so they can be embedded in the worktree script.
-	private static bool IsValidBranchName(string branch)
+	// /finish: if the worktree's work is fully folded into the base branch and the tree is clean, detach the
+	// worktree, delete its (merged) branch, and signal Beast to tear down and remove the host folder. Beast
+	// drives the actual shutdown via its graceful /quit path, so the finish signal is delivered before the
+	// socket closes. Otherwise report what is still pending and do nothing, so the user can finish or reset
+	// the work first.
+	private async Task FinishAsync(Session session, CancellationToken ct)
 	{
-		if (string.IsNullOrWhiteSpace(branch))
-			return false;
-		foreach (char c in branch)
+		if (!Directory.Exists("/git"))
 		{
-			bool ok = char.IsLetterOrDigit(c) || c == '.' || c == '_' || c == '-' || c == '/';
-			if (!ok)
-				return false;
+			_transport.Error(session.Id, "/finish is only available inside a Beast worktree container.");
+			return;
 		}
-		return true;
+
+		// Pending if the worktree has uncommitted changes, or feature commits not yet contained in base.
+		string checkScript =
+			"feat=$(git -C /workspace rev-parse --abbrev-ref HEAD)\n" +
+			"base=$(git -C /git rev-parse --abbrev-ref HEAD)\n" +
+			"dirty=$(git -C /workspace status --porcelain)\n" +
+			"if [ -n \"$dirty\" ]; then echo PENDING; echo \"Uncommitted changes in the worktree:\"; echo \"$dirty\"; exit 0; fi\n" +
+			"if ! git -C /git merge-base --is-ancestor \"$feat\" \"$base\"; then\n" +
+			"  n=$(git -C /git rev-list --count \"$base\"..\"$feat\" 2>/dev/null)\n" +
+			"  echo PENDING; echo \"$n commit(s) on '$feat' are not yet integrated into '$base'.\"; exit 0\n" +
+			"fi\n" +
+			"echo OK; echo \"$feat\"; echo \"$base\"\n";
+
+		ToolResult check = await ShellTools.BashAsync("finish_check", checkScript, null, ct);
+		string[] lines = check.StdOut.Trim().Length == 0 ? Array.Empty<string>() : check.StdOut.Trim().Split('\n');
+		string verdict = lines.Length > 0 ? lines[0].Trim() : string.Empty;
+
+		if (verdict != "OK")
+		{
+			string detail = lines.Length > 1 ? string.Join("\n", lines, 1, lines.Length - 1) : "Could not determine worktree status.";
+			_transport.Output(session.Id,
+				"Cannot finish yet — the worktree is not fully integrated:\n" + detail +
+				"\n\nTell the agent that its task is to finish the work (review and approve the changes) or to reset the branch, then run /finish again.");
+			return;
+		}
+
+		string baseBranch = lines.Length > 2 ? lines[2].Trim() : string.Empty;
+
+		// Detach the worktree and delete its merged branch. feat is re-derived in-script (never interpolated)
+		// and cd /git runs first so removing /workspace does not pull the shell's CWD out from under it.
+		// Success is judged by the registration being gone, NOT by exit code: /workspace is a bind mount, so
+		// `git worktree remove` deletes the checkout but cannot rmdir the mount point — it exits non-zero
+		// while still detaching the worktree. Beast removes the leftover (empty) host folder afterward.
+		string removeScript =
+			"cd /git\n" +
+			"feat=$(git -C /workspace rev-parse --abbrev-ref HEAD)\n" +
+			"git worktree remove --force /workspace >/dev/null 2>&1 || true\n" +
+			"git worktree prune >/dev/null 2>&1 || true\n" +
+			"if git worktree list --porcelain | grep -qx 'worktree /workspace'; then echo 'ERROR: worktree still registered at /workspace.'; exit 1; fi\n" +
+			"git branch -d \"$feat\" >/dev/null 2>&1 || true\n" +
+			"echo REMOVED\n";
+
+		ToolResult remove = await ShellTools.BashAsync("finish_remove", removeScript, null, ct);
+		if (!remove.StdOut.Contains("REMOVED"))
+		{
+			string detail = remove.StdErr;
+			if (!string.IsNullOrEmpty(remove.StdOut))
+				detail = string.IsNullOrEmpty(detail) ? remove.StdOut : detail + "\n" + remove.StdOut;
+			_transport.Error(session.Id, "Failed to remove the worktree:\n" + (string.IsNullOrWhiteSpace(detail) ? "(no output)" : detail));
+			return;
+		}
+
+		// The CWD (/workspace) is gone now; move to /git so the process keeps a valid working directory for
+		// the brief remainder of its life before Beast's /quit arrives.
+		try
+		{ Directory.SetCurrentDirectory("/git"); }
+		catch { }
+
+		_transport.Output(session.Id, $"Worktree finished and integrated into '{baseBranch}'. Removing it and shutting down.");
+		_transport.Status(session.Id, "worktree-finished");
 	}
 
 	// Routes inbound input to the session tree by ID.
@@ -514,6 +548,9 @@ public class SessionRunner
 				case "quit":
 					_cancellationTokenSource.Cancel();
 					break;
+				case "finish":
+					await FinishAsync(session, _cancellationTokenSource.Token);
+					break;
 				case "compact":
 					_wantsCompact = true;
 					break;
@@ -624,7 +661,7 @@ public class SessionRunner
 					}
 					break;
 				case "help":
-					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /session new, /session none, /session <id>, /session delete <id>, /test, /quit");
+					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /session new, /session none, /session <id>, /session delete <id>, /finish, /test, /quit");
 					break;
 				case "test":
 					await RunTestsAsync(session.Id, args);
@@ -644,7 +681,7 @@ public class SessionRunner
 		List<string> candidates = new List<string>
 		{
 			"/compact", "/reload", "/model",
-			"/session", "/help"
+			"/session", "/finish", "/help"
 		};
 
 		Role? activeRole = _roleService.GetRole(session.Role);
@@ -718,41 +755,24 @@ public class SessionRunner
 	// tools are injected here for the root: start_task and subagent when the role declares them by name,
 	// and task_complete for any Agent role kept on task by an end-of-turn prompt. Child agents
 	// (isSubagent) get only their regular tools — SubagentRunner adds return_to_caller — so they cannot
-	// spawn subagents or start tasks. start_task is built per call so its branch-argument description
-	// carries the current git branch and worktrees.
-	private async Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
+	// spawn subagents or start tasks.
+	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
 	{
 		if (isSubagent)
-			return role.BuiltTools;
+			return Task.FromResult(role.BuiltTools);
 
 		List<Tool> tools = new List<Tool>(role.BuiltTools);
 		if (role.Tools.Contains("read_file"))
 			tools.Add(_readFileTool);
 		if (role.Tools.Contains("start_task"))
-		{
-			string branchContext = await GitWorktreeContextAsync(ct);
-			tools.Add(ToolFactory.CreateStartTaskTool(branchContext, StartTaskAsync));
-		}
+			tools.Add(ToolFactory.CreateStartTaskTool(StartTaskAsync));
 		if (role.Tools.Contains("subagent"))
 			tools.Add(_subagentTool);
 		if (role.Tools.Contains("fetch_url"))
 			tools.Add(_fetchUrlTool);
 		if (!string.IsNullOrEmpty(role.EndOfTurnPrompt))
 			tools.Add(_taskCompleteTool);
-		return tools.ToArray();
-	}
-
-	// Current branch and existing worktrees, for the start_task branch-argument description so the model
-	// picks a name that does not collide. Best-effort: any stderr is appended; failure yields a notice.
-	private static async Task<string> GitWorktreeContextAsync(CancellationToken ct)
-	{
-		string command = "echo \"Current branch: $(git rev-parse --abbrev-ref HEAD)\"; echo \"Existing worktrees:\"; git worktree list";
-		ToolResult result = await ShellTools.BashAsync("git_worktree_context", command, null, ct);
-
-		string text = result.StdOut;
-		if (!string.IsNullOrEmpty(result.StdErr))
-			text = string.IsNullOrEmpty(text) ? result.StdErr : text + "\n" + result.StdErr;
-		return string.IsNullOrEmpty(text) ? "(git worktree information unavailable)" : text;
+		return Task.FromResult(tools.ToArray());
 	}
 
 	// Replaces _service when the model or role has changed, or when the service has permanently

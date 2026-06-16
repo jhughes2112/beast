@@ -36,6 +36,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly List<string> _messages;
     private readonly IDisplay _display;
     private readonly Log _log;
+    private readonly string _agentName;
+    private readonly Worktrees.Selection? _worktree;
+    // Set when the agent reports a successful /finish; on shutdown the worktree's host folder is removed.
+    private bool _worktreeFinished;
     private string? _idleSoundFile;
     private string? _subagentSoundFile;
 
@@ -56,12 +60,14 @@ public class BeastApp : IDisposable, IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string SessionId, string Content)> _frameQueue
         = new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string, string)>();
 
-    public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, Log log)
+    public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, Log log, string agentName, Worktrees.Selection? worktree)
     {
         _agentContext = agentContext;
         _messages = messages;
         _display = display;
         _log = log;
+        _agentName = agentName;
+        _worktree = worktree;
     }
 
     // Sends /quit to the agent so it saves the session, then waits for it to disconnect.
@@ -119,8 +125,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         int exitCode = 0;
         try
         {
-            string agentName = $"beastagent_{Guid.NewGuid():N}";
-            int hostPort = await _agentContext.StartAsync(agentName, _cts.Token);
+            int hostPort = await _agentContext.StartAsync(_agentName, _cts.Token);
 
             _wsClient = await RetryConnectAsync($"ws://localhost:{hostPort}/", _agentContext, _log, _cts.Token);
 
@@ -369,6 +374,13 @@ public class BeastApp : IDisposable, IAsyncDisposable
                             await _wsClient!.SendAsync(readySessionId + "|" + msg);
                     }
                     _ = SendMessagesAsync();
+                }
+                else if (content == "worktree-finished")
+                {
+                    // The agent detached and deleted its worktree/branch on /finish; remove the now-empty
+                    // host folder during shutdown so it no longer appears in the launch menu.
+                    _worktreeFinished = true;
+                    _display.SetStatus("Worktree finished — cleaning up.");
                 }
                 else
                 {
@@ -631,6 +643,12 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _wsClient?.Dispose();
         try { await _agentContext.StopAsync(); } catch { }
         _agentContext.Dispose();
+
+        // After /finish the container is gone and the worktree detached; remove its host folder so the
+        // next launch's menu no longer lists it. Only on an explicit finish — ordinary exits keep it.
+        if (_worktreeFinished && _worktree != null)
+            Worktrees.RemoveFolder(_worktree.Value.RepoCwd, _worktree.Value.Name);
+
         _cts?.Dispose();
     }
 }

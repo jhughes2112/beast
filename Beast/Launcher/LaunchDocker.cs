@@ -16,24 +16,34 @@ public class LaunchDocker : ILauncher
     private readonly string _image;
     private readonly DockerClient _dockerClient;
     private readonly Log _log;
+    private readonly Worktrees.Selection _worktree;
     private string? _containerId;
     private int _hostPort;
 
-    public LaunchDocker(string image, Log log)
+    public LaunchDocker(string image, Log log, Worktrees.Selection worktree)
     {
         _image = image;
         _log = log;
+        _worktree = worktree;
         _dockerClient = new DockerClientConfiguration().CreateClient();
     }
 
     public int HostPort => _hostPort;
 
-    // Removes any stale container with the same name, then creates and starts a fresh one.
+    // Reaps a stale (exited) container with this name, then creates and starts a fresh one. A container
+    // with this name that is still running means the worktree is occupied by another Beast instance —
+    // that is refused rather than killed, since the deterministic name is the per-worktree lock.
     public async Task<int> StartAsync(string name, CancellationToken cancellationToken)
     {
-        await RemoveContainerByNameAsync(name);
+        bool reaped = await RemoveStaleContainerByNameAsync(name);
+        if (!reaped)
+            throw new InvalidOperationException($"Worktree '{_worktree.Name}' is already in use by a running container ('{name}').");
 
-        string cwd = Directory.GetCurrentDirectory();
+        // The real repo is bound to /git as a pristine reference checkout; the worktree folder is bound to
+        // /workspace, where all tools operate. The agent runs `git worktree add /workspace` against /git
+        // once it is up, using the branch passed as the --worktree-branch startup argument.
+        string repoCwd = _worktree.RepoCwd;
+        string worktreeHostPath = _worktree.HostPath;
         string beastConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
         Directory.CreateDirectory(beastConfigDir);
@@ -47,6 +57,8 @@ public class LaunchDocker : ILauncher
             Name = name,
             WorkingDir = "/workspace",
             Env = new List<string> { },
+            // The worktree branch is passed as a startup argument to the agent entrypoint (never an env var).
+            Cmd = new List<string> { "--worktree-branch", _worktree.Branch },
             ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
             HostConfig = new HostConfig
             {
@@ -61,7 +73,8 @@ public class LaunchDocker : ILauncher
                 },
                 Binds = new List<string>
                 {
-                    $"{cwd}:/workspace",
+                    $"{repoCwd}:/git",
+                    $"{worktreeHostPath}:/workspace",
                     $"{beastConfigDir}:/root/.beast"
                 }
             }
@@ -174,8 +187,11 @@ public class LaunchDocker : ILauncher
         }
     }
 
-    // Removes a named container if it exists, regardless of state. Used to clean up before relaunching.
-    private async Task RemoveContainerByNameAsync(string name)
+    // Reaps a stale (non-running) container with this name so a relaunch into the same worktree works.
+    // Returns false without removing anything if a container with this name is still running — the caller
+    // must not kill it, since one running container per name is the per-worktree occupancy lock. Returns
+    // true when the name is free (nothing there, or a stopped container was removed).
+    private async Task<bool> RemoveStaleContainerByNameAsync(string name)
     {
         try
         {
@@ -188,17 +204,51 @@ public class LaunchDocker : ILauncher
                 {
                     if (n == $"/{name}" || n == name)
                     {
+                        bool running = string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase);
+                        if (running)
+                            return false;
+
                         await _dockerClient.Containers.RemoveContainerAsync(
                             container.ID, new ContainerRemoveParameters { Force = true });
-                        return;
+                        return true;
                     }
                 }
             }
         }
         catch (Exception ex)
         {
-            _log.Error($"[docker] Failed to remove container {name}: {ex.Message}");
+            _log.Error($"[docker] Failed to inspect container {name}: {ex.Message}");
         }
+
+        return true;
+    }
+
+    // Worktree names whose beast_<name> container is currently running, so the launch menu can mark them
+    // occupied. Best effort: if Docker is unreachable, returns an empty set (nothing shown as in use).
+    public static async Task<HashSet<string>> RunningWorktreeNamesAsync()
+    {
+        HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            using DockerClient client = new DockerClientConfiguration().CreateClient();
+            IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
+                new ContainersListParameters { All = false });
+
+            foreach (ContainerListResponse container in containers)
+            {
+                foreach (string n in container.Names)
+                {
+                    string bare = n.TrimStart('/');
+                    if (bare.StartsWith("beast_", StringComparison.Ordinal))
+                        names.Add(bare.Substring("beast_".Length));
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return names;
     }
 
     public void Dispose()

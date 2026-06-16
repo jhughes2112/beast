@@ -28,6 +28,18 @@ public class Program
 			return ctx.Failed > 0 ? 1 : 0;
 		}
 
+		// Create/attach the git worktree at /workspace before anything reads the working tree. The branch
+		// comes from the --worktree-branch startup argument (never an env var). No-op for debug/native runs
+		// without the /git mount. A failure here means /workspace is unusable, so abort.
+		string worktreeBranch = ArgValue(args, "--worktree-branch");
+		(bool wtOk, string wtDetail) = await WorktreeBootstrap.EnsureAsync(worktreeBranch, cts.Token);
+		if (!wtOk)
+		{
+			Console.Error.WriteLine("Failed to set up git worktree at /workspace:");
+			Console.Error.WriteLine(string.IsNullOrWhiteSpace(wtDetail) ? "(no output)" : wtDetail);
+			return 1;
+		}
+
 		SettingsService settingsService;
 		RoleService roleService;
 		try
@@ -61,5 +73,16 @@ public class Program
 		}
 
 		return 0;
+	}
+
+	// Returns the value following a "--flag value" startup argument, or empty if the flag is absent or last.
+	private static string ArgValue(string[] args, string flag)
+	{
+		for (int i = 0; i < args.Length - 1; i++)
+		{
+			if (args[i] == flag)
+				return args[i + 1];
+		}
+		return string.Empty;
 	}
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
 
 // Beast CLI -- launches the Agent docker container and communicates with it over stdio.
@@ -44,11 +45,24 @@ public class Program
         bool runBeastTests = switches.Contains("/test");
         bool verbose = switches.Contains("/verbose");
 
+        // --worktree <name> selects (or creates) the worktree without showing the menu. Beast-only.
+        string? worktreeArg = null;
+        foreach (string sw in switches)
+        {
+            if (sw == "/worktree" || sw.StartsWith("/worktree ", StringComparison.Ordinal))
+            {
+                int sp = sw.IndexOf(' ');
+                worktreeArg = sp >= 0 ? sw.Substring(sp + 1).Trim() : null;
+            }
+        }
+
         // Agent receives all switches except Beast-only ones.
         List<string> agentSwitches = new List<string>();
         foreach (string sw in switches)
         {
-            if (sw != "/help" && sw != "/h" && sw != "/verbose" && sw != "/debug")
+            bool beastOnly = sw == "/help" || sw == "/h" || sw == "/verbose" || sw == "/debug"
+                || sw == "/worktree" || sw.StartsWith("/worktree ", StringComparison.Ordinal);
+            if (!beastOnly)
                 agentSwitches.Add(sw);
         }
 
@@ -83,11 +97,55 @@ public class Program
         // /debug — connect to an already-running agent on port 13131 (start Agent separately in VS).
         bool useDebug = switches.Contains("/debug");
 
-        ILauncher agentContext = useDebug
-            ? (ILauncher)new LaunchDebug()
-            : new LaunchDocker("beastagent", log);
-        await using BeastApp app = new BeastApp(agentContext, messages, display, log);
+        ILauncher agentContext;
+        string agentName;
+        Worktrees.Selection? worktree = null;
+        if (useDebug)
+        {
+            agentContext = new LaunchDebug();
+            agentName = "beast_debug";
+        }
+        else
+        {
+            string cwd = Directory.GetCurrentDirectory();
+            Worktrees.Selection? sel = ResolveWorktree(cwd, worktreeArg, nonInteractive);
+            if (sel == null)
+                return 0;   // user cancelled the worktree menu
+            worktree = sel;
+            agentContext = new LaunchDocker("beastagent", log, sel.Value);
+            agentName = Worktrees.ContainerName(sel.Value.Name);
+        }
+
+        await using BeastApp app = new BeastApp(agentContext, messages, display, log, agentName, worktree);
         return await app.Run();
+    }
+
+    // Resolves which worktree this launch attaches to: an explicit --worktree name, a headless default for
+    // non-interactive runs, or the interactive chooser. Returns null only when the user cancels the menu.
+    private static Worktrees.Selection? ResolveWorktree(string cwd, string? nameArg, bool nonInteractive)
+    {
+        if (!string.IsNullOrWhiteSpace(nameArg))
+            return Worktrees.Ensure(cwd, nameArg!);
+
+        if (nonInteractive)
+            return Worktrees.Ensure(cwd, "work");
+
+        List<Worktrees.Info> existing = Worktrees.List(cwd);
+        HashSet<string> running = LaunchDocker.RunningWorktreeNamesAsync().GetAwaiter().GetResult();
+
+        List<SelectMenu.Item> items = new List<SelectMenu.Item>();
+        foreach (Worktrees.Info info in existing)
+        {
+            bool inUse = running.Contains(info.Name);
+            items.Add(new SelectMenu.Item(info.Name, info.Name, inUse ? "in use" : string.Empty, inUse));
+        }
+
+        string suggestion = existing.Count == 0 ? "work" : string.Empty;
+        SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, 0);
+        if (result.Cancelled)
+            return null;
+
+        return Worktrees.Ensure(cwd, result.Value);
     }
 
     private static void PrintHelp()
