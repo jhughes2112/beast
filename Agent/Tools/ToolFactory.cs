@@ -132,7 +132,7 @@ public static class ToolFactory
         string roleList = string.Empty;
 		foreach (Role r in subagentRoles)
 		{
-			roleList += $"{r.Name} -> {r.Description}\n"
+			roleList += $"{r.Name} -> {r.Description}\n";
 		}
 
         return new Tool
@@ -232,6 +232,36 @@ public static class ToolFactory
         };
     }
 
+    // Creates the Reviewer's termination tool. onFinish receives the approval flag and the review comments;
+    // SubagentRunner adds this to a Reviewer child's tool list, reads what onFinish captured, and on approval
+    // integrates the worktree branch into main before returning the review to the caller.
+    public static Tool CreateFinishReviewTool(Action<bool, string> onFinish)
+    {
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "finish_review",
+                    Description = "Call this to finish the review. approved=true accepts the change and triggers an automatic commit and rebase of the worktree branch onto main (linear history, no merge commit — you do not run any git yourself); approved=false rejects it for the developer to fix.",
+                    Parameters = Params(
+                        Req("approved", "boolean", "True to accept the change, false to reject it."),
+                        Req("comments", "string", "Your review: what you checked and why you approved, or exactly what the developer must fix. This string is the entire response the caller receives."))
+                }
+            },
+            Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                bool approved = Bool(args, "approved");
+                string comments = Str(args, "comments");
+                onFinish(approved, comments);
+                string ack = approved ? "Review approved." : "Review rejected.";
+                return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
+            }
+        };
+    }
+
     // Creates the explicit termination tool a subagent calls to finish. onReturn receives the final
     // output; SubagentRunner adds this to each child's tool list and reads what onReturn captured.
     public static Tool CreateReturnToCallerTool(Action<string> onReturn)
@@ -323,5 +353,11 @@ public static class ToolFactory
     {
         if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && int.TryParse(node.ToString(), out int v)) return v;
         return null;
+    }
+
+    private static bool Bool(JsonObject args, string key)
+    {
+        if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && bool.TryParse(node.ToString(), out bool v)) return v;
+        return false;
     }
 }

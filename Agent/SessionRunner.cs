@@ -80,10 +80,10 @@ public class SessionRunner
 		});
 	}
 
-	// start_task callback: exit the current role, create (or attach to) the git worktree for the chosen
-	// branch, switch the working directory into it, then enter the Task role. Any step failing aborts the
-	// switch and its message becomes the start_task tool result, so the Default session sees why. On
-	// success the objective is queued for the role switch after the turn.
+	// start_task callback: create (or attach to) the git worktree for the chosen branch and switch the
+	// working directory into it, ready for the Task role. Any step failing aborts the switch and its
+	// message becomes the start_task tool result, so the Default session sees why. On success the
+	// objective is queued for the role switch after the turn.
 	private async Task<string> StartTaskAsync(string objective, string branch, CancellationToken ct)
 	{
 		if (!IsValidBranchName(branch))
@@ -92,14 +92,6 @@ public class SessionRunner
 		Role? taskRole = _roleService.GetRole("Task");
 		if (taskRole == null)
 			return "Error: Task role is not defined.";
-
-		Role? current = _roleService.GetRole(_currentSession.Role);
-		if (current != null)
-		{
-			string exitError = await current.ExitAsync(ct, null);
-			if (!string.IsNullOrEmpty(exitError))
-				return exitError;
-		}
 
 		(string? worktreePath, string? worktreeError) = await CreateOrAttachWorktreeAsync(branch, ct);
 		if (worktreeError != null)
@@ -116,11 +108,6 @@ public class SessionRunner
 		{
 			return $"Failed to switch to worktree '{worktreePath}': {ex.Message}";
 		}
-
-		Dictionary<string, string> variables = new Dictionary<string, string> { ["branch"] = branch };
-		string enterError = await taskRole.EnterAsync(ct, variables);
-		if (!string.IsNullOrEmpty(enterError))
-			return enterError;
 
 		_pendingTaskObjective = objective;
 		return string.Empty;

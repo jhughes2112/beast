@@ -339,6 +339,7 @@ internal static class BlockRenderer
     private static bool IsProseArg(string toolName, string propName)
     {
         if (toolName == "return_to_caller" && propName.Equals("output", StringComparison.OrdinalIgnoreCase)) return true;
+        if (toolName == "finish_review" && propName.Equals("comments", StringComparison.OrdinalIgnoreCase)) return true;
         if (toolName == "state_transition" && propName.Equals("context", StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
@@ -405,6 +406,7 @@ internal static class BlockRenderer
             "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
             "fetch_url"                                               => BuildPathSummary(label, Get("url"), respLineCount),
             "return_to_caller"                                         => BuildLineCountSummary(label, CountLines(Get("output"))),
+            "finish_review"                                            => BuildLineCountSummary(label, CountLines(Get("comments"))),
             "state_transition"                                         => $"{label} {Get("statement")}",
             _                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)
         };

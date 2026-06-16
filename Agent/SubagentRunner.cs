@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -32,13 +33,14 @@ public class SubagentRunner
         _currentSession = currentSession;
     }
 
-    // Mutable sink the return_to_caller handler writes into; read by the drive loop after each tool
-    // round. Fields, not properties: the handler mutates them directly and the loop resets Returned
-    // when it asks for a shorter retry.
+    // Mutable sink the terminator handler (return_to_caller or finish_review) writes into; read by the
+    // drive loop after each tool round. Fields, not properties: the handler mutates them directly and the
+    // loop resets Returned when it asks for a shorter retry. Approved is set only by finish_review.
     private sealed class ReturnSink
     {
         public string? Value;
         public bool Returned;
+        public bool Approved;
     }
 
     // Runs an explicitly-invoked subagent: a child session assigned the named role, seeded with the
@@ -64,11 +66,6 @@ public class SubagentRunner
         if (service == null)
             return (false, $"No model available for role '{roleName}'.", 0);
 
-        // Entry hook gates the session: a nonzero exit aborts before any session is created.
-        string enterError = await role.EnterAsync(ct, null);
-        if (!string.IsNullOrEmpty(enterError))
-            return (false, enterError, 0);
-
         string displayName = prompt.Length > 80 ? prompt.Substring(0, 80) : prompt;
 
         Session parent = _currentSession();
@@ -79,16 +76,22 @@ public class SubagentRunner
         parent.AddChild(subSession);
 
         // The child carries only its role's bound tools (no subagent tool), so nesting stops here.
-        // fetch_url is injected by name like elsewhere (it needs the runWeb delegate); return_to_caller is
-        // created in ToolFactory and added here as the explicit terminator.
+        // fetch_url is injected by name like elsewhere (it needs the runWeb delegate). The terminator is
+        // created in ToolFactory and added here: a Reviewer role (declaring finish_review) finishes with
+        // finish_review, which carries an approval flag; every other subagent finishes with return_to_caller.
         ReturnSink sink = new ReturnSink();
-        Tool returnTool = ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
-        List<Tool> withReturn = new List<Tool>(role.BuiltTools);
+        bool isReview = role.Tools.Contains("finish_review");
+        string terminatorName = isReview ? "finish_review" : "return_to_caller";
+        Tool terminatorTool = isReview
+            ? ToolFactory.CreateFinishReviewTool((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; })
+            : ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
+
+        List<Tool> withTerminator = new List<Tool>(role.BuiltTools);
         if (role.Tools.Contains("fetch_url"))
-            withReturn.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, _currentSession));
-        withReturn.Add(returnTool);
-        Tool[] fullTools = withReturn.ToArray();
-        Tool[] returnOnlyTools = new Tool[] { returnTool };
+            withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, _currentSession));
+        withTerminator.Add(terminatorTool);
+        Tool[] fullTools = withTerminator.ToArray();
+        Tool[] terminatorOnlyTools = new Tool[] { terminatorTool };
 
         subSession.SendBusy();
         try
@@ -99,11 +102,11 @@ public class SubagentRunner
 
             for (int turn = 1; turn <= kMaxTurns; turn++)
             {
-                // On the last allotted turn return_to_caller is the only tool and is required, and the
+                // On the last allotted turn the terminator is the only tool and is required, and the
                 // output is hard-capped to the budget since there is no further turn to shorten it.
                 bool lastTurn = turn == kMaxTurns;
-                Tool[] turnTools = lastTurn ? returnOnlyTools : fullTools;
-                string? forcedToolName = lastTurn ? "return_to_caller" : null;
+                Tool[] turnTools = lastTurn ? terminatorOnlyTools : fullTools;
+                string? forcedToolName = lastTurn ? terminatorName : null;
                 int outputCap = lastTurn ? outputBudgetTokens : 0;
 
                 ProtocolResult result = await service.RunToCompletionAsync(subSession, turnTools, forcedToolName, 0, outputCap, _transport, ct);
@@ -117,7 +120,7 @@ public class SubagentRunner
 
                 if (sink.Returned)
                 {
-                    // The return_to_caller call carries the reply; its turn's completion tokens are the
+                    // The terminator call carries the reply; its turn's completion tokens are the
                     // server-measured size we charge against the caller's budget.
                     responseTokens = subSession.LastTokenUsage?.CompletionTokens ?? 0;
                     if (responseTokens <= outputBudgetTokens || lastTurn)
@@ -127,16 +130,16 @@ public class SubagentRunner
                     sink.Returned = false;
                     subSession.AddUserMessage(
                         $"That output is about {responseTokens} tokens but must fit within {outputBudgetTokens} tokens. "
-                        + "Call return_to_caller again with a shorter output, preserving the key details (file paths, line numbers, names, key output).");
+                        + $"Call {terminatorName} again with a shorter output, preserving the key details (file paths, line numbers, names, key output).");
                     continue;
                 }
 
                 if (!hasToolCalls && !lastTurn)
                 {
                     // A turn that ends with no tool call cannot terminate the subagent: nudge it with the
-                    // role's end-of-turn prompt (data-driven) to keep working and finish via return_to_caller.
+                    // role's end-of-turn prompt (data-driven) to keep working and finish via its terminator.
                     string nudge = string.IsNullOrEmpty(role.EndOfTurnPrompt)
-                        ? "Continue the task, then call the return_to_caller tool with your final result to finish."
+                        ? $"Continue the task, then call the {terminatorName} tool with your final result to finish."
                         : role.EndOfTurnPrompt;
                     subSession.AddUserMessage(nudge);
                 }
@@ -146,16 +149,22 @@ public class SubagentRunner
             // sub-session's entire spend up into the calling agent so the root's cost reflects total spend.
             parent.RecordCost(subSession.TotalCost);
 
-            // Exit hook gates the result: a nonzero exit means the result returned to the caller is the
-            // hook error rather than the subagent's output.
-            string exitError = await role.ExitAsync(ct, null);
-            if (!string.IsNullOrEmpty(exitError))
-                return (false, exitError, responseTokens);
-
             if (sink.Value == null)
                 return (false, "The subagent finished without returning a result.", responseTokens);
 
-            return (true, sink.Value, responseTokens);
+            string output = sink.Value;
+
+            // An approved review integrates the work: commit the worktree, then fast-forward main onto its
+            // branch. The git transcript is appended to the review regardless of outcome — on failure the
+            // Developer (the only role with write access) sees exactly what must be resolved.
+            if (isReview && sink.Approved)
+            {
+                string integration = await IntegrateApprovedBranchAsync(ct);
+                output = $"{output}\n\n--- Integration ---\n{integration}";
+                responseTokens = Math.Max(responseTokens, ToolDispatch.EstimateTokens(output));
+            }
+
+            return (true, output, responseTokens);
         }
         finally
         {
@@ -163,5 +172,57 @@ public class SubagentRunner
                 SessionService.Save(subSession.Data, false);
             subSession.SendIdle();
         }
+    }
+
+    // Integrates an approved review with a strictly linear, rebase-based flow — never a merge commit, and
+    // never left to the LLM. It commits everything in the current worktree onto its branch, fast-forwards
+    // the repo's default branch from its remote, rebases the feature branch onto that default branch, then
+    // fast-forwards the default branch onto the now-linear feature branch. After the rebase the feature
+    // branch is a strict descendant of the default, so the final step can only ever fast-forward. It runs
+    // from the worktree's CWD and reaches the default branch's checkout with git -C, since that branch is
+    // checked out in another worktree and cannot be switched here. A rebase that hits conflicts is aborted
+    // cleanly and reported: that is the Developer's to rebase and resolve, never an automatic merge.
+    // Returns the combined git transcript — success or failure — so it can be appended to the review.
+    private static async Task<string> IntegrateApprovedBranchAsync(CancellationToken ct)
+    {
+        string script =
+            "branch=$(git rev-parse --abbrev-ref HEAD)\n" +
+            "echo \"Committing work on '$branch'...\"\n" +
+            "git add -A\n" +
+            "git commit -m \"Approved by reviewer on $branch\" || echo '(nothing to commit)'\n" +
+            "main=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')\n" +
+            "[ -z \"$main\" ] && main=main\n" +
+            "main_wt=$(git worktree list --porcelain | awk -v b=\"refs/heads/$main\" '$1==\"worktree\"{p=$2} $1==\"branch\" && $2==b{print p}')\n" +
+            "if [ -z \"$main_wt\" ]; then echo \"Could not locate a worktree for '$main'.\"; exit 1; fi\n" +
+            "echo \"Fast-forwarding '$main' from its remote...\"\n" +
+            "git -C \"$main_wt\" pull --ff-only || echo \"Note: could not pull '$main' (continuing with local '$main').\"\n" +
+            "echo \"Rebasing '$branch' onto '$main' (linear history, no merge commit)...\"\n" +
+            "if ! git rebase \"$main\"; then\n" +
+            "  git rebase --abort 2>/dev/null\n" +
+            "  echo \"Rebase of '$branch' onto '$main' hit conflicts and was aborted. The Developer must rebase onto '$main' and resolve them.\"\n" +
+            "  exit 1\n" +
+            "fi\n" +
+            "echo \"Fast-forwarding '$main' onto '$branch'...\"\n" +
+            "git -C \"$main_wt\" merge --ff-only \"$branch\"\n";
+
+        ToolResult result = await ShellTools.BashAsync("review_integrate", script, null, ct);
+
+        StringBuilder sb = new StringBuilder();
+        if (!string.IsNullOrEmpty(result.StdOut))
+            sb.Append(result.StdOut);
+        if (!string.IsNullOrEmpty(result.StdErr))
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+            sb.Append(result.StdErr);
+        }
+        if (result.ExitCode != 0)
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+            sb.Append($"[integration failed: git exited {result.ExitCode}; the Developer must resolve this]");
+        }
+
+        return sb.Length > 0 ? sb.ToString() : "[integration produced no output]";
     }
 }
