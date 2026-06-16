@@ -17,6 +17,17 @@ public class LaunchDebug : ILauncher
         return Task.CompletedTask;
     }
 
+    // The agent runs separately under the debugger, so we cannot observe its lifecycle — assume alive.
+    public Task<bool> IsAliveAsync()
+    {
+        return Task.FromResult(true);
+    }
+
+    public Task<string> GetLogsAsync()
+    {
+        return Task.FromResult(string.Empty);
+    }
+
     public void Dispose()
     {
     }

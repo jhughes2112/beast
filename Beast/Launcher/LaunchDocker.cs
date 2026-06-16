@@ -109,6 +109,52 @@ public class LaunchDocker : ILauncher
         return used;
     }
 
+    // True while the container is still running. False once it has exited (e.g. the agent crashed on
+    // bad config), or if it cannot be inspected.
+    public async Task<bool> IsAliveAsync()
+    {
+        if (_containerId == null)
+            return false;
+
+        try
+        {
+            ContainerInspectResponse info = await _dockerClient.Containers.InspectContainerAsync(_containerId);
+            return info.State != null && info.State.Running;
+        }
+        catch (Exception ex)
+        {
+            _log.Verbose($"[docker] Inspect failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    // Returns the container's combined stdout/stderr so a startup crash is visible to the user.
+    public async Task<string> GetLogsAsync()
+    {
+        if (_containerId == null)
+            return string.Empty;
+
+        try
+        {
+            ContainerLogsParameters parameters = new ContainerLogsParameters
+            {
+                ShowStdout = true,
+                ShowStderr = true,
+                Timestamps = false
+            };
+
+            using MultiplexedStream stream = await _dockerClient.Containers.GetContainerLogsAsync(
+                _containerId, false, parameters, CancellationToken.None);
+            (string stdout, string stderr) = await stream.ReadOutputToEndAsync(CancellationToken.None);
+
+            return string.IsNullOrEmpty(stderr) ? stdout : stdout + stderr;
+        }
+        catch (Exception ex)
+        {
+            return $"(failed to read container logs: {ex.Message})";
+        }
+    }
+
     // Stops and removes the container started by StartAsync.
     public async Task StopAsync()
     {

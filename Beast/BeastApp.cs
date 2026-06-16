@@ -114,7 +114,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             string agentName = $"beastagent_{Guid.NewGuid():N}";
             int hostPort = await _agentContext.StartAsync(agentName, _cts.Token);
 
-            _wsClient = await RetryConnectAsync($"ws://localhost:{hostPort}/", _log, _cts.Token);
+            _wsClient = await RetryConnectAsync($"ws://localhost:{hostPort}/", _agentContext, _log, _cts.Token);
 
             _readCts = new CancellationTokenSource();
             _readTask = ReadLoop(_wsClient, _readCts.Token);
@@ -569,7 +569,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
     }
 
     // Retries WebSocket connection until success or cancellation, with 200ms delays.
-    private static async Task<ITransportClient> RetryConnectAsync(string url, Log log, CancellationToken cancellationToken)
+    private static async Task<ITransportClient> RetryConnectAsync(string url, ILauncher launcher, Log log, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -587,6 +587,18 @@ public class BeastApp : IDisposable, IAsyncDisposable
             catch (Exception)
             {
                 wsClient.Dispose();
+
+                // The WS server only comes up once the agent is running. If the backend has already
+                // exited (e.g. crashed on bad roles.json/settings.json), retrying is pointless — show
+                // its log so the failure is visible, and bail.
+                if (!await launcher.IsAliveAsync())
+                {
+                    string containerLog = await launcher.GetLogsAsync();
+                    log.Error("[beast] Agent backend exited before its server started. Log follows:");
+                    log.Error(string.IsNullOrWhiteSpace(containerLog) ? "(no output captured)" : containerLog.TrimEnd());
+                    throw new InvalidOperationException("Agent backend failed to start.");
+                }
+
                 await Task.Delay(200, cancellationToken);
             }
         }

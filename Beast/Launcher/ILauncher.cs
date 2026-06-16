@@ -14,4 +14,11 @@ public interface ILauncher : IDisposable
 
 	// Stops the agent backend gracefully. Called during BeastApp dispose.
 	Task StopAsync();
+
+	// True while the agent backend is still running. False once it has exited/crashed, which means its
+	// WebSocket server will never come up and the client should stop waiting to connect.
+	Task<bool> IsAliveAsync();
+
+	// Returns the agent backend's captured output for diagnostics when it failed to start. May be empty.
+	Task<string> GetLogsAsync();
 }
