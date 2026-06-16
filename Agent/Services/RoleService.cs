@@ -1,15 +1,33 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
-// Provides the role definitions. Roles are generated in code (see Role's factory methods), not loaded
-// from disk, so the role system is structured and versioned with the build.
+// Provides the role definitions. The defaults are generated in code (see Role's factory methods) so the
+// role system is versioned with the build, then externalized to the project's .beast/roles.json so the
+// defaults can be edited: the file is written from the in-code set when missing, and loaded over the
+// defaults when present. It is never stored in the home dir — the defaults already live in code.
 public class RoleService
 {
     public Dictionary<string, Role> Roles { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public RoleService()
+    private readonly string _workDirRolesPath;
+
+    public RoleService(string workDir)
     {
+        _workDirRolesPath = Path.Combine(workDir, ".beast", "roles.json");
         LoadRoles();
+    }
+
+    // The on-disk shape of roles.json: two blocks whose membership determines each role's kind.
+    private sealed class RolesFile
+    {
+        [JsonPropertyName("agents")]
+        public List<Role> Agents { get; set; } = new List<Role>();
+
+        [JsonPropertyName("subagents")]
+        public List<Role> Subagents { get; set; } = new List<Role>();
     }
 
     public Role? GetRole(string name)
@@ -40,24 +58,102 @@ public class RoleService
     {
         Roles.Clear();
 
-        Role defaultRole = DefaultRole();
-        Role taskRole = TaskRole();
-        Role developerRole = DeveloperRole();
-        Role reviewerRole = ReviewerRole();
-        Role webRole = WebRole();
+        // Build the in-code defaults first; they are authoritative and versioned with the build. The
+        // Agents block holds the Agent-kind roles, the Subagents block the Subagent-kind ones.
+        Role[] defaults =
+        {
+            DefaultRole(),
+            TaskRole(),
+            DeveloperRole(),
+            ReviewerRole(),
+            WebRole()
+        };
+        foreach (Role role in defaults)
+            Roles[role.Name] = role;
 
-        Roles[defaultRole.Name] = defaultRole;
-        Roles[taskRole.Name] = taskRole;
-        Roles[developerRole.Name] = developerRole;
-        Roles[reviewerRole.Name] = reviewerRole;
-		Roles[webRole.Name] = webRole;
+        // Write the project's roles.json from the defaults when missing; otherwise load it and assign its
+        // roles over the defaults so edits take effect (and any extra roles are added).
+        if (!File.Exists(_workDirRolesPath))
+            WriteRolesFile(_workDirRolesPath, defaults);
+        else
+            ApplyRolesFromFile(_workDirRolesPath);
+    }
+
+    // Serializes the current role set into roles.json, splitting it into the Agents and Subagents blocks
+    // by kind. The kind itself is not written — the block a role sits in carries it.
+    private static void WriteRolesFile(string path, IReadOnlyList<Role> roles)
+    {
+        RolesFile file = new RolesFile();
+        foreach (Role role in roles)
+        {
+            if (role.Kind == RoleKind.Agent)
+                file.Agents.Add(role);
+            else
+                file.Subagents.Add(role);
+        }
+
+        try
+        {
+            JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
+            string json = JsonSerializer.Serialize(file, options);
+
+            string? dir = Path.GetDirectoryName(path);
+            if (dir != null)
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllText(path, json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"WARNING: Failed to write roles.json at {path}: {ex.Message}");
+        }
+    }
+
+    // Loads roles.json and assigns each block's roles over the in-code defaults in the dictionary. Each
+    // role's kind comes from the block it appears in, not the file, so it is reconstructed here.
+    private void ApplyRolesFromFile(string path)
+    {
+        RolesFile? file;
+        try
+        {
+            string json = File.ReadAllText(path);
+            if (string.IsNullOrWhiteSpace(json))
+                return;
+            file = JsonSerializer.Deserialize<RolesFile>(json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ERROR: Failed to load roles.json from {path}");
+            Console.Error.WriteLine($"       {ex.Message}");
+            Console.Error.WriteLine("Fix it, or delete the file to regenerate defaults.");
+            throw;
+        }
+
+        if (file == null)
+            return;
+
+        foreach (Role role in file.Agents)
+            AssignRole(role, RoleKind.Agent);
+        foreach (Role role in file.Subagents)
+            AssignRole(role, RoleKind.Subagent);
+    }
+
+    // Rebuilds a file-loaded role with the kind from its block (kind is not serialized) and assigns it
+    // over any default of the same name. Skips nameless entries.
+    private void AssignRole(Role role, RoleKind kind)
+    {
+        if (string.IsNullOrEmpty(role.Name))
+            return;
+
+        Role kinded = new Role(role.Name, role.Description, kind, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
+        Roles[kinded.Name] = kinded;
     }
 
     // ---- Role definitions ----
     // Each role is defined here so the role set is easy to extend without touching the Role data class.
 
     // Interactive entry point: read the project and decide what to do. No end-of-turn prompt, so it
-    // behaves like ordinary chat — it responds and waits. start_task hands off to the Task role.
+    // behaves like ordinary chat — it responds and waits. start_task hands off to the Task role.  This should be a smart model.
     private static Role DefaultRole()
     {
 		const string description = "Light conversation role";
@@ -70,7 +166,7 @@ public class RoleService
     }
 
     // Carries out a task by delegating to subagents. Kept on task by its end-of-turn prompt until it
-    // calls task_complete.
+    // calls task_complete.  This does not need to be a very smart model, just capable of calling a few tools and track task progress.
     private static Role TaskRole()
     {
 		const string description = "To orchestrate the completion of a task";
@@ -80,7 +176,7 @@ public class RoleService
             Carry out the objective by delegating units of work to subagents. When you call subagent you name the role to spawn and write the context for what it must do:
               - Assign the Developer role to make the actual code changes (it has full read/write/shell access).
               - Then assign the Reviewer role to inspect the result. An approved review commits the work and rebases the worktree branch onto main (linear, no merge commit); a rejected review returns comments for the Developer to address.
-            Iterate Developer -> Reviewer until the review is approved. Ask clarifying questions only when truly blocked.
+            Iterate between Developer and Reviewer until the review is approved. Ask clarifying questions only when truly blocked.
             """;
         const string summaryPrompt = """
             Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
@@ -90,12 +186,12 @@ public class RoleService
         // Drives the task by delegating; it does not perform the work itself. task_complete is added in
         // code for Agent roles that have an end-of-turn prompt.
         List<string> tools = new List<string> { "read_file", "ls", "subagent" };
-        return new Role("Task", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
+        return new Role("Task", description, RoleKind.Agent, new List<string> { "local", "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
     // A full-access worker invoked as a subagent: it makes the actual code changes in the worktree.
     // It is the only role with write access (write_file, edit_file, bash), so all implementation —
-    // including fixes after a rejected review — is delegated to it. Finishes by calling return_to_caller.
+    // including fixes after a rejected review — is delegated to it. Finishes by calling return_to_caller. This should be a smart model.
     private static Role DeveloperRole()
     {
 		const string description = "Implements changes with full read/write/shell access";
@@ -107,13 +203,13 @@ public class RoleService
             """;
         const string endOfTurnPrompt = "If you have achieved the goal, call the return_to_caller tool with the result. Otherwise keep working.";
         List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls", "fetch_url", "search_web" };
-        return new Role("Developer", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 
     // A read-only reviewer invoked as a subagent. It inspects the Developer's changes but cannot modify
     // them — only the Developer has write access. It finishes by calling finish_review with an approval
     // flag and comments; on approval SubagentRunner commits and rebases the worktree branch onto main
-    // (linear, no merge commit) and appends the git transcript to the review the orchestrator receives.
+    // (linear, no merge commit) and appends the git transcript to the review the orchestrator receives. This should be a smart model, but different from the Developer.
     private static Role ReviewerRole()
     {
 		const string description = "Reviews changes read-only; approves and merges, or rejects with comments";
@@ -127,12 +223,12 @@ public class RoleService
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
         // entry, so it is listed here only as the marker that selects this role's terminator.
         List<string> tools = new List<string> { "read_file", "ls", "fetch_url", "search_web", "finish_review" };
-        return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 
     // Used internally by the fetch_url tool (WebFetch.FetchRawAsync), which runs it as a single turn. It is
     // seeded with a URL, an objective, and the already-fetched page content, and replies with only what the
-    // objective asks for. It has no tools and no end-of-turn loop — its reply is the answer.
+    // objective asks for. It has no tools and no end-of-turn loop — its reply is the answer. This should be a dumb model.
     private static Role WebRole()
     {
 		const string description = "To request a URL and return only the useful parts";

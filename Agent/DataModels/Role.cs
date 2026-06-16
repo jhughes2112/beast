@@ -21,7 +21,10 @@ public class Role
 	[JsonPropertyName("description")]
 	public string Description { get; }
 
-	[JsonPropertyName("kind")]
+	// Not serialized: roles.json groups roles into an Agents block and a Subagents block, and the block a
+	// role appears in determines its kind (see RoleService). So the field is reconstructed on load, never
+	// read from or written to the file.
+	[JsonIgnore]
 	public RoleKind Kind { get; }
 
     // '*' expands at load time to all enabled model IDs at that position. Order is still respected.
