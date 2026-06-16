@@ -590,16 +590,20 @@ public class SessionRunner
 				case "model":
 					if (args != null)
 					{
+						// Completions append a pricing annotation after the id; keep only the id token.
+						int modelArgSpace = args.IndexOf(' ');
+						string modelArg = modelArgSpace >= 0 ? args.Substring(0, modelArgSpace) : args;
+
 						Role? modelRole = _roleService.GetRole(session.Role);
-						LlmModel? targetModel = modelRole != null ? _registry.GetModelForRole(modelRole, args, 0) : null;
+						LlmModel? targetModel = modelRole != null ? _registry.GetModelForRole(modelRole, modelArg, 0) : null;
 						if (targetModel == null)
-							_transport.Error(session.Id, $"Unknown model: {args}");
+							_transport.Error(session.Id, $"Unknown model: {modelArg}");
 						else
 						{
 							session.UpdateModel(targetModel);
-							_registry.ResetAvailability(args);
+							_registry.ResetAvailability(modelArg);
 							_service = null;  // force fresh service with new model next turn
-							_transport.Status(session.Id, $"Model set to {args}");
+							_transport.Status(session.Id, $"Model set to {modelArg}");
 							// Reflect the new model on the client status line immediately rather than
 							// waiting for the next turn's Stats frame.
 							session.SendStats();
@@ -639,7 +643,16 @@ public class SessionRunner
 		{
 			string currentModelId = activeModel != null ? activeModel.ConfigId : session.Model + " (not available)";
 			List<string> enabledModels = _registry.GetEnabledModelsForRole(activeRole);
-			AddCurrentFirst(candidates, "/model ", currentModelId, enabledModels);
+			// Current model first, then the rest, each annotated with its per-Mtok pricing.
+			// The trailing pricing is display-only: the /model handler trims everything after the id.
+			if (!string.IsNullOrEmpty(currentModelId) && enabledModels.Contains(currentModelId))
+				candidates.Add("/model " + currentModelId + ModelPricingLabel(currentModelId));
+			foreach (string modelId in enabledModels)
+			{
+				if (modelId == currentModelId)
+					continue;
+				candidates.Add("/model " + modelId + ModelPricingLabel(modelId));
+			}
 		}
 
 		candidates.Add("/session new");
@@ -655,16 +668,16 @@ public class SessionRunner
 		return candidates;
 	}
 
-	private static void AddCurrentFirst(List<string> candidates, string prefix, string currentValue, ICollection<string> values)
+	// Builds the trailing pricing annotation shown after a model id in /model completions, e.g.
+	// "  in:$3.00 out:$15.00 /Mtok". Display-only — the /model handler trims it before resolving.
+	private string ModelPricingLabel(string modelId)
 	{
-		if (!string.IsNullOrEmpty(currentValue) && values.Contains(currentValue))
-			candidates.Add(prefix + currentValue);
-		foreach (string value in values)
-		{
-			if (value == currentValue)
-				continue;
-			candidates.Add(prefix + value);
-		}
+		LlmModel? model = _registry.GetModel(modelId);
+		if (model == null)
+			return string.Empty;
+
+		CostConfig cost = model.Config.Cost;
+		return $"  in:${cost.Input:0.00} out:${cost.Output:0.00} /Mtok";
 	}
 
 	// ---- Tests ----

@@ -1396,7 +1396,11 @@ public class DisplayScreen : IDisplay
             // waiting for the agent to round-trip a Stats frame back to us.
             if (verb.Equals("model", StringComparison.OrdinalIgnoreCase) && spaceIdx >= 0)
             {
+                // Completions append a pricing annotation after the id; keep only the id token.
                 string newModel = trimmed.Substring(spaceIdx + 1).Trim();
+                int modelSpace = newModel.IndexOf(' ');
+                if (modelSpace >= 0)
+                    newModel = newModel.Substring(0, modelSpace);
                 if (newModel.Length > 0)
                 {
                     lock (_consoleLock)

@@ -78,7 +78,7 @@ public static class ProtocolSwitchTests
 
 	private static ProtocolProxy BuildTestProxy()
 	{
-		LlmModel model = new LlmModel("test", "http://localhost", string.Empty, new Dictionary<string, JsonNode?>(), new ModelConfig());
+		LlmModel model = new LlmModel("test", "http://localhost", string.Empty, new List<JsonObject>(), new List<JsonObject>(), new ModelConfig());
 		return new ProtocolProxy(model);
 	}
 

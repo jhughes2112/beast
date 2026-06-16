@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -47,12 +46,7 @@ public class LlmRegistry
 				if (!modelConfig.Enabled)
 					continue;
 
-				Dictionary<string, JsonNode?> extras = new(provider.Extras);
-				foreach (KeyValuePair<string, JsonNode?> kv in modelConfig.Extras)
-				{
-					extras[kv.Key] = kv.Value;
-				}
-				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, extras, modelConfig);
+				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, modelConfig.Extras, modelConfig.Headers, modelConfig);
 				_models[modelConfig.Id] = model;
 			}
 		}
@@ -130,7 +124,7 @@ public class LlmRegistry
 				foreach (string modelId in entry.Value.modelIds)
 				{
 					if (_models.TryGetValue(modelId, out LlmModel? old))
-						_models[modelId] = new LlmModel(old.ConfigId, effectiveEndpoint, old.ApiKey, old.Extras, old.Config);
+						_models[modelId] = new LlmModel(old.ConfigId, effectiveEndpoint, old.ApiKey, old.Extras, old.Headers, old.Config);
 				}
 			}
 		}
@@ -178,6 +172,13 @@ public class LlmRegistry
 	public LlmModel? GetModelForRole(Role? role, string preferredModelId, int minContextRequired)
 	{
 		return PickModel(role, preferredModelId, minContextRequired);
+	}
+
+	// Returns the registered model for a config ID, or null if it is not enabled/known.
+	public LlmModel? GetModel(string configId)
+	{
+		_models.TryGetValue(configId, out LlmModel? model);
+		return model;
 	}
 
 	// Returns the role's models filtered to those currently registered (enabled in settings).

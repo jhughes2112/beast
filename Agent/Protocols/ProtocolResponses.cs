@@ -235,6 +235,10 @@ public class ProtocolResponses
         if (tools.Count > 0)
         {
             JsonArray toolsArr = new JsonArray();
+            JsonObject twebsearch = new JsonObject();  // the allows web search to happen internally on any OpenAI model, about a penny a search
+            twebsearch["type"] = "web_search";
+            toolsArr.Add(twebsearch);
+
             foreach (ToolDefinition td in tools)
             {
                 JsonObject t = new JsonObject();

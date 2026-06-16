@@ -72,13 +72,17 @@ public class WebSearchOpenrouter
     }
 
     // Reads an integer value from the model extras, falling back to the given default.
+    // Extras are an ordered list of JSON objects; later entries win, so scan in reverse.
     private int GetIntExtra(string key, int defaultValue)
     {
-        if (_model.Extras.TryGetValue(key, out JsonNode? node) &&
-            node is JsonValue jv &&
-            jv.TryGetValue<int>(out int v))
+        for (int i = _model.Extras.Count - 1; i >= 0; i--)
         {
-            return v;
+            if (_model.Extras[i].TryGetPropertyValue(key, out JsonNode? node) &&
+                node is JsonValue jv &&
+                jv.TryGetValue<int>(out int v))
+            {
+                return v;
+            }
         }
         return defaultValue;
     }

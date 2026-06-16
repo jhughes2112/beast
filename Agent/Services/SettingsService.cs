@@ -149,26 +149,15 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 131078,
                             Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
-                            Extras = new Dictionary<string, JsonNode?>
+                            // Steer OpenRouter routing by declaring a "provider" object here, e.g.
+                            // { "provider": { "order": ["Anthropic"], "allow_fallbacks": false } }.
+                            Extras = new List<JsonObject>
                             {
-                                { "temperature", null },
-                                { "top_p", null },
-                                { "frequency_penalty", null }
+                                new JsonObject { ["temperature"] = null },
+                                new JsonObject { ["top_p"] = null },
+                                new JsonObject { ["frequency_penalty"] = null }
                             }
                         }
-                    },
-                    Extras = new Dictionary<string, JsonNode?>
-                    {
-                        { "or_provider_order", JsonValue.Create("") },
-                        { "or_provider_only", JsonValue.Create("") },
-                        { "or_provider_ignore", JsonValue.Create("") },
-                        { "or_provider_sort", JsonValue.Create("") },
-                        { "or_provider_allow_fallbacks", JsonValue.Create("") },
-                        { "or_provider_require_parameters", JsonValue.Create("") },
-                        { "or_provider_data_collection", JsonValue.Create("") },
-                        { "or_provider_zdr", JsonValue.Create("") },
-                        { "or_user", JsonValue.Create("") },
-                        { "or_models", JsonValue.Create("") }
                     }
                 },
                 // Anthropic — direct API
@@ -185,16 +174,14 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 200000,
                             Cost = new CostConfig { Input = 3.0m, Output = 15.0m, CacheRead = 0.3m, CacheWrite = 3.75m },
-                            Extras = new Dictionary<string, JsonNode?>
+                            // Enable extended thinking by declaring a "thinking" object here, e.g.
+                            // { "thinking": { "budget_tokens": 8192 } }.
+                            Extras = new List<JsonObject>
                             {
-                                { "temperature", null },
-                                { "top_p", null }
+                                new JsonObject { ["temperature"] = null },
+                                new JsonObject { ["top_p"] = null }
                             }
                         }
-                    },
-                    Extras = new Dictionary<string, JsonNode?>
-                    {
-                        { "anthropic_version", JsonValue.Create("2023-06-01") }
                     }
                 },
                 // OpenAI — direct API
@@ -211,20 +198,20 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 400000,
                             Cost = new CostConfig { Input = 0.05m, Output = 0.40m, CacheRead = 0.005m, CacheWrite = 0.0m },
-                            Extras = new Dictionary<string, JsonNode?>
+                            Extras = new List<JsonObject>
                             {
-                                { "temperature", null },
-                                { "top_p", null },
-                                { "frequency_penalty", null }
+                                new JsonObject { ["temperature"] = null },
+                                new JsonObject { ["top_p"] = null },
+                                new JsonObject { ["frequency_penalty"] = null },
+                                new JsonObject { ["store"] = "" },
+                                new JsonObject { ["metadata"] = "" }
+                            },
+                            Headers = new List<JsonObject>
+                            {
+                                new JsonObject { ["OpenAI-Organization"] = "" },
+                                new JsonObject { ["OpenAI-Project"] = "" }
                             }
                         }
-                    },
-                    Extras = new Dictionary<string, JsonNode?>
-                    {
-                        { "header_OpenAI-Organization", JsonValue.Create("") },
-                        { "header_OpenAI-Project", JsonValue.Create("") },
-                        { "store", JsonValue.Create("") },
-                        { "metadata", JsonValue.Create("") }
                     }
                 },
                 // Ollama — local models
@@ -241,10 +228,9 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 32768,
                             Cost = new CostConfig { Input = 0.0m, Output = 0.0m },
-                            Extras = new Dictionary<string, JsonNode?>()
+                            Extras = new List<JsonObject>()
                         }
-                    },
-                    Extras = new Dictionary<string, JsonNode?>()
+                    }
                 }
             },
             WebSearch = new WebSearchConfig
@@ -255,11 +241,11 @@ public class SettingsService
                     ApiKey = "YOUR_OPENROUTER_KEY_HERE",
                     Enabled = false,
                     Model = "baidu/cobuddy:free",
-                    Extras = new Dictionary<string, JsonNode?>
+                    Extras = new List<JsonObject>
                     {
-                        { "plugins", new JsonArray(new JsonObject { ["id"] = "web" }) },
-                        { "temperature", JsonValue.Create(0) },
-                        { "max_tokens", JsonValue.Create(4096) }
+                        new JsonObject { ["plugins"] = new JsonArray(new JsonObject { ["id"] = "web" }) },
+                        new JsonObject { ["temperature"] = JsonValue.Create(0) },
+                        new JsonObject { ["max_tokens"] = JsonValue.Create(4096) }
                     }
                 }
             }

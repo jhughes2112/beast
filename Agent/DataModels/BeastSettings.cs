@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -35,13 +36,6 @@ public class ProviderConfig
 
     [JsonPropertyName("models")]
     public List<ModelConfig> Models { get; set; } = new();
-
-    // Provider-specific key/value pairs. Used to pass vendor-specific options
-    // (e.g. routing preferences for OpenRouter) without changing the schema.
-    // Values are JsonNode so structured payloads (arrays, objects) are supported
-    // alongside plain strings. Null values and empty strings are skipped.
-    [JsonPropertyName("extras")]
-    public Dictionary<string, JsonNode?> Extras { get; set; } = new();
 }
 
 public class ModelConfig
@@ -64,12 +58,19 @@ public class ModelConfig
     [JsonPropertyName("cost")]
     public CostConfig Cost { get; set; } = new();
 
-    // Per-model overrides. header_* keys become HTTP headers; everything else is injected
-    // as top-level JSON payload fields, overriding the typed fields above when names match.
-    // Values are JsonNode so structured payloads (arrays, objects) are supported
-    // alongside plain strings. Null values and empty strings are skipped.
+    // Extra top-level fields merged verbatim into the outgoing request body. Each entry is a
+    // JSON object whose properties are copied into the payload as-is (strings, arrays, objects,
+    // numbers, booleans). Entries are applied in order; later keys win on collision. Null and
+    // empty-string values are skipped so the settings file can carry self-documenting placeholders.
     [JsonPropertyName("extras")]
-    public Dictionary<string, JsonNode?> Extras { get; set; } = new();
+    [JsonConverter(typeof(JsonObjectListConverter))]
+    public List<JsonObject> Extras { get; set; } = new();
+
+    // Extra HTTP request headers. Each entry is a JSON object of header-name → value, copied
+    // verbatim onto the request. Applied in order; later entries win. Empty values are skipped.
+    [JsonPropertyName("headers")]
+    [JsonConverter(typeof(JsonObjectListConverter))]
+    public List<JsonObject> Headers { get; set; } = new();
 }
 
 public class CostConfig
@@ -95,7 +96,7 @@ public class WebSearchConfig
 }
 
 // Configuration for web search via the OpenRouter plugin API.
-// Extras are injected as top-level JSON payload fields on the chat completion request,
+// Extras are merged verbatim as top-level JSON payload fields on the chat completion request,
 // so structured values like the plugins array can be declared in settings.
 public class OpenrouterSearchConfig
 {
@@ -112,12 +113,16 @@ public class OpenrouterSearchConfig
     [JsonPropertyName("model")]
     public string Model { get; set; } = "openai/gpt-4o-mini";
 
-    // Extra key/value pairs injected into the chat completion payload.
-    // header_* keys become HTTP headers; or_* keys control OpenRouter routing;
-    // everything else is merged verbatim as a top-level JSON field.
-    // Values are JsonNode so structured payloads (arrays, objects) are supported.
+    // Extra top-level body fields merged verbatim into the chat completion payload.
+    // Each entry is a JSON object copied as-is; later keys win on collision.
     [JsonPropertyName("extras")]
-    public Dictionary<string, JsonNode?> Extras { get; set; } = new();
+    [JsonConverter(typeof(JsonObjectListConverter))]
+    public List<JsonObject> Extras { get; set; } = new();
+
+    // Extra HTTP request headers, copied verbatim. Each entry is a name → value JSON object.
+    [JsonPropertyName("headers")]
+    [JsonConverter(typeof(JsonObjectListConverter))]
+    public List<JsonObject> Headers { get; set; } = new();
 
     public LlmModel BuildModel()
     {
@@ -126,6 +131,44 @@ public class OpenrouterSearchConfig
             endpoint: Endpoint,
             apiKey: ApiKey,
             extras: Extras,
+            headers: Headers,
             config: new ModelConfig { Id = Model, Name = Model });
+    }
+}
+
+// Reads extras/headers as a list of JSON objects, but also accepts a single object for
+// convenience (it becomes a one-element list). This lets the settings file write the natural
+// { "temperature": 0.7, "top_p": 0.95 } shape instead of requiring an outer array.
+public class JsonObjectListConverter : JsonConverter<List<JsonObject>>
+{
+    public override List<JsonObject> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        List<JsonObject> result = new List<JsonObject>();
+        JsonNode? node = JsonNode.Parse(ref reader);
+
+        if (node is JsonArray array)
+        {
+            foreach (JsonNode? item in array)
+            {
+                if (item is JsonObject obj)
+                    result.Add((JsonObject)obj.DeepClone());
+            }
+        }
+        else if (node is JsonObject single)
+        {
+            result.Add((JsonObject)single.DeepClone());
+        }
+
+        return result;
+    }
+
+    public override void Write(Utf8JsonWriter writer, List<JsonObject> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartArray();
+        foreach (JsonObject obj in value)
+        {
+            obj.WriteTo(writer, options);
+        }
+        writer.WriteEndArray();
     }
 }

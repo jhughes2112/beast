@@ -19,24 +19,14 @@ public enum DetectedProtocol
 // Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
 // The lifetime of a ProtocolProxy is tied to the LLMService it is created for.
 // Protocol is inferred from the endpoint URL path (/messages → Anthropic, /chat/completions → ChatCompletions, /responses → Responses).
-// This class also routes calls to the appropriate protocol implementation and injects headers/payload fields from the Extras dictionary.
+// This class also routes calls to the appropriate protocol implementation and injects the model's
+// headers and body extras onto the outgoing request.
 //
-// Extras key conventions:
-//   header_<name>  — added verbatim as an HTTP request header
-//   or_*           — OpenRouter-specific (see below); injected as structured fields
-//   Anything else  — added verbatim as a top-level JSON payload field (string, array, object, etc.)
-//
-// OpenRouter extras (or_*):
-//   or_provider_order              — comma-separated provider names, e.g. "Anthropic,OpenAI"
-//   or_provider_sort               — "price", "throughput", or "latency"
-//   or_provider_allow_fallbacks    — "true" or "false" (default: true when on openrouter)
-//   or_provider_require_parameters — "true" to only route to providers supporting all params
-//   or_provider_data_collection    — "deny" to exclude providers that store prompts
-//   or_provider_ignore             — comma-separated provider names to exclude
-//   or_provider_only               — comma-separated provider names; restricts routing strictly
-//   or_provider_zdr                — "true" to restrict to zero-data-retention endpoints
-//   or_user                        — stable identifier for your end-user (abuse detection)
-//   or_models                      — comma-separated fallback model names (string) or JSON array of model names
+// Extras and headers are replicated verbatim — no key interpretation. The model's "extras" entries
+// are merged as top-level JSON body fields (strings, arrays, objects, numbers, booleans) and its
+// "headers" entries become HTTP request headers. To steer OpenRouter routing, declare a "provider"
+// object directly in extras; we no longer translate any or_* shorthand. Null and empty-string values
+// are skipped so the settings file can carry self-documenting placeholder keys.
 public class ProtocolProxy
 {
     // Sentinel forcedToolName meaning "the model must call some tool this turn, but may pick which."
@@ -202,7 +192,7 @@ public class ProtocolProxy
     {
         bundle.SetActiveProxy(this);
 
-        (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Endpoint);
+        (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Headers);
         string endpoint = _model.Endpoint;
 
         if (_detected == DetectedProtocol.Unknown)
@@ -210,7 +200,7 @@ public class ProtocolProxy
             (DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(endpoint, cancellationToken);
             _detected = probed;
             if (effectiveEndpoint != endpoint)
-                _model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Config);
+                _model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Headers, _model.Config);
         }
 
         IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
@@ -272,125 +262,47 @@ public class ProtocolProxy
         node is null ||
         (node is JsonValue jv && jv.TryGetValue<string>(out var s) && string.IsNullOrEmpty(s));
 
-    // Builds the extra-headers and extra-payload dictionaries from Extras.
-    // OpenRouter headers are always injected; or_* extras populate the provider routing block.
-    // header_* keys become HTTP headers; everything else goes directly into the payload
-    // as a JsonNode, preserving structured values (arrays, objects) verbatim.
+    // Builds the extra-headers and extra-payload dictionaries from the model's headers and extras.
+    // Both are replicated verbatim with no key interpretation: each extras entry's properties are
+    // merged as top-level body fields, each headers entry's properties become HTTP headers. Entries
+    // apply in order so later keys win on collision. Null and empty-string values are skipped.
     public static (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) BuildExtras(
-        Dictionary<string, JsonNode?> extras, string endpoint)
+        List<JsonObject> extras, List<JsonObject> headerObjects)
     {
         Dictionary<string, string> headers = new();
         Dictionary<string, JsonNode?> payload = new();
 
         // Always inject OpenRouter identification headers — harmless on non-OpenRouter endpoints.
+        // The model's own headers can override these.
         headers["HTTP-Referer"] = OpenRouterReferer;
         headers["X-Title"] = OpenRouterTitle;
         headers["X-OpenRouter-Title"] = OpenRouterTitle;
         headers["X-OpenRouter-Categories"] = OpenRouterCategories;
 
-        JsonObject orProvider = new JsonObject();
-        bool hasOrProvider = false;
-
-        // Default allow_fallbacks to true when talking to OpenRouter.
-        if (endpoint.Contains("openrouter.ai", System.StringComparison.OrdinalIgnoreCase))
+        foreach (JsonObject headerObject in headerObjects)
         {
-            orProvider["allow_fallbacks"] = JsonValue.Create(true);
-            hasOrProvider = true;
-        }
+            foreach (KeyValuePair<string, JsonNode?> kv in headerObject)
+            {
+                if (IsEmptyExtra(kv.Value))  // empty/null values are ignored, so the settings file can be self-documenting
+                    continue;
 
-        foreach (KeyValuePair<string, JsonNode?> kv in extras)
-        {
-            string key = kv.Key;
-            JsonNode? value = kv.Value;
-
-            if (IsEmptyExtra(value))  // empty/null values are ignored, so the settings file can be self-documenting
-                continue;
-
-            if (key.StartsWith("header_"))
-            {
-                headers[key.Substring("header_".Length)] = value!.ToString();
-            }
-            else if (key == "or_user")
-            {
-                payload["user"] = value!.DeepClone();
-            }
-            else if (key == "or_models")
-            {
-                if (value!.GetValueKind() == JsonValueKind.String)
-                {
-                    string str = value.ToString();
-                    if (!string.IsNullOrEmpty(str))
-                    {
-                        JsonArray arr = BuildCsvArray(str);
-                        if (arr.Count > 0) payload["models"] = arr;
-                    }
-                }
-                else if (value.GetValueKind() == JsonValueKind.Array)
-                {
-                    // DeepClone: the node belongs to the extras tree and gets parented into the
-                    // request body downstream; re-using it across turns would throw.
-                    payload["models"] = (JsonArray)value.DeepClone();
-                }
-            }
-            else if (key.StartsWith("or_provider_"))
-            {
-                string field = key.Substring("or_provider_".Length);
-                string str = value!.ToString();
-                switch (field)
-                {
-                    case "order":
-                        JsonArray order = BuildCsvArray(str);
-                        if (order.Count > 0) { orProvider["order"] = order; hasOrProvider = true; }
-                        break;
-                    case "only":
-                        JsonArray only = BuildCsvArray(str);
-                        if (only.Count > 0) { orProvider["only"] = only; hasOrProvider = true; }
-                        break;
-                    case "ignore":
-                        JsonArray ignore = BuildCsvArray(str);
-                        if (ignore.Count > 0) { orProvider["ignore"] = ignore; hasOrProvider = true; }
-                        break;
-                    case "sort":
-                        orProvider["sort"] = JsonValue.Create(str); hasOrProvider = true;
-                        break;
-                    case "allow_fallbacks":
-                        orProvider["allow_fallbacks"] = JsonValue.Create(str != "false"); hasOrProvider = true;
-                        break;
-                    case "require_parameters":
-                        if (str == "true") { orProvider["require_parameters"] = JsonValue.Create(true); hasOrProvider = true; }
-                        break;
-                    case "data_collection":
-                        orProvider["data_collection"] = JsonValue.Create(str); hasOrProvider = true;
-                        break;
-                    case "zdr":
-                        if (str == "true") { orProvider["zdr"] = JsonValue.Create(true); hasOrProvider = true; }
-                        break;
-                }
-            }
-            else
-            {
-                // Generic extra — pass the JsonNode verbatim into the payload.
-                // This supports strings, arrays, objects, numbers, booleans, etc.
-                payload[key] = value!.DeepClone();
+                headers[kv.Key] = kv.Value!.ToString();
             }
         }
 
-        if (hasOrProvider)
+        foreach (JsonObject extraObject in extras)
         {
-            payload["provider"] = orProvider;
+            foreach (KeyValuePair<string, JsonNode?> kv in extraObject)
+            {
+                if (IsEmptyExtra(kv.Value))
+                    continue;
+
+                // DeepClone: the node belongs to the extras tree and gets parented into the
+                // request body downstream; re-using it across turns would throw.
+                payload[kv.Key] = kv.Value!.DeepClone();
+            }
         }
 
         return (headers, payload);
-    }
-
-    private static JsonArray BuildCsvArray(string csv)
-    {
-        JsonArray arr = new JsonArray();
-        foreach (string part in csv.Split(','))
-        {
-            string trimmed = part.Trim();
-            if (trimmed.Length > 0) arr.Add(JsonValue.Create(trimmed));
-        }
-        return arr;
     }
 }

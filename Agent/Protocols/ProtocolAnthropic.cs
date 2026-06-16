@@ -189,7 +189,7 @@ public class ProtocolAnthropic
             }
         }
 
-        ThinkingParameters? thinking = BuildThinking(model, extraPayload);
+        ThinkingParameters? thinking = BuildThinking(extraPayload);
         if (thinking != null)
         {
             parameters.Thinking = thinking;
@@ -198,18 +198,14 @@ public class ProtocolAnthropic
         return parameters;
     }
 
-    // Thinking is dynamic: the agent will set it later. A payload-level "thinking" block wins;
-    // otherwise model.Extras may carry it. Enabled only when a positive budget is present.
-    private static ThinkingParameters? BuildThinking(LlmModel model, Dictionary<string, JsonNode?> extraPayload)
+    // Thinking is dynamic: the agent will set it later. The model's extras land in extraPayload, so a
+    // "thinking" block declared there drives this. Enabled only when a positive budget is present.
+    private static ThinkingParameters? BuildThinking(Dictionary<string, JsonNode?> extraPayload)
     {
         JsonNode? source = null;
         if (extraPayload.TryGetValue("thinking", out JsonNode? payloadThinking) && payloadThinking != null)
         {
             source = payloadThinking;
-        }
-        else if (model.Extras.TryGetValue("thinking", out JsonNode? extrasThinking) && extrasThinking != null)
-        {
-            source = extrasThinking;
         }
 
         ThinkingParameters? result = null;
