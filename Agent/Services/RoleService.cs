@@ -25,15 +25,15 @@ public class RoleService
 
     // Names of the Subagent-kind roles — the only roles the subagent tool may target and the only
     // roles a SubagentSession may run.
-    public List<string> SubagentRoleNames()
+    public List<Role> SubagentRoles()
     {
-        List<string> names = new List<string>();
+        List<Role> subagentRoles = new List<Role>();
         foreach (Role role in Roles.Values)
         {
             if (role.Kind == RoleKind.Subagent)
-                names.Add(role.Name);
+                subagentRoles.Add(role);
         }
-        return names;
+        return subagentRoles;
     }
 
     private void LoadRoles()
@@ -43,10 +43,12 @@ public class RoleService
         Role defaultRole = DefaultRole();
         Role taskRole = TaskRole();
         Role toolsRole = ToolsRole();
+        Role webRole = WebRole();
 
         Roles[defaultRole.Name] = defaultRole;
         Roles[taskRole.Name] = taskRole;
         Roles[toolsRole.Name] = toolsRole;
+		Roles[webRole.Name] = webRole;
     }
 
     // ---- Role definitions ----
@@ -56,18 +58,20 @@ public class RoleService
     // behaves like ordinary chat — it responds and waits. start_task hands off to the Task role.
     private static Role DefaultRole()
     {
+		const string description = "Light conversation role";
         const string systemPrompt = "You are a helpful assistant. Use read_file and ls to consider the current project, discuss it with the user, and when there is a concrete task to do, call start_task with a clear objective to begin working it.";
         const string summaryPrompt = """
             Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
             """;
-        List<string> tools = new List<string> { "read_file", "ls", "start_task" };
-        return new Role("Default", RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, string.Empty, string.Empty, string.Empty);
+        List<string> tools = new List<string> { "read_file", "ls", "start_task", "fetch_url", "search_web" };
+        return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, string.Empty, string.Empty, string.Empty);
     }
 
     // Carries out a task by delegating to subagents. Kept on task by its end-of-turn prompt until it
     // calls task_complete.
     private static Role TaskRole()
     {
+		const string description = "To orchestrate the completion of a task";
         const string systemPrompt = "You are a capable orchestrator. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress. Carry out the objective by delegating units of work to subagents, asking clarifying questions only when truly blocked.";
         const string summaryPrompt = """
             Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
@@ -77,12 +81,13 @@ public class RoleService
         // Drives the task by delegating; it does not perform the work itself. task_complete is added in
         // code for Agent roles that have an end-of-turn prompt.
         List<string> tools = new List<string> { "read_file", "ls", "subagent" };
-        return new Role("Task", RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt, string.Empty, string.Empty);
+        return new Role("Task", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt, string.Empty, string.Empty);
     }
 
     // A general worker invoked as a subagent. Finishes by calling return_to_caller.
     private static Role ToolsRole()
     {
+		const string description = "To perform a single tool call interpreted through an LLM";
         const string systemPrompt =
             """
             You are a worker agent carrying out a single delegated unit of work. Use your tools to accomplish the goal directly and report the minimum output needed.
@@ -90,7 +95,21 @@ public class RoleService
             If the goal cannot be achieved, be brief: report this and list what you attempted along with the exact output.
             """;
         const string endOfTurnPrompt = "If you have achieved the goal, call the return_to_caller tool with the result. Otherwise keep working.";
-        List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls" };
-        return new Role("Tools", RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt, string.Empty, string.Empty);
+        List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls", "fetch_url", "search_web" };
+        return new Role("Tools", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt, string.Empty, string.Empty);
+    }
+
+    // Used internally by the fetch_url tool (WebFetch.FetchRawAsync), which runs it as a single turn. It is
+    // seeded with a URL, an objective, and the already-fetched page content, and replies with only what the
+    // objective asks for. It has no tools and no end-of-turn loop — its reply is the answer.
+    private static Role WebRole()
+    {
+		const string description = "To request a URL and return only the useful parts";
+        const string systemPrompt =
+            """
+            You are given a URL, an objective, and the already-fetched text content of that page. Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value.
+            """;
+        List<string> tools = new List<string>();
+        return new Role("Web", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, string.Empty, string.Empty, string.Empty);
     }
 }

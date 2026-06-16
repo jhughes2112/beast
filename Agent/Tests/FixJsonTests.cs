@@ -145,7 +145,7 @@ public static class FixJsonTests
 
 	private static void TestFuzzyToolName(TestContext ctx)
 	{
-		string[] tools = new string[] { "read_file", "write_file", "edit_file", "bash", "fetch_page" };
+		string[] tools = new string[] { "read_file", "write_file", "edit_file", "bash", "fetch_url" };
 
 		// camelCase → snake_case (distance 1: remove underscore)
 		string? r1 = FixJson.FuzzyMatchToolName("editFile", tools, 3, null);

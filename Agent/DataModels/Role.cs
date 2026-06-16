@@ -21,6 +21,9 @@ public class Role
 	[JsonPropertyName("name")]
 	public string Name { get; }
 
+	[JsonPropertyName("description")]
+	public string Description { get; }
+
 	[JsonPropertyName("kind")]
 	public RoleKind Kind { get; }
 
@@ -62,6 +65,7 @@ public class Role
 	[JsonConstructor]
 	public Role(
 		string name,
+		string description,
 		RoleKind kind,
 		List<string> models,
 		List<string> tools,
@@ -72,6 +76,7 @@ public class Role
 		string onExit)
 	{
 		Name = name ?? string.Empty;
+		Description = description ?? string.Empty;
 		Kind = kind;
 		Models = models ?? new List<string>();
 		Tools = tools ?? new List<string>();

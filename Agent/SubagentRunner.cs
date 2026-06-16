@@ -79,10 +79,13 @@ public class SubagentRunner
         parent.AddChild(subSession);
 
         // The child carries only its role's bound tools (no subagent tool), so nesting stops here.
-        // return_to_caller is created in ToolFactory and added here as the explicit terminator.
+        // fetch_url is injected by name like elsewhere (it needs the runWeb delegate); return_to_caller is
+        // created in ToolFactory and added here as the explicit terminator.
         ReturnSink sink = new ReturnSink();
         Tool returnTool = ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
         List<Tool> withReturn = new List<Tool>(role.BuiltTools);
+        if (role.Tools.Contains("fetch_url"))
+            withReturn.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, _currentSession));
         withReturn.Add(returnTool);
         Tool[] fullTools = withReturn.ToArray();
         Tool[] returnOnlyTools = new Tool[] { returnTool };

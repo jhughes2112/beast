@@ -43,6 +43,9 @@ public class SessionRunner
 	private readonly Tool _taskCompleteTool;
 	private bool _taskCompleteCalled = false;
 
+	// fetch_url: fetches a page and filters it through the Web role. Injected for roles that declare it.
+	private readonly Tool _fetchUrlTool;
+
 	// Set by start_task (via StartTaskAsync) once its hooks succeed; after the turn the root switches to a
 	// fresh Task session seeded with it. Null = no pending start. The start_task tool is built per turn
 	// (in ToolsForTurnAsync) so its branch-argument description carries live git worktree context.
@@ -67,7 +70,8 @@ public class SessionRunner
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
-		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoleNames(), _subagent.RunSubagentAsync);
+		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
+		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
 		_taskCompleteTool = ToolFactory.CreateTaskCompleteTool(status =>
 		{
 			_taskCompleteCalled = true;
@@ -593,7 +597,7 @@ public class SessionRunner
 					await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
 					_registry.ResetAllAvailability();
 					_service = null;
-					_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoleNames(), _subagent.RunSubagentAsync);
+					_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
 					_transport.Status(session.Id, "Config files reloaded.");
 					break;
 				case "model":
@@ -716,6 +720,8 @@ public class SessionRunner
 		}
 		if (role.Tools.Contains("subagent"))
 			tools.Add(_subagentTool);
+		if (role.Tools.Contains("fetch_url"))
+			tools.Add(_fetchUrlTool);
 		if (!string.IsNullOrEmpty(role.EndOfTurnPrompt))
 			tools.Add(_taskCompleteTool);
 		return tools.ToArray();

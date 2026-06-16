@@ -15,24 +15,13 @@ public static class ToolFactory
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
-        WebFetch webFetch = new();
-        Register(tools, "fetch_page",
-            "Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.",
-            Params(
-                Req("url", "string", "The fully-formed URL to fetch content from.")),
-            async (args, toolCallId, ct, transport, sessionId) =>
-            {
-                string url = Str(args, "url");
-                return await webFetch.FetchPageAsync(toolCallId, url, ct);
-            });
-
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
             WebSearchOpenrouter webSearch = new(webSearchConfig.Openrouter.BuildModel());
             Register(tools, "search_web",
                 "Search the web using a natural language query.",
                 Params(
-                    Req("query", "string", "Query or natural language question to answer using the web.")),
+                    Req("query", "string", "Describe what you are searching for and request specific details if possible.")),
                 async (args, toolCallId, ct, transport, sessionId) =>
                 {
                     string query = Str(args, "query");
@@ -105,13 +94,46 @@ public static class ToolFactory
         return tools;
     }
 
+    // Creates the fetch_url tool. It always routes through the Web role inside WebFetch.FetchRawAsync, which
+    // fetches the page and interprets it, returning only what the objective asks for. Injected by name like
+    // the other in-code tools, since it needs the registry/roleService and the current session.
+    public static Tool CreateFetchUrlTool(LlmRegistry registry, RoleService roleService, Func<Session> currentSession)
+    {
+        WebFetch webFetch = new WebFetch();
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "fetch_url",
+                    Description = "Fetch a web page and get back only the information you ask for. The page is read by the Web role, which returns just what your objective describes.",
+                    Parameters = Params(
+                        Req("url", "string", "The fully-formed URL to fetch content from."),
+                        Req("objective", "string", "Explain exactly what you are looking for and how that information will be used, so only that is returned."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string url = Str(args, "url");
+                string objective = Str(args, "objective");
+                return await webFetch.FetchRawAsync(toolCallId, url, objective, registry, roleService, transport, currentSession(), maxOutputTokens, ct);
+            }
+        };
+    }
+
     // Creates the delegation tool. The root agent adds this to its tool list (it is never role-assignable
     // and never given to a child, so subagents cannot recursively spawn). runSubagent launches the child
     // session, runs it to completion, and returns its final result fit to the caller's budget. roleNames
     // is listed in the role argument description so the model picks a valid role.
-    public static Tool CreateSubagentTool(IEnumerable<string> roleNames, Func<string, string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runSubagent)
+    public static Tool CreateSubagentTool(IEnumerable<Role> subagentRoles, Func<string, string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runSubagent)
     {
-        string roleList = string.Join(", ", roleNames);
+        string roleList = string.Empty;
+		foreach (Role r in subagentRoles)
+		{
+			roleList += $"{r.Name} -> {r.Description}\n"
+		}
 
         return new Tool
         {

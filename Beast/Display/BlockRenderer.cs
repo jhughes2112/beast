@@ -360,7 +360,7 @@ internal static class BlockRenderer
                 set.Add("command"); break;
             case "search_web":
                 set.Add("query"); break;
-            case "fetch_page":
+            case "fetch_url":
                 set.Add("url"); break;
         }
         return set;
@@ -403,7 +403,7 @@ internal static class BlockRenderer
             "write_file" or "edit_file_replace" or "edit_file_insert"  => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
             "bash"                                                     => BuildRunCommandSummary(label, Get("command")),
             "search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
-            "fetch_page"                                               => BuildPathSummary(label, Get("url"), respLineCount),
+            "fetch_url"                                               => BuildPathSummary(label, Get("url"), respLineCount),
             "return_to_caller"                                         => BuildLineCountSummary(label, CountLines(Get("output"))),
             "state_transition"                                         => $"{label} {Get("statement")}",
             _                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)

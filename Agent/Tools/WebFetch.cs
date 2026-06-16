@@ -1,66 +1,83 @@
 using System;
-using System.Collections.Concurrent;
-using System.ComponentModel;
-using System.Net;
+using System.Collections.Generic;
 using System.Net.Http;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
-
-// Fetches web pages and returns their text content with HTML stripped.
-// Caches successful responses for 30 seconds to avoid hammering external sites.
+// Fetches a web page and returns only what the objective asks for. The page is always interpreted by the
+// Web role; the raw page is never returned to the caller.
 public class WebFetch
 {
-    private record CacheEntry(string Content, DateTime ExpiresAt);
-
-    private static readonly Regex ScriptRegex = new Regex(@"<script[^>]*>[\s\S]*?</script>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex StyleRegex = new Regex(@"<style[^>]*>[\s\S]*?</style>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-    private static readonly Regex TagRegex = new Regex(@"<[^>]+>", RegexOptions.Compiled);
-    private static readonly Regex WhitespaceRegex = new Regex(@"\s+", RegexOptions.Compiled);
-    private static readonly Regex BlankLinesRegex = new Regex(@"(\r?\n\s*){3,}", RegexOptions.Compiled);
-
-    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
     private static readonly HttpClient SharedHttpClient = new();
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
-    [Description("Fetch the contents of a web page at the specified URL. Returns the text content with HTML tags stripped.")]
-    public async Task<ToolResult> FetchPageAsync(
-		string toolCallId,
-        [Description("The fully-formed URL to fetch content from.")] string url,
+    // Fetches the page and interprets it in a single Web-role turn: a throwaway sub-session is seeded with
+    // the URL, the objective, and the page content, and its reply (only what the objective asked for) is
+    // returned. Cost rolls up into the calling session. Everything is contained here.
+    public async Task<ToolResult> FetchRawAsync(
+        string toolCallId,
+        string url,
+        string objective,
+        LlmRegistry registry,
+        RoleService roleService,
+        ITransportServer transport,
+        Session parent,
+        int maxOutputTokens,
         CancellationToken cancellationToken)
     {
-
         if (string.IsNullOrWhiteSpace(url))
             return new ToolResult(toolCallId, string.Empty, "Error: URL cannot be empty.", 1, 0);
 
+        if (string.IsNullOrWhiteSpace(objective))
+            return new ToolResult(toolCallId, string.Empty, "Error: objective cannot be empty.", 1, 0);
+
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
             return new ToolResult(toolCallId, string.Empty, "Error: Invalid URL format: " + url, 1, 0);
+
+        Role? webRole = roleService.GetRole("Web");
+        if (webRole == null)
+            return new ToolResult(toolCallId, string.Empty, "Error: Web role is not defined.", 1, 0);
+
+        LlmService? service = registry.CreateService(webRole, string.Empty, 0);
+        if (service == null)
+            return new ToolResult(toolCallId, string.Empty, "Error: no model available for the Web role.", 1, 0);
 
         try
         {
             using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(DefaultTimeout);
 
-            if (_cache.TryGetValue(url, out CacheEntry? entry) && DateTime.UtcNow < entry.ExpiresAt)
-                return new ToolResult(toolCallId, entry.Content, string.Empty, 0, 0);
-
-            _cache.TryRemove(url, out _);
-
             HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, cts.Token);
-
             if (!response.IsSuccessStatusCode)
                 return new ToolResult(toolCallId, string.Empty, "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, 1, 0);
 
             string html = await response.Content.ReadAsStringAsync(cts.Token);
-            string text = StripHtmlTags(html);
 
-            if (string.IsNullOrWhiteSpace(text))
-                return new ToolResult(toolCallId, string.Empty, "Error: No readable text content found at URL: " + url, 1, 0);
+            // Interpret the page with the Web role in one turn (it has no tools, so the reply is the answer).
+            BeastSession data = new BeastSession(parent.AllocateChildId(), "fetch_url", service.Model.ConfigId, webRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+            Session webSession = new Session(data, webRole.SystemPrompt, transport, true);
+            webSession.AddUserMessage($"URL: {url}\nObjective: {objective}\n\nPage content:\n{html}");
+            webSession.AnnounceToClient();
+            parent.AddChild(webSession);
 
-            _cache[url] = new CacheEntry(text, DateTime.UtcNow + CacheTtl);
-            return new ToolResult(toolCallId, text, string.Empty, 0, 0);
+            webSession.SendBusy();
+            try
+            {
+                ProtocolResult result = await service.RunToCompletionAsync(webSession, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, cancellationToken);
+                if (result.Outcome != ProtocolCallOutcome.Success)
+                    return new ToolResult(toolCallId, string.Empty, "Error: the Web role failed to interpret " + url, 1, 0);
+
+                webSession.CommitAssistantTurn(result.Payload!);
+                parent.RecordCost(webSession.TotalCost);
+
+                string answer = result.Payload!.AssistantText;
+                int tokens = webSession.LastTokenUsage?.CompletionTokens ?? ToolDispatch.EstimateTokens(answer);
+                return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
+            }
+            finally
+            {
+                webSession.SendIdle();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -75,16 +92,4 @@ public class WebFetch
             return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + ex.Message, 1, 0);
         }
     }
-
-    private static string StripHtmlTags(string html)
-    {
-        html = ScriptRegex.Replace(html, "");
-        html = StyleRegex.Replace(html, "");
-        html = TagRegex.Replace(html, " ");
-        html = WebUtility.HtmlDecode(html);
-        html = WhitespaceRegex.Replace(html, " ");
-        html = BlankLinesRegex.Replace(html, "\n\n");
-        return html.Trim();
-    }
 }
-
