@@ -10,14 +10,58 @@ using System.Threading.Tasks;
 // Shell tools — all static methods.
 public static class ShellTools
 {
+	// Most entries a single ls returns before the rest are omitted with a mention, so a huge directory
+	// cannot flood the context.
+	private const int MaxLsEntries = 100;
+
 	// Lists a folder in `ls -al` form. Empty folder lists the current directory. Implemented over the
-	// shell so the output format matches `ls -al` exactly.
-	public static Task<ToolResult> LsAsync(string toolCallId, string folder, CancellationToken cancellationToken)
+	// shell so the output format matches `ls -al` exactly, then capped to MaxLsEntries entries.
+	public static async Task<ToolResult> LsAsync(string toolCallId, string folder, CancellationToken cancellationToken)
 	{
 		string target = string.IsNullOrWhiteSpace(folder) ? "." : folder;
 		string escaped = target.Replace("'", "'\\''");
 		string command = $"ls -al -- '{escaped}'";
-		return BashAsync(toolCallId, command, null, cancellationToken);
+		ToolResult result = await BashAsync(toolCallId, command, null, cancellationToken);
+
+		if (result.ExitCode != 0 || string.IsNullOrEmpty(result.StdOut))
+			return result;
+
+		return CapLsOutput(toolCallId, result);
+	}
+
+	// Keeps the leading `total N` line and the first MaxLsEntries entries, dropping the rest with a note.
+	// `ls -al` emits one entry per line after the `total` header, so an entry is any other non-empty line.
+	private static ToolResult CapLsOutput(string toolCallId, ToolResult result)
+	{
+		string[] lines = result.StdOut.Replace("\r\n", "\n").Split('\n');
+
+		StringBuilder sb = new StringBuilder();
+		int entries = 0;
+		int omitted = 0;
+		foreach (string line in lines)
+		{
+			if (line.Length == 0)
+				continue;
+
+			bool isEntry = !line.StartsWith("total ", StringComparison.Ordinal);
+			if (isEntry)
+			{
+				if (entries >= MaxLsEntries)
+				{
+					omitted++;
+					continue;
+				}
+				entries++;
+			}
+
+			sb.Append(line);
+			sb.Append('\n');
+		}
+
+		if (omitted > 0)
+			sb.Append($"[Showing the first {MaxLsEntries} entries; {omitted} more were omitted. Narrow the path or use bash to inspect the rest.]\n");
+
+		return new ToolResult(toolCallId, sb.ToString(), result.StdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
 
 	[Description("""

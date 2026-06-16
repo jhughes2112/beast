@@ -12,11 +12,17 @@ public static class FileTools
 	private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 	private static readonly SemaphoreSlim FileLock = new SemaphoreSlim(1, 1);
 
+	// A single line is never returned longer than this, regardless of caller — a lone enormous (e.g.
+	// minified) line would otherwise flood the context. The line count is capped by the caller's maxLines.
+	private const int MaxLineLength = 2000;
+
 	public static async Task<ToolResult> ReadFileAsync(
 		string toolCallId,
 		string filePath,
 		string offset,
 		string lines,
+		int maxLines,
+		bool numberLines,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -48,15 +54,15 @@ public static class FileTools
 						{
 							string fileContent = await File.ReadAllTextAsync(fullPath, cts.Token);
 
-							if (offsetValue <= 1 && linesValue == 0)
+							if (fileContent.Length == 0)
 							{
-								result = fileContent.Length == 0
-									? new ToolResult(toolCallId, $"File is empty: {filePath}", string.Empty, 0, 0)
-									: new ToolResult(toolCallId, fileContent, string.Empty, 0, 0);
+								result = new ToolResult(toolCallId, $"File is empty: {filePath}", string.Empty, 0, 0);
 							}
 							else
 							{
-								// Windowed read: split, slice, rejoin
+								// Windowed read: split, slice, rejoin. The output is always bounded — at most
+								// maxLines lines, each at most MaxLineLength chars — so a huge file or a single
+								// enormous line can never flood the context. Limits are mentioned, never errors.
 								string[] allLines = fileContent.Replace("\r\n", "\n").Split('\n');
 								int startLine = offsetValue <= 0 ? 1 : offsetValue;
 								int startIdx = startLine - 1;
@@ -67,11 +73,37 @@ public static class FileTools
 								}
 								else
 								{
-									int count = linesValue > 0 ? Math.Min(linesValue, allLines.Length - startIdx) : allLines.Length - startIdx;
-									string[] slice = new string[count];
-									Array.Copy(allLines, startIdx, slice, 0, count);
-									string windowed = string.Join(Environment.NewLine, slice);
-									result = new ToolResult(toolCallId, windowed, string.Empty, 0, 0);
+									int available = allLines.Length - startIdx;
+									int requested = linesValue > 0 ? Math.Min(linesValue, available) : available;
+									int count = Math.Min(requested, maxLines);
+
+									bool lineTruncated = false;
+									StringBuilder sb = new StringBuilder();
+									for (int i = 0; i < count; i++)
+									{
+										string line = allLines[startIdx + i];
+										if (line.Length > MaxLineLength)
+										{
+											line = line.Substring(0, MaxLineLength) + "...truncated";
+											lineTruncated = true;
+										}
+										if (i > 0)
+											sb.Append(Environment.NewLine);
+										// Line numbers let a reader cite exact locations (file, line, count).
+										if (numberLines)
+										{
+											sb.Append((startLine + i).ToString().PadLeft(6));
+											sb.Append(" | ");
+										}
+										sb.Append(line);
+									}
+
+									if (count < requested)
+										sb.Append($"{Environment.NewLine}[Showing {count} lines from line {startLine}; output capped at {maxLines} lines. Read again from line {startLine + count} to continue.]");
+									if (lineTruncated)
+										sb.Append($"{Environment.NewLine}[One or more lines exceeded {MaxLineLength} characters and were truncated with \"...truncated\".]");
+
+									result = new ToolResult(toolCallId, sb.ToString(), string.Empty, 0, 0);
 								}
 							}
 						}

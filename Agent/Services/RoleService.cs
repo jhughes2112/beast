@@ -66,6 +66,7 @@ public class RoleService
             TaskRole(),
             DeveloperRole(),
             ReviewerRole(),
+            ExplorerRole(),
             WebRole()
         };
         foreach (Role role in defaults)
@@ -237,9 +238,27 @@ public class RoleService
         return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 
-    // Used internally by the fetch_url tool (WebFetch.FetchRawAsync), which runs it as a single turn. It is
-    // seeded with a URL, an objective, and the already-fetched page content, and replies with only what the
-    // objective asks for. It has no tools and no end-of-turn loop — its reply is the answer. This should be a dumb model.
+    // Used internally by the read_file tool (ReadFileExplorer.ExploreAsync) on the first read of a file in a
+    // session. It is seeded with the caller's goal, the file path, and a line-numbered window of that file,
+    // and replies with citations the caller can read directly: file, start line, and line count. It runs via
+    // HelperSession, finishing by calling return_to_caller (forced on the last turn). This should be a fast
+    // model, since it runs on every first read for discovery.
+    private static Role ExplorerRole()
+    {
+		const string description = "To read a file and cite the parts relevant to a goal";
+        const string systemPrompt =
+            """
+            You are given a goal, a file path, and a line-numbered window of that file's contents. Your job is fast first-pass discovery: find the parts of the file that matter to the goal and cite them so the caller can read them directly.
+            Reply with citations in the form the read_file tool takes — the file path, the starting line number (from the left margin), and the number of lines — each with a one-line note naming the symbols involved and why they are relevant to the goal. Be concise: cite what matters and nothing else. Do not propose changes or speculate beyond what the content shows.
+            """;
+        const string endOfTurnPrompt = "When you have found the relevant locations, call return_to_caller with your citations. Otherwise keep looking.";
+        List<string> tools = new List<string>();
+        return new Role("Explorer", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+    }
+
+    // Used internally by the fetch_url tool (WebFetch.FetchRawAsync). It is seeded with a URL, an objective,
+    // and the already-fetched page content, and replies with only what the objective asks for. It runs via
+    // HelperSession, finishing by calling return_to_caller (forced on the last turn). This should be a dumb model.
     private static Role WebRole()
     {
 		const string description = "To request a URL and return only the useful parts";
@@ -247,7 +266,8 @@ public class RoleService
             """
             You are given a URL, an objective, and the already-fetched text content of that page. Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value.
             """;
+        const string endOfTurnPrompt = "When you have what the objective asks for, call return_to_caller with it. Otherwise keep working.";
         List<string> tools = new List<string>();
-        return new Role("Web", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, string.Empty);
+        return new Role("Web", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 }

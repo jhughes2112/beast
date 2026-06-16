@@ -46,6 +46,10 @@ public class SessionRunner
 	// fetch_url: fetches a page and filters it through the Web role. Injected for roles that declare it.
 	private readonly Tool _fetchUrlTool;
 
+	// read_file: filters this agent's first read of a file through the Explorer role. The root owns its own
+	// explorer; each subagent run makes its own, so an agent's exploration never depends on another's reads.
+	private readonly Tool _readFileTool;
+
 	// Set by start_task (via StartTaskAsync) once its hooks succeed; after the turn the root switches to a
 	// fresh Task session seeded with it. Null = no pending start. The start_task tool is built per turn
 	// (in ToolsForTurnAsync) so its branch-argument description carries live git worktree context.
@@ -72,6 +76,7 @@ public class SessionRunner
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
 		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
 		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
+		_readFileTool = ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => this.CurrentSession);
 		_taskCompleteTool = ToolFactory.CreateTaskCompleteTool(status =>
 		{
 			_taskCompleteCalled = true;
@@ -721,6 +726,8 @@ public class SessionRunner
 			return role.BuiltTools;
 
 		List<Tool> tools = new List<Tool>(role.BuiltTools);
+		if (role.Tools.Contains("read_file"))
+			tools.Add(_readFileTool);
 		if (role.Tools.Contains("start_task"))
 		{
 			string branchContext = await GitWorktreeContextAsync(ct);

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,9 +10,12 @@ public class WebFetch
     private static readonly HttpClient SharedHttpClient = new();
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
-    // Fetches the page and interprets it in a single Web-role turn: a throwaway sub-session is seeded with
-    // the URL, the objective, and the page content, and its reply (only what the objective asked for) is
-    // returned. Cost rolls up into the calling session. Everything is contained here.
+    // The Web role digests a page and returns one answer; it needs a working turn at most before finalizing.
+    private const int MaxTurns = 2;
+
+    // Fetches the page and interprets it with the Web role: a throwaway sub-session is seeded with the URL,
+    // the objective, and the page content, and what it passes to return_to_caller (only what the objective
+    // asked for) is returned. Cost rolls up into the calling session. Everything is contained here.
     public async Task<ToolResult> FetchRawAsync(
         string toolCallId,
         string url,
@@ -53,31 +55,14 @@ public class WebFetch
 
             string html = await response.Content.ReadAsStringAsync(cts.Token);
 
-            // Interpret the page with the Web role in one turn (it has no tools, so the reply is the answer).
-            BeastSession data = new BeastSession(parent.AllocateChildId(), "fetch_url", service.Model.ConfigId, webRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
-            Session webSession = new Session(data, webRole.SystemPrompt, transport, true);
-            webSession.AddUserMessage($"URL: {url}\nObjective: {objective}\n\nPage content:\n{html}");
-            webSession.AnnounceToClient();
-            parent.AddChild(webSession);
+            // Interpret the page with the Web role: it returns only what the objective asks for via
+            // return_to_caller, with a working turn available before the terminator is forced.
+            string seed = $"URL: {url}\nObjective: {objective}\n\nPage content:\n{html}";
+            (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, "fetch_url", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
+            if (!ok)
+                return new ToolResult(toolCallId, string.Empty, "Error: the Web role failed to interpret " + url, 1, 0);
 
-            webSession.SendBusy();
-            try
-            {
-                ProtocolResult result = await service.RunToCompletionAsync(webSession, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, cancellationToken);
-                if (result.Outcome != ProtocolCallOutcome.Success)
-                    return new ToolResult(toolCallId, string.Empty, "Error: the Web role failed to interpret " + url, 1, 0);
-
-                webSession.CommitAssistantTurn(result.Payload!);
-                parent.RecordCost(webSession.TotalCost);
-
-                string answer = result.Payload!.AssistantText;
-                int tokens = webSession.LastTokenUsage?.CompletionTokens ?? ToolDispatch.EstimateTokens(answer);
-                return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
-            }
-            finally
-            {
-                webSession.SendIdle();
-            }
+            return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
         }
         catch (OperationCanceledException)
         {

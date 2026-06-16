@@ -86,7 +86,11 @@ public class SubagentRunner
             ? ToolFactory.CreateFinishReviewTool((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; })
             : ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
 
+        // Each subagent run gets its own ReadFileExplorer: exploration is self-contained, so a subagent's
+        // first read of a file always gets Explorer citations and never depends on what another agent read.
         List<Tool> withTerminator = new List<Tool>(role.BuiltTools);
+        if (role.Tools.Contains("read_file"))
+            withTerminator.Add(ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, _currentSession));
         if (role.Tools.Contains("fetch_url"))
             withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, _currentSession));
         withTerminator.Add(terminatorTool);

@@ -55,14 +55,14 @@ public static class FileToolsTests
 		using CancellationTokenSource cts = new CancellationTokenSource();
 
 		// Full read returns raw content
-		ToolResult full = await FileTools.ReadFileAsync("testId1", path, string.Empty, string.Empty, cts.Token);
+		ToolResult full = await FileTools.ReadFileAsync("testId1", path, string.Empty, string.Empty, 500, false, cts.Token);
 		ctx.Assert(full.ExitCode == 0, "Read full: success");
 		ctx.AssertContains(full.StdOut, "line one", "Read full: has line one");
 		ctx.AssertContains(full.StdOut, "line three", "Read full: has line three");
 		ctx.Assert(!full.StdOut.Contains(":"), "Read full: no hash anchors");
 
 		// Windowed read
-		ToolResult windowed = await FileTools.ReadFileAsync("testId2", path, "2", "1", cts.Token);
+		ToolResult windowed = await FileTools.ReadFileAsync("testId2", path, "2", "1", 500, false, cts.Token);
 		ctx.Assert(windowed.ExitCode == 0, "Read windowed: success");
 		ctx.AssertContains(windowed.StdOut, "line two", "Read windowed: has line two");
 		ctx.Assert(!windowed.StdOut.Contains("line one"), "Read windowed: no line one");

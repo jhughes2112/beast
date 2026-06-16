@@ -41,20 +41,6 @@ public static class ToolFactory
                 return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
             });
 
-        Register(tools, "read_file",
-            "Read a file and return its contents. CWD is at the root of the repo at /workspace/",
-            Params(
-                Req("file_path", "string", "File path"),
-                Req("offset", "string", "Starting line number (1 based)"),
-                Opt("lines", "string", "Number of lines to read. Empty means to the end of the file.")),
-            async (args, toolCallId, ct, transport, sessionId) =>
-            {
-                string filePath = Str(args, "file_path");
-                string offset = Str(args, "offset");
-                string lines = Str(args, "lines");
-                return await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ct);
-            });
-
         Register(tools, "write_file",
             "Create a new file or overwrite an existing one (if you used read_file already). CWD is /workspace/ but temporary files should go in /tmp/",
             Params(
@@ -92,6 +78,39 @@ public static class ToolFactory
             });
 
         return tools;
+    }
+
+    // Creates the read_file tool. Like fetch_url it needs the registry/roleService and the current session,
+    // because the first read of a file in a session is interpreted by the Explorer role (see ReadFileExplorer)
+    // rather than returned raw. The ReadFileExplorer is shared so its per-session "already read" set persists
+    // across turns; the same instance is handed to the root and to subagents.
+    public static Tool CreateReadFileTool(ReadFileExplorer explorer, LlmRegistry registry, RoleService roleService, Func<Session> currentSession)
+    {
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "read_file",
+                    Description = "Read a file. The first read of a file is interpreted by the Explorer role, which returns citations relevant to your goal; later reads of the same file return its raw contents. CWD is the repo root at /workspace/.",
+                    Parameters = Params(
+                        Req("file_path", "string", "File path"),
+                        Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned on the first read."),
+                        Req("offset", "string", "Starting line number (1 based)"),
+                        Opt("lines", "string", "Number of lines to read. Empty means to the end of the file."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string filePath = Str(args, "file_path");
+                string goal = Str(args, "goal");
+                string offset = Str(args, "offset");
+                string lines = Str(args, "lines");
+                return await explorer.ReadAsync(toolCallId, filePath, offset, lines, goal, registry, roleService, transport, currentSession(), maxOutputTokens, ct);
+            }
+        };
     }
 
     // Creates the fetch_url tool. It always routes through the Web role inside WebFetch.FetchRawAsync, which
