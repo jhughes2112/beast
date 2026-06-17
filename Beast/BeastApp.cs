@@ -377,10 +377,12 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 }
                 else if (content == "worktree-finished")
                 {
-                    // The agent detached and deleted its worktree/branch on /finish; remove the now-empty
-                    // host folder during shutdown so it no longer appears in the launch menu.
+                    // The agent detached and deleted its worktree/branch on /finish. Flag it so shutdown
+                    // removes the now-empty host folder, then drive the graceful exit (sends /quit, waits for
+                    // the agent to disconnect, tears the container down) — the agent does not exit itself.
                     _worktreeFinished = true;
                     _display.SetStatus("Worktree finished — cleaning up.");
+                    RequestGracefulExit();
                 }
                 else
                 {

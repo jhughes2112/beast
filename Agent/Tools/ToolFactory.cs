@@ -142,6 +142,87 @@ public static class ToolFactory
         };
     }
 
+    // A window cap for the Web helper's read_file: large enough to read a saved page in a few reads, bounded
+    // so a single read cannot flood the helper's own context. Lines past it are reported, never errored.
+    private const int WebHelperReadMaxLines = 2000;
+
+    // Resolves a helper role's declared tool names (Role.Tools) to the tool instances a HelperSession runs.
+    // This is a deliberately small, curated set distinct from the main registry: a helper sub-session must
+    // not recurse (so read_file is the raw line-numbered reader, never the Explorer-backed one) and must not
+    // hold write access. Names the helper set does not know are skipped, so editing a helper role in
+    // roles.json can never wire in a registry tool that would be unsafe here. return_to_caller is added by
+    // HelperSession on top of the result. A role with no tools (e.g. Explorer) gets an empty array.
+    public static Tool[] BuildHelperTools(IReadOnlyList<string> toolNames)
+    {
+        Dictionary<string, Tool> available = new(StringComparer.OrdinalIgnoreCase);
+        foreach (Tool tool in CreateWebHelperTools())
+            available[tool.Definition.Function.Name] = tool;
+
+        List<Tool> resolved = new List<Tool>();
+        foreach (string name in toolNames)
+        {
+            if (available.TryGetValue(name, out Tool? tool))
+                resolved.Add(tool);
+        }
+        return resolved.ToArray();
+    }
+
+    // Builds the tools a helper session may work with (see BuildHelperTools): a raw read_file (line-numbered
+    // window, no Explorer round-trip) and bash, so the Web role can parse, strip, grep, or download the files
+    // a fetch saved to /tmp/.
+    private static Tool[] CreateWebHelperTools()
+    {
+        Tool readFile = new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "read_file",
+                    Description = "Read a line-numbered window of a file. Fetched pages are saved under /tmp/; CWD is /workspace/.",
+                    Parameters = Params(
+                        Req("file_path", "string", "File path"),
+                        Req("offset", "string", "Starting line number (1 based)"),
+                        Opt("lines", "string", "Number of lines to read. Empty means to the end of the file (capped)."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string filePath = Str(args, "file_path");
+                string offset = Str(args, "offset");
+                string lines = Str(args, "lines");
+                ToolResult raw = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, WebHelperReadMaxLines, true, ct);
+                return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
+            }
+        };
+
+        Tool bash = new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "bash",
+                    Description = "Standard bash command. Use it to inspect, parse, or download files (cat, grep, head, jq, curl, wget, ...). CWD is /workspace/.",
+                    Parameters = Params(
+                        Req("command", "string", "Shell command to execute"),
+                        Opt("timeout_seconds", "integer", "Timeout in seconds (default 120)."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string command = Str(args, "command");
+                int? timeoutSeconds = IntOpt(args, "timeout_seconds");
+                ToolResult raw = await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
+                return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
+            }
+        };
+
+        return new Tool[] { readFile, bash };
+    }
+
     // Creates the delegation tool. The root agent adds this to its tool list (it is never role-assignable
     // and never given to a child, so subagents cannot recursively spawn). runSubagent launches the child
     // session, runs it to completion, and returns its final result fit to the caller's budget. roleNames

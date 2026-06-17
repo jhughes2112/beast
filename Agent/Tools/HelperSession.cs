@@ -8,7 +8,9 @@ using System.Threading.Tasks;
 // and returns what the model passes to return_to_caller. The model gets up to maxTurns: every turn that does
 // not finish is nudged with the role's end-of-turn prompt, and return_to_caller is forced on the final turn
 // so the loop always terminates. This is the shared spine behind WebFetch and ReadFileExplorer — both seed a
-// tool-less role with content and want one clean returned answer, optionally after a working turn.
+// role with content and want one clean returned answer, optionally after working turns. extraTools are the
+// tools the helper may call while working (ReadFileExplorer passes none; WebFetch passes bash and read_file
+// so the Web role can inspect the files a fetch saved); return_to_caller is always added on top of them.
 public static class HelperSession
 {
 	public static async Task<(bool ok, string output, int responseTokens)> RunAsync(
@@ -19,6 +21,7 @@ public static class HelperSession
 		string seedMessage,
 		int maxTurns,
 		int maxOutputTokens,
+		Tool[] extraTools,
 		ITransportServer transport,
 		CancellationToken cancellationToken)
 	{
@@ -28,10 +31,14 @@ public static class HelperSession
 		session.AnnounceToClient();
 		parent.AddChild(session);
 
-		// return_to_caller is the only tool: the model finishes by calling it, and its argument is the answer.
+		// return_to_caller terminates the run; the model finishes by calling it and its argument is the
+		// answer. Any extraTools the role works with come first, with the terminator appended on top.
 		string? returned = null;
 		Tool terminator = ToolFactory.CreateReturnToCallerTool(output => returned = output);
-		Tool[] tools = new Tool[] { terminator };
+		Tool[] tools = new Tool[extraTools.Length + 1];
+		for (int i = 0; i < extraTools.Length; i++)
+			tools[i] = extraTools[i];
+		tools[extraTools.Length] = terminator;
 
 		string lastAssistantText = string.Empty;
 		int tokens = 0;

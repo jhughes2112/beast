@@ -257,17 +257,21 @@ public class RoleService
     }
 
     // Used internally by the fetch_url tool (WebFetch.FetchRawAsync). It is seeded with a URL, an objective,
-    // and the already-fetched page content, and replies with only what the objective asks for. It runs via
-    // HelperSession, finishing by calling return_to_caller (forced on the last turn). This should be a dumb model.
+    // and the paths of the files a fetch saved to /tmp/ (raw bytes, plus stripped-text and tag-skeleton views
+    // for HTML), and is given read_file and bash (injected by HelperSession, see ToolFactory.CreateWebHelperTools)
+    // to inspect, parse, or download them. It replies with only what the objective asks for via return_to_caller
+    // (forced on the last turn). This should be a capable-enough model to pick the right file and parse it.
     private static Role WebRole()
     {
 		const string description = "To request a URL and return only the useful parts";
         const string systemPrompt =
             """
-            You are given a URL, an objective, and the already-fetched text content of that page. Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value.
+            You are given a URL, an objective, and a list of files that the fetched resource was saved to under /tmp/. Use read_file and bash to inspect those files: prefer the stripped-text view for prose, the tag-skeleton view to locate a section, and the raw file when you need exact markup or non-HTML data. If the resource was too large to download, fetch it yourself with curl or wget via bash. Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value. Be cautious about exceeding your context length, there is no compaction, you just fail.
             """;
         const string endOfTurnPrompt = "When you have what the objective asks for, call return_to_caller with it. Otherwise keep working.";
-        List<string> tools = new List<string>();
+        // Resolved against the helper tool set (ToolFactory.BuildHelperTools), not the main registry: read_file
+        // is the raw line-numbered reader (no Explorer round-trip) and bash is plain bash.
+        List<string> tools = new List<string> { "read_file", "bash" };
         return new Role("Web", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 }
