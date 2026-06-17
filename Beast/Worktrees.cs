@@ -6,8 +6,9 @@ using System.Text;
 
 // Host-side bookkeeping for per-launch git worktrees. Each Beast launch binds one worktree folder to
 // /workspace in the container; the real repo (cwd) is bound to /git. Worktrees live under
-// ~/.beast/worktrees/<repoKey>/<name>, where repoKey is the normalized absolute repo path so worktrees
-// never collide across different checkouts. The folder name doubles as the git branch name.
+// <repo>/.beast/worktrees/<name>, inside the project itself: this keeps them on the same drive as the repo
+// and lets the project cover every worktree with one .gitignore entry (.beast/). The folder name doubles
+// as the git branch name.
 public static class Worktrees
 {
     // The chosen worktree for a launch: the folder name (also the branch), its host path, and the repo it
@@ -41,43 +42,11 @@ public static class Worktrees
         }
     }
 
-    // ~/.beast/worktrees — the host root that is bind-mounted into the container's ~/.beast as well.
-    public static string Root()
-    {
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return Path.Combine(home, ".beast", "worktrees");
-    }
-
-    // Normalizes an absolute repo path into a single filesystem-safe key: lowercased, every run of
-    // non-[a-z0-9._-] characters collapsed to one underscore, ends trimmed. "d:\foo\bar" -> "d_foo_bar".
-    public static string RepoKey(string cwd)
-    {
-        string lower = cwd.ToLowerInvariant();
-        StringBuilder sb = new StringBuilder(lower.Length);
-        bool lastUnderscore = false;
-        foreach (char c in lower)
-        {
-            bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-';
-            if (ok)
-            {
-                sb.Append(c);
-                lastUnderscore = false;
-            }
-            else if (!lastUnderscore)
-            {
-                sb.Append('_');
-                lastUnderscore = true;
-            }
-        }
-
-        string key = sb.ToString().Trim('_');
-        return key.Length == 0 ? "repo" : key;
-    }
-
-    // The directory holding all worktrees for one repo: ~/.beast/worktrees/<repoKey>.
+    // The directory holding all of a repo's worktrees: <repo>/.beast/worktrees. Kept inside the project so the
+    // worktrees stay on the repo's drive and a single .gitignore entry (.beast/) covers them all.
     public static string RepoDir(string cwd)
     {
-        return Path.Combine(Root(), RepoKey(cwd));
+        return Path.Combine(cwd, ".beast", "worktrees");
     }
 
     // Restricts a user-entered name to a folder- and branch-safe charset (letters, digits, '.', '_', '-'),
@@ -128,13 +97,39 @@ public static class Worktrees
     }
 
     // Builds the selection for a name, creating the (empty) worktree folder so it can be bind-mounted.
-    // The agent runs `git worktree add` into it once the container is up.
+    // The agent runs `git worktree add` into it once the container is up. Creating the worktree also brings
+    // the project's .beast folder into being, so its .gitignore is ensured here in the same step.
     public static Selection Ensure(string cwd, string name)
     {
         string safe = SanitizeName(name);
         string hostPath = Path.Combine(RepoDir(cwd), safe);
         Directory.CreateDirectory(hostPath);
+        EnsureBeastGitignore(cwd);
         return new Selection(safe, hostPath, cwd);
+    }
+
+    // Drops a .gitignore into the project's .beast folder so the generated worktrees and saved sessions stay
+    // out of git without the project having to add them by hand. Written only when missing, so a project can
+    // edit it freely. Best effort: a failure here never blocks a launch.
+    public static void EnsureBeastGitignore(string cwd)
+    {
+        string beastDir = Path.Combine(cwd, ".beast");
+        string gitignorePath = Path.Combine(beastDir, ".gitignore");
+        try
+        {
+            Directory.CreateDirectory(beastDir);
+            if (File.Exists(gitignorePath))
+                return;
+
+            // Worktrees hold per-launch checkouts; sessions hold saved conversations. Both are local state,
+            // not source. The agent writes its sessions under a worktree, so "worktrees/" already covers that
+            // copy; "sessions/" covers a session folder written directly in the repo (e.g. a non-worktree run).
+            string contents = "# Beast-generated: per-launch worktrees and saved sessions are local state, not source.\nworktrees/\nsessions/\n";
+            File.WriteAllText(gitignorePath, contents);
+        }
+        catch
+        {
+        }
     }
 
     // The deterministic container name for a worktree: beast_<name>. A running container with this name

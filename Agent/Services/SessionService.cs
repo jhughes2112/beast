@@ -120,12 +120,82 @@ public static class SessionService
         return results;
     }
 
+    // Deletes exactly one session file: <sessionId>.json inside the sessions folder, and nothing else. It
+    // never removes the folder or any other file. The id must be a bare session id (a GUID, optionally with
+    // "_N" child suffixes); anything empty, or carrying a path separator or "..", is rejected so a delete can
+    // never escape the folder or widen its scope. A missing file or any IO error returns false.
     public static bool Delete(string sessionId)
     {
-        string path = Path.Combine(SessionsDir, sessionId + ".json");
-        if (!File.Exists(path))
+        bool deleted;
+
+        if (string.IsNullOrWhiteSpace(sessionId) || !IsSafeSessionId(sessionId))
+        {
+            deleted = false;
+        }
+        else
+        {
+            string path = Path.Combine(SessionsDir, sessionId + ".json");
+            if (!File.Exists(path))
+            {
+                deleted = false;
+            }
+            else
+            {
+                try
+                {
+                    File.Delete(path);
+                    deleted = true;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[SessionService] Delete failed for {sessionId}: {ex.Message}");
+                    deleted = false;
+                }
+            }
+        }
+
+        return deleted;
+    }
+
+    // Deletes a session and every descendant session: its own file plus any "<sessionId>_..." child file
+    // (subagent tool sessions, compaction/role successors). Used by /finish so a finished worktree leaves no
+    // orphaned session files behind. Session ids are full GUIDs, so the "<id>_" prefix matches only this
+    // session's own descendants. Each removal goes through Delete, so it stays confined to one file at a time.
+    // Returns the number of files removed.
+    public static int DeleteTree(string sessionId)
+    {
+        int removed = 0;
+
+        if (string.IsNullOrWhiteSpace(sessionId) || !IsSafeSessionId(sessionId) || !Directory.Exists(SessionsDir))
+            return removed;
+
+        string childPrefix = sessionId + "_";
+        foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
+        {
+            string id = Path.GetFileNameWithoutExtension(file);
+            bool isThisTree = string.Equals(id, sessionId, StringComparison.Ordinal) || id.StartsWith(childPrefix, StringComparison.Ordinal);
+            if (isThisTree && Delete(id))
+                removed++;
+        }
+
+        return removed;
+    }
+
+    // True when the id is a bare session id safe to turn into a single filename: only the characters session
+    // ids use (letters, digits, '-' from GUIDs, and '_' for child suffixes) and no path navigation. This
+    // confines Delete to one file inside the sessions folder, so a malformed id can never widen the delete.
+    private static bool IsSafeSessionId(string sessionId)
+    {
+        if (sessionId.Contains("..") || sessionId.Contains('/') || sessionId.Contains('\\'))
             return false;
-        File.Delete(path);
+
+        foreach (char c in sessionId)
+        {
+            bool ok = char.IsLetterOrDigit(c) || c == '-' || c == '_';
+            if (!ok)
+                return false;
+        }
+
         return true;
     }
 }

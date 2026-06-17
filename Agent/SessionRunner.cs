@@ -177,6 +177,11 @@ public class SessionRunner
 
 		string baseBranch = lines.Length > 2 ? lines[2].Trim() : string.Empty;
 
+		// The session files live under the worktree's .beast/sessions, so before folding the worktree down
+		// delete this session and every child it spawned — they belong to the task that is now finishing and
+		// would otherwise be orphaned when the worktree folder goes away.
+		SessionService.DeleteTree(session.Id);
+
 		// Detach the worktree and delete its merged branch. feat is re-derived in-script (never interpolated)
 		// and cd /git runs first so removing /workspace does not pull the shell's CWD out from under it.
 		// Success is judged by the registration being gone, NOT by exit code: /workspace is a bind mount, so
@@ -575,9 +580,14 @@ public class SessionRunner
 					}
 					else if (args != null && args.StartsWith("delete ", StringComparison.OrdinalIgnoreCase))
 					{
-						// Drop a subagent session file from disk. Refuse to delete the live root session.
+						// Drop exactly one subagent session file from disk. Refuse to delete the live root
+						// session, and refuse an empty target so a blank id can never reach the disk layer.
 						string deleteId = args.Substring("delete ".Length).Trim();
-						if (string.Equals(deleteId, session.Id, StringComparison.Ordinal))
+						if (string.IsNullOrEmpty(deleteId))
+						{
+							_transport.Error(session.Id, "No session specified to delete.");
+						}
+						else if (string.Equals(deleteId, session.Id, StringComparison.Ordinal))
 						{
 							_transport.Error(session.Id, "Cannot delete the active session.");
 						}
