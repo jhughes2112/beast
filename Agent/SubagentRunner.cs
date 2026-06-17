@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-// Spawns child agents on behalf of the root agent's subagent tool. A child is a real, announced,
-// saved sub-session assigned a named role — its system prompt, model, and tools — seeded with a
-// natural-language task. It runs to completion, terminating only when the model calls return_to_caller;
+// Spawns child agents on behalf of a delegation tool (the root's assign_work, the Developer's review_work).
+// A child is a real, announced, saved sub-session assigned a named role — its system prompt, model, and
+// tools — seeded with a natural-language task. It runs to completion, terminating only when the model calls
+// its terminator (return_to_caller, or task_complete for the Developer / finish_review for the Reviewer);
 // a turn that ends with no tool call is re-prompted to use it. The reply is measured and fit to the
 // caller's budget before it is returned.
 //
@@ -49,7 +49,17 @@ public class SubagentRunner
     // the caller's outputBudgetTokens. Returns ok=false with the error text as the result when the role is
     // unknown/ineligible, no model is available, there is no budget, the role's enter/exit hook fails, or
     // the subagent never returned a result; the calling handler surfaces that text to the caller.
-    public async Task<(bool ok, string text, int responseTokens)> RunSubagentAsync(string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
+    public Task<(bool ok, string text, int responseTokens)> RunSubagentAsync(string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
+    {
+        // A top-level subagent (spawned by the root's subagent tool) is parented to the currently-running
+        // root session, read at call time since the active session changes across compaction/role switches.
+        return RunForParentAsync(_currentSession(), roleName, prompt, outputBudgetTokens, ct);
+    }
+
+    // Runs a subagent under an explicit parent session. The public entry point parents to the root; the
+    // Developer's review_work tool parents the Reviewer to the Developer's own sub-session so the session
+    // tree nests correctly.
+    private async Task<(bool ok, string text, int responseTokens)> RunForParentAsync(Session parent, string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
     {
         if (outputBudgetTokens <= 0)
             return (false, "No output budget remaining for a subagent.", 0);
@@ -66,9 +76,15 @@ public class SubagentRunner
         if (service == null)
             return (false, $"No model available for role '{roleName}'.", 0);
 
-        string displayName = prompt.Length > 80 ? prompt.Substring(0, 80) : prompt;
+        // Name the sub-session "{Role} {task}" so the session tree shows which subagent it is and what it
+        // was asked to do, the way root sessions show "{Role} {first message}". The task is the prompt's
+        // first line, trimmed to keep the label to a single short row.
+        int promptNewline = prompt.IndexOf('\n');
+        string promptHead = (promptNewline >= 0 ? prompt.Substring(0, promptNewline) : prompt).Trim();
+        if (promptHead.Length > 60)
+            promptHead = promptHead.Substring(0, 60);
+        string displayName = promptHead.Length > 0 ? $"{role.Name} {promptHead}" : role.Name;
 
-        Session parent = _currentSession();
         BeastSession subData = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
         Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
 
@@ -80,16 +96,31 @@ public class SubagentRunner
         subSession.AnnounceToClient();
         parent.AddChild(subSession);
 
-        // The child carries only its role's bound tools (no subagent tool), so nesting stops here.
-        // fetch_url is injected by name like elsewhere (it needs the runWeb delegate). The terminator is
-        // created in ToolFactory and added here: a Reviewer role (declaring finish_review) finishes with
-        // finish_review, which carries an approval flag; every other subagent finishes with return_to_caller.
+        // The child carries its role's bound tools plus injected-by-name tools, but never the subagent tool,
+        // so a child cannot fan out arbitrarily. The terminator is created in ToolFactory and selected by the
+        // role's declared marker: a Reviewer (finish_review) finishes with finish_review, which carries an
+        // approval flag; a Developer (task_complete) finishes with task_complete; every other subagent
+        // finishes with return_to_caller.
         ReturnSink sink = new ReturnSink();
         bool isReview = role.Tools.Contains("finish_review");
-        string terminatorName = isReview ? "finish_review" : "return_to_caller";
-        Tool terminatorTool = isReview
-            ? ToolFactory.CreateFinishReviewTool((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; })
-            : ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
+        bool isDeveloper = role.Tools.Contains("task_complete");
+        string terminatorName;
+        Tool terminatorTool;
+        if (isReview)
+        {
+            terminatorName = "finish_review";
+            terminatorTool = ToolFactory.CreateFinishReviewTool((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; });
+        }
+        else if (isDeveloper)
+        {
+            terminatorName = "task_complete";
+            terminatorTool = ToolFactory.CreateTaskCompleteTool(output => { sink.Value = output; sink.Returned = true; });
+        }
+        else
+        {
+            terminatorName = "return_to_caller";
+            terminatorTool = ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
+        }
 
         // Each subagent run gets its own ReadFileExplorer: exploration is self-contained, so a subagent's
         // first read of a file always gets Explorer citations and never depends on what another agent read.
@@ -98,6 +129,12 @@ public class SubagentRunner
             withTerminator.Add(ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, _currentSession));
         if (role.Tools.Contains("fetch_url"))
             withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, _currentSession));
+        // review_work spawns a Reviewer parented to this sub-session (the Developer); it returns the verdict
+        // only. The Developer integrates approved work itself with commit_and_rebase, so both are injected here.
+        if (role.Tools.Contains("review_work"))
+            withTerminator.Add(ToolFactory.CreateReviewWorkTool((reviewPrompt, budget, reviewCt) => RunForParentAsync(subSession, "Reviewer", reviewPrompt, budget, reviewCt)));
+        if (role.Tools.Contains("commit_and_rebase"))
+            withTerminator.Add(ToolFactory.CreateCommitAndRebaseTool());
         withTerminator.Add(terminatorTool);
         Tool[] fullTools = withTerminator.ToArray();
         Tool[] terminatorOnlyTools = new Tool[] { terminatorTool };
@@ -163,18 +200,11 @@ public class SubagentRunner
 
             string output = sink.Value;
 
-            // An approved review integrates the work: commit the worktree, then fast-forward the base branch
-            // onto its feature branch. The git transcript is appended to the review regardless of outcome. A
-            // failed integration (typically a rebase conflict) returns ok=false so the caller sees it as a
-            // failure — the Task then gives the Developer (the only role with write access) another turn to
-            // rebase and resolve, with the transcript naming exactly what must be fixed.
-            if (isReview && sink.Approved)
-            {
-                (bool integrated, string integration) = await IntegrateApprovedBranchAsync(ct);
-                output = $"{output}\n\n--- Integration ---\n{integration}";
-                responseTokens = Math.Max(responseTokens, ToolDispatch.EstimateTokens(output));
-                return (integrated, output, responseTokens);
-            }
+            // A review is pure feedback now — it never touches git. Prefix the verdict so the Developer can act
+            // on it directly: integrate with commit_and_rebase when approved, or address the comments and call
+            // review_work again when rejected.
+            if (isReview)
+                output = sink.Approved ? $"[APPROVED]\n{output}" : $"[REJECTED]\n{output}";
 
             return (true, output, responseTokens);
         }
@@ -184,64 +214,6 @@ public class SubagentRunner
                 SessionService.Save(subSession.Data, false);
             subSession.SendIdle();
         }
-    }
-
-    // Integrates an approved review with a strictly linear, rebase-based flow — never a merge commit, and
-    // never left to the LLM. It commits everything in the current worktree onto its feature branch, finds
-    // the base branch (the branch checked out in the primary worktree — the one the task was started from),
-    // fast-forwards that base from its remote, rebases the feature branch onto it, then fast-forwards the
-    // base onto the now-linear feature branch. After the rebase the feature branch is a strict descendant of
-    // the base, so the final step can only ever fast-forward. It runs from the worktree's CWD and reaches the
-    // base branch's checkout with git -C, since that branch is checked out in the primary worktree and cannot
-    // be switched here. The base is derived from the primary worktree (git --git-common-dir), not guessed as
-    // "main" or read from origin/HEAD, so it is correct for any base branch (master, develop, ...) and with
-    // or without a remote. A rebase that hits conflicts is aborted cleanly and reported: that is the
-    // Developer's to rebase and resolve, never an automatic merge. Returns (ok, transcript): ok is false on
-    // any git failure, and the combined transcript is appended to the review either way.
-    private static async Task<(bool ok, string transcript)> IntegrateApprovedBranchAsync(CancellationToken ct)
-    {
-        string script =
-            "branch=$(git rev-parse --abbrev-ref HEAD)\n" +
-            "common=$(git rev-parse --git-common-dir)\n" +
-            "main_wt=$(cd \"$common\" && cd .. && pwd)\n" +
-            "base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
-            "if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Could not determine a distinct base branch (base='$base', feature='$branch').\"; exit 1; fi\n" +
-            "echo \"Committing work on '$branch'...\"\n" +
-            "git add -A\n" +
-            "git commit -m \"Approved by reviewer on $branch\" || echo '(nothing to commit)'\n" +
-            "echo \"Fast-forwarding base '$base' from its remote...\"\n" +
-            "git -C \"$main_wt\" pull --ff-only || echo \"Note: could not pull '$base' (continuing with local '$base').\"\n" +
-            "echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +
-            "if ! git rebase \"$base\"; then\n" +
-            "  git rebase --abort 2>/dev/null\n" +
-            "  echo \"Rebase of '$branch' onto '$base' hit conflicts and was aborted. The Developer must rebase onto '$base' and resolve them.\"\n" +
-            "  exit 1\n" +
-            "fi\n" +
-            "echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
-            "git -C \"$main_wt\" merge --ff-only \"$branch\"\n";
-
-        ToolResult result = await ShellTools.BashAsync("review_integrate", script, null, ct);
-
-        StringBuilder sb = new StringBuilder();
-        if (!string.IsNullOrEmpty(result.StdOut))
-            sb.Append(result.StdOut);
-        if (!string.IsNullOrEmpty(result.StdErr))
-        {
-            if (sb.Length > 0)
-                sb.Append('\n');
-            sb.Append(result.StdErr);
-        }
-
-        bool ok = result.ExitCode == 0;
-        if (!ok)
-        {
-            if (sb.Length > 0)
-                sb.Append('\n');
-            sb.Append($"[integration failed: git exited {result.ExitCode}; the Developer must resolve this]");
-        }
-
-        string transcript = sb.Length > 0 ? sb.ToString() : "[integration produced no output]";
-        return (ok, transcript);
     }
 
     // Builds the worktree context line injected at the top of a subagent's first prompt: the branch and

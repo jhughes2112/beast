@@ -91,7 +91,7 @@ public class ReadFileExplorer
 
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, service, "read_file", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(explorerRole.Tools), transport, cancellationToken);
+		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, service, $"read_file {filePath}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(explorerRole.Tools), transport, cancellationToken);
 		if (!ok)
 			return new ToolResult(toolCallId, string.Empty, "Error: the Explorer role failed to interpret " + filePath, 1, 0);
 

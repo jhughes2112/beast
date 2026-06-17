@@ -31,17 +31,13 @@ public class SessionRunner
 	// with other sessions. Replaced when the model or role changes, or after a permanent failure.
 	private LlmService? _service;
 
-	// Runs child sub-sessions on behalf of the root's subagent tool.
+	// Runs child sub-sessions on behalf of the root's delegation tool.
 	private readonly SubagentRunner _subagent;
 
-	// The root agent's delegation tool. Appended to the root's bound tools each turn; child agents never
-	// receive it, so nesting stops at one level. Rebuilt on /reload so its role-name list stays current.
-	private Tool _subagentTool;
-
-	// The Task agent's termination tool. Its handler sets _taskCompleteCalled, which stops the end-of-turn
-	// reminder loop so the root idles and waits for the user instead of being kept on task.
-	private readonly Tool _taskCompleteTool;
-	private bool _taskCompleteCalled = false;
+	// The Default agent's delegation tool: hands a unit of work to the Developer subagent. Appended to the
+	// root's bound tools each turn; child agents never receive it, so nesting stops at one level. It targets
+	// one fixed role, so unlike the old generic subagent tool it needs no rebuild on /reload.
+	private readonly Tool _assignWorkTool;
 
 	// fetch_url: fetches a page and filters it through the Web role. Injected for roles that declare it.
 	private readonly Tool _fetchUrlTool;
@@ -49,11 +45,6 @@ public class SessionRunner
 	// read_file: filters this agent's first read of a file through the Explorer role. The root owns its own
 	// explorer; each subagent run makes its own, so an agent's exploration never depends on another's reads.
 	private readonly Tool _readFileTool;
-
-	// Set by start_task (via StartTaskAsync) once its hooks succeed; after the turn the root switches to a
-	// fresh Task session seeded with it. Null = no pending start. The start_task tool is built per turn
-	// (in ToolsForTurnAsync) so its branch-argument description carries live git worktree context.
-	private string? _pendingTaskObjective;
 
 	private bool _wantsCompact = false;
 
@@ -74,67 +65,9 @@ public class SessionRunner
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
-		_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
+		_assignWorkTool = ToolFactory.CreateAssignWorkTool((prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt));
 		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
 		_readFileTool = ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => this.CurrentSession);
-		_taskCompleteTool = ToolFactory.CreateTaskCompleteTool(status =>
-		{
-			_taskCompleteCalled = true;
-			if (!string.IsNullOrEmpty(status))
-				_transport.Output(_currentSession.Id, status);
-		});
-	}
-
-	// start_task callback: kick off the Task role with the objective. The worktree already exists — the
-	// whole launch runs in one worktree (created at startup, bound to /workspace), so there is no per-task
-	// worktree to create or switch into. The objective is prefixed with the worktree banner and queued for
-	// the role switch after the turn. Returns string.Empty on success or an error for the Default session.
-	private async Task<string> StartTaskAsync(string objective, CancellationToken ct)
-	{
-		Role? taskRole = _roleService.GetRole("Task");
-		if (taskRole == null)
-			return "Error: Task role is not defined.";
-
-		// Inject the worktree context at the top of the Task's first prompt so it is explicit, not silent:
-		// where work happens, which branch, and the base an approved review folds it into.
-		string banner = await WorktreeBannerAsync(ct);
-		_pendingTaskObjective = string.IsNullOrEmpty(banner) ? objective : $"{banner}\n\n{objective}";
-		return string.Empty;
-	}
-
-	// One line describing the current worktree for a first prompt: branch, working directory, and the base
-	// branch (checked out in the primary /git worktree) an approved review folds into. Empty when the CWD is
-	// not a git checkout so non-git runs are unaffected.
-	private static async Task<string> WorktreeBannerAsync(CancellationToken ct)
-	{
-		string script =
-			"branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0\n" +
-			"[ -z \"$branch\" ] && exit 0\n" +
-			"common=$(git rev-parse --git-common-dir 2>/dev/null)\n" +
-			"base=\"\"\n" +
-			"if [ -n \"$common\" ]; then prim=$(cd \"$common\" && cd .. && pwd); base=$(git -C \"$prim\" rev-parse --abbrev-ref HEAD 2>/dev/null); fi\n" +
-			"echo \"$branch\"\n" +
-			"pwd\n" +
-			"echo \"$base\"\n";
-
-		ToolResult result = await ShellTools.BashAsync("start_task_worktree_banner", script, null, ct);
-		if (result.ExitCode != 0)
-			return string.Empty;
-
-		string[] lines = result.StdOut.Trim().Split('\n');
-		if (lines.Length < 2)
-			return string.Empty;
-
-		string branch = lines[0].Trim();
-		string path = lines[1].Trim();
-		string baseBranch = lines.Length >= 3 ? lines[2].Trim() : string.Empty;
-		if (string.IsNullOrEmpty(branch) || string.IsNullOrEmpty(path))
-			return string.Empty;
-
-		string foldInto = string.IsNullOrEmpty(baseBranch) || baseBranch == branch
-			? "its base branch"
-			: $"'{baseBranch}'";
-		return $"[Worktree] This task runs in the git worktree '{path}', on branch '{branch}'. All work you delegate happens here; an approved review rebases this branch onto {foldInto} and fast-forwards it.";
 	}
 
 	// /finish: if the worktree's work is fully folded into the base branch and the tree is clean, detach the
@@ -292,8 +225,6 @@ public class SessionRunner
 					try
 					{
 						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, _cancellationTokenSource.Token);
-						_taskCompleteCalled = false;
-						_pendingTaskObjective = null;
 
 						// Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
 						bool completed = false;
@@ -313,20 +244,15 @@ public class SessionRunner
 									session.CommitToolResults(result.Payload!);
 								}
 
-								// Decide whether to keep going. User input always continues the turn. Otherwise
-								// task_complete or start_task stops this turn (start_task then switches roles below);
-								// a turn that ran other tools keeps going; a turn with no tool calls is reminded by
-								// the role's end-of-turn prompt and keeps going, or — when the role defines no such
+								// Decide whether to keep going. User input always continues the turn. Otherwise a
+								// turn that ran tools keeps going; a turn with no tool calls is reminded by the
+								// role's end-of-turn prompt and keeps going, or — when the role defines no such
 								// prompt — completes and idles.
 								string? newUserInput = session.TryGetPendingInput();
 								if (!string.IsNullOrEmpty(newUserInput))
 								{
 									session.Bundle.OnUserMessage(newUserInput);
 									completed = false;
-								}
-								else if (_taskCompleteCalled || _pendingTaskObjective != null)
-								{
-									completed = true;
 								}
 								else if (!hasToolCalls)
 								{
@@ -393,23 +319,6 @@ public class SessionRunner
 					// force a fresh service so the compacted session rehydrates from its own canonical.
 					_service = null;
 				}
-
-					// start_task switches the root into a fresh Task session seeded with the objective. The
-					// loop restarts immediately on the new session (the top of the loop announces the switch).
-					if (_pendingTaskObjective != null)
-					{
-						string objective = _pendingTaskObjective;
-						_pendingTaskObjective = null;
-
-						if (!session.Ephemeral)
-							SaveRoot(session);
-
-						session = CreateFreshSession("Task", session.Ephemeral);
-						session.AddUserMessage(objective);
-						_service = null;  // the Task role may use a different model
-						_transport.Status(session.Id, "Started task.");
-						continue;
-					}
 
 				if (role != null)
 				{
@@ -638,13 +547,13 @@ public class SessionRunner
 						await _registry.ProbeEndpointsAsync(_cancellationTokenSource.Token);
 						_registry.ResetAllAvailability();
 						_service = null;
-						_subagentTool = ToolFactory.CreateSubagentTool(_roleService.SubagentRoles(), _subagent.RunSubagentAsync);
 						_transport.Status(session.Id, "Config files reloaded.");
 					}
-					catch (ConfigException)
+					catch (ConfigException ex)
 					{
-						// Parse error already detailed in the agent log; keep the previous config running.
-						_transport.Error(session.Id, "Reload failed: config did not parse. Keeping the previous config — see the agent log for the line and column.");
+						// Surface the file, line/column and parser message so the user can fix it without
+						// digging through the agent log. The previous config stays in effect.
+						_transport.Error(session.Id, $"Reload failed: {ex.Message}. Keeping the previous config.");
 					}
 					break;
 				case "model":
@@ -762,10 +671,9 @@ public class SessionRunner
 	// ---- Helpers ----
 
 	// Returns the tools for this turn. role.BuiltTools holds the role's regular tools; the in-code special
-	// tools are injected here for the root: start_task and subagent when the role declares them by name,
-	// and task_complete for any Agent role kept on task by an end-of-turn prompt. Child agents
-	// (isSubagent) get only their regular tools — SubagentRunner adds return_to_caller — so they cannot
-	// spawn subagents or start tasks.
+	// tools are injected here for the root: read_file, assign_work, and fetch_url when the role declares them
+	// by name. Child agents (isSubagent) get only their regular tools — SubagentRunner adds the terminator and
+	// the Developer's review_work / commit_and_rebase — so they cannot spawn arbitrary subagents.
 	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
 	{
 		if (isSubagent)
@@ -774,14 +682,10 @@ public class SessionRunner
 		List<Tool> tools = new List<Tool>(role.BuiltTools);
 		if (role.Tools.Contains("read_file"))
 			tools.Add(_readFileTool);
-		if (role.Tools.Contains("start_task"))
-			tools.Add(ToolFactory.CreateStartTaskTool(StartTaskAsync));
-		if (role.Tools.Contains("subagent"))
-			tools.Add(_subagentTool);
+		if (role.Tools.Contains("assign_work"))
+			tools.Add(_assignWorkTool);
 		if (role.Tools.Contains("fetch_url"))
 			tools.Add(_fetchUrlTool);
-		if (!string.IsNullOrEmpty(role.EndOfTurnPrompt))
-			tools.Add(_taskCompleteTool);
 		return Task.FromResult(tools.ToArray());
 	}
 

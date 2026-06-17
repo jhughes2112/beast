@@ -85,7 +85,7 @@ public class WebFetch
                     seed = BuildFilesSeed(url, objective, contentType, bytes!);
             }
 
-            (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, "fetch_url", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(webRole.Tools), transport, cancellationToken);
+            (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(webRole.Tools), transport, cancellationToken);
             if (!ok)
                 return new ToolResult(toolCallId, string.Empty, "Error: the Web role failed to interpret " + url, 1, 0);
 

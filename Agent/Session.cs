@@ -336,7 +336,8 @@ public class Session
 	// The conversation bundle — passed to LlmService by SessionRunner so it can read/write history.
 	public ListenerBundle Bundle => _bundle;
 
-	// Sets the display name from the first user message in history, if not already set.
+	// Sets the display name to "{Role} {first user message}", if not already set. Subagent and helper
+	// sessions set their own name at creation, so this only ever names a root agent session.
 	// Returns true if the name was newly assigned (so the caller can announce it to the client).
 	public bool InferDisplayName()
 	{
@@ -345,9 +346,12 @@ public class Session
 		foreach (CanonicalMessage msg in _data.Messages)
 		{
 			if (msg is UserMessage um && !string.IsNullOrWhiteSpace(um.Text))
-			{ 
+			{
 				string name = um.Text.Trim();
-				_data.DisplayName = name.Length > 50 ? name.Substring(0, 50) : name;
+				if (name.Length > 50)
+					name = name.Substring(0, 50);
+				// Prefix the role so the session tree reads "{Role} {first message}" (e.g. "Task Add dark mode").
+				_data.DisplayName = string.IsNullOrEmpty(_data.Role) ? name : $"{_data.Role} {name}";
 				return true;
 			}
 		}

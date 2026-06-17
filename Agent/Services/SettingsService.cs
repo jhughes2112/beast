@@ -61,21 +61,22 @@ public class SettingsService
         }
         catch (JsonException ex)
         {
-            Console.Error.WriteLine($"ERROR: Failed to parse settings.json at {path}");
-            Console.Error.WriteLine($"       {ex.Message}");
-            if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
-            {
-                Console.Error.WriteLine($"       Line {ex.LineNumber + 1}, column {ex.BytePositionInLine + 1}");
-            }
+            string location = ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue
+                ? $" (line {ex.LineNumber + 1}, column {ex.BytePositionInLine + 1})"
+                : "";
+            string detail = $"settings.json parse error at {path}{location}: {ex.Message}";
+
+            Console.Error.WriteLine($"ERROR: Failed to parse {detail}");
             Console.Error.WriteLine("Fix it, or delete the file to use defaults.");
-            throw new ConfigException("settings.json parse error");
+            throw new ConfigException(detail);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"ERROR: Failed to load settings.json from {path}");
-            Console.Error.WriteLine($"       {ex.Message}");
+            string detail = $"settings.json load error at {path}: {ex.Message}";
+
+            Console.Error.WriteLine($"ERROR: Failed to load {detail}");
             Console.Error.WriteLine("Fix it, or delete the file to use defaults.");
-            throw new ConfigException("settings.json load error");
+            throw new ConfigException(detail);
         }
     }
 

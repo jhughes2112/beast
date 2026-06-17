@@ -63,7 +63,6 @@ public class RoleService
         Role[] defaults =
         {
             DefaultRole(),
-            TaskRole(),
             DeveloperRole(),
             ReviewerRole(),
             ExplorerRole(),
@@ -124,21 +123,22 @@ public class RoleService
         }
         catch (JsonException ex)
         {
-            Console.Error.WriteLine($"ERROR: Failed to parse roles.json at {path}");
-            Console.Error.WriteLine($"       {ex.Message}");
-            if (ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue)
-            {
-                Console.Error.WriteLine($"       Line {ex.LineNumber + 1}, column {ex.BytePositionInLine + 1}");
-            }
+            string location = ex.LineNumber.HasValue && ex.BytePositionInLine.HasValue
+                ? $" (line {ex.LineNumber + 1}, column {ex.BytePositionInLine + 1})"
+                : "";
+            string detail = $"roles.json parse error at {path}{location}: {ex.Message}";
+
+            Console.Error.WriteLine($"ERROR: Failed to parse {detail}");
             Console.Error.WriteLine("Fix it, or delete the file to regenerate defaults.");
-            throw new ConfigException("roles.json parse error");
+            throw new ConfigException(detail);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"ERROR: Failed to load roles.json from {path}");
-            Console.Error.WriteLine($"       {ex.Message}");
+            string detail = $"roles.json load error at {path}: {ex.Message}";
+
+            Console.Error.WriteLine($"ERROR: Failed to load {detail}");
             Console.Error.WriteLine("Fix it, or delete the file to regenerate defaults.");
-            throw new ConfigException("roles.json load error");
+            throw new ConfigException(detail);
         }
 
         if (file == null)
@@ -165,76 +165,63 @@ public class RoleService
     // Each role is defined here so the role set is easy to extend without touching the Role data class.
 
     // Interactive entry point: read the project and decide what to do. No end-of-turn prompt, so it
-    // behaves like ordinary chat — it responds and waits. start_task hands off to the Task role.  This should be a smart model.
+    // behaves like ordinary chat — it responds and waits. The subagent tool hands concrete work off to
+    // the Developer.  This should be a smart model.
     private static Role DefaultRole()
     {
 		const string description = "Light conversation role";
-        const string systemPrompt = "You are a helpful assistant. Use read_file and ls to consider the current project, discuss it with the user, and when there is a concrete task to do, call start_task with a clear objective to begin working it.";
+        const string systemPrompt = "You are a helpful assistant. Use read_file and ls to consider the current project, discuss it with the user, and when there is a concrete task to do, delegate it to the Developer subagent with a clear objective. The Developer makes the change, gets it reviewed and integrated, and reports back.";
         const string summaryPrompt = """
             Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
             """;
-        List<string> tools = new List<string> { "read_file", "ls", "start_task", "fetch_url", "search_web" };
+        List<string> tools = new List<string> { "read_file", "ls", "assign_work", "fetch_url", "search_web" };
         return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, string.Empty);
     }
 
-    // Carries out a task by delegating to subagents. Kept on task by its end-of-turn prompt until it
-    // calls task_complete.  This does not need to be a very smart model, just capable of calling a few tools and track task progress.
-    private static Role TaskRole()
-    {
-		const string description = "To orchestrate the completion of a task";
-        const string systemPrompt =
-            """
-            You are a capable orchestrator. Read the MEMORY.md file for project-level knowledge, read PLAN.md for tasks in progress.
-            Carry out the objective by delegating units of work to subagents. When you call subagent you name the role to spawn and write the context for what it must do:
-              - Assign the Developer role to make the actual code changes (it has full read/write/shell access).
-              - Then assign the Reviewer role to inspect the result. An approved review commits the work and rebases the worktree branch onto its base branch (linear, no merge commit); a rejected review returns comments for the Developer to address.
-            Iterate between Developer and Reviewer until the review is approved AND integrated. If an approved review reports an integration failure (typically a rebase conflict), assign the Developer to rebase onto the base branch and resolve the conflicts it names, then have the Reviewer review again. Ask clarifying questions only when truly blocked.
-            """;
-        const string summaryPrompt = """
-            Update project-level learnings that have long-term value in MEMORY.md, update PLAN.md so that the status of the current task is reflected.
-            Output only a summary of the preceding conversation retaining the objective, critical concepts, current status, discovered context, key next steps, and exact details that would help perform them. Be concise. Retain only that which will help complete the task.
-            """;
-        const string endOfTurnPrompt = "If the task is finished, call the task_complete tool with a status update. Otherwise keep working.";
-        // Drives the task by delegating; it does not perform the work itself. task_complete is added in
-        // code for Agent roles that have an end-of-turn prompt.
-        List<string> tools = new List<string> { "read_file", "ls", "subagent" };
-        return new Role("Task", description, RoleKind.Agent, new List<string> { "local", "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
-    }
-
-    // A full-access worker invoked as a subagent: it makes the actual code changes in the worktree.
-    // It is the only role with write access (write_file, edit_file, bash), so all implementation —
-    // including fixes after a rejected review — is delegated to it. Finishes by calling return_to_caller. This should be a smart model.
+    // A full-access worker invoked as a subagent: it makes the actual code changes in the worktree and
+    // drives its own review. It is the only role with write access (write_file, edit_file, bash), so all
+    // implementation — including fixes after a rejected review — happens here. It calls review_work to have
+    // the Reviewer inspect and integrate the change, then finishes by calling task_complete. This should be
+    // a smart model.
     private static Role DeveloperRole()
     {
-		const string description = "Implements changes with full read/write/shell access";
+		const string description = "Implements changes with full read/write/shell access, and gets them reviewed";
         const string systemPrompt =
             """
-            You are a developer agent carrying out a delegated unit of work in a git worktree. Use your tools to make the change directly: read what you need, edit files, and run commands to build and verify.
-            Do not interpret results beyond what the goal asks for.
+            You are a developer agent working in a git worktree. Use tools to make changes directly.
+            When the changes are ready, call review_work for constructive feedback. Address anything in-scope for the work requested and call review_work again until it is approved.
+            Once approved, call commit_and_rebase to finish the work and integrate it onto the base branch (ff merge only, no merge commits). If a conflict happens, resolve them, run 'git rebase --continue', then call commit_and_rebase again to finish.
+            Be precise, directed, and maintain a sense of purpose without spending effort on high level considerations and interpretation. Consider the code the source of truth. Do not stray from the goal.
             If the goal cannot be achieved, be brief: report this and list what you attempted along with the exact output.
+            Finish by calling task_complete with the review outcome and integration status.
             """;
-        const string endOfTurnPrompt = "If you have achieved the goal, call the return_to_caller tool with the result. Otherwise keep working.";
-        List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls", "fetch_url", "search_web" };
+        const string endOfTurnPrompt = "Are you finished?  If so, review_work until it's approved. After approval, commit_and_rebase to check it in.  Then call task_complete with the approval message.";
+        // review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
+        // injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
+        // work; task_complete is this role's terminator).
+        List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls", "fetch_url", "search_web", "review_work", "commit_and_rebase", "task_complete" };
         return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 
-    // A read-only reviewer invoked as a subagent. It inspects the Developer's changes but cannot modify
-    // them — only the Developer has write access. It finishes by calling finish_review with an approval
-    // flag and comments; on approval SubagentRunner commits and rebases the worktree branch onto its base
-    // branch (linear, no merge commit) and appends the git transcript to the review the orchestrator receives. This should be a smart model, but different from the Developer.
+    // A read-only reviewer invoked by the Developer through review_work. It inspects the Developer's changes
+    // but cannot modify them — only the Developer has write access. It finishes by calling finish_review with
+    // an approval flag and comments; on approval SubagentRunner commits and rebases the worktree branch onto
+    // its base branch (linear, no merge commit) and appends the git transcript to the review the Developer
+    // receives. This should be a smart model, but different from the Developer.
     private static Role ReviewerRole()
     {
-		const string description = "Reviews changes read-only; approves and merges, or rejects with comments";
+		const string description = "Reviews changes read-only; approves or rejects with comments";
         const string systemPrompt =
             """
-            You are a reviewer agent with read-only access to the worktree. Inspect the changes against the goal you were given: check correctness, scope, and that nothing obviously broke.
-            You cannot modify files. If anything needs changing, reject with specific, actionable comments for the developer.
-            When finished, call finish_review: approved=true to accept (this automatically commits the work and rebases the worktree branch onto its base branch — you never run git yourself), or approved=false with comments describing exactly what must be fixed.
+            You are a reviewer agent with read-only access to the worktree. Inspect the indicated changes against the goal you were given: check correctness, scope, code quality and that nothing obviously broke.
+            If you need any outputs from build tools, use the bash tool but do not modify any files. Approve with caveats, concerns, and indicate whether follow-on tasks should be added to the plan. 
+            If the code quality violates standards, has bugs, needs more cases handled, or in any other case should be improved, reject with specific, actionable comments for the developer.
+            Call finish_review to complete this review round.
             """;
         const string endOfTurnPrompt = "When you have reached a decision, call the finish_review tool. Otherwise keep reviewing.";
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
         // entry, so it is listed here only as the marker that selects this role's terminator.
-        List<string> tools = new List<string> { "read_file", "ls", "fetch_url", "search_web", "finish_review" };
+        List<string> tools = new List<string> { "bash", "read_file", "ls", "fetch_url", "search_web", "finish_review" };
         return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 
@@ -245,11 +232,12 @@ public class RoleService
     // model, since it runs on every first read for discovery.
     private static Role ExplorerRole()
     {
-		const string description = "To read a file and cite the parts relevant to a goal";
+		const string description = "To reduce context by providing a brief roadmap of a file relevant to a goal";
         const string systemPrompt =
             """
-            You are given a goal, a file path, and a line-numbered window of that file's contents. Your job is fast first-pass discovery: find the parts of the file that matter to the goal and cite them so the caller can read them directly.
-            Reply with citations in the form the read_file tool takes — the file path, the starting line number (from the left margin), and the number of lines — each with a one-line note naming the symbols involved and why they are relevant to the goal. Be concise: cite what matters and nothing else. Do not propose changes or speculate beyond what the content shows.
+            You are the first-pass discovery agent that creates a very brief roadmap for an indicated file that pertains to the goal and cite them so the caller can read them directly.
+            Reply with undecorated citations in the form the read_file tool takes: file path, starting line number, number of lines. On each entry, note naming the functions or variables of importance. 
+            Do not propose changes or speculate beyond what the content shows.
             """;
         const string endOfTurnPrompt = "When you have found the relevant locations, call return_to_caller with your citations. Otherwise keep looking.";
         List<string> tools = new List<string>();
@@ -263,12 +251,15 @@ public class RoleService
     // (forced on the last turn). This should be a capable-enough model to pick the right file and parse it.
     private static Role WebRole()
     {
-		const string description = "To request a URL and return only the useful parts";
+		const string description = "To reduce context by returning the useful parts of a web page";
         const string systemPrompt =
             """
-            You are given a URL, an objective, and a list of files that the fetched resource was saved to under /tmp/. Use read_file and bash to inspect those files: prefer the stripped-text view for prose, the tag-skeleton view to locate a section, and the raw file when you need exact markup or non-HTML data. If the resource was too large to download, fetch it yourself with curl or wget via bash. Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value. Be cautious about exceeding your context length, there is no compaction, you just fail.
+            A web page has been fetched and stored in /tmp/ as multiple different versions of the same file. Consider the provided objective, and use read_file and bash to inspect these files: prefer the stripped-text view for prose, the tag-skeleton view to locate a section, and the raw file when you need exact markup or non-HTML data. 
+            If the resource was too large to download, fetch it yourself with curl or wget via bash. 
+            Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value. 
+            Be cautious about exceeding your context length, there is no compaction, you just fail.
             """;
-        const string endOfTurnPrompt = "When you have what the objective asks for, call return_to_caller with it. Otherwise keep working.";
+        const string endOfTurnPrompt = "If you are finished, call return_to_caller with it. Otherwise keep working.";
         // Resolved against the helper tool set (ToolFactory.BuildHelperTools), not the main registry: read_file
         // is the raw line-numbered reader (no Explorer round-trip) and bash is plain bash.
         List<string> tools = new List<string> { "read_file", "bash" };

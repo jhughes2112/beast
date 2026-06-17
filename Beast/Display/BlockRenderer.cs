@@ -410,6 +410,14 @@ internal static class BlockRenderer
             "state_transition"                                         => $"{label} {Get("statement")}",
             _                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)
         };
+
+        // The collapsed summary must stay a single visual line. Anything past the first newline
+        // wraps and corrupts the surrounding block layout, so cut there and re-terminate any open
+        // ANSI styling so color does not bleed into the rest of the row.
+        int firstNewline = summary.IndexOf('\n');
+        if (firstNewline >= 0)
+            summary = summary.Substring(0, firstNewline) + DisplayScreen.Palette.ResetAnsi;
+
         return summary;
     }
 

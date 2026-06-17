@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,9 +9,10 @@ using System.Threading.Tasks;
 // Builds the tool dictionary with explicit registrations — no reflection.
 public static class ToolFactory
 {
-    // Builds the role-assignable tool set. The two delegation tools (subagent, return_to_caller) are
-    // created by CreateSubagentTool / CreateReturnToCallerTool and added to a session's tool list in
-    // code (the root gets subagent; SubagentRunner gives each child return_to_caller).
+    // Builds the role-assignable tool set. The delegation and terminator tools are not registered here:
+    // they are created by their Create* factories and added to a session's tool list in code (the root gets
+    // assign_work; SubagentRunner gives the Developer review_work / commit_and_rebase and each child its
+    // terminator).
     public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig)
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
@@ -223,18 +225,12 @@ public static class ToolFactory
         return new Tool[] { readFile, bash };
     }
 
-    // Creates the delegation tool. The root agent adds this to its tool list (it is never role-assignable
-    // and never given to a child, so subagents cannot recursively spawn). runSubagent launches the child
-    // session, runs it to completion, and returns its final result fit to the caller's budget. roleNames
-    // is listed in the role argument description so the model picks a valid role.
-    public static Tool CreateSubagentTool(IEnumerable<Role> subagentRoles, Func<string, string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runSubagent)
+    // Creates the Default agent's tool for handing a concrete unit of work to the Developer. runDeveloper
+    // launches the Developer subagent (in a git worktree), runs it to completion, and returns its final
+    // report fit to the caller's budget. Like review_work it targets one fixed role and takes no role
+    // argument; the Developer reviews and integrates its own work, so the Default only delegates and waits.
+    public static Tool CreateAssignWorkTool(Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runDeveloper)
     {
-        string roleList = string.Empty;
-		foreach (Role r in subagentRoles)
-		{
-			roleList += $"{r.Name} -> {r.Description}\n";
-		}
-
         return new Tool
         {
             Definition = new ToolDefinition
@@ -242,21 +238,19 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition
                 {
-                    Name = "subagent",
-                    Description = "Instruct a subagent to do work. The subagent gets a git worktree that you name with the provided role and tools, works to completion, and returns an update.",
+                    Name = "assign_work",
+                    Description = "Hand a concrete unit of work to the Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and returns a report.",
                     Parameters = Params(
-                        Req("role", "string", $"The role to assign the child agent. It receives that role's system prompt and tool set. Valid roles: {roleList}."),
-                        Req("prompt", "string", "The task for the child agent, written in natural language as if you were the user instructing it."))
+                        Req("prompt", "string", "The task for the Developer, written in natural language as if you were the user instructing it."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
-                string role = Str(args, "role");
                 string prompt = Str(args, "prompt");
-                if (string.IsNullOrWhiteSpace(role) || string.IsNullOrWhiteSpace(prompt))
-                    return new ToolResult(toolCallId, string.Empty, "Error: subagent requires both 'role' and 'prompt'.", 1, 0);
+                if (string.IsNullOrWhiteSpace(prompt))
+                    return new ToolResult(toolCallId, string.Empty, "Error: assign_work requires a 'prompt'.", 1, 0);
 
-                (bool ok, string text, int responseTokens) = await runSubagent(role, prompt, maxOutputTokens, ct);
+                (bool ok, string text, int responseTokens) = await runDeveloper(prompt, maxOutputTokens, ct);
                 if (!ok)
                     return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -265,8 +259,51 @@ public static class ToolFactory
         };
     }
 
-    // Creates the Task agent's termination tool. onComplete receives the final status; SessionRunner
-    // adds this to the root's tool list and stops keeping the model on task once it is called.
+    // Preserved in case we reintroduce free-form delegation: the generic subagent tool let the root pick any
+    // subagent role by name. It is no longer wired up — the Default uses assign_work (Developer) and the
+    // Developer uses review_work (Reviewer), so there is no caller that needs an arbitrary role choice.
+    // public static Tool CreateSubagentTool(IEnumerable<Role> subagentRoles, Func<string, string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runSubagent)
+    // {
+    //     string roleList = string.Empty;
+    //     foreach (Role r in subagentRoles)
+    //     {
+    //         roleList += $"{r.Name} -> {r.Description}\n";
+    //     }
+    //
+    //     return new Tool
+    //     {
+    //         Definition = new ToolDefinition
+    //         {
+    //             Type = "function",
+    //             Function = new FunctionDefinition
+    //             {
+    //                 Name = "subagent",
+    //                 Description = "Instruct a subagent to do work. The subagent gets a git worktree that you name with the provided role and tools, works to completion, and returns an update.",
+    //                 Parameters = Params(
+    //                     Req("role", "string", $"The role to assign the child agent. It receives that role's system prompt and tool set. Valid roles: {roleList}."),
+    //                     Req("prompt", "string", "The task for the child agent, written in natural language as if you were the user instructing it."))
+    //             }
+    //         },
+    //         Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+    //         {
+    //             string role = Str(args, "role");
+    //             string prompt = Str(args, "prompt");
+    //             if (string.IsNullOrWhiteSpace(role) || string.IsNullOrWhiteSpace(prompt))
+    //                 return new ToolResult(toolCallId, string.Empty, "Error: subagent requires both 'role' and 'prompt'.", 1, 0);
+    //
+    //             (bool ok, string text, int responseTokens) = await runSubagent(role, prompt, maxOutputTokens, ct);
+    //             if (!ok)
+    //                 return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
+    //
+    //             return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
+    //         }
+    //     };
+    // }
+
+    // Creates the Developer subagent's termination tool. onComplete receives the final result; SubagentRunner
+    // adds this to the Developer's tool list (selected by the role declaring task_complete) and reads what
+    // onComplete captured to return to the caller. Its required argument is the result of review_work, which
+    // strongly steers the Developer to get the work reviewed and integrated before finishing.
     public static Tool CreateTaskCompleteTool(Action<string> onComplete)
     {
         return new Tool
@@ -277,27 +314,27 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "task_complete",
-                    Description = "Declare this task finished and stop work.",
+                    Description = "Declare your work finished and return to the agent that delegated it. Before calling this, get your work reviewed with review_work and integrated with commit_and_rebase, then summarize the outcome below.",
                     Parameters = Params(
-                        Req("status", "string", "Provide proof this task is complete with any final summary or details the user should read."))
+                        Req("results_of_review_work", "string", "The review outcome and the integration status from commit_and_rebase. This string is the entire response the caller receives."))
                 }
             },
             Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
-                string status = Str(args, "status");
-                onComplete(status);
+                string results = Str(args, "results_of_review_work");
+                onComplete(results);
                 string ack = "Task marked complete.";
                 return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
             }
         };
     }
 
-    // Creates the Default agent's tool for kicking off a task. onStart receives the objective and runs the
-    // role transition into the Task role; it returns string.Empty on success or an error otherwise. On error
-    // the task does not start and the error is returned to the model as the tool result. There is no branch
-    // argument: the whole launch runs in one worktree (chosen at launch, bound to /workspace), so a task
-    // never picks or creates a branch.
-    public static Tool CreateStartTaskTool(Func<string, CancellationToken, Task<string>> onStart)
+    // Creates the Developer's review_work tool: it spawns a Reviewer subagent on the Developer's worktree and
+    // returns the review to the Developer. runReview launches the Reviewer (via SubagentRunner) parented to the
+    // calling Developer's sub-session; the review is feedback only — the Developer integrates approved work
+    // itself with commit_and_rebase. Like assign_work it always targets one fixed role and takes no role
+    // argument.
+    public static Tool CreateReviewWorkTool(Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runReview)
     {
         return new Tool
         {
@@ -306,31 +343,123 @@ public static class ToolFactory
                 Type = "function",
                 Function = new FunctionDefinition
                 {
-                    Name = "start_task",
-                    Description = "Begin working a task. This starts a new Task session, providing an objective that it will work on.",
+                    Name = "review_work",
+                    Description = "Ask the Reviewer to inspect your changes. Returns its verdict: approved, or rejected with comments to address. The review does not commit anything — once approved, integrate the work yourself with commit_and_rebase.",
                     Parameters = Params(
-                        Req("objective", "string", "Describe the task, written as a clear instruction for the agent that will carry it out."))
+                        Req("prompt", "string", "What you changed and what the reviewer should check, written in natural language as if you were instructing it."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
-                string objective = Str(args, "objective");
-                if (string.IsNullOrWhiteSpace(objective))
-                    return new ToolResult(toolCallId, string.Empty, "Error: start_task requires an objective.", 1, 0);
+                string prompt = Str(args, "prompt");
+                if (string.IsNullOrWhiteSpace(prompt))
+                    return new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0);
 
-                string error = await onStart(objective, ct);
-                if (!string.IsNullOrEmpty(error))
-                    return new ToolResult(toolCallId, string.Empty, error, 1, ToolDispatch.EstimateTokens(error));
+                (bool ok, string text, int responseTokens) = await runReview(prompt, maxOutputTokens, ct);
+                if (!ok)
+                    return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
-                string ack = "Starting task.";
-                return new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack));
+                return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
             }
         };
     }
 
+    // Creates the Developer's commit_and_rebase tool: it commits the worktree with the given message and
+    // integrates it onto the base branch via a strictly linear rebase (see CommitAndRebaseAsync). The Developer
+    // calls this explicitly after an approved review, so the git transcript is visible in its session and a
+    // conflict comes straight back to it to resolve. Selected by the role declaring commit_and_rebase.
+    public static Tool CreateCommitAndRebaseTool()
+    {
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "commit_and_rebase",
+                    Description = "Commit all changes in your worktree, then integrate them: fast-forward the base branch from its remote, rebase your branch onto it (linear history, no merge commit), and fast-forward the base onto your branch. Call this after an approved review. On a conflict the rebase stops with the conflicted files listed — resolve them, run 'git rebase --continue' with bash, then call this again to finish.",
+                    Parameters = Params(
+                        Req("message", "string", "The commit message describing the work."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string message = Str(args, "message");
+                if (string.IsNullOrWhiteSpace(message))
+                    return new ToolResult(toolCallId, string.Empty, "Error: commit_and_rebase requires a commit 'message'.", 1, 0);
+
+                (bool ok, string transcript) = await CommitAndRebaseAsync(message, ct);
+                int tokens = Math.Max(1, ToolDispatch.EstimateTokens(transcript));
+                if (!ok)
+                    return new ToolResult(toolCallId, string.Empty, transcript, 1, tokens);
+
+                return new ToolResult(toolCallId, transcript, string.Empty, 0, tokens);
+            }
+        };
+    }
+
+    // Commits the current worktree and integrates it with a strictly linear, rebase-based flow — never a merge
+    // commit. It commits everything onto the feature branch, finds the base branch (the branch checked out in
+    // the primary worktree, reached with git -C since it cannot be switched here), fast-forwards that base from
+    // its remote, rebases the feature branch onto it, then fast-forwards the base onto the now-linear feature
+    // branch. The base is derived from the primary worktree (git --git-common-dir), not guessed as "main" or
+    // read from origin/HEAD, so it is correct for any base branch and with or without a remote. The commit
+    // message is passed base64-encoded so arbitrary text cannot break out of the script. A rebase conflict is
+    // left in place (not aborted) with the conflicted files listed, so the Developer can resolve it directly and
+    // call again. Returns (ok, transcript): ok is false on any git failure, with the transcript explaining why.
+    private static async Task<(bool ok, string transcript)> CommitAndRebaseAsync(string message, CancellationToken ct)
+    {
+        string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(message));
+        string script =
+            "branch=$(git rev-parse --abbrev-ref HEAD)\n" +
+            "common=$(git rev-parse --git-common-dir)\n" +
+            "main_wt=$(cd \"$common\" && cd .. && pwd)\n" +
+            "base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
+            "if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Could not determine a distinct base branch (base='$base', feature='$branch').\"; exit 1; fi\n" +
+            "echo \"Committing work on '$branch'...\"\n" +
+            "echo '" + encoded + "' | base64 -d > /tmp/beast_commit_msg\n" +
+            "git add -A\n" +
+            "git commit -F /tmp/beast_commit_msg || echo '(nothing to commit)'\n" +
+            "echo \"Fast-forwarding base '$base' from its remote...\"\n" +
+            "git -C \"$main_wt\" pull --ff-only || echo \"Note: could not pull '$base' (continuing with local '$base').\"\n" +
+            "echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +
+            "if ! git rebase \"$base\"; then\n" +
+            "  echo \"Rebase of '$branch' onto '$base' hit conflicts. Conflicted files:\"\n" +
+            "  git diff --name-only --diff-filter=U\n" +
+            "  echo \"Resolve each, 'git add' it, run 'git rebase --continue', then call commit_and_rebase again to fast-forward '$base'.\"\n" +
+            "  exit 1\n" +
+            "fi\n" +
+            "echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
+            "git -C \"$main_wt\" merge --ff-only \"$branch\"\n";
+
+        ToolResult result = await ShellTools.BashAsync("commit_and_rebase", script, null, ct);
+
+        StringBuilder sb = new StringBuilder();
+        if (!string.IsNullOrEmpty(result.StdOut))
+            sb.Append(result.StdOut);
+        if (!string.IsNullOrEmpty(result.StdErr))
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+            sb.Append(result.StdErr);
+        }
+
+        bool ok = result.ExitCode == 0;
+        if (!ok)
+        {
+            if (sb.Length > 0)
+                sb.Append('\n');
+            sb.Append($"[commit_and_rebase failed: git exited {result.ExitCode}]");
+        }
+
+        string transcript = sb.Length > 0 ? sb.ToString() : "[commit_and_rebase produced no output]";
+        return (ok, transcript);
+    }
+
     // Creates the Reviewer's termination tool. onFinish receives the approval flag and the review comments;
-    // SubagentRunner adds this to a Reviewer child's tool list, reads what onFinish captured, and on approval
-    // integrates the worktree branch onto its base branch before returning the review to the caller.
+    // SubagentRunner adds this to a Reviewer child's tool list and reads what onFinish captured to return the
+    // verdict to the Developer. The Reviewer never integrates — the Developer commits and rebases after approval.
     public static Tool CreateFinishReviewTool(Action<bool, string> onFinish)
     {
         return new Tool
@@ -341,7 +470,7 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "finish_review",
-                    Description = "Call this to finish the review. approved=true accepts the change and triggers an automatic commit and rebase of the worktree branch onto its base branch (linear history, no merge commit — you do not run any git yourself); approved=false rejects it for the developer to fix.",
+                    Description = "Call this to finish the review. approved=true accepts the change; approved=false rejects it with comments. You only review — after approval the developer commits and integrates the work itself, so you never run git.",
                     Parameters = Params(
                         Req("approved", "boolean", "True to accept the change, false to reject it."),
                         Req("comments", "string", "Your review: what you checked and why you approved, or exactly what the developer must fix. This string is the entire response the caller receives."))
