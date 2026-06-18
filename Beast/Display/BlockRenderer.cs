@@ -171,7 +171,9 @@ internal static class BlockRenderer
     {
         List<string> result = new List<string>();
         string prefix = PrefixTextForType(msg.Type);
-        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.System || msg.Type == FrameType.User;
+        // The system prompt is plain instructional text, not markdown: rendering it through Markdig drops
+        // angle-bracket tokens (parsed as HTML) and collapses single newlines, so it is rendered verbatim.
+        bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.User;
         bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
                      || msg.Type == FrameType.System || msg.Type == FrameType.Thinking;
 

@@ -273,6 +273,7 @@ public class RoleService
 			Name only symbols visible within the cited region.
 			No prose, no markdown, no preamble: citations only.
 			Do not describe behavior, propose changes, or speculate beyond what the content explicitly shows.
+			You get one turn: deliver the citations as the output argument of a single return_to_caller call. That call is your only reply.
 			""";
         const string endOfTurnPrompt = "When you have found the relevant locations, call return_to_caller with your citations. Otherwise keep looking.";
         List<string> tools = new List<string>();

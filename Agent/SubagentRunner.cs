@@ -88,6 +88,10 @@ public class SubagentRunner
         BeastSession subData = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
         Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
 
+        // The constructor no longer displays the system prompt; this sub-session has no other replay path,
+        // so emit its (system-only) history to the client now. The seed user message displays when flushed.
+        subSession.ReplayToTransport();
+
         // Inject the worktree context at the top of the first prompt so the subagent knows where it is
         // operating (branch + path) rather than inferring it. Empty when the CWD is not a git checkout.
         string banner = await WorktreeBannerAsync(ct);

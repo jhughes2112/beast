@@ -18,8 +18,14 @@ public class ReadFileExplorer
 	private const int RawMaxLines = 500;
 	private const int ExploreMaxLines = 2000;
 
-	// The Explorer digests one file window and returns its citations; a working turn at most before finishing.
-	private const int MaxTurns = 2;
+	// A first read of a file this small is returned whole instead of routed through the Explorer: digesting
+	// it costs more than just handing it over. Either threshold (lines or bytes) being met is enough.
+	private const int SmallFileMaxLines = 50;
+	private const int SmallFileMaxBytes = 2048;
+
+	// The Explorer digests one file window and returns its citations in a single forced turn: it has no tools
+	// to work with, so there is nothing to do but cite, and return_to_caller is forced on that one turn.
+	private const int MaxTurns = 1;
 
 	// The full paths this agent has already read. A turn's tool calls run in parallel, so TryAdd is the
 	// first-read decision: it returns true exactly once per path even under concurrent reads.
@@ -64,7 +70,29 @@ public class ReadFileExplorer
 			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 
 		_read.TryAdd(fullPath, 0);
+
+		// A small file is cheaper handed over whole than digested: under either threshold, return the
+		// line-numbered window directly with no LLM round-trip.
+		long fileBytes = new FileInfo(fullPath).Length;
+		if (fileBytes < SmallFileMaxBytes || CountLines(raw.StdOut) < SmallFileMaxLines)
+			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
+
 		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, registry, roleService, transport, parent, maxOutputTokens, cancellationToken);
+	}
+
+	// Counts physical lines in already-read content; used only for the small-file threshold.
+	private static int CountLines(string text)
+	{
+		if (string.IsNullOrEmpty(text))
+			return 0;
+
+		int count = 1;
+		foreach (char c in text)
+		{
+			if (c == '\n')
+				count++;
+		}
+		return count;
 	}
 
 	// First read of the file: interpret the line-numbered window with the Explorer role, which returns its

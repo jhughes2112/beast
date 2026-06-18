@@ -96,7 +96,7 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "read_file",
-                    Description = "Read a file. The first read of a file is interpreted by the Explorer role, which returns citations relevant to your goal; later reads of the same file return its raw contents. CWD is the repo root at /workspace/.",
+                    Description = "Read a file. The first read returns a concept map of the file relevant to your goal — cited line ranges with the functions and symbols in each — so you can target follow-up reads; every read after the first returns the file's raw contents. Small files (under 50 lines or 2KB) are returned directly. CWD is the repo root at /workspace/.",
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
                         Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned on the first read."),

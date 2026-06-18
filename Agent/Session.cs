@@ -74,8 +74,11 @@ public class Session
 		_bundle = new ListenerBundle(
 			new CanonicalConversation(data.Messages),
 			new ListenerTransport(_transport, data.Id));
+		// Persist the system prompt to canonical only — never emit it to the transport here. Display is
+		// owned by ReplayToTransport (called on every display path), so emitting at construction too would
+		// show the prompt twice on a fresh conversation. The active protocol rehydrates it from canonical.
 		if (!string.IsNullOrEmpty(systemPrompt))
-			_bundle.OnSystemMessage(systemPrompt);
+			_bundle.Canonical.OnSystemMessage(systemPrompt);
 	}
 
 	// ---- Child ID allocation ----

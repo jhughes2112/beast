@@ -7,8 +7,11 @@ using System.Threading.Tasks;
 // Runs an internal helper role (Web, Explorer) as a throwaway child session seeded with content to process,
 // and returns what the model passes to return_to_caller. The model gets up to maxTurns: every turn that does
 // not finish is nudged with the role's end-of-turn prompt, and return_to_caller is forced on the final turn
-// so the loop always terminates. This is the shared spine behind WebFetch and ReadFileExplorer — both seed a
-// role with content and want one clean returned answer, optionally after working turns. extraTools are the
+// so the loop always terminates. The answer only ever arrives through return_to_caller — if the model defies
+// even the forced final call the run fails; there is no fallback to its plain assistant text. This is the
+// shared spine behind WebFetch and ReadFileExplorer — both seed a role with content and want one clean
+// returned answer, optionally after working turns (Explorer has no tools, so it runs a single forced turn).
+// extraTools are the
 // tools the helper may call while working (ReadFileExplorer passes none; WebFetch passes bash and read_file
 // so the Web role can inspect the files a fetch saved); return_to_caller is always added on top of them.
 public static class HelperSession
@@ -27,6 +30,10 @@ public static class HelperSession
 	{
 		BeastSession data = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
 		Session session = new Session(data, role.SystemPrompt, transport, true);
+
+		// The constructor no longer displays the system prompt; a helper session has no other replay path,
+		// so emit its (system-only) history now. The seed user message displays when flushed during the run.
+		session.ReplayToTransport();
 		session.AddUserMessage(seedMessage);
 		session.AnnounceToClient();
 		parent.AddChild(session);
@@ -40,7 +47,6 @@ public static class HelperSession
 			tools[i] = extraTools[i];
 		tools[extraTools.Length] = terminator;
 
-		string lastAssistantText = string.Empty;
 		int tokens = 0;
 
 		session.SendBusy();
@@ -58,7 +64,6 @@ public static class HelperSession
 					return (false, string.Empty, 0);
 
 				session.CommitAssistantTurn(result.Payload!);
-				lastAssistantText = result.Payload!.AssistantText;
 
 				bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, transport, cancellationToken);
 				if (hasToolCalls)
@@ -75,10 +80,9 @@ public static class HelperSession
 					session.AddUserMessage(role.EndOfTurnPrompt);
 			}
 
-			// The forced final turn still did not call return_to_caller: fall back to its assistant text so
-			// the caller gets something usable rather than nothing.
-			int fallbackTokens = tokens > 0 ? tokens : ToolDispatch.EstimateTokens(lastAssistantText);
-			return (true, lastAssistantText, Math.Max(1, fallbackTokens));
+			// return_to_caller was forced on the final turn, so reaching here means the model defied a forced
+			// tool call and produced nothing usable. There is no salvage path: report failure to the caller.
+			return (false, string.Empty, 0);
 		}
 		finally
 		{
