@@ -186,6 +186,18 @@ public class RoleService
     private static Role DeveloperRole()
     {
 		const string description = "Implements changes with full read/write/shell access, and gets them reviewed";
+        const string summaryPrompt = """
+			Output a concise summary of the preceding conversation preserving:
+			- Goal & scope: what is being built, fixed, or investigated
+			- Tech stack & environment: languages, frameworks, tools, versions, and any relevant config
+			- Current status: what's working, what's broken, and where execution left off
+			- Code context: key files, functions, classes, or logic discussed; include critical snippets verbatim if small enough
+			- Errors & resolutions: any bugs encountered, root causes identified, and fixes applied or attempted
+			- Decisions made: architectural choices, tradeoffs accepted, or approaches ruled out
+			- Last action: the most recent code written, command run, or change made
+			- Next steps: open tasks, unresolved issues, or what was about to be tried
+			Be concise. Prioritize technical precision over narrative.
+			""";
         const string systemPrompt =
             """
             You are a developer agent working in a git worktree. Use tools to make changes directly.
@@ -200,7 +212,7 @@ public class RoleService
         // injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
         // work; task_complete is this role's terminator).
         List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls", "fetch_url", "search_web", "review_work", "commit_and_rebase", "task_complete" };
-        return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
     // A read-only reviewer invoked by the Developer through review_work. It inspects the Developer's changes
@@ -211,6 +223,20 @@ public class RoleService
     private static Role ReviewerRole()
     {
 		const string description = "Reviews changes read-only; approves or rejects with comments";
+		const string summaryPrompt = """
+			Output a concise summary of the preceding conversation preserving:
+			- Review target: PR/branch/commit being reviewed, its stated purpose, and the repo/codebase context
+			- Scope covered: files, modules, or sections already reviewed vs. still pending
+			- Issues found: bugs, logic errors, security concerns, performance problems, or anti-patterns flagged; include severity and file/line references where noted
+			- Positives noted: good patterns, clean abstractions, or well-handled edge cases worth acknowledging
+			- Standards & conventions: style guide, architectural patterns, or team norms applied during review
+			- Unresolved questions: things to verify, clarify with the author, or cross-reference elsewhere in the codebase
+			- Author exchanges: any discussion, pushback, or clarifications already given
+			- Current verdict: approve, request changes, or still undecided — and why
+			- Last position: the most recent file, function, or block examined
+			- Next focus: what was about to be reviewed or followed up on
+			Be concise. Preserve file names, function names, and issue descriptions exactly.
+			""";
         const string systemPrompt =
             """
             You are a reviewer agent with read-only access to the worktree. Inspect the indicated changes against the goal you were given: check correctness, scope, code quality and that nothing obviously broke.
@@ -222,7 +248,7 @@ public class RoleService
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
         // entry, so it is listed here only as the marker that selects this role's terminator.
         List<string> tools = new List<string> { "bash", "read_file", "ls", "fetch_url", "search_web", "finish_review" };
-        return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
     // Used internally by the read_file tool (ReadFileExplorer.ExploreAsync) on the first read of a file in a
@@ -235,10 +261,19 @@ public class RoleService
 		const string description = "To reduce context by providing a brief roadmap of a file relevant to a goal";
         const string systemPrompt =
             """
-            You are the first-pass discovery agent that creates a very brief roadmap for an indicated file that pertains to the goal and cite them so the caller can read them directly.
-            Reply with undecorated citations in the form the read_file tool takes: file path, starting line number, number of lines. On each entry, note naming the functions or variables of importance. 
-            Do not propose changes or speculate beyond what the content shows.
-            """;
+			You are a first-pass discovery agent. Given a goal and a block of content from the target file, return a cited index of regions relevant to that goal so the caller can read them directly using read_file.
+			Output format should include the file and a series of entries in this exact form:
+			<file_path>
+			<starting_line>, <ending_line> — <names of functions and variables visible in that region>
+			<starting_line>, <ending_line> — <names of functions and variables visible in that region>
+			
+			Rules:
+			Cite only regions whose content directly relates to the goal. Omit unrelated code, to increase signal to noise ratio.
+			Line numbers must be exact; do not approximate.
+			Name only symbols visible within the cited region.
+			No prose, no markdown, no preamble: citations only.
+			Do not describe behavior, propose changes, or speculate beyond what the content explicitly shows.
+			""";
         const string endOfTurnPrompt = "When you have found the relevant locations, call return_to_caller with your citations. Otherwise keep looking.";
         List<string> tools = new List<string>();
         return new Role("Explorer", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
@@ -253,12 +288,11 @@ public class RoleService
     {
 		const string description = "To reduce context by returning the useful parts of a web page";
         const string systemPrompt =
-            """
-            A web page has been fetched and stored in /tmp/ as multiple different versions of the same file. Consider the provided objective, and use read_file and bash to inspect these files: prefer the stripped-text view for prose, the tag-skeleton view to locate a section, and the raw file when you need exact markup or non-HTML data. 
-            If the resource was too large to download, fetch it yourself with curl or wget via bash. 
-            Reply with exactly what the objective asks for — precise but thorough so the response retains maximum value. 
-            Be cautious about exceeding your context length, there is no compaction, you just fail.
-            """;
+			"""
+			You are a web content extraction agent. The fetched resource has been saved to /tmp/ in three different ways. Use whichever view best serves the objective: html-stripped text for readable content, the html tag skeleton for structure and navigation, and the unmodified raw file.
+			If the resource was larger than 1mb, it will be truncated or missing. Fetch it yourself via bash.
+			Your job is to filter out low value content. Return exactly what the objective asks for, be precise and complete, but minimal. If the page is paywalled, blocked, or uninformative, say so immediately.
+			""";
         const string endOfTurnPrompt = "If you are finished, call return_to_caller with it. Otherwise keep working.";
         // Resolved against the helper tool set (ToolFactory.BuildHelperTools), not the main registry: read_file
         // is the raw line-numbered reader (no Explorer round-trip) and bash is plain bash.

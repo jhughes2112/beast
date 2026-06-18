@@ -137,9 +137,10 @@ public class WebFetch
 
         StringBuilder manifest = new StringBuilder();
 
-        string rawPath = Path.Combine(directory, "raw." + ExtensionFor(classification));
+        string rawName = FileNameFor(url, classification);
+        string rawPath = Path.Combine(directory, rawName);
         File.WriteAllBytes(rawPath, bytes);
-        manifest.Append($"- {rawPath}  ({bytes.Length} bytes) — the exact bytes as fetched\n");
+        manifest.Append($"- {rawPath}  ({bytes.Length} bytes) — \"{rawName}\", the exact bytes as fetched\n");
 
         if (classification == "html")
         {
@@ -202,6 +203,43 @@ public class WebFetch
         if (head.StartsWith("<"))
             return "xml";
         return "text";
+    }
+
+    // Names the raw file after the resource's own filename (the last path segment of the URL) so the role sees
+    // what the thing is actually called, not a generic "raw". Falls back to "raw" when the URL has no usable
+    // segment, and ensures an extension matching the classification is present either way.
+    private static string FileNameFor(string url, string classification)
+    {
+        string path = url;
+        int query = path.IndexOf('?');
+        if (query >= 0)
+            path = path.Substring(0, query);
+        int fragment = path.IndexOf('#');
+        if (fragment >= 0)
+            path = path.Substring(0, fragment);
+
+        string segment = string.Empty;
+        int slash = path.LastIndexOf('/');
+        if (slash >= 0 && slash < path.Length - 1)
+            segment = path.Substring(slash + 1);
+
+        // Strip anything that would be awkward on disk, keeping the name recognizable.
+        StringBuilder cleaned = new StringBuilder(segment.Length);
+        foreach (char c in segment)
+        {
+            if (char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_')
+                cleaned.Append(c);
+        }
+
+        string name = cleaned.ToString().Trim('.');
+        if (name.Length == 0)
+            name = "raw";
+
+        string extension = ExtensionFor(classification);
+        if (!name.EndsWith("." + extension, StringComparison.OrdinalIgnoreCase))
+            name = name + "." + extension;
+
+        return name;
     }
 
     // File extension for the raw view, matching the classification so on-disk tooling (and the role) can tell
