@@ -8,7 +8,7 @@ using TextCopy;
 
 
 // IDisplay implementation that builds a frame by compositing independent layer Screens:
-//   BlockRenderer   → per-message BlockLayers stacked via StackLayout / ScreenView
+//   BlockRenderer   → per-message BlockLayers; StackLayout lays them out and renders the visible window
 //   SeparatorLayer  → the horizontal rule row with busy-animation overlay
 //   InputLayer      → multi-row input text area + slash-command completion popup
 //   StatusBarLayer  → left/center/right status bar
@@ -132,8 +132,10 @@ public class DisplayScreen : IDisplay
     private int _renderedWidth = 0;
 
     // Last frame's StackLayout — captured during Redraw so mouse handlers can map row→slot without recomputing.
+    // _lastViewTop is that frame's window offset (rows from the top of the stack); valid only when _lastStack
+    // is non-null, which is how a "no prior frame" state is signaled.
     private StackLayout? _lastStack;
-    private ScreenView?  _lastView;
+    private int          _lastViewTop = 0;
     private int          _lastHistoryHeight = 0;
 
     private int  _scrollbarTopRow    = 0;
@@ -195,7 +197,6 @@ public class DisplayScreen : IDisplay
             _needsErase = true;
             // New conversation model — the previous layout is not a valid anchoring basis.
             _lastStack = null;
-            _lastView  = null;
             if (_runCts != null) Redraw();
         }
     }
@@ -362,11 +363,7 @@ public class DisplayScreen : IDisplay
 
         InputLoop(_runCts.Token);
 
-        Console.Write("\x1b[?1006l\x1b[?1003l\x1b[?1000l");     // DisableMouse
-        Console.Write("\x1b[?7h");                              // EnableWrap
-        Console.Write("\x1b[?1049l");                           // ExitAltScreen
-        Console.Out.Flush();
-        Console.CursorVisible = true;
+        RestoreTerminal();
         WindowsConsole.Restore();
 
         if (_bufferedOut != null)
@@ -380,6 +377,19 @@ public class DisplayScreen : IDisplay
             _bufferedOut = null;
         }
         return Task.CompletedTask;
+    }
+
+    // Emits the escape sequences that return the terminal to its normal state: disable mouse reporting,
+    // re-enable line wrap, leave the alt screen, show the cursor. Idempotent — safe to call after RunAsync
+    // already restored, or on a failure path where RunAsync never ran (the worktree chooser left the alt
+    // screen up to show "Launching Sandbox…" and the sandbox then failed to start).
+    public void RestoreTerminal()
+    {
+        Console.Write("\x1b[?1006l\x1b[?1003l\x1b[?1000l");     // DisableMouse
+        Console.Write("\x1b[?7h");                              // EnableWrap
+        Console.Write("\x1b[?1049l");                           // ExitAltScreen
+        Console.Out.Flush();
+        Console.CursorVisible = true;
     }
 
     private void OnMessageUpdated(DisplayMessage msg)
@@ -407,7 +417,6 @@ public class DisplayScreen : IDisplay
             _renderedWidth = w;
             // Reflow changes every block height; the previous layout is not a valid anchoring basis.
             _lastStack = null;
-            _lastView  = null;
         }
 
         if (w != _lastWidth || h != _lastHeight)
@@ -432,16 +441,15 @@ public class DisplayScreen : IDisplay
         int popupTop  = separatorRow - popupRows;
         int historyH  = popupTop;
 
-        // 1. Build the tall history composite via StackLayout of BlockLayers.
-        // SpacerRows=1 gives every block exactly one row of breathing room beneath it without making
-        // the spacer itself part of the block (so toggle/hover math stays clean).
+        // 1. Lay out one BlockLayer per visible message. Only placements (top/height) are computed here;
+        // no full-history Screen is built. SpacerRows=1 gives every block one row of breathing room beneath
+        // it without making the spacer part of the block (so toggle/hover math stays clean).
         StackLayout stack = new StackLayout(w, spacerRows: 1);
         BuildBlockLayers(stack, w);
 
         Cell bgCell = new Cell(' ', null, Palette.Background, CellStyle.None);
-        (Screen historyComposite, ScreenCompositor historyCompositor) = stack.Compose(bgCell);
 
-        int totalRows = historyComposite.H;
+        int totalRows = stack.TotalRows;
         int maxOffset = Math.Max(0, totalRows - historyH);
 
         // 2. Re-anchor against the previous frame's layout so block height changes (collapse,
@@ -458,15 +466,15 @@ public class DisplayScreen : IDisplay
         _scrollbarHeight    = historyH;
         _scrollbarMaxOffset = maxOffset;
 
-        // Scroll offset is "rows from the bottom"; convert to "rows from the top" for ScreenView.
+        // Scroll offset is "rows from the bottom"; convert to "rows from the top" of the stack.
         int viewOffsetFromTop = totalRows - historyH - (int)Math.Round(_historyScrollOffset);
         if (viewOffsetFromTop < 0) viewOffsetFromTop = 0;
 
-        ScreenView view = new ScreenView(historyComposite, historyH, viewOffsetFromTop);
-        Screen historyView = view.Render(bgCell);
+        // Render only the visible window directly — cost scales with what is on screen, not history size.
+        Screen historyView = stack.RenderWindow(historyH, viewOffsetFromTop, bgCell);
 
         _lastStack         = stack;
-        _lastView          = view;
+        _lastViewTop       = viewOffsetFromTop;
         _lastHistoryHeight = historyH;
 
         // 3. Hover effect: brightens the whole hovered-block rectangle.
@@ -627,11 +635,11 @@ public class DisplayScreen : IDisplay
     // against the previous frame's layout and sums the required correction per changed block.
     private void ApplyLayoutAnchoring(StackLayout stack)
     {
-        if (_lastStack == null || _lastView == null) return;
+        if (_lastStack == null) return;
         // Pinned to the bottom: follow new content instead of anchoring (the normal streaming case).
         if (_scrollTarget < 0.5f) return;
 
-        int oldViewTop = _lastView.ScrollOffset;
+        int oldViewTop = _lastViewTop;
         IReadOnlyList<BlockPlacement> oldP = _lastStack.Placements;
         IReadOnlyList<BlockPlacement> newP = stack.Placements;
         int spacer = stack.SpacerRows;
@@ -779,9 +787,9 @@ public class DisplayScreen : IDisplay
 
     private int? SlotAtTerminalRow(int row)
     {
-        if (_lastStack == null || _lastView == null) return null;
+        if (_lastStack == null) return null;
         if (row < 0 || row >= _lastHistoryHeight) return null;
-        int sourceRow = _lastView.MapViewRowToSourceRow(row);
+        int sourceRow = row + _lastViewTop;
         return _lastStack.SlotAtRow(sourceRow);
     }
 
@@ -828,7 +836,6 @@ public class DisplayScreen : IDisplay
                         _blockCache.Clear();
                         _renderedWidth = curW;
                         _lastStack = null;
-                        _lastView  = null;
                         needRedraw = true;
                     }
                     float remaining = _scrollTarget - _historyScrollOffset;

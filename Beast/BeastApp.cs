@@ -136,6 +136,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            // The worktree chooser may have left its alt screen up (showing "Launching Sandbox…") for the
+            // live display to take over. If we failed before that happened, the display never restored the
+            // terminal — do it here so the error prints on the normal screen instead of a stranded alt buffer.
+            _display.RestoreTerminal();
             _log.Error($"[beast] Error: {ex.Message}");
             exitCode = 1;
         }
@@ -643,8 +647,15 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _readTask?.Wait(2000);
         _readCts?.Dispose();
         _wsClient?.Dispose();
-        try { await _agentContext.StopAsync(); } catch { }
-        _agentContext.Dispose();
+
+        // Tell the sandbox to shut down, but don't block the user's exit on the container actually stopping
+        // and being removed. The /quit sent during graceful exit already makes the agent exit (so the
+        // container is usually stopping on its own); this stop+remove is best-effort cleanup, and anything
+        // left behind is reaped on the next launch into the same worktree. Cap the wait so closing stays
+        // snappy — the stop request reaches the Docker daemon well within the cap, and it finishes the job
+        // independently of this process.
+        Task stop = StopSandboxAsync();
+        await Task.WhenAny(stop, Task.Delay(2000));
 
         // After /finish the container is gone and the worktree detached; remove its host folder so the
         // next launch's menu no longer lists it. Only on an explicit finish — ordinary exits keep it.
@@ -652,5 +663,13 @@ public class BeastApp : IDisposable, IAsyncDisposable
             Worktrees.RemoveFolder(_worktree.Value.RepoCwd, _worktree.Value.Name);
 
         _cts?.Dispose();
+    }
+
+    // Stops and removes the container, then disposes the launcher. Run detached from the exit path so a slow
+    // or stuck container cannot hold up closing Beast; errors are swallowed since we are tearing down anyway.
+    private async Task StopSandboxAsync()
+    {
+        try { await _agentContext.StopAsync(); } catch { }
+        _agentContext.Dispose();
     }
 }

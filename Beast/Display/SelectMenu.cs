@@ -52,16 +52,21 @@ public static class SelectMenu
     private static readonly Rgb NoteFg   = new Rgb(120, 110, 90);
     private static readonly Rgb NewFg    = new Rgb(150, 200, 150);
     private static readonly Rgb FieldBg  = new Rgb(35, 40, 48);
+    private static readonly Rgb LaunchFg = new Rgb(240, 220, 140);
 
     // Runs the menu. initialIndex pre-selects a row (clamped). createLabel is the always-present final row;
-    // createSuggestion pre-fills its text field. Returns a Cancelled result on Esc.
-    public static Result Choose(string title, IReadOnlyList<Item> items, string createLabel, string createSuggestion, int initialIndex)
+    // createSuggestion pre-fills its text field. Returns a Cancelled result on Esc. When launchingNote is
+    // non-empty, a confirmed selection draws that note bold at the bottom row and leaves the alt screen up
+    // (rather than tearing it down) so the caller can launch behind it and hand off to the live display
+    // without the screen flashing back to the normal terminal in between.
+    public static Result Choose(string title, IReadOnlyList<Item> items, string createLabel, string createSuggestion, int initialIndex, string launchingNote)
     {
         WindowsConsole.EnableVirtualTerminal();
         Console.Write("\x1b[?1049h");   // alt screen
         Console.Write("\x1b[?7l");      // disable wrap
         Console.CursorVisible = false;
 
+        bool keepAlive = false;
         try
         {
             int createRow = items.Count;          // the synthetic "create new" row index
@@ -102,7 +107,10 @@ public static class SelectMenu
                     {
                         string typed = text.ToString().Trim();
                         if (typed.Length > 0)
+                        {
+                            keepAlive = EnterLaunching(launchingNote, w, h);
                             return new Result(false, true, typed);
+                        }
                     }
                     else if (key.Key == ConsoleKey.Backspace)
                     {
@@ -133,18 +141,44 @@ public static class SelectMenu
                         if (selected == createRow)
                             editing = true;
                         else if (!items[selected].Disabled)
+                        {
+                            keepAlive = EnterLaunching(launchingNote, w, h);
                             return new Result(false, false, items[selected].Value);
+                        }
                         break;
                 }
             }
         }
         finally
         {
-            Console.CursorVisible = true;
-            Console.Write("\x1b[?7h");      // re-enable wrap
-            Console.Write("\x1b[?1049l");   // leave alt screen
-            Console.Out.Flush();
+            // On a confirmed selection with a launching note, leave the alt screen up so the caller can
+            // launch behind the "Launching Sandbox…" footer and hand off to the live display. Otherwise
+            // (cancel, or no note) restore the terminal as normal.
+            if (!keepAlive)
+            {
+                Console.CursorVisible = true;
+                Console.Write("\x1b[?7h");      // re-enable wrap
+                Console.Write("\x1b[?1049l");   // leave alt screen
+                Console.Out.Flush();
+            }
         }
+    }
+
+    // Draws the launching note bold on the bottom row over the current menu, leaving the alt screen up.
+    // Returns true (keep the alt screen alive) when a note was drawn, false when there is nothing to show.
+    private static bool EnterLaunching(string launchingNote, int w, int h)
+    {
+        if (string.IsNullOrEmpty(launchingNote))
+            return false;
+
+        Screen s = new Screen(w, 1, new Cell(' ', LaunchFg, Bg, CellStyle.None));
+        s.WriteText(2, 0, launchingNote, LaunchFg, Bg, CellStyle.Bold);
+
+        StringBuilder buf = new StringBuilder();
+        ScreenAnsiWriter.Write(buf, s, h, 1);   // bottom row (1-based terminal row h)
+        Console.Write(buf);
+        Console.Out.Flush();
+        return true;
     }
 
     // Moves off a disabled row in the given direction (+1/-1), wrapping; the create row is never disabled.

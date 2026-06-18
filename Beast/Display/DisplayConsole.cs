@@ -108,6 +108,7 @@ public class DisplayConsole : IDisplay
     public void SetSessionSwitchCallback(Action<string> switchTo) { }
     public void SetSessionDeleteCallback(Action<string> deleteSession) { }
     public bool IsAutoTrackSuppressed() { return false; }
+    public void RestoreTerminal() { }  // non-interactive display does not own the alt screen
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {

@@ -141,7 +141,7 @@ public class Program
         }
 
         string suggestion = existing.Count == 0 ? "work" : string.Empty;
-        SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, 0);
+        SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, 0, LaunchNotes.Pick());
         if (result.Cancelled)
             return null;
 

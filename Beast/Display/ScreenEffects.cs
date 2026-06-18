@@ -1,9 +1,8 @@
 using System;
 
 
-// An effect mutates the cells of a target Screen inside a rectangle.
-// Effects are non-destructive at the composition level: they are stored as ScreenCompositor ops and only
-// applied when the compositor renders into a target Screen.
+// An effect mutates the cells of a target Screen inside a rectangle. Applied directly to a Screen by the
+// frame compositor in DisplayScreen.Redraw (e.g. hover brightening, scrollbar tint, cursor glow).
 public interface IScreenEffect
 {
     void Apply(Screen target, Rect rect);

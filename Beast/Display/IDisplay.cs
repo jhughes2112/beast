@@ -31,4 +31,8 @@ public interface IDisplay
     // is open or the user has scrolled away from the bottom of the conversation.
     bool IsAutoTrackSuppressed();
     Task RunAsync(CancellationToken cancellationToken);
+    // Restores the terminal (leaves the alt screen, re-enables wrap, shows the cursor). Used when the
+    // session ends before RunAsync ever took over the screen — e.g. the sandbox fails to launch after the
+    // worktree chooser left its alt screen up. No-op for displays that do not own the alt screen.
+    void RestoreTerminal();
 }

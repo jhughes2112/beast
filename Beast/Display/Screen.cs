@@ -136,7 +136,7 @@ public enum BlendMode
 }
 
 // A WxH rectangular grid of Cells. Cheap to construct; mutate via Set/WriteText/Blit; consume non-destructively
-// by handing the Screen to a ScreenCompositor that blits it onto another Screen.
+// by blitting it onto another Screen.
 public sealed class Screen
 {
     public int W { get; }

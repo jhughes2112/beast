@@ -2,91 +2,6 @@ using System;
 using System.Collections.Generic;
 
 
-// A single operation in a ScreenCompositor's ordered op list. Implementations are tiny structs/classes
-// representing a deferred blit or effect — nothing executes until ScreenCompositor.Render(target) is called.
-public interface ICompositionOp
-{
-    void Execute(Screen target);
-}
-
-// Blits a source Screen onto the target at (DstX, DstY) using the given blend mode.
-// SrcRect == null means the whole source.
-public sealed class BlitOp : ICompositionOp
-{
-    public Screen    Source   { get; }
-    public int       DstX     { get; }
-    public int       DstY     { get; }
-    public BlendMode Blend    { get; }
-    public Rect?     SrcRect  { get; }
-
-    public BlitOp(Screen source, int dstX, int dstY, BlendMode blend, Rect? srcRect)
-    {
-        Source  = source;
-        DstX    = dstX;
-        DstY    = dstY;
-        Blend   = blend;
-        SrcRect = srcRect;
-    }
-
-    public void Execute(Screen target)
-    {
-        target.Blit(Source, DstX, DstY, Blend, SrcRect);
-    }
-}
-
-// Applies an IScreenEffect to a rectangle of the target Screen.
-public sealed class EffectOp : ICompositionOp
-{
-    public IScreenEffect Effect { get; }
-    public Rect          Rect   { get; }
-
-    public EffectOp(IScreenEffect effect, Rect rect)
-    {
-        Effect = effect;
-        Rect   = rect;
-    }
-
-    public void Execute(Screen target)
-    {
-        Effect.Apply(target, Rect);
-    }
-}
-
-// A Photoshop-style ordered op list. Operations are appended; Render runs them in order against a target.
-// Render is idempotent and may be called many times per frame against different targets (e.g. preview vs final).
-public sealed class ScreenCompositor
-{
-    private readonly List<ICompositionOp> _ops = new List<ICompositionOp>();
-
-    public IReadOnlyList<ICompositionOp> Ops { get { return _ops; } }
-
-    public void Add(ICompositionOp op)
-    {
-        _ops.Add(op);
-    }
-
-    public void AddBlit(Screen source, int dstX, int dstY, BlendMode blend, Rect? srcRect)
-    {
-        _ops.Add(new BlitOp(source, dstX, dstY, blend, srcRect));
-    }
-
-    public void AddEffect(IScreenEffect effect, Rect rect)
-    {
-        _ops.Add(new EffectOp(effect, rect));
-    }
-
-    public void Clear()
-    {
-        _ops.Clear();
-    }
-
-    public void Render(Screen target)
-    {
-        foreach (ICompositionOp op in _ops)
-            op.Execute(target);
-    }
-}
-
 // Represents one conversation block. Holds its slot index plus two pre-rendered Screens for the collapsed
 // (one-line summary) and expanded (full content) views. Layout switches between them based on IsExpanded.
 // Construct once per (block, terminal-width); rebuild on resize or content change.
@@ -175,59 +90,33 @@ public sealed class StackLayout
         return null;
     }
 
-    // Builds a fresh tall Screen by blitting each block's Current Screen at its placement row.
-    // Returns the composite Screen plus a compositor that produced it, so callers can add overlays/effects.
-    public (Screen Composite, ScreenCompositor Compositor) Compose(Cell background)
+    // Renders only the rows visible in [viewTop, viewTop+viewportHeight) into a fresh viewport-sized Screen.
+    // Cost scales with what is visible, not with the full history height: a forward scan skips blocks above
+    // the window, blits each block that intersects it (clipped to the window), and stops at the first block
+    // past the bottom. viewTop is in composite-row coordinates (rows from the top of the full stack).
+    public Screen RenderWindow(int viewportHeight, int viewTop, Cell background)
     {
-        Screen target = new Screen(Width, _totalRows, background);
-        ScreenCompositor compositor = new ScreenCompositor();
-        for (int i = 0; i < _blocks.Count; i++)
+        Screen viewport = new Screen(Width, viewportHeight, background);
+        if (viewportHeight <= 0) return viewport;
+
+        int viewBottom = viewTop + viewportHeight;
+
+        for (int i = 0; i < _placements.Count; i++)
         {
-            compositor.AddBlit(_blocks[i].Current, 0, _placements[i].Top, BlendMode.Normal, null);
+            BlockPlacement p = _placements[i];
+            if (p.Bottom <= viewTop) continue;  // entirely above the window
+            if (p.Top >= viewBottom) break;      // entirely below; placements are top-ascending, so done
+
+            // Intersect the block with the window, then map to block-local (srcY) and viewport (dstY) rows.
+            int srcTop    = p.Top > viewTop ? p.Top : viewTop;
+            int srcBottom = p.Bottom < viewBottom ? p.Bottom : viewBottom;
+            int srcY      = srcTop - p.Top;
+            int dstY      = srcTop - viewTop;
+            int rows      = srcBottom - srcTop;
+
+            viewport.Blit(_blocks[i].Current, 0, dstY, BlendMode.Normal, new Rect(0, srcY, Width, rows));
         }
-        compositor.Render(target);
-        return (target, compositor);
-    }
-}
 
-// A scrollable viewport into a (typically much taller) source Screen. ScrollOffset is in rows from the top
-// of the source. The viewport is itself a Screen of (Width, ViewportHeight) populated by Render().
-// MapViewRowToSourceRow / MapSourceRowToViewRow translate mouse coordinates between view and source space.
-public sealed class ScreenView
-{
-    public Screen Source         { get; }
-    public int    ViewportHeight { get; }
-    public int    ScrollOffset   { get; }
-
-    public ScreenView(Screen source, int viewportHeight, int scrollOffset)
-    {
-        Source         = source;
-        ViewportHeight = viewportHeight < 0 ? 0 : viewportHeight;
-        int maxOffset = Math.Max(0, source.H - ViewportHeight);
-        if (scrollOffset < 0) scrollOffset = 0;
-        if (scrollOffset > maxOffset) scrollOffset = maxOffset;
-        ScrollOffset = scrollOffset;
-    }
-
-    public int MaxScrollOffset { get { return Math.Max(0, Source.H - ViewportHeight); } }
-
-    public int MapViewRowToSourceRow(int viewRow)
-    {
-        return viewRow + ScrollOffset;
-    }
-
-    public int? MapSourceRowToViewRow(int sourceRow)
-    {
-        int v = sourceRow - ScrollOffset;
-        if (v < 0 || v >= ViewportHeight) return null;
-        return v;
-    }
-
-    // Renders the visible window of Source into a fresh Screen of (Source.W, ViewportHeight).
-    public Screen Render(Cell background)
-    {
-        Screen viewport = new Screen(Source.W, ViewportHeight, background);
-        viewport.Blit(Source, 0, 0, BlendMode.Normal, new Rect(0, ScrollOffset, Source.W, ViewportHeight));
         return viewport;
     }
 }

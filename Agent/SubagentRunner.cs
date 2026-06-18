@@ -128,11 +128,15 @@ public class SubagentRunner
 
         // Each subagent run gets its own ReadFileExplorer: exploration is self-contained, so a subagent's
         // first read of a file always gets Explorer citations and never depends on what another agent read.
+        // These tools parent their helper sessions to this sub-session — not _currentSession (the root) —
+        // so the Explorer/Web helpers an explicitly-invoked subagent spawns nest under the subagent that
+        // actually made the call. A sub-session is fixed for its lifetime (no compaction/role switch), so
+        // capturing it directly is safe, unlike the root whose active session is read at call time.
         List<Tool> withTerminator = new List<Tool>(role.BuiltTools);
         if (role.Tools.Contains("read_file"))
-            withTerminator.Add(ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, _currentSession));
+            withTerminator.Add(ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => subSession));
         if (role.Tools.Contains("fetch_url"))
-            withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, _currentSession));
+            withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => subSession));
         // review_work spawns a Reviewer parented to this sub-session (the Developer); it returns the verdict
         // only. The Developer integrates approved work itself with commit_and_rebase, so both are injected here.
         if (role.Tools.Contains("review_work"))
