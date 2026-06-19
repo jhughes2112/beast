@@ -21,6 +21,11 @@ public class BeastApp : IDisposable, IAsyncDisposable
         public Dictionary<int, FrameType> SlotTypes = new Dictionary<int, FrameType>();
         public Dictionary<FrameType, int> PendingCommit = new Dictionary<FrameType, int>();
 
+        // Tick when this session's current turn began (its Busy frame arrived). Drives the duration
+        // shown in the separator so it reflects how long this session has been working, independent
+        // of when the user started viewing it. 0 when the session is idle.
+        public long BusyStartTick;
+
         // Last stats reported by the agent for this session. Pushed to the display whenever
         // this session becomes the actively viewed one.
         public string StatsModel = "";
@@ -168,7 +173,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
         // Agent connection is gone — stop the busy animation and any open stream.
         _display.OnStreamEnd();
-        _display.SetAgentBusy(false);
+        _display.SetAgentBusy(false, 0);
         _display.SetStatus("Agent disconnected.");
         _cts?.Cancel();
     }
@@ -227,7 +232,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
         _activeSessionId = sessionId;
         _display.OnStreamEnd();
-        _display.SetAgentBusy(_busySessions.Contains(sessionId));
+        _display.SetAgentBusy(_busySessions.Contains(sessionId), state.BusyStartTick);
         _display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext, state.StatsContextTokens);
         _display.Attach(state.Model);
         NotifySessionList();
@@ -353,11 +358,14 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetSessionCounts(_busySessions.Count, _sessions.Count);
     }
 
-    // Frames that carry new message content, as opposed to busy/idle plumbing. StreamChunk and
-    // StreamEnd are excluded so concurrent streams auto-track per message, not per chunk.
+    // Frames that represent live activity worth following to. Busy/Idle are plumbing, and StreamEnd
+    // and SessionAnnounce carry no new viewable content, so none of them pull focus. StreamChunk
+    // DOES: a session that began streaming before the user switched away emits only chunks, so
+    // excluding them would leave focus unable to ever drift back to it. The FollowDelayMs gate in
+    // IsAutoTrackSuppressed prevents per-chunk thrash between concurrent streams.
     private static bool IsMessageFrame(FrameType type)
     {
-        bool plumbing = type == FrameType.Busy || type == FrameType.Idle || type == FrameType.StreamChunk || type == FrameType.StreamEnd || type == FrameType.SessionAnnounce;
+        bool plumbing = type == FrameType.Busy || type == FrameType.Idle || type == FrameType.StreamEnd || type == FrameType.SessionAnnounce;
         return !plumbing;
     }
 
@@ -478,16 +486,21 @@ public class BeastApp : IDisposable, IAsyncDisposable
         switch (type)
         {
             case FrameType.Busy:
+                // Record the turn start on the first Busy of a turn so the duration reflects the
+                // session's own working time, not when the user switched to view it.
+                if (!_busySessions.Contains(effectiveId))
+                    session.BusyStartTick = Environment.TickCount64;
                 _busySessions.Add(effectiveId);
                 // The separator busy animation reflects the viewed session only; the F10 overlay
                 // dots show every session's busy state independently via NotifySessionList.
-                if (isActive) _display.SetAgentBusy(true);
+                if (isActive) _display.SetAgentBusy(true, session.BusyStartTick);
                 NotifySessionList();
                 break;
 
             case FrameType.Idle:
                 _busySessions.Remove(effectiveId);
-                if (isActive) _display.SetAgentBusy(false);
+                session.BusyStartTick = 0;
+                if (isActive) _display.SetAgentBusy(false, 0);
                 // Content "subagent" marks a sub-session completion; it gets its own sound.
                 PlaySound(content == "subagent" ? _subagentSoundFile : _idleSoundFile);
                 NotifySessionList();

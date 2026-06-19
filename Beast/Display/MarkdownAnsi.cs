@@ -81,7 +81,8 @@ public static class MarkdownAnsi
         else if (block is ParagraphBlock para)
         {
             string text = InlinesToAnsi(para.Inline, type);
-            lines.Add(indent + text + Codes.Reset);
+            foreach (string segment in text.Split('\n'))
+                lines.Add(indent + segment + Codes.Reset);
         }
         else if (block is FencedCodeBlock fenced)
         {
@@ -108,7 +109,17 @@ public static class MarkdownAnsi
                         string childIndent = firstChild ? indent + bullet : indent + new string(' ', bullet.Length);
                         firstChild = false;
                         if (child is ParagraphBlock cp)
-                            lines.Add(childIndent + InlinesToAnsi(cp.Inline, type) + Codes.Reset);
+                        {
+                            // First wrapped line carries the bullet (in childIndent); any line breaks
+                            // inside the item continue under the bullet's hanging indent.
+                            string hangingIndent = indent + new string(' ', bullet.Length);
+                            bool firstSegment = true;
+                            foreach (string segment in InlinesToAnsi(cp.Inline, type).Split('\n'))
+                            {
+                                lines.Add((firstSegment ? childIndent : hangingIndent) + segment + Codes.Reset);
+                                firstSegment = false;
+                            }
+                        }
                         else
                             RenderBlock(child, lines, childIndent, type, w);
                     }
@@ -157,7 +168,9 @@ public static class MarkdownAnsi
                     if (child is ParagraphBlock pp)
                         sb.Append(InlinesToAnsi(pp.Inline, type));
                 }
-                string text = sb.ToString();
+                // A table cell is always one row; flatten any in-cell line break back to a space so it
+                // can't blow out the column layout.
+                string text = sb.ToString().Replace('\n', ' ');
                 cells.Add(text);
                 int vis = AnsiString.VisibleLength(text);
                 if (ci >= colWidths.Count) colWidths.Add(vis);
@@ -340,7 +353,9 @@ public static class MarkdownAnsi
         }
         else if (inline is LineBreakInline)
         {
-            sb.Append(' ');
+            // Preserve the author's newline as a real line break. The paragraph/list emitters split
+            // on it into separate display lines; only table cells flatten it back to a space.
+            sb.Append('\n');
         }
         else if (inline is HtmlEntityInline entity)
         {

@@ -83,7 +83,7 @@ public class DisplayConsole : IDisplay
         _didStream = false;
     }
 
-    public void SetAgentBusy(bool busy)
+    public void SetAgentBusy(bool busy, long startTick)
     {
         // No busy indicator in non-interactive mode.
     }

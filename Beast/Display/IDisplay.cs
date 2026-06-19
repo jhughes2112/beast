@@ -15,7 +15,9 @@ public interface IDisplay
     void OnStreamStart(int streamIndex, FrameType type);
     void OnStreamChunk(string chunk);
     void OnStreamEnd();
-    void SetAgentBusy(bool busy);
+    // startTick is the tick when the busy session's current turn began (ignored when busy is false),
+    // so the separator shows the session's own working duration rather than time-since-view-switch.
+    void SetAgentBusy(bool busy, long startTick);
     void SetSendAsync(Func<string, Task> sendAsync);
     void SetRequestExit(Action requestExit);
     void SetFrameDrain(Action drain);

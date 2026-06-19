@@ -17,7 +17,7 @@ file sealed class NullDisplay : IDisplay
     public void OnStreamStart(int streamIndex, FrameType type) { }
     public void OnStreamChunk(string chunk) { }
     public void OnStreamEnd() { }
-    public void SetAgentBusy(bool busy) { }
+    public void SetAgentBusy(bool busy, long startTick) { }
     public void SetSendAsync(Func<string, Task> sendAsync) { }
     public void SetRequestExit(Action requestExit) { }
     public void SetFrameDrain(Action drain) { }

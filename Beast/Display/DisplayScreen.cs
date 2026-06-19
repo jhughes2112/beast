@@ -118,10 +118,11 @@ public class DisplayScreen : IDisplay
 
     private const float ScrollAlpha = 0.22f;
 
-    // Auto-follow gating: following the active session is re-enabled only after the viewed session
-    // has been idle and pinned to the bottom continuously for FollowDelayMs. _followReadyTick holds
-    // the tick when that stable state began (0 = not stable). The viewed session going busy, leaving
-    // the bottom, or any scroll gesture resets it. The F10 overlay being open does not block it.
+    // Auto-follow gating: following the active session is re-enabled only after the view has stayed
+    // pinned to the bottom continuously for FollowDelayMs with no new output in the viewed session.
+    // _followReadyTick holds the tick when that stable state began (0 = not stable). Output in the
+    // viewed session, leaving the bottom, or any scroll/click gesture resets it. The F10 overlay
+    // being open does not block it.
     private long _followReadyTick = 0;
     private const int FollowDelayMs = 5000;
 
@@ -242,26 +243,31 @@ public class DisplayScreen : IDisplay
         }
     }
 
-    public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _busyWordIndex++; } }
-    public void OnStreamChunk(string chunk) { }
+    public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _busyWordIndex++; _followReadyTick = 0; } }
+    public void OnStreamChunk(string chunk) { lock (_consoleLock) _followReadyTick = 0; }
     public void OnStreamEnd() { lock (_consoleLock) _streamingSlot = -1; }
 
-    public void SetAgentBusy(bool busy)
+    public void SetAgentBusy(bool busy, long startTick)
     {
         lock (_consoleLock)
         {
-            if (busy && !_agentBusy)
+            if (busy)
             {
-                _busyStartTick = Environment.TickCount64;
-                _agentBusy = true;
-                _currentAnimationIndex = Random.Shared.Next(SeparatorLayer.AnimationCount);
+                if (!_agentBusy)
+                {
+                    _agentBusy = true;
+                    _currentAnimationIndex = Random.Shared.Next(SeparatorLayer.AnimationCount);
+                }
+                else
+                {
+                    // New activity while already busy — advance the word.
+                    _busyWordIndex++;
+                }
+                // Always adopt the viewed session's turn-start tick so the duration tracks that
+                // session, even when switching directly between two busy sessions.
+                _busyStartTick = startTick;
             }
-            else if (busy && _agentBusy)
-            {
-                // New activity while already busy — advance the word.
-                _busyWordIndex++;
-            }
-            else if (!busy)
+            else
             {
                 _agentBusy = false;
                 _streamingSlot = -1;
@@ -280,21 +286,24 @@ public class DisplayScreen : IDisplay
     {
         lock (_consoleLock)
         {
-            // Following is allowed only when the viewed session is idle, the view is pinned to the
-            // bottom (same threshold as ApplyLayoutAnchoring), and it has held that way for the full
-            // delay. The F10 overlay being open does not suppress following.
-            if (_agentBusy) return true;
+            // Following is allowed once the view has sat pinned to the bottom (same threshold as
+            // ApplyLayoutAnchoring) with no new output in the viewed session and no user input for the
+            // full delay. The viewed session being busy does NOT block following — a session that is
+            // working but producing nothing is exactly when the user wants to drift to live output.
+            // Output in the viewed session, scrolling, clicking, or leaving the bottom resets the timer.
+            // The F10 overlay being open does not suppress following.
             if (_scrollTarget >= 0.5f) return true;
             if (_followReadyTick == 0) return true;
             return Environment.TickCount64 - _followReadyTick < FollowDelayMs;
         }
     }
 
-    // Maintains the auto-follow timer: starts it when the viewed session is idle and pinned to the
-    // bottom, clears it the instant either condition breaks. Called every input tick under the lock.
+    // Maintains the auto-follow timer: starts it when the view is pinned to the bottom, clears it the
+    // instant that breaks. Viewed-session output resets it separately (see OnMessageUpdated). Called
+    // every input tick under the lock.
     private void UpdateFollowTimer()
     {
-        bool stable = !_agentBusy && _scrollTarget < 0.5f;
+        bool stable = _scrollTarget < 0.5f;
         if (stable)
         {
             if (_followReadyTick == 0)
@@ -418,6 +427,9 @@ public class DisplayScreen : IDisplay
     {
         lock (_consoleLock)
         {
+            // New output in the viewed session — the user is watching something happen here, so
+            // restart the follow delay rather than drifting away to another active session.
+            _followReadyTick = 0;
             _blockCache.Remove(msg.Index);
             Redraw();
         }

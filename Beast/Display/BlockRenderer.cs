@@ -357,8 +357,10 @@ internal static class BlockRenderer
         {
             case "read_file":
             case "write_file":
+            case "edit_file":
             case "edit_file_replace":
             case "edit_file_insert":
+            case "ls":
                 return RespMode.Code;
             case "bash":
                 return RespMode.Bash;
