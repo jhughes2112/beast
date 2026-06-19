@@ -6,26 +6,26 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-// Fetches a web resource and lets the Web role interpret it. Rather than stripping the page and feeding the
+// Fetches a web resource and lets the WebFetch role interpret it. Rather than stripping the page and feeding the
 // result back (which mangles non-HTML content and floods the context on large pages), the resource is treated
-// like a file: it is downloaded to /tmp/, classified, and offered to the Web role as a set of files — the raw
-// bytes plus, for HTML, a stripped-text view and a tag-skeleton view. The Web role is given read_file and bash
+// like a file: it is downloaded to /tmp/, classified, and offered to the WebFetch role as a set of files — the raw
+// bytes plus, for HTML, a stripped-text view and a tag-skeleton view. The WebFetch role is given read_file and bash
 // so it can inspect, parse, or grep those files and returns only what the objective asks for. Resources over
-// the auto-download limit are not fetched here; the Web role is told the size and can download them itself.
+// the auto-download limit are not fetched here; the WebFetch role is told the size and can download them itself.
 public class WebFetch
 {
     private static readonly HttpClient SharedHttpClient = new();
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
-    // The Web role now does real work — reading and parsing the saved files — so it gets several turns; the
+    // The WebFetch role now does real work — reading and parsing the saved files — so it gets several turns; the
     // terminator is forced on the last one so the loop always finishes (see HelperSession).
     private const int MaxTurns = 8;
 
-    // Resources larger than this are not auto-downloaded: the Web role is told the size and can fetch them
+    // Resources larger than this are not auto-downloaded: the WebFetch role is told the size and can fetch them
     // itself with curl/wget via bash if the objective actually needs them.
     private const long MaxAutoDownloadBytes = 1_048_576;
 
-    // Fetches the resource and interprets it with the Web role: a throwaway sub-session is seeded with the URL,
+    // Fetches the resource and interprets it with the WebFetch role: a throwaway sub-session is seeded with the URL,
     // the objective, and the paths of the saved files, then returns only what the objective asked for via
     // return_to_caller. Cost rolls up into the calling session. Everything is contained here.
     public async Task<ToolResult> FetchRawAsync(
@@ -48,13 +48,13 @@ public class WebFetch
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
             return new ToolResult(toolCallId, string.Empty, "Error: Invalid URL format: " + url, 1, 0);
 
-        Role? webRole = roleService.GetRole("Web");
+        Role? webRole = roleService.GetRole("WebFetch");
         if (webRole == null)
-            return new ToolResult(toolCallId, string.Empty, "Error: Web role is not defined.", 1, 0);
+            return new ToolResult(toolCallId, string.Empty, "Error: WebFetch role is not defined.", 1, 0);
 
         LlmService? service = registry.CreateService(webRole, string.Empty, 0);
         if (service == null)
-            return new ToolResult(toolCallId, string.Empty, "Error: no model available for the Web role.", 1, 0);
+            return new ToolResult(toolCallId, string.Empty, "Error: no model available for the WebFetch role.", 1, 0);
 
         try
         {
@@ -87,7 +87,7 @@ public class WebFetch
 
             (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(webRole.Tools), transport, cancellationToken);
             if (!ok)
-                return new ToolResult(toolCallId, string.Empty, "Error: the Web role failed to interpret " + url, 1, 0);
+                return new ToolResult(toolCallId, string.Empty, "Error: the WebFetch role failed to interpret " + url, 1, 0);
 
             return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
         }
@@ -126,7 +126,7 @@ public class WebFetch
         return (buffer.ToArray(), false);
     }
 
-    // Saves the downloaded resource to a fresh /tmp/ directory and builds the seed the Web role reads: the
+    // Saves the downloaded resource to a fresh /tmp/ directory and builds the seed the WebFetch role reads: the
     // raw bytes always, plus a stripped-text view and a tag-skeleton view when the content is HTML. The seed
     // lists each saved file with its size and what it is good for, so the role can read the right one.
     private static string BuildFilesSeed(string url, string objective, string? contentType, byte[] bytes)

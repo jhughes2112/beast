@@ -85,7 +85,7 @@
       "end_of_turn_prompt": "When you have found the relevant locations, call return_to_caller with your citations. Otherwise keep looking."
     },
     {
-      "name": "Web",
+      "name": "WebFetch",
       "description": "To reduce context by returning the useful parts of a web page",
       "models": [
         "local",

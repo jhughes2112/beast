@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 // Backs one agent's read_file tool. Every read goes through FileTools.ReadFileAsync, so the long-line
 // truncation always applies. The first time the agent reads a given file, a larger, line-numbered window is
 // handed to a throwaway Explorer sub-session along with the caller's goal, and only the Explorer's citations
-// (file, line, line count) come back — mirroring how WebFetch filters a page through the Web role. Later
+// (file, line, line count) come back — mirroring how WebFetch filters a page through the WebFetch role. Later
 // reads return the window raw at the caller's request. One instance per agent: an agent's reads never depend
 // on another's.
 public class ReadFileExplorer

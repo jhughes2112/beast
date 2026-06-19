@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 // the model's last assistant message and returns that, flagged so the caller knows tool calling went wrong.
 // This is the shared spine behind WebFetch and ReadFileExplorer — both seed a role with content and want one
 // returned answer, optionally after working turns. extraTools are the tools the helper may call while working
-// (ReadFileExplorer passes none; WebFetch passes bash and read_file so the Web role can inspect the files a
+// (ReadFileExplorer passes none; WebFetch passes bash and read_file so the WebFetch role can inspect the files a
 // fetch saved); return_to_caller is always added on top of them.
 public static class HelperSession
 {

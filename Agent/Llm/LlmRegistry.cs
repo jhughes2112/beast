@@ -68,7 +68,7 @@ public class LlmRegistry
 		}
 
 		// Resolve each role's tool names to instances once, here, so they are not rebuilt every turn.
-		Dictionary<string, Tool> allTools = ToolFactory.Build(settings.Settings.WebSearch);
+		Dictionary<string, Tool> allTools = ToolFactory.Build();
 		foreach (Role role in roles.Roles.Values)
 		{
 			List<Tool> bound = new List<Tool>();

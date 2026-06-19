@@ -39,8 +39,12 @@ public class SessionRunner
 	// one fixed role, so unlike the old generic subagent tool it needs no rebuild on /reload.
 	private readonly Tool _assignWorkTool;
 
-	// fetch_url: fetches a page and filters it through the Web role. Injected for roles that declare it.
+	// fetch_url: fetches a page and filters it through the WebFetch role. Injected for roles that declare it.
 	private readonly Tool _fetchUrlTool;
+
+	// search_web: searches the web and filters the results through the WebSearch role. Null when web search
+	// is not configured/enabled. Injected for roles that declare it.
+	private readonly Tool? _searchWebTool;
 
 	// read_file: filters this agent's first read of a file through the Explorer role. The root owns its own
 	// explorer; each subagent run makes its own, so an agent's exploration never depends on another's reads.
@@ -64,9 +68,10 @@ public class SessionRunner
 		_transport = transport;
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
-		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession);
+		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession, settings.Settings.WebSearch);
 		_assignWorkTool = ToolFactory.CreateAssignWorkTool((prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt));
 		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
+		_searchWebTool = ToolFactory.CreateSearchWebTool(_settings.Settings.WebSearch, _roleService, () => this.CurrentSession);
 		_readFileTool = ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => this.CurrentSession);
 	}
 
@@ -661,7 +666,7 @@ public class SessionRunner
 		FixJsonTests.Test(ctx);
 		await FileToolsTests.TestAsync(ctx);
 		ShellToolsTests.Test(ctx);
-		await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch);
+		await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch, _roleService, _transport, _currentSession, _cancellationTokenSource.Token);
 		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, _cancellationTokenSource.Token);
 		ProtocolSwitchTests.Test(ctx);
 
@@ -671,7 +676,7 @@ public class SessionRunner
 	// ---- Helpers ----
 
 	// Returns the tools for this turn. role.BuiltTools holds the role's regular tools; the in-code special
-	// tools are injected here for the root: read_file, assign_work, and fetch_url when the role declares them
+	// tools are injected here for the root: read_file, assign_work, fetch_url, and search_web when the role declares them
 	// by name. Child agents (isSubagent) get only their regular tools — SubagentRunner adds the terminator and
 	// the Developer's review_work / commit_and_rebase — so they cannot spawn arbitrary subagents.
 	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
@@ -686,6 +691,8 @@ public class SessionRunner
 			tools.Add(_assignWorkTool);
 		if (role.Tools.Contains("fetch_url"))
 			tools.Add(_fetchUrlTool);
+		if (role.Tools.Contains("search_web") && _searchWebTool != null)
+			tools.Add(_searchWebTool);
 		return Task.FromResult(tools.ToArray());
 	}
 

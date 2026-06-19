@@ -13,23 +13,9 @@ public static class ToolFactory
     // they are created by their Create* factories and added to a session's tool list in code (the root gets
     // assign_work; SubagentRunner gives the Developer review_work / commit_and_rebase and each child its
     // terminator).
-    public static Dictionary<string, Tool> Build(WebSearchConfig? webSearchConfig)
+    public static Dictionary<string, Tool> Build()
     {
         Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
-
-        if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
-        {
-            WebSearchOpenrouter webSearch = new(webSearchConfig.Openrouter.BuildModel());
-            Register(tools, "search_web",
-                "Search the web using a natural language query.",
-                Params(
-                    Req("query", "string", "Describe what you are searching for and request specific details if possible.")),
-                async (args, toolCallId, ct, transport, sessionId) =>
-                {
-                    string query = Str(args, "query");
-                    return await webSearch.SearchWebAsync(toolCallId, query, transport, sessionId, ct);
-                });
-        }
 
         Register(tools, "bash",
             "Standard bash command. CWD is at the root of the repo at /workspace/",
@@ -115,8 +101,8 @@ public static class ToolFactory
         };
     }
 
-    // Creates the fetch_url tool. It always routes through the Web role inside WebFetch.FetchRawAsync, which
-    // fetches the page and interprets it, returning only what the objective asks for. Injected by name like
+    // Creates the fetch_url tool. It always routes through the WebFetch role inside WebFetch.FetchRawAsync, which
+    // fetches the page and interprets it, returning only what the goal asks for. Injected by name like
     // the other in-code tools, since it needs the registry/roleService and the current session.
     public static Tool CreateFetchUrlTool(LlmRegistry registry, RoleService roleService, Func<Session> currentSession)
     {
@@ -129,17 +115,49 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "fetch_url",
-                    Description = "Fetch a web page and get back only the information you ask for. The page is read by the Web role, which returns just what your objective describes.",
+                    Description = "Fetch a web page and get back only the information you ask for. The page is read by the WebFetch role, which returns just what your goal describes.",
                     Parameters = Params(
                         Req("url", "string", "The fully-formed URL to fetch content from."),
-                        Req("objective", "string", "Explain exactly what you are looking for and how that information will be used, so only that is returned."))
+                        Req("goal", "string", "Explain exactly what you are looking for and how that information will be used, so only that is returned."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
                 string url = Str(args, "url");
-                string objective = Str(args, "objective");
-                return await webFetch.FetchRawAsync(toolCallId, url, objective, registry, roleService, transport, currentSession(), maxOutputTokens, ct);
+                string goal = Str(args, "goal");
+                return await webFetch.FetchRawAsync(toolCallId, url, goal, registry, roleService, transport, currentSession(), maxOutputTokens, ct);
+            }
+        };
+    }
+
+    // Creates the search_web tool, or null when web search is not configured/enabled. Like fetch_url it routes
+    // through a helper role (the WebSearch role inside WebSearchOpenrouter.SearchWebAsync), so it is injected by
+    // name and needs the roleService and the current session. The search model is built once from settings here.
+    public static Tool? CreateSearchWebTool(WebSearchConfig? webSearchConfig, RoleService roleService, Func<Session> currentSession)
+    {
+        if (webSearchConfig?.Openrouter == null || !webSearchConfig.Openrouter.Enabled)
+            return null;
+
+        WebSearchOpenrouter webSearch = new WebSearchOpenrouter(webSearchConfig.Openrouter.BuildModel());
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "search_web",
+                    Description = "Search the web using a natural language query. The results are read by the WebSearch role, which returns just what your goal describes.",
+                    Parameters = Params(
+                        Req("query", "string", "Describe what should be retrieved from the web in enough detail that the top five hits will all be directly relevant to the task at hand."),
+                        Req("goal", "string", "Provide a prompt to an agent so that it can return exactly and only what is necessary from the web pages. If you know exactly what you're looking for ask for it here."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string query = Str(args, "query");
+                string goal = Str(args, "goal");
+                return await webSearch.SearchWebAsync(toolCallId, query, goal, roleService, transport, currentSession(), maxOutputTokens, ct);
             }
         };
     }
@@ -170,7 +188,7 @@ public static class ToolFactory
     }
 
     // Builds the tools a helper session may work with (see BuildHelperTools): a raw read_file (line-numbered
-    // window, no Explorer round-trip) and bash, so the Web role can parse, strip, grep, or download the files
+    // window, no Explorer round-trip) and bash, so the WebFetch role can parse, strip, grep, or download the files
     // a fetch saved to /tmp/.
     private static Tool[] CreateWebHelperTools()
     {

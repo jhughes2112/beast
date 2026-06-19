@@ -1,61 +1,61 @@
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.Net.Http;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-// Web search via the OpenRouter plugin API.
-// Routes through ProtocolProxy directly — no endpoint probe needed.
-// LlmModel is built once from settings at construction time.
+// Web search via the OpenRouter plugin API. The search model (configured under .beast settings) retrieves
+// live results through the OpenRouter web plugin, then the WebSearch role digests them down to what the
+// caller's goal asks for. Rather than a single bare protocol call, the model is driven through HelperSession
+// — the same spine behind fetch_url and read_file — so it gets the multi-turn tool_choice cycling, the
+// return_to_caller terminator, the salvage fallback, session-tree visibility, and cost roll-up into the
+// caller. The LlmService is built once from the search model at construction time.
 public class WebSearchOpenrouter
 {
-    private readonly LlmModel _model;
+    private readonly LlmService _service;
+
+    // A few turns is plenty: the model normally answers on turn one. The extras drop covers HelperSession's
+    // tool_choice cycle (force return_to_caller, force any tool, auto) so a flaky server still lands one form.
+    private const int MaxTurns = 4;
 
     public WebSearchOpenrouter(LlmModel model)
     {
-        _model = model;
+        // The search model is configured separately from the registry, so build its service directly with a
+        // fresh availability tracker. The protocol is left Unknown and resolved from the endpoint URL on the
+        // first turn, exactly as the previous direct ProtocolProxy use relied on.
+        _service = new LlmService(model, DetectedProtocol.Unknown, new ModelAvailability());
     }
 
-    [Description("Search the web using a natural language query.")]
     public async Task<ToolResult> SearchWebAsync(
 		string toolCallId,
-        [Description("Query or natural language question to answer using the web.")] string query,
+        string query,
+        string goal,
+        RoleService roleService,
         ITransportServer transport,
-        string sessionId,
+        Session parent,
+        int maxOutputTokens,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(query))
             return new ToolResult(toolCallId, string.Empty, "Error: Search query cannot be empty.", 1, 0);
+        if (string.IsNullOrWhiteSpace(goal))
+            return new ToolResult(toolCallId, string.Empty, "Error: Search goal cannot be empty.", 1, 0);
+
+        Role? searchRole = roleService.GetRole("WebSearch");
+        if (searchRole == null)
+            return new ToolResult(toolCallId, string.Empty, "Error: WebSearch role is not defined.", 1, 0);
 
         try
         {
-            List<CanonicalMessage> messages = new List<CanonicalMessage>();
-            ListenerBundle bundle = new ListenerBundle(new CanonicalConversation(messages), null);
-            bundle.OnUserMessage(query);
+            // The OpenRouter web plugin searches off the conversation, so the seed both triggers the search
+            // (the query) and steers the digest (the goal). The role has no extra tools — only return_to_caller.
+            string seed = $"Search Query: {query}\nGoal: {goal}";
 
-            int maxTokens = GetIntExtra("max_tokens", 4096);  // this is the default, you can adjust it in the extras payload config
+            (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, searchRole, _service, $"search_web {query}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(searchRole.Tools), transport, cancellationToken);
+            if (!ok)
+                return new ToolResult(toolCallId, string.Empty, "Error: OpenRouter search failed for query: " + query, 1, 0);
 
-            ProtocolProxy proxy = new ProtocolProxy(_model);
-            ProtocolResult result = await proxy.ExecuteAsync(bundle, new List<ToolDefinition>(), null, maxTokens, (i, o, c) => { }, transport, sessionId, null, cancellationToken);
-
-            if (result.Outcome == ProtocolCallOutcome.Success)
-            {
-                string content = result.Payload!.AssistantText ?? string.Empty;
-                return new ToolResult(toolCallId, string.IsNullOrWhiteSpace(content) ? "No search results found." : content, string.Empty, 0, 0);
-            }
-            else if (result.Outcome == ProtocolCallOutcome.RateLimited)
-            {
-                return new ToolResult(toolCallId, string.Empty, "Error: OpenRouter rate limited the search request. Retry after " + result.RetryAfter, 1, 0);
-            }
-            else
-            {
-                return new ToolResult(toolCallId, string.Empty, "Error: OpenRouter search failed: " + result.ErrorMessage, 1, 0);
-            }
+            return new ToolResult(toolCallId, string.IsNullOrWhiteSpace(answer) ? "No search results found." : answer, string.Empty, 0, Math.Max(1, tokens));
         }
         catch (OperationCanceledException)
         {
@@ -70,21 +70,4 @@ public class WebSearchOpenrouter
             return new ToolResult(toolCallId, string.Empty, "Error: Search failed: " + ex.Message, 1, 0);
         }
     }
-
-    // Reads an integer value from the model extras, falling back to the given default.
-    // Extras are an ordered list of JSON objects; later entries win, so scan in reverse.
-    private int GetIntExtra(string key, int defaultValue)
-    {
-        for (int i = _model.Extras.Count - 1; i >= 0; i--)
-        {
-            if (_model.Extras[i].TryGetPropertyValue(key, out JsonNode? node) &&
-                node is JsonValue jv &&
-                jv.TryGetValue<int>(out int v))
-            {
-                return v;
-            }
-        }
-        return defaultValue;
-    }
 }
-

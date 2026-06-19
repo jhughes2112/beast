@@ -66,7 +66,8 @@ public class RoleService
             DeveloperRole(),
             ReviewerRole(),
             ExplorerRole(),
-            WebRole()
+            WebFetchRole(),
+            WebSearchRole()
         };
         foreach (Role role in defaults)
             Roles[role.Name] = role;
@@ -170,7 +171,12 @@ public class RoleService
     private static Role DefaultRole()
     {
 		const string description = "Light conversation role";
-        const string systemPrompt = "You are a helpful assistant. Use read_file and ls to consider the current project, discuss it with the user, and when there is a concrete task to do, delegate it to the Developer subagent with a clear objective. The Developer makes the change, gets it reviewed and integrated, and reports back.";
+        const string systemPrompt = """
+			You are a helpful assistant with read-only privileges. Use tools to consider the state of the project, discuss it with the user, ask clarifying questions to understand scope.
+			When there is clear direction enough to dispatch one or more concrete tasks, delegate to the Developer subagent with a clear objective. 
+			The Developer makes the change, gets it reviewed and integrated, and reports back.
+			""";
+			
         const string summaryPrompt = """
             Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
             """;
@@ -207,7 +213,7 @@ public class RoleService
             If the goal cannot be achieved, be brief: report this and list what you attempted along with the exact output.
             Finish by calling task_complete with the review outcome and integration status.
             """;
-        const string endOfTurnPrompt = "Are you finished?  If so, review_work until it's approved. After approval, commit_and_rebase to check it in.  Then call task_complete with the approval message.";
+        const string endOfTurnPrompt = "Are you finished? If so, review_work until it's approved. After approval, commit_and_rebase to check it in. Then call task_complete with the approval message.";
         // review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
         // injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
         // work; task_complete is this role's terminator).
@@ -261,11 +267,11 @@ public class RoleService
 		const string description = "To reduce context by providing a brief roadmap of a file relevant to a goal";
         const string systemPrompt =
             """
-			You are a first-pass discovery agent. Given a goal and a block of content from the target file, return a cited index of regions relevant to that goal so the caller can read them directly using read_file.
-			Output format should include the file and a series of entries in this exact form:
-			<file_path>
-			<starting_line>, <ending_line> — <names of functions and variables visible in that region>
-			<starting_line>, <ending_line> — <names of functions and variables visible in that region>
+			You are a first-pass discovery agent. Given a goal and a block of content from the target file, generate an index of regions relevant to the stated goal so the caller can read them directly using read_file.
+			Call the return_to_caller tool and deliver the citations as the output argument.
+			The format should clearly include the range of line numbers and what the agent will find there in this exact form:
+			lines <starting_line> to <ending_line> -> <names of functions and variables>
+			lines <starting_line> to <ending_line> -> <names of functions and variables>
 			
 			Rules:
 			Cite only regions whose content directly relates to the goal. Omit unrelated code, to increase signal to noise ratio.
@@ -273,31 +279,51 @@ public class RoleService
 			Name only symbols visible within the cited region.
 			No prose, no markdown, no preamble: citations only.
 			Do not describe behavior, propose changes, or speculate beyond what the content explicitly shows.
-			You get one turn: deliver the citations as the output argument of a single return_to_caller call. That call is your only reply.
 			""";
-        const string endOfTurnPrompt = "When you have found the relevant locations, call return_to_caller with your citations. Otherwise keep looking.";
+        const string endOfTurnPrompt = "Report the relevant locations with the return_to_caller tool.";
         List<string> tools = new List<string>();
-        return new Role("Explorer", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("Explorer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 
-    // Used internally by the fetch_url tool (WebFetch.FetchRawAsync). It is seeded with a URL, an objective,
+    // Used internally by the fetch_url tool (WebFetch.FetchRawAsync). It is seeded with a URL, a goal,
     // and the paths of the files a fetch saved to /tmp/ (raw bytes, plus stripped-text and tag-skeleton views
     // for HTML), and is given read_file and bash (injected by HelperSession, see ToolFactory.CreateWebHelperTools)
-    // to inspect, parse, or download them. It replies with only what the objective asks for via return_to_caller
+    // to inspect, parse, or download them. It replies with only what the goal asks for via return_to_caller
     // (forced on the last turn). This should be a capable-enough model to pick the right file and parse it.
-    private static Role WebRole()
+    private static Role WebFetchRole()
     {
 		const string description = "To reduce context by returning the useful parts of a web page";
         const string systemPrompt =
 			"""
-			You are a web content extraction agent. The fetched resource has been saved to /tmp/ in three different ways. Use whichever view best serves the objective: html-stripped text for readable content, the html tag skeleton for structure and navigation, and the unmodified raw file.
+			You are a web content extraction agent. The fetched resource has been saved to /tmp/ in several different convenient formats. Use whichever view best serves the goal: html-stripped text for readable content, the html tag skeleton for structure and navigation, and the unmodified raw file.
 			If the resource was larger than 1mb, it will be truncated or missing. Fetch it yourself via bash.
-			Your job is to filter out low value content. Return exactly what the objective asks for, be precise and complete, but minimal. If the page is paywalled, blocked, or uninformative, say so immediately.
+			Your job is to filter out low value content. Return exactly what is asked for in the goal, be precise and complete, but minimal. If the page is paywalled, blocked, or uninformative, say so immediately.
 			""";
-        const string endOfTurnPrompt = "If you are finished, call return_to_caller with it. Otherwise keep working.";
+        const string endOfTurnPrompt = "Report the relevant content with the return_to_caller tool.";
         // Resolved against the helper tool set (ToolFactory.BuildHelperTools), not the main registry: read_file
         // is the raw line-numbered reader (no Explorer round-trip) and bash is plain bash.
         List<string> tools = new List<string> { "read_file", "bash" };
-        return new Role("Web", description, RoleKind.Subagent, new List<string> { "local", "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("WebFetch", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+    }
+
+    // Used internally by the search_web tool (WebSearchOpenrouter.SearchWebAsync). It runs on the dedicated
+    // OpenRouter web-search model configured under .beast settings (not a registry model), which retrieves
+    // live results through the OpenRouter web plugin before the model answers. This role then returns only
+    // what the caller's goal asks for via return_to_caller (forced on the last turn). It has no tools of its
+    // own — the retrieval happens inside the model's own step, so there is nothing to inspect on disk. Its
+    // Models list is empty because the service is built from the search model directly, not picked by role.
+    private static Role WebSearchRole()
+    {
+		const string description = "To reduce context by returning only the web search results that serve the goal";
+        const string systemPrompt =
+            """
+			You are a web search agent. The query has already been searched on the live web and the results are in front of you.
+			Read them and return exactly what the goal asks for: precise, complete, and minimal, keeping source URLs where they are useful.
+			Omit navigation, ads, and unrelated hits. If nothing relevant was found, or the search was blocked, say so plainly.
+			Deliver your answer by calling the return_to_caller tool.
+			""";
+        const string endOfTurnPrompt = "Report the relevant findings with the return_to_caller tool.";
+        List<string> tools = new List<string>();
+        return new Role("WebSearch", description, RoleKind.Subagent, new List<string>(), tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
 }

@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 public static class WebToolsTests
 {
-    public static async Task TestAsync(TestContext ctx, WebSearchConfig? webSearchConfig)
+    public static async Task TestAsync(TestContext ctx, WebSearchConfig? webSearchConfig, RoleService roleService, ITransportServer transport, Session parent, CancellationToken cancellationToken)
     {
         ctx.Log("  WebToolsTests");
 
@@ -14,7 +14,7 @@ public static class WebToolsTests
 
         if (webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled)
         {
-            await TestWebSearchAsync(ctx, webSearchConfig.Openrouter);
+            await TestWebSearchAsync(ctx, webSearchConfig.Openrouter, roleService, transport, parent, cancellationToken);
         }
         else
         {
@@ -22,18 +22,17 @@ public static class WebToolsTests
         }
     }
 
-    private static async Task TestWebSearchAsync(TestContext ctx, OpenrouterSearchConfig config)
+    private static async Task TestWebSearchAsync(TestContext ctx, OpenrouterSearchConfig config, RoleService roleService, ITransportServer transport, Session parent, CancellationToken cancellationToken)
     {
         ctx.Log("  WebToolsTests: testing web search via OpenRouter");
-
-        TestCaptureTransport captureTransport = new TestCaptureTransport();
 
         try
         {
             WebSearchOpenrouter searcher = new WebSearchOpenrouter(config.BuildModel());
 
-            using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            ToolResult result = await searcher.SearchWebAsync("testSearchId", "What is the capital of France?", captureTransport, "test", cts.Token);
+            using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            ToolResult result = await searcher.SearchWebAsync("testSearchId", "What is the capital of France?", "State the capital city of France in one short sentence.", roleService, transport, parent, 0, cts.Token);
 
             string response = result.ExitCode == 0 ? result.StdOut : result.StdErr;
             ctx.Log($"    response: {response}");
@@ -42,7 +41,7 @@ public static class WebToolsTests
         }
         catch (OperationCanceledException)
         {
-            ctx.Log("    TIMEOUT: web search timed out after 30s");
+            ctx.Log("    TIMEOUT: web search timed out");
         }
         catch (Exception ex)
         {

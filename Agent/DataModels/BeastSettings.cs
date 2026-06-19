@@ -113,6 +113,15 @@ public class OpenrouterSearchConfig
     [JsonPropertyName("model")]
     public string Model { get; set; } = "openai/gpt-4o-mini";
 
+    // Context window and per-response output ceiling for the search model. The search now runs through
+    // LlmService (see WebSearchOpenrouter/HelperSession), whose budget math needs a real window — a zero
+    // window reads as "context full" before the first turn. Defaults are sane for any hosted search model.
+    [JsonPropertyName("contextWindow")]
+    public int ContextWindow { get; set; } = 128000;
+
+    [JsonPropertyName("maxOutputTokens")]
+    public int MaxOutputTokens { get; set; } = 4096;
+
     // Extra top-level body fields merged verbatim into the chat completion payload.
     // Each entry is a JSON object copied as-is; later keys win on collision.
     [JsonPropertyName("extras")]
@@ -132,7 +141,7 @@ public class OpenrouterSearchConfig
             apiKey: ApiKey,
             extras: Extras,
             headers: Headers,
-            config: new ModelConfig { Id = Model, Name = Model });
+            config: new ModelConfig { Id = Model, Name = Model, ContextWindow = ContextWindow, MaxOutputTokens = MaxOutputTokens });
     }
 }
 

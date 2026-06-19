@@ -24,13 +24,15 @@ public class SubagentRunner
     private readonly RoleService _roleService;
     private readonly ITransportServer _transport;
     private readonly Func<Session> _currentSession;
+    private readonly WebSearchConfig? _webSearchConfig;
 
-    public SubagentRunner(LlmRegistry registry, RoleService roleService, ITransportServer transport, Func<Session> currentSession)
+    public SubagentRunner(LlmRegistry registry, RoleService roleService, ITransportServer transport, Func<Session> currentSession, WebSearchConfig? webSearchConfig)
     {
         _registry = registry;
         _roleService = roleService;
         _transport = transport;
         _currentSession = currentSession;
+        _webSearchConfig = webSearchConfig;
     }
 
     // Mutable sink the terminator handler (return_to_caller or finish_review) writes into; read by the
@@ -137,6 +139,12 @@ public class SubagentRunner
             withTerminator.Add(ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => subSession));
         if (role.Tools.Contains("fetch_url"))
             withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => subSession));
+        if (role.Tools.Contains("search_web"))
+        {
+            Tool? searchWebTool = ToolFactory.CreateSearchWebTool(_webSearchConfig, _roleService, () => subSession);
+            if (searchWebTool != null)
+                withTerminator.Add(searchWebTool);
+        }
         // review_work spawns a Reviewer parented to this sub-session (the Developer); it returns the verdict
         // only. The Developer integrates approved work itself with commit_and_rebase, so both are injected here.
         if (role.Tools.Contains("review_work"))
