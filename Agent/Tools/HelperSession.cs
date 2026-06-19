@@ -5,15 +5,16 @@ using System.Threading.Tasks;
 
 
 // Runs an internal helper role (Web, Explorer) as a throwaway child session seeded with content to process,
-// and returns what the model passes to return_to_caller. The model gets up to maxTurns: every turn that does
-// not finish is nudged with the role's end-of-turn prompt, and return_to_caller is forced on the final turn
-// so the loop always terminates. The answer only ever arrives through return_to_caller — if the model defies
-// even the forced final call the run fails; there is no fallback to its plain assistant text. This is the
-// shared spine behind WebFetch and ReadFileExplorer — both seed a role with content and want one clean
-// returned answer, optionally after working turns (Explorer has no tools, so it runs a single forced turn).
-// extraTools are the
-// tools the helper may call while working (ReadFileExplorer passes none; WebFetch passes bash and read_file
-// so the Web role can inspect the files a fetch saved); return_to_caller is always added on top of them.
+// and returns what the model passes to return_to_caller. The model gets up to maxTurns. Because some models
+// and OpenAI-compatible servers mishandle one tool_choice form but honor another, the constraint is cycled
+// each turn: force the specific terminator, then force any tool, then leave it on auto, repeating. A turn that
+// produces no tool call is nudged with the role's end-of-turn prompt. The answer normally arrives through
+// return_to_caller; if the model burns every turn without ever calling it, the run does not fail — it salvages
+// the model's last assistant message and returns that, flagged so the caller knows tool calling went wrong.
+// This is the shared spine behind WebFetch and ReadFileExplorer — both seed a role with content and want one
+// returned answer, optionally after working turns. extraTools are the tools the helper may call while working
+// (ReadFileExplorer passes none; WebFetch passes bash and read_file so the Web role can inspect the files a
+// fetch saved); return_to_caller is always added on top of them.
 public static class HelperSession
 {
 	public static async Task<(bool ok, string output, int responseTokens)> RunAsync(
@@ -48,22 +49,33 @@ public static class HelperSession
 		tools[extraTools.Length] = terminator;
 
 		int tokens = 0;
+		string lastAssistantText = string.Empty;
 
 		session.SendBusy();
 		try
 		{
 			for (int turn = 1; turn <= maxTurns; turn++)
 			{
-				// Force the terminator on the last allotted turn so the loop cannot run on; earlier turns
-				// leave it optional so the model can do a working turn before it must finalize.
-				bool lastTurn = turn == maxTurns;
-				string? forcedToolName = lastTurn ? "return_to_caller" : null;
+				// Cycle the tool-call constraint each turn so a model or server that mishandles one form gets
+				// another shot at a different one: force the specific terminator, then force any tool, then
+				// leave it on auto, repeating. Whatever environment the model works best in, one of these lands.
+				string? forcedToolName;
+				switch ((turn - 1) % 3)
+				{
+					case 0:  forcedToolName = "return_to_caller"; break;
+					case 1:  forcedToolName = ProtocolProxy.AnyTool; break;
+					default: forcedToolName = null; break;
+				}
 
 				ProtocolResult result = await service.RunToCompletionAsync(session, tools, forcedToolName, 0, maxOutputTokens, transport, cancellationToken);
 				if (result.Outcome != ProtocolCallOutcome.Success)
 					return (false, string.Empty, 0);
 
 				session.CommitAssistantTurn(result.Payload!);
+
+				// Remember the latest non-empty assistant text in case the model never calls return_to_caller.
+				if (!string.IsNullOrWhiteSpace(result.Payload!.AssistantText))
+					lastAssistantText = result.Payload!.AssistantText;
 
 				bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, transport, cancellationToken);
 				if (hasToolCalls)
@@ -74,14 +86,18 @@ public static class HelperSession
 				if (returned != null)
 					return (true, returned, Math.Max(1, tokens));
 
-				// A turn that ended without finishing: nudge it with the role's end-of-turn prompt to call
-				// return_to_caller next time. Never reached on the last turn (the terminator was forced).
-				if (!hasToolCalls && !lastTurn)
+				// A turn that produced no tool call: nudge it with the role's end-of-turn prompt to call
+				// return_to_caller next time.
+				if (!hasToolCalls)
 					session.AddUserMessage(role.EndOfTurnPrompt);
 			}
 
-			// return_to_caller was forced on the final turn, so reaching here means the model defied a forced
-			// tool call and produced nothing usable. There is no salvage path: report failure to the caller.
+			// Every turn is spent and return_to_caller was never called — some models and servers simply will
+			// not emit a tool call however the choice is constrained. Rather than throw the work away, salvage
+			// the model's last assistant message and hand it back flagged, so the caller still gets the content.
+			if (!string.IsNullOrWhiteSpace(lastAssistantText))
+				return (true, $"This model had a problem calling tools, but here's what it output: {lastAssistantText}", Math.Max(1, tokens));
+
 			return (false, string.Empty, 0);
 		}
 		finally

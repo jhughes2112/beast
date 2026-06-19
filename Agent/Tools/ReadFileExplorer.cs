@@ -23,9 +23,11 @@ public class ReadFileExplorer
 	private const int SmallFileMaxLines = 50;
 	private const int SmallFileMaxBytes = 2048;
 
-	// The Explorer digests one file window and returns its citations in a single forced turn: it has no tools
-	// to work with, so there is nothing to do but cite, and return_to_caller is forced on that one turn.
-	private const int MaxTurns = 1;
+	// The Explorer digests one file window and returns its citations via return_to_caller. It has no tools to
+	// work with, so there is nothing to do but cite, but flaky models/servers do not always emit the tool call
+	// on the first try: HelperSession cycles the tool_choice constraint across these turns and, failing that,
+	// salvages the last assistant message, so a few turns are allotted rather than a single forced one.
+	private const int MaxTurns = 5;
 
 	// The full paths this agent has already read. A turn's tool calls run in parallel, so TryAdd is the
 	// first-read decision: it returns true exactly once per path even under concurrent reads.

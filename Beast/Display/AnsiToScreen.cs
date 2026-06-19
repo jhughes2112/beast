@@ -47,7 +47,12 @@ public static class AnsiToScreen
             {
                 Rgb? renderFg = dim && fg.HasValue ? fg.Value.Scale(0.5f) : fg;
                 Rgb? renderBg = dim && bg.HasValue ? bg.Value.Scale(0.5f) : bg;
-                target.Set(cx, y, new Cell(c, renderFg, renderBg, style));
+                // Map stray control characters (a leftover '\r' from a \r\n system prompt, a backspace, etc.)
+                // to a space. Emitted raw they would move the terminal cursor — a '\r' returns it to column 0,
+                // scrambling the row and leaving it unfilled — so they never reach a cell. ESC is consumed by
+                // the escape branch above; tabs and newlines are expanded/split by callers before this point.
+                char glyph = (c < ' ' || c == '\x7f') ? ' ' : c;
+                target.Set(cx, y, new Cell(glyph, renderFg, renderBg, style));
             }
             cx++;
             i++;

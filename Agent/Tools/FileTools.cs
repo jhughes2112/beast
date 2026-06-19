@@ -64,6 +64,18 @@ public static class FileTools
 								// maxLines lines, each at most MaxLineLength chars — so a huge file or a single
 								// enormous line can never flood the context. Limits are mentioned, never errors.
 								string[] allLines = fileContent.Replace("\r\n", "\n").Split('\n');
+
+								// A file with no (or very long) lines — minified HTML/JSON, a single-line dump —
+								// is unreadable as one giant line and would otherwise be truncated to nothing
+								// useful. On a raw (un-numbered) read, reflow over-long lines into several so the
+								// caller can page through the content. The numbered Explorer read is left alone so
+								// its line numbers still match the file exactly.
+								if (!numberLines)
+								{
+									bool isHtml = IsHtmlContent(fullPath, fileContent);
+									allLines = ReflowLongLines(allLines, isHtml);
+								}
+
 								int startLine = offsetValue <= 0 ? 1 : offsetValue;
 								int startIdx = startLine - 1;
 
@@ -148,6 +160,85 @@ public static class FileTools
 		}
 
 		return result;
+	}
+
+	// On a raw read, any line longer than this is broken into multiple lines so newline-less content stays
+	// readable. Well under MaxLineLength, so a reflowed line is never additionally truncated.
+	private const int MaxRawLineLength = 160;
+
+	// Decides whether content should reflow on a tag boundary rather than at whitespace: true for HTML/XML by
+	// extension, or when the body opens with a tag (covers raw fetch files saved without a telling extension).
+	private static bool IsHtmlContent(string fullPath, string fileContent)
+	{
+		string extension = Path.GetExtension(fullPath).ToLowerInvariant();
+		bool isHtml = extension == ".html" || extension == ".htm" || extension == ".xml";
+		if (!isHtml)
+		{
+			string head = fileContent.TrimStart();
+			isHtml = head.StartsWith("<", StringComparison.Ordinal);
+		}
+		return isHtml;
+	}
+
+	// Breaks lines longer than MaxRawLineLength into several. For HTML, the break lands just after a '>' so a
+	// tag is never split; otherwise it lands at the last whitespace before the limit. When neither is available
+	// the line is cut hard at the limit so the loop always makes progress.
+	private static string[] ReflowLongLines(string[] sourceLines, bool isHtml)
+	{
+		List<string> reflowed = new List<string>(sourceLines.Length);
+		foreach (string line in sourceLines)
+		{
+			if (line.Length <= MaxRawLineLength)
+			{
+				reflowed.Add(line);
+				continue;
+			}
+
+			int start = 0;
+			while (start < line.Length)
+			{
+				int remaining = line.Length - start;
+				if (remaining <= MaxRawLineLength)
+				{
+					reflowed.Add(line.Substring(start));
+					break;
+				}
+
+				int limit = start + MaxRawLineLength;
+				int breakAt = -1;
+
+				if (isHtml)
+				{
+					for (int i = limit - 1; i > start; i--)
+					{
+						if (line[i] == '>')
+						{
+							breakAt = i + 1;
+							break;
+						}
+					}
+				}
+
+				if (breakAt < 0)
+				{
+					for (int i = limit - 1; i > start; i--)
+					{
+						if (char.IsWhiteSpace(line[i]))
+						{
+							breakAt = i + 1;
+							break;
+						}
+					}
+				}
+
+				if (breakAt <= start)
+					breakAt = limit;
+
+				reflowed.Add(line.Substring(start, breakAt - start));
+				start = breakAt;
+			}
+		}
+		return reflowed.ToArray();
 	}
 
 	public static async Task<ToolResult> EditFileAsync(
