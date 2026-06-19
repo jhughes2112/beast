@@ -42,8 +42,8 @@ public class SessionRunner
 	// fetch_url: fetches a page and filters it through the WebFetch role. Injected for roles that declare it.
 	private readonly Tool _fetchUrlTool;
 
-	// search_web: searches the web and filters the results through the WebSearch role. Null when web search
-	// is not configured/enabled. Injected for roles that declare it.
+	// search_web: searches the web with the OpenRouter search model and returns its answer verbatim. Null when
+	// web search is not configured/enabled. Injected for roles that declare it.
 	private readonly Tool? _searchWebTool;
 
 	// read_file: filters this agent's first read of a file through the Explorer role. The root owns its own

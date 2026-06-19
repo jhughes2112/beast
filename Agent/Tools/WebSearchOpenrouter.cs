@@ -1,22 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 
 
 // Web search via the OpenRouter plugin API. The search model (configured under .beast settings) retrieves
-// live results through the OpenRouter web plugin, then the WebSearch role digests them down to what the
-// caller's goal asks for. Rather than a single bare protocol call, the model is driven through HelperSession
-// — the same spine behind fetch_url and read_file — so it gets the multi-turn tool_choice cycling, the
-// return_to_caller terminator, the salvage fallback, session-tree visibility, and cost roll-up into the
-// caller. The LlmService is built once from the search model at construction time.
+// live results through the OpenRouter web plugin and answers in a single step — the retrieval and the digest
+// both happen inside that model's own turn. We make one bare call and return exactly what it produced, rather
+// than feeding the result through a second LlmService loop: that model has already processed the page content,
+// so passing it through another LLM only dilutes the signal. A throwaway child session is still created so the
+// turn is visible in the session tree and its cost rolls up into the caller. The service is built once from the
+// search model at construction time.
 public class WebSearchOpenrouter
 {
     private readonly LlmService _service;
-
-    // A few turns is plenty: the model normally answers on turn one. The extras drop covers HelperSession's
-    // tool_choice cycle (force return_to_caller, force any tool, auto) so a flaky server still lands one form.
-    private const int MaxTurns = 4;
 
     public WebSearchOpenrouter(LlmModel model)
     {
@@ -45,16 +43,32 @@ public class WebSearchOpenrouter
         if (searchRole == null)
             return new ToolResult(toolCallId, string.Empty, "Error: WebSearch role is not defined.", 1, 0);
 
+        BeastSession data = new BeastSession(parent.AllocateChildId(), $"search_web {query}", _service.Model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+        Session session = new Session(data, searchRole.SystemPrompt, transport, true);
+
+        // The constructor no longer displays the system prompt; a helper session has no other replay path, so
+        // emit its (system-only) history now. The seed user message displays when flushed during the run.
+        session.ReplayToTransport();
+
+        // The OpenRouter web plugin searches off the conversation, so the seed both triggers the search (the
+        // query) and steers the answer (the goal). It is the only message the model sees.
+        session.AddUserMessage($"Search Query: {query}\nGoal: {goal}");
+        session.AnnounceToClient();
+        parent.AddChild(session);
+
+        session.SendBusy();
         try
         {
-            // The OpenRouter web plugin searches off the conversation, so the seed both triggers the search
-            // (the query) and steers the digest (the goal). The role has no extra tools — only return_to_caller.
-            string seed = $"Search Query: {query}\nGoal: {goal}";
+            // One bare call: no tools, no forced tool choice. The web plugin runs inside the model's turn and
+            // the assistant text it returns is the answer we hand straight back to the caller.
+            ProtocolResult result = await _service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, cancellationToken);
+            if (result.Outcome != ProtocolCallOutcome.Success)
+                return new ToolResult(toolCallId, string.Empty, $"Error: OpenRouter search failed for query \"{query}\": {result.ErrorMessage}", 1, 0);
 
-            (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, searchRole, _service, $"search_web {query}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(searchRole.Tools), transport, cancellationToken);
-            if (!ok)
-                return new ToolResult(toolCallId, string.Empty, "Error: OpenRouter search failed for query: " + query, 1, 0);
+            session.CommitAssistantTurn(result.Payload!);
 
+            string answer = result.Payload!.AssistantText;
+            int tokens = session.LastTokenUsage?.CompletionTokens ?? 0;
             return new ToolResult(toolCallId, string.IsNullOrWhiteSpace(answer) ? "No search results found." : answer, string.Empty, 0, Math.Max(1, tokens));
         }
         catch (OperationCanceledException)
@@ -68,6 +82,12 @@ public class WebSearchOpenrouter
         catch (Exception ex)
         {
             return new ToolResult(toolCallId, string.Empty, "Error: Search failed: " + ex.Message, 1, 0);
+        }
+        finally
+        {
+            // Cost is spent regardless of how the call ended; roll it up into the calling session.
+            parent.RecordCost(session.TotalCost);
+            session.SendIdle();
         }
     }
 }

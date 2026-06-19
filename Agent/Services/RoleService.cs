@@ -250,7 +250,7 @@ public class RoleService
             If the code quality violates standards, has bugs, needs more cases handled, or in any other case should be improved, reject with specific, actionable comments for the developer.
             Call finish_review to complete this review round.
             """;
-        const string endOfTurnPrompt = "When you have reached a decision, call the finish_review tool. Otherwise keep reviewing.";
+        const string endOfTurnPrompt = "Are you finished? To complete the conversation, use the return_to_caller tool and report your results.";
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
         // entry, so it is listed here only as the marker that selects this role's terminator.
         List<string> tools = new List<string> { "bash", "read_file", "ls", "fetch_url", "search_web", "finish_review" };
@@ -268,7 +268,7 @@ public class RoleService
         const string systemPrompt =
             """
 			You are a first-pass discovery agent. Given a goal and a block of content from the target file, generate an index of regions relevant to the stated goal so the caller can read them directly using read_file.
-			Call the return_to_caller tool and deliver the citations as the output argument.
+			To complete the conversation, use the return_to_caller tool and deliver the citations as the output argument.
 			The format should clearly include the range of line numbers and what the agent will find there in this exact form:
 			lines <starting_line> to <ending_line> -> <names of functions and variables>
 			lines <starting_line> to <ending_line> -> <names of functions and variables>
@@ -280,7 +280,7 @@ public class RoleService
 			No prose, no markdown, no preamble: citations only.
 			Do not describe behavior, propose changes, or speculate beyond what the content explicitly shows.
 			""";
-        const string endOfTurnPrompt = "Report the relevant locations with the return_to_caller tool.";
+        const string endOfTurnPrompt = "To complete the conversation, use the return_to_caller tool and report your results.";
         List<string> tools = new List<string>();
         return new Role("Explorer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
     }
@@ -297,9 +297,10 @@ public class RoleService
 			"""
 			You are a web content extraction agent. The fetched resource has been saved to /tmp/ in several different convenient formats. Use whichever view best serves the goal: html-stripped text for readable content, the html tag skeleton for structure and navigation, and the unmodified raw file.
 			If the resource was larger than 1mb, it will be truncated or missing. Fetch it yourself via bash.
-			Your job is to filter out low value content. Return exactly what is asked for in the goal, be precise and complete, but minimal. If the page is paywalled, blocked, or uninformative, say so immediately.
+			Your job is to filter out low value content and respond with what is asked for in the goal. Be precise and complete, but minimal. If the page is paywalled, blocked, or uninformative, say so immediately without exploring further.
+			To complete the conversation, use the return_to_caller tool and report your results.
 			""";
-        const string endOfTurnPrompt = "Report the relevant content with the return_to_caller tool.";
+        const string endOfTurnPrompt = "To complete the conversation, use the return_to_caller tool and report your results.";
         // Resolved against the helper tool set (ToolFactory.BuildHelperTools), not the main registry: read_file
         // is the raw line-numbered reader (no Explorer round-trip) and bash is plain bash.
         List<string> tools = new List<string> { "read_file", "bash" };
@@ -308,22 +309,20 @@ public class RoleService
 
     // Used internally by the search_web tool (WebSearchOpenrouter.SearchWebAsync). It runs on the dedicated
     // OpenRouter web-search model configured under .beast settings (not a registry model), which retrieves
-    // live results through the OpenRouter web plugin before the model answers. This role then returns only
-    // what the caller's goal asks for via return_to_caller (forced on the last turn). It has no tools of its
-    // own — the retrieval happens inside the model's own step, so there is nothing to inspect on disk. Its
-    // Models list is empty because the service is built from the search model directly, not picked by role.
+    // live results through the OpenRouter web plugin and answers in the same turn. We make one bare call and
+    // return that answer verbatim — the model has already digested the pages, so there is no second pass. This
+    // role only supplies the system prompt for that call; it has no tools and no terminator. Its Models list is
+    // empty because the service is built from the search model directly, not picked by role.
     private static Role WebSearchRole()
     {
-		const string description = "To reduce context by returning only the web search results that serve the goal";
+		const string description = "To return live web search results that serve the goal";
         const string systemPrompt =
             """
-			You are a web search agent. The query has already been searched on the live web and the results are in front of you.
-			Read them and return exactly what the goal asks for: precise, complete, and minimal, keeping source URLs where they are useful.
+			You are a web search agent. Search the live web for the given query and answer exactly what the goal asks for:
+			precise, complete, and minimal, keeping source URLs where they are useful.
 			Omit navigation, ads, and unrelated hits. If nothing relevant was found, or the search was blocked, say so plainly.
-			Deliver your answer by calling the return_to_caller tool.
 			""";
-        const string endOfTurnPrompt = "Report the relevant findings with the return_to_caller tool.";
         List<string> tools = new List<string>();
-        return new Role("WebSearch", description, RoleKind.Subagent, new List<string>(), tools, systemPrompt, string.Empty, endOfTurnPrompt);
+        return new Role("WebSearch", description, RoleKind.Subagent, new List<string>(), tools, systemPrompt, string.Empty, string.Empty);
     }
 }

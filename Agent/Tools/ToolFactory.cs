@@ -130,9 +130,10 @@ public static class ToolFactory
         };
     }
 
-    // Creates the search_web tool, or null when web search is not configured/enabled. Like fetch_url it routes
-    // through a helper role (the WebSearch role inside WebSearchOpenrouter.SearchWebAsync), so it is injected by
-    // name and needs the roleService and the current session. The search model is built once from settings here.
+    // Creates the search_web tool, or null when web search is not configured/enabled. It makes one bare call to
+    // the OpenRouter search model (inside WebSearchOpenrouter.SearchWebAsync) and returns that model's answer as
+    // is, so it is injected by name and needs the roleService and the current session. The search model is built
+    // once from settings here.
     public static Tool? CreateSearchWebTool(WebSearchConfig? webSearchConfig, RoleService roleService, Func<Session> currentSession)
     {
         if (webSearchConfig?.Openrouter == null || !webSearchConfig.Openrouter.Enabled)
@@ -147,7 +148,7 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "search_web",
-                    Description = "Search the web using a natural language query. The results are read by the WebSearch role, which returns just what your goal describes.",
+                    Description = "Search the web using a natural language query. A live web-search model retrieves and answers in one step; its answer is returned to you verbatim.",
                     Parameters = Params(
                         Req("query", "string", "Describe what should be retrieved from the web in enough detail that the top five hits will all be directly relevant to the task at hand."),
                         Req("goal", "string", "Provide a prompt to an agent so that it can return exactly and only what is necessary from the web pages. If you know exactly what you're looking for ask for it here."))
