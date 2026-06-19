@@ -38,7 +38,9 @@ public class AgentOrchestrator
         _registry.LoadFromConfigs(_settings, _roleService);
         await _registry.ProbeEndpointsAsync(ct);
 
-        SessionRunner runner = new SessionRunner(LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+        // The first runner resumes the saved root, so it restores that root's child sessions into the
+        // client's list; later runners (compaction-failure restarts) reuse the live session and must not.
+        SessionRunner runner = new SessionRunner(LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource, true);
 
         using CancellationTokenSource inputCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
@@ -54,7 +56,7 @@ public class AgentOrchestrator
 
             // RunAsync exited without cancellation (compaction failure) — keep the server alive
             // and restart on the same session so the user can issue commands and continue.
-            runner = new SessionRunner(currentSession, _registry, _roleService, _settings, _transport, _cancellationTokenSource);
+            runner = new SessionRunner(currentSession, _registry, _roleService, _settings, _transport, _cancellationTokenSource, false);
         }
     }
 

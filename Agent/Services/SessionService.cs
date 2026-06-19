@@ -120,6 +120,26 @@ public static class SessionService
         return results;
     }
 
+    // Returns the ids of every descendant session of a root: the "<rootId>_..." child files (subagent tool
+    // sessions, compaction/role successors) at any depth, identified by filename alone so the files are not
+    // read. The root itself is excluded. Used on resume to surface a root's saved children in the session list.
+    public static List<string> ListDescendants(string rootId)
+    {
+        List<string> ids = new List<string>();
+        if (string.IsNullOrWhiteSpace(rootId) || !IsSafeSessionId(rootId) || !Directory.Exists(SessionsDir))
+            return ids;
+
+        string childPrefix = rootId + "_";
+        foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
+        {
+            string id = Path.GetFileNameWithoutExtension(file);
+            if (id.StartsWith(childPrefix, StringComparison.Ordinal))
+                ids.Add(id);
+        }
+
+        return ids;
+    }
+
     // Deletes exactly one session file: <sessionId>.json inside the sessions folder, and nothing else. It
     // never removes the folder or any other file. The id must be a bare session id (a GUID, optionally with
     // "_N" child suffixes); anything empty, or carrying a path separator or "..", is rejected so a delete can

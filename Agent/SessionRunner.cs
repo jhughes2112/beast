@@ -52,6 +52,11 @@ public class SessionRunner
 
 	private bool _wantsCompact = false;
 
+	// True for the runner that resumes a saved root at startup: it restores that root's saved child sessions
+	// into the client's session list on first run. Consumed once, then cleared, so a compaction-failure
+	// restart on the same runner (or a fresh runner with it false) never replays the children twice.
+	private bool _restoreChildren;
+
 	private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
 	public SessionRunner(
@@ -60,8 +65,10 @@ public class SessionRunner
 		RoleService roleService,
 		SettingsService settings,
 		ITransportServer transport,
-		CancellationTokenSource cancellationTokenSource)
+		CancellationTokenSource cancellationTokenSource,
+		bool restoreChildren)
 	{
+		_restoreChildren = restoreChildren;
 		_registry = registry;
 		_roleService = roleService;
 		_settings = settings;
@@ -154,6 +161,25 @@ public class SessionRunner
 		_transport.Status(session.Id, "worktree-finished");
 	}
 
+	// Loads a resumed root's saved child sessions (subagent tool sessions, compaction/role successors) from
+	// disk and replays each to the client so the F10 tree lists them and they can be viewed. These sessions
+	// are not re-run — they are inert history — so the constructed Session objects are used only to announce
+	// and replay, then discarded. Ordered after the root's own replay so the root stays the active view.
+	private void RestoreChildSessions(Session root)
+	{
+		foreach (string childId in SessionService.ListDescendants(root.Id))
+		{
+			BeastSession? data = SessionService.Load(childId);
+			if (data == null)
+				continue;
+
+			Session child = new Session(data, string.Empty, _transport, true);
+			child.AnnounceToClient();
+			child.SendStats();
+			child.ReplayToTransport();
+		}
+	}
+
 	// Routes inbound input to the session tree by ID.
 	public void Deliver(string targetId, string text) => _currentSession.Deliver(targetId, text);
 
@@ -171,6 +197,15 @@ public class SessionRunner
 		// client's session list and status show the name rather than the raw ID.
 		session.AnnounceToClient();
 
+		// On resume, also surface this root's saved child sessions so the F10 tree shows them and they can
+		// be viewed. Done after the root has announced and replayed so the client's active session stays the
+		// root, not a child whose frames would otherwise arrive first.
+		if (_restoreChildren)
+		{
+			_restoreChildren = false;
+			RestoreChildSessions(session);
+		}
+
 		_cachedSessions = SessionService.List();
 		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
 		_transport.Completions(session.Id, lastCompletionCandidates);
@@ -187,6 +222,9 @@ public class SessionRunner
 					session.ReplayToTransport();
 					session.SendStats();
 					session.AnnounceToClient();
+					// Surface the switched-in root's saved children too (no-op for a fresh/ephemeral
+					// session, which has no child files yet), so /session <id> lists them like a resume.
+					RestoreChildSessions(session);
 					SaveRoot(_currentSession);
 					_currentSession = session;
 				}
