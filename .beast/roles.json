@@ -76,7 +76,7 @@
       "name": "Explorer",
       "description": "To reduce context by providing a brief roadmap of a file relevant to a goal",
       "models": [
-		"nvidia/nemotron-3-ultra-550b-a55b:free"
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
         "local",
         "*"
       ],
@@ -89,7 +89,7 @@
       "name": "WebFetch",
       "description": "To reduce context by returning the useful parts of a web page",
       "models": [
-		"nvidia/nemotron-3-ultra-550b-a55b:free"
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
         "local",
         "*"
       ],
@@ -105,7 +105,7 @@
       "name": "WebSearch",
       "description": "To return live web search results that serve the goal",
       "models": [
-		"nvidia/nemotron-3-ultra-550b-a55b:free"
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
         "local",
         "*"
 	  ],

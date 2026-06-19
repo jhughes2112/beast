@@ -108,6 +108,13 @@ public class Program
         else
         {
             string cwd = Directory.GetCurrentDirectory();
+
+            // Parse settings.json and roles.json here on the host, before the worktree menu takes over the
+            // screen, so a bad config file shows a located error on the normal terminal instead of dying
+            // silently inside the Docker container (whose stderr is lost when the container is reaped).
+            if (!PreflightConfig(cwd))
+                return 1;
+
             Worktrees.Selection? sel = ResolveWorktree(cwd, worktreeArg, nonInteractive);
             if (sel == null)
                 return 0;   // user cancelled the worktree menu
@@ -146,6 +153,28 @@ public class Program
             return null;
 
         return Worktrees.Ensure(cwd, result.Value);
+    }
+
+    // Loads settings.json and roles.json from the same locations the agent uses (project .beast first,
+    // then ~/.beast for settings), letting their loaders validate the JSON. Both loaders print a friendly,
+    // line-located message to stderr and throw ConfigException on a parse/load failure; we catch it and
+    // return false so the launch aborts visibly rather than the container crash-looping out of sight.
+    private static bool PreflightConfig(string cwd)
+    {
+        bool ok;
+        try
+        {
+            SettingsService settings = new SettingsService(cwd);
+            RoleService roles = new RoleService(cwd);
+            ok = settings != null && roles != null;
+        }
+        catch (ConfigException)
+        {
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Aborting: the agent was not launched because the configuration above is invalid.");
+            ok = false;
+        }
+        return ok;
     }
 
     private static void PrintHelp()

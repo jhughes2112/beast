@@ -628,14 +628,15 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 wsClient.Dispose();
 
                 // The WS server only comes up once the agent is running. If the backend has already
-                // exited (e.g. crashed on bad roles.json/settings.json), retrying is pointless — show
-                // its log so the failure is visible, and bail.
+                // exited (e.g. crashed on bad roles.json/settings.json), retrying is pointless. Carry the
+                // container log in the thrown exception so Run() can print it after restoring the terminal,
+                // instead of painting it onto the worktree menu's alt screen where it would be lost.
                 if (!await launcher.IsAliveAsync())
                 {
                     string containerLog = await launcher.GetLogsAsync();
-                    log.Error("[beast] Agent backend exited before its server started. Log follows:");
-                    log.Error(string.IsNullOrWhiteSpace(containerLog) ? "(no output captured)" : containerLog.TrimEnd());
-                    throw new InvalidOperationException("Agent backend failed to start.");
+                    string body = string.IsNullOrWhiteSpace(containerLog) ? "(no output captured)" : containerLog.TrimEnd();
+                    throw new InvalidOperationException(
+                        "Agent backend exited before its server started. Container log follows:\n" + body);
                 }
 
                 await Task.Delay(200, cancellationToken);
