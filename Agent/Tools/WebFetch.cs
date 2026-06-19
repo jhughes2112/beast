@@ -82,7 +82,13 @@ public class WebFetch
                 if (tooBig)
                     seed = BuildTooBigSeed(url, objective, declaredLength ?? (MaxAutoDownloadBytes + 1));
                 else
-                    seed = BuildFilesSeed(url, objective, contentType, bytes!);
+                {
+                    // The server's Content-Disposition filename, when present, is the authoritative name
+                    // for the resource — prefer it over the URL segment so the raw file keeps its real name.
+                    string? suggestedName = response.Content.Headers.ContentDisposition?.FileNameStar
+                        ?? response.Content.Headers.ContentDisposition?.FileName;
+                    seed = BuildFilesSeed(url, objective, contentType, bytes!, suggestedName);
+                }
             }
 
             (bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(webRole.Tools), transport, cancellationToken);
@@ -129,7 +135,7 @@ public class WebFetch
     // Saves the downloaded resource to a fresh /tmp/ directory and builds the seed the WebFetch role reads: the
     // raw bytes always, plus a stripped-text view and a tag-skeleton view when the content is HTML. The seed
     // lists each saved file with its size and what it is good for, so the role can read the right one.
-    private static string BuildFilesSeed(string url, string objective, string? contentType, byte[] bytes)
+    private static string BuildFilesSeed(string url, string objective, string? contentType, byte[] bytes, string? suggestedName)
     {
         string classification = ClassifyContent(contentType, url, bytes);
         string directory = Path.Combine("/tmp", "fetch_" + Guid.NewGuid().ToString("N").Substring(0, 12));
@@ -137,7 +143,7 @@ public class WebFetch
 
         StringBuilder manifest = new StringBuilder();
 
-        string rawName = FileNameFor(url, classification);
+        string rawName = FileNameFor(url, classification, suggestedName);
         string rawPath = Path.Combine(directory, rawName);
         File.WriteAllBytes(rawPath, bytes);
         manifest.Append($"- {rawPath}  ({bytes.Length} bytes) — \"{rawName}\", the exact bytes as fetched\n");
@@ -155,6 +161,19 @@ public class WebFetch
             string structurePath = Path.Combine(directory, "structure.html");
             File.WriteAllText(structurePath, structure);
             manifest.Append($"- {structurePath}  ({structure.Length} chars) — tag skeleton with text removed; best for understanding layout or locating a section\n");
+        }
+        else if (classification == "pdf")
+        {
+            // PDFs are binary — read_file on the raw bytes is useless. Extract a readable text view with
+            // pdftotext (poppler-utils, installed in the image). -layout keeps columns/tables roughly intact.
+            string textPath = Path.Combine(directory, "extracted.txt");
+            manifest.Append($"- {textPath} — readable text extracted from the PDF. It does not exist yet; create it first by running `pdftotext -layout \"{rawPath}\" \"{textPath}\"` with bash, then read it.\n");
+        }
+        else if (classification == "binary")
+        {
+            // Binary payload (archive, image, office doc): read_file shows only garbage. Identify it and
+            // extract with the matching tool — all installed in the image — then read the extracted text.
+            manifest.Append($"- The raw file is binary. Run `file \"{rawPath}\"` to identify it, then extract with the matching tool before reading: unzip/7z for archives, tar for tarballs, pandoc for documents (docx/odt/rtf/epub), pdftotext for PDFs. Reading the raw bytes directly will not work.\n");
         }
 
         return $"URL: {url}\nObjective: {objective}\nContent type: {classification}{(contentType != null ? $" ({contentType})" : string.Empty)}\n\n"
@@ -179,6 +198,7 @@ public class WebFetch
         {
             string lowered = contentType.ToLowerInvariant();
             if (lowered.Contains("html")) return "html";
+            if (lowered.Contains("pdf")) return "pdf";
             if (lowered.Contains("json")) return "json";
             if (lowered.Contains("xml")) return "xml";
             if (lowered.Contains("text/")) return "text";
@@ -190,9 +210,20 @@ public class WebFetch
             path = path.Substring(0, query);
         string extension = Path.GetExtension(path).ToLowerInvariant();
         if (extension == ".html" || extension == ".htm") return "html";
+        if (extension == ".pdf") return "pdf";
         if (extension == ".json") return "json";
         if (extension == ".xml") return "xml";
         if (extension == ".txt" || extension == ".md" || extension == ".csv") return "text";
+
+        // A PDF always begins with the "%PDF-" magic regardless of declared type or extension.
+        if (bytes.Length >= 5 && bytes[0] == '%' && bytes[1] == 'P' && bytes[2] == 'D' && bytes[3] == 'F' && bytes[4] == '-')
+            return "pdf";
+
+        // A NUL byte in the leading window means the payload is not text (archive, image, office doc):
+        // it must be classified as binary so the role is steered to `file` and an extractor rather than
+        // told to read_file raw bytes. Checked before the text sniff, which would otherwise misread it.
+        if (LooksBinary(bytes))
+            return "binary";
 
         // Sniff the leading non-whitespace characters of the decoded text.
         string head = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, 512)).TrimStart();
@@ -205,10 +236,52 @@ public class WebFetch
         return "text";
     }
 
-    // Names the raw file after the resource's own filename (the last path segment of the URL) so the role sees
-    // what the thing is actually called, not a generic "raw". Falls back to "raw" when the URL has no usable
-    // segment, and ensures an extension matching the classification is present either way.
-    private static string FileNameFor(string url, string classification)
+    // True when the leading bytes contain a NUL, the simplest reliable signal that content is binary
+    // rather than text. Only the first kilobyte is scanned — enough to catch archive/image/office magic.
+    private static bool LooksBinary(byte[] bytes)
+    {
+        int n = Math.Min(bytes.Length, 1024);
+        for (int i = 0; i < n; i++)
+        {
+            if (bytes[i] == 0)
+                return true;
+        }
+        return false;
+    }
+
+    // Names the raw file after the resource's own filename so the role sees what the thing is actually
+    // called, not a generic "raw". Prefers the server's Content-Disposition name, then the URL's last path
+    // segment. A name that already carries an extension is kept verbatim — we retain the original name as
+    // fetched; only when there is no usable name or extension is one synthesized from the classification.
+    private static string FileNameFor(string url, string classification, string? suggestedName)
+    {
+        string candidate = !string.IsNullOrWhiteSpace(suggestedName) ? suggestedName! : UrlLastSegment(url);
+
+        // Strip anything that would be awkward on disk, keeping the name recognizable. This also drops path
+        // separators, neutralizing any directory components or traversal in a Content-Disposition name.
+        StringBuilder cleaned = new StringBuilder(candidate.Length);
+        foreach (char c in candidate)
+        {
+            if (char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_')
+                cleaned.Append(c);
+        }
+
+        string name = cleaned.ToString().Trim('.');
+
+        // A real filename that already has its own extension is kept exactly as fetched.
+        if (name.Length > 0 && name.IndexOf('.') >= 0)
+            return name;
+
+        // No usable name or extension: synthesize one from the classification (binary gets a neutral .bin).
+        if (name.Length == 0)
+            name = "raw";
+        string extension = classification == "binary" ? "bin" : ExtensionFor(classification);
+        return name + "." + extension;
+    }
+
+    // The last path segment of a URL, with the query and fragment removed. Empty when the URL ends in a
+    // slash or has no path (e.g. "https://host/"), in which case the caller synthesizes a name.
+    private static string UrlLastSegment(string url)
     {
         string path = url;
         int query = path.IndexOf('?');
@@ -218,28 +291,10 @@ public class WebFetch
         if (fragment >= 0)
             path = path.Substring(0, fragment);
 
-        string segment = string.Empty;
         int slash = path.LastIndexOf('/');
         if (slash >= 0 && slash < path.Length - 1)
-            segment = path.Substring(slash + 1);
-
-        // Strip anything that would be awkward on disk, keeping the name recognizable.
-        StringBuilder cleaned = new StringBuilder(segment.Length);
-        foreach (char c in segment)
-        {
-            if (char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_')
-                cleaned.Append(c);
-        }
-
-        string name = cleaned.ToString().Trim('.');
-        if (name.Length == 0)
-            name = "raw";
-
-        string extension = ExtensionFor(classification);
-        if (!name.EndsWith("." + extension, StringComparison.OrdinalIgnoreCase))
-            name = name + "." + extension;
-
-        return name;
+            return path.Substring(slash + 1);
+        return string.Empty;
     }
 
     // File extension for the raw view, matching the classification so on-disk tooling (and the role) can tell
@@ -248,6 +303,7 @@ public class WebFetch
     {
         string extension;
         if (classification == "html") extension = "html";
+        else if (classification == "pdf") extension = "pdf";
         else if (classification == "json") extension = "json";
         else if (classification == "xml") extension = "xml";
         else extension = "txt";

@@ -24,11 +24,36 @@ public static class MarkdownAnsi
         if (string.IsNullOrEmpty(markdown)) return lines;
 
         MarkdownDocument doc = Markdown.Parse(markdown, Pipeline);
-        RenderBlocks(doc, lines, "", type, w);
+        RenderTopLevel(doc, lines, type, w);
         // Trim trailing blank lines.
         while (lines.Count > 0 && string.IsNullOrEmpty(lines[lines.Count - 1]))
             lines.RemoveAt(lines.Count - 1);
         return lines;
+    }
+
+    // Top-level pass: tracks the current heading section so blocks beneath a heading are indented
+    // two spaces per heading level. A heading itself renders at its parent level's indent; the body
+    // that follows it (until the next heading of equal-or-shallower level) is pushed in one level.
+    private static void RenderTopLevel(MarkdownDocument doc, List<string> lines, FrameType type, int w)
+    {
+        string sectionIndent = "";
+        bool first = true;
+        foreach (Block block in doc)
+        {
+            if (!first) lines.Add("");
+            first = false;
+
+            if (block is HeadingBlock heading)
+            {
+                string headIndent = new string(' ', Math.Max(0, heading.Level - 1) * 2);
+                RenderBlock(block, lines, headIndent, type, w);
+                sectionIndent = new string(' ', heading.Level * 2);
+            }
+            else
+            {
+                RenderBlock(block, lines, sectionIndent, type, w);
+            }
+        }
     }
 
     private static void RenderBlocks(IEnumerable<Block> blocks, List<string> lines, string indent, FrameType type, int w)
@@ -48,8 +73,10 @@ public static class MarkdownAnsi
         {
             string text = InlinesToString(heading.Inline);
             int level = heading.Level;
-            string prefix = level == 1 ? Codes.Bold + "# " : level == 2 ? Codes.Bold + "## " : Codes.Bold;
-            lines.Add(indent + prefix + text + Codes.Reset);
+            // No literal '#' markers — hierarchy is conveyed by the section indent and a muted color
+            // per level (kept calm for a medium-dark background). H1 also carries an underline rule.
+            string code = level == 1 ? Codes.H1 : level == 2 ? Codes.H2 : Codes.H3;
+            lines.Add(indent + code + text + Codes.Reset);
         }
         else if (block is ParagraphBlock para)
         {
@@ -481,6 +508,11 @@ public static class MarkdownAnsi
         public const string Reset      = "\x1b[0m";
         public const string Bold       = "\x1b[1m";
         public const string Italic     = "\x1b[3m";
+
+        // Heading colors — desaturated blue/teal tones chosen to read well on a medium-dark background.
+        public const string H1         = "\x1b[1m\x1b[4m\x1b[38;5;75m";
+        public const string H2         = "\x1b[1m\x1b[38;5;73m";
+        public const string H3         = "\x1b[1m\x1b[38;5;110m";
 
         public const string Output     = "\x1b[38;5;250m";
         public const string Thinking   = "\x1b[2;3;38;5;59m";

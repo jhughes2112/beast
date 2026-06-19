@@ -324,9 +324,31 @@ public class DisplayScreen : IDisplay
             foreach (SessionDisplayInfo s in sessions)
                 _sessionList.Add(s);
             _sessionActiveId = activeId;
+
+            // The F10 selection drives the view, so it must always point at the session currently
+            // being viewed. When the view changes on its own (auto-track follows a subagent) or the
+            // tree is reordered, snap the cursor to the active session so the highlight and the view
+            // stay in sync rather than pointing at a stale row.
+            for (int i = 0; i < _sessionList.Count; i++)
+            {
+                if (string.Equals(_sessionList[i].Id, activeId, StringComparison.Ordinal))
+                {
+                    _sessionTreeSelected = i;
+                    break;
+                }
+            }
+
             // Clamp selection to valid range.
             if (_sessionTreeSelected >= _sessionList.Count)
                 _sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
+
+            // Keep the selected row scrolled into view after a reorder.
+            int visRows = Math.Max(1, _lastHeight - 5);
+            if (_sessionTreeSelected < _sessionTreeScroll)
+                _sessionTreeScroll = _sessionTreeSelected;
+            else if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
+                _sessionTreeScroll = _sessionTreeSelected - visRows + 1;
+
             Redraw();
         }
     }

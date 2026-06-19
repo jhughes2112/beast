@@ -226,6 +226,9 @@ public class SessionRunner
 				bool contextFull = false;
 				if (session.NeedsAttention() && _service != null && role != null)
 				{
+					// Name and announce the root before the turn runs so the client's session tree shows
+					// the inferred name immediately, not the raw ID until the turn completes and saves.
+					session.EnsureNamedAndAnnounce();
 					session.SendBusy();
 					try
 					{

@@ -246,6 +246,26 @@ public static class AnsiString
         return result;
     }
 
+    // Word-wraps while preserving leading spaces as a hanging indent. Plain WordWrap drops leading
+    // spaces, which erases markdown section indentation and list nesting; this keeps the first line's
+    // indent and aligns every wrapped continuation line beneath it.
+    public static List<string> WordWrapIndented(string s, int maxWidth)
+    {
+        int indent = 0;
+        while (indent < s.Length && s[indent] == ' ') indent++;
+        if (indent == 0) return WordWrap(s, maxWidth);
+
+        string prefix = new string(' ', indent);
+        string body   = s.Substring(indent);
+        int bodyWidth = Math.Max(1, maxWidth - indent);
+
+        List<string> wrapped = WordWrap(body, bodyWidth);
+        List<string> result  = new List<string>();
+        foreach (string line in wrapped)
+            result.Add(prefix + line);
+        return result;
+    }
+
     // Pads or truncates to exactly visibleWidth visible characters.
     // Trailing reset is appended when the string contained codes.
     public static string TruncatePad(string s, int visibleWidth)

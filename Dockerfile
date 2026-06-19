@@ -29,14 +29,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash curl wget git ca-certificates gnupg lsb-release \
     # C / C++
     build-essential gcc g++ gdb cmake ninja-build \
-    # Python
-    python3 python3-pip python3-venv \
+    # Python (python-is-python3 provides a `python` -> python3 alias so the many tools/scripts
+    # that invoke `python` rather than `python3` resolve correctly)
+    python3 python3-pip python3-venv python-is-python3 \
     # Ruby
     ruby ruby-dev \
     # JVM
     openjdk-21-jdk-headless \
     # Shell / scripting utilities
     jq sqlite3 zip unzip bc file tree \
+    # PDF text extraction (poppler-utils provides `pdftotext`, used by the WebFetch role on PDFs)
+    poppler-utils \
+    # Archive, document, and text-handling tools — all light. The WebFetch role and agent bash use
+    # these to inspect/extract fetched files: 7z + extra (de)compressors, xmllint, document->text via
+    # pandoc, line-ending fixups. (tar/gzip ship with the base image; no heavy media tools by design.)
+    xz-utils bzip2 p7zip-full libxml2-utils pandoc dos2unix \
     # .NET runtime deps (required for self-contained .NET 10 binary)
     libicu74 libssl3 zlib1g \
     && rm -rf /var/lib/apt/lists/*

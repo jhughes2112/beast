@@ -118,6 +118,19 @@ public class Session
 		_transport.SessionAnnounce(_data.Id, json);
 	}
 
+	// Names a still-nameless root from its first user message and announces it immediately, so the
+	// client shows the name from the first turn rather than the raw session ID for its whole duration
+	// (the name was previously only set when the turn finished and the session was saved). Flushing the
+	// pending input here is safe: a nameless session has no prior assistant turn, so there are no
+	// dangling tool calls to order the user message against. A no-op once the session already has a name.
+	public void EnsureNamedAndAnnounce()
+	{
+		if (!string.IsNullOrEmpty(_data.DisplayName))
+			return;
+		FlushPendingMessages();
+		AnnounceToClient();
+	}
+
 	// ---- Mutation ----
 
 	// Sets the active model name. Call InvalidateProtocol() separately if the model switch

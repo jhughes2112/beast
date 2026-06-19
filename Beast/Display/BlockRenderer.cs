@@ -185,7 +185,7 @@ internal static class BlockRenderer
             {
                 string full = firstLine ? prefix + mdLine : mdLine;
                 firstLine = false;
-                List<string> wrappedLines = wordWrap ? AnsiString.WordWrap(full, w) : AnsiString.Wrap(full, w);
+                List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, w) : AnsiString.Wrap(full, w);
                 foreach (string wrapped in wrappedLines)
                     result.Add(wrapped);
             }
@@ -200,7 +200,7 @@ internal static class BlockRenderer
             {
                 string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
                 first = false;
-                List<string> wrappedLines = wordWrap ? AnsiString.WordWrap(full, w) : AnsiString.Wrap(full, w);
+                List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, w) : AnsiString.Wrap(full, w);
                 foreach (string wl in wrappedLines)
                     result.Add(wl);
             }
@@ -254,6 +254,9 @@ internal static class BlockRenderer
             {
                 using JsonDocument doc = JsonDocument.Parse(argsJson);
                 List<string> inlineProps = new List<string>();
+                // Block-valued arguments deferred until after the short scalars. Kind: 0 = prose markdown,
+                // 1 = code content, 2 = plain multi-line. Sorted shortest-first before emission.
+                List<(string Name, string Val, int Kind)> blockProps = new List<(string, string, int)>();
 
                 foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
                 {
@@ -270,43 +273,50 @@ internal static class BlockRenderer
                     // blocks and long paragraphs are interpreted and width-wrapped, rather than dumped raw
                     // (raw over-width lines desync the terminal columns around the rendered content).
                     if (IsProseArg(name, prop.Name))
+                        blockProps.Add((prop.Name, val, 0));
+                    else if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
+                        blockProps.Add((prop.Name, val, 1));
+                    else if (val.IndexOf('\n') >= 0)
+                        blockProps.Add((prop.Name, val, 2));
+                    else
+                        inlineProps.Add($"{prop.Name} {val}");
+                }
+
+                // Short scalar arguments first, word-wrapped, so the most scannable parameters lead.
+                if (inlineProps.Count > 0)
+                {
+                    foreach (string wrapped in AnsiString.WordWrap("  " + string.Join("  ", inlineProps), w))
+                        result.Add(wrapped);
+                }
+
+                // Then the heavier block arguments, shortest first so the bulkiest content sinks last.
+                blockProps.Sort((a, b) => a.Val.Length.CompareTo(b.Val.Length));
+
+                foreach ((string Name, string Val, int Kind) bp in blockProps)
+                {
+                    if (bp.Kind == 0)
                     {
-                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
-                        foreach (string mdLine in MarkdownAnsi.Render(ExpandTabs(val), FrameType.Output, w))
+                        foreach (string mdLine in MarkdownAnsi.Render(ExpandTabs(bp.Val), FrameType.Output, w))
                         {
-                            foreach (string wrapped in AnsiString.WordWrap(mdLine, w))
+                            foreach (string wrapped in AnsiString.WordWrapIndented(mdLine, w))
                                 result.Add(wrapped);
                         }
-                        continue;
                     }
-
-                    if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
+                    else if (bp.Kind == 1)
                     {
-                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
-                        foreach (string valLine in val.Split('\n'))
+                        foreach (string valLine in bp.Val.Split('\n'))
                             result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(valLine), fileLang, respBodyBgAnsi));
-                        continue;
-                    }
-
-                    string[] valLines = val.Split('\n');
-                    if (valLines.Length == 1)
-                    {
-                        inlineProps.Add($"{prop.Name} {val}");
                     }
                     else
                     {
-                        if (inlineProps.Count > 0) { result.Add("  " + string.Join("  ", inlineProps)); inlineProps.Clear(); }
                         bool firstPropLine = true;
-                        foreach (string valLine in valLines)
+                        foreach (string valLine in bp.Val.Split('\n'))
                         {
-                            result.Add(firstPropLine ? $"  {prop.Name}  {valLine}" : $"    {valLine}");
+                            result.Add(firstPropLine ? $"  {bp.Name}  {valLine}" : $"    {valLine}");
                             firstPropLine = false;
                         }
                     }
                 }
-
-                if (inlineProps.Count > 0)
-                    result.Add("  " + string.Join("  ", inlineProps));
             }
             catch
             {
@@ -321,8 +331,8 @@ internal static class BlockRenderer
         if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
             string respBgAnsi = msg.PairedResponseIsError ? DisplayScreen.Palette.ErrBodyBgAnsi : respBodyBgAnsi;
-            foreach (string respLine in msg.PairedResponseContent.Split('\n'))
-                result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLine), fileLang, respBgAnsi));
+            RespMode mode = msg.PairedResponseIsError ? RespMode.Code : ResponseModeFor(name);
+            EmitResponseLines(result, msg.PairedResponseContent, mode, fileLang, respBgAnsi, w);
         }
 
         if (!string.IsNullOrEmpty(msg.PairedResponseError))
@@ -334,6 +344,47 @@ internal static class BlockRenderer
         if (result.Count == 0)
             result.Add(name);
         return result;
+    }
+
+    private enum RespMode { Code, Bash, Markdown }
+
+    // Picks how a tool's response body is rendered. File and shell output stay as un-wrapped highlighted
+    // lines (code columns line up; wide output is meant to scroll horizontally). Everything else — web
+    // fetches, searches, subagent returns — is prose, so it flows through the markdown pipeline.
+    private static RespMode ResponseModeFor(string toolName)
+    {
+        switch (toolName)
+        {
+            case "read_file":
+            case "write_file":
+            case "edit_file_replace":
+            case "edit_file_insert":
+                return RespMode.Code;
+            case "bash":
+                return RespMode.Bash;
+            default:
+                return RespMode.Markdown;
+        }
+    }
+
+    // Emits a tool response into result. Markdown mode interprets and word-wraps prose; the other modes
+    // emit one highlighted line per source line (no wrap), keeping code and shell columns intact.
+    private static void EmitResponseLines(List<string> result, string content, RespMode mode, string fileLang, string bgAnsi, int w)
+    {
+        if (mode == RespMode.Markdown)
+        {
+            foreach (string mdLine in MarkdownAnsi.Render(ExpandTabs(content), FrameType.Output, w))
+            {
+                foreach (string wrapped in AnsiString.WordWrapIndented(mdLine, w))
+                    result.Add(wrapped);
+            }
+        }
+        else
+        {
+            string lang = mode == RespMode.Bash ? "bash" : fileLang;
+            foreach (string respLine in content.Replace("\r\n", "\n").Split('\n'))
+                result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLine), lang, bgAnsi));
+        }
     }
 
     // True for string arguments that carry free-form markdown prose rather than code, paths, or short

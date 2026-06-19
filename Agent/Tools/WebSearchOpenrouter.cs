@@ -10,18 +10,19 @@ using System.Threading.Tasks;
 // both happen inside that model's own turn. We make one bare call and return exactly what it produced, rather
 // than feeding the result through a second LlmService loop: that model has already processed the page content,
 // so passing it through another LLM only dilutes the signal. A throwaway child session is still created so the
-// turn is visible in the session tree and its cost rolls up into the caller. The service is built once from the
-// search model at construction time.
+// turn is visible in the session tree and its cost rolls up into the caller.
 public class WebSearchOpenrouter
 {
-    private readonly LlmService _service;
+    private readonly LlmModel _model;
+
+    // Shared across every search so rate-limit / down state set by one call is seen by the next, exactly as
+    // LlmRegistry shares one ModelAvailability across its per-session services.
+    private readonly ModelAvailability _availability;
 
     public WebSearchOpenrouter(LlmModel model)
     {
-        // The search model is configured separately from the registry, so build its service directly with a
-        // fresh availability tracker. The protocol is left Unknown and resolved from the endpoint URL on the
-        // first turn, exactly as the previous direct ProtocolProxy use relied on.
-        _service = new LlmService(model, DetectedProtocol.Unknown, new ModelAvailability());
+        _model = model;
+        _availability = new ModelAvailability();
     }
 
     public async Task<ToolResult> SearchWebAsync(
@@ -43,7 +44,14 @@ public class WebSearchOpenrouter
         if (searchRole == null)
             return new ToolResult(toolCallId, string.Empty, "Error: WebSearch role is not defined.", 1, 0);
 
-        BeastSession data = new BeastSession(parent.AllocateChildId(), $"search_web {query}", _service.Model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+        // A fresh LlmService per call, so each search gets its own ProtocolProxy and starts from a clean
+        // protocol message list. The proxy caches its protocol instance for the life of the service and only
+        // rehydrates from canonical when that instance is null; reusing one service across calls would leak the
+        // previous search's messages into the next. This mirrors LlmRegistry, which builds a fresh service per
+        // session for the same reason. Availability is shared so rate-limit state still carries across calls.
+        LlmService service = new LlmService(_model, DetectedProtocol.Unknown, _availability);
+
+        BeastSession data = new BeastSession(parent.AllocateChildId(), $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
         Session session = new Session(data, searchRole.SystemPrompt, transport, true);
 
         // The constructor no longer displays the system prompt; a helper session has no other replay path, so
@@ -61,7 +69,7 @@ public class WebSearchOpenrouter
         {
             // One bare call: no tools, no forced tool choice. The web plugin runs inside the model's turn and
             // the assistant text it returns is the answer we hand straight back to the caller.
-            ProtocolResult result = await _service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, cancellationToken);
+            ProtocolResult result = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, cancellationToken);
             if (result.Outcome != ProtocolCallOutcome.Success)
                 return new ToolResult(toolCallId, string.Empty, $"Error: OpenRouter search failed for query \"{query}\": {result.ErrorMessage}", 1, 0);
 

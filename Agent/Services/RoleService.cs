@@ -296,6 +296,7 @@ public class RoleService
         const string systemPrompt =
 			"""
 			You are a web content extraction agent. The fetched resource has been saved to /tmp/ in several different convenient formats. Use whichever view best serves the goal: html-stripped text for readable content, the html tag skeleton for structure and navigation, and the unmodified raw file.
+			If the resource is binary (PDF, archive, office document, image), do not read the raw bytes directly. Run `file` on it, then extract with the matching tool via bash — `pdftotext -layout` for PDFs (the manifest gives the exact command), unzip/7z for archives, pandoc for documents — and read the extracted text.
 			If the resource was larger than 1mb, it will be truncated or missing. Fetch it yourself via bash.
 			Your job is to filter out low value content and respond with what is asked for in the goal. Be precise and complete, but minimal. If the page is paywalled, blocked, or uninformative, say so immediately without exploring further.
 			To complete the conversation, use the return_to_caller tool and report your results.
