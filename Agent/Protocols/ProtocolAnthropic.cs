@@ -189,7 +189,7 @@ public class ProtocolAnthropic
             }
         }
 
-        ThinkingParameters? thinking = BuildThinking(extraPayload);
+        ThinkingParameters? thinking = BuildThinking(model, extraPayload, parameters.MaxTokens);
         if (thinking != null)
         {
             parameters.Thinking = thinking;
@@ -198,24 +198,24 @@ public class ProtocolAnthropic
         return parameters;
     }
 
-    // Thinking is dynamic: the agent will set it later. The model's extras land in extraPayload, so a
-    // "thinking" block declared there drives this. Enabled only when a positive budget is present.
-    private static ThinkingParameters? BuildThinking(Dictionary<string, JsonNode?> extraPayload)
+    // Resolves the thinking budget from the model's friendly reasoningEffort word, clamped against this
+    // turn's max_tokens. An explicit "thinking" object in extras is the raw escape hatch and overrides
+    // the word. Enabled only when a positive budget results.
+    private static ThinkingParameters? BuildThinking(LlmModel model, Dictionary<string, JsonNode?> extraPayload, int maxTokens)
     {
-        JsonNode? source = null;
+        int budget = ReasoningEffort.AnthropicBudget(model.Config.ReasoningEffort, maxTokens);
+
         if (extraPayload.TryGetValue("thinking", out JsonNode? payloadThinking) && payloadThinking != null)
         {
-            source = payloadThinking;
+            int extrasBudget = payloadThinking["budget_tokens"]?.GetValue<int>() ?? 0;
+            if (extrasBudget > 0)
+                budget = extrasBudget;
         }
 
         ThinkingParameters? result = null;
-        if (source != null)
+        if (budget > 0)
         {
-            int budget = source["budget_tokens"]?.GetValue<int>() ?? 0;
-            if (budget > 0)
-            {
-                result = new ThinkingParameters { BudgetTokens = budget };
-            }
+            result = new ThinkingParameters { BudgetTokens = budget };
         }
 
         return result;

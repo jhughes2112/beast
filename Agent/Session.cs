@@ -27,6 +27,10 @@ public class Session
 	private CancellationTokenSource? _turnCts;
 	private bool _isSubagent;
 
+	// " (high)" style suffix for the active model's reasoning level, shown after the model name in stats.
+	// Set by UpdateModel each turn; empty until the first turn or when thinking is off.
+	private string _modelDisplaySuffix = string.Empty;
+
 	private readonly ConcurrentDictionary<string, Session> _children = new ConcurrentDictionary<string, Session>();
 
 	public QueryLogger QueryLog { get; }
@@ -60,7 +64,7 @@ public class Session
 	// Sends current session stats to the client using explicit values.
 	public void SendStats()
 	{
-		_transport.Stats(_data.Id, _data.Model, _data.Role,
+		_transport.Stats(_data.Id, _data.Model + _modelDisplaySuffix, _data.Role,
 			_data.CumulativeInputTokens, _data.CumulativeOutputTokens,
 			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize);
 	}
@@ -135,7 +139,7 @@ public class Session
 
 	// Sets the active model name. Call InvalidateProtocol() separately if the model switch
 	// requires discarding the in-progress protocol (e.g. via the /model command).
-	public void UpdateModel(LlmModel model) { _data.Model = model.ConfigId; _data.ContextWindow = model.Config.ContextWindow; }
+	public void UpdateModel(LlmModel model) { _data.Model = model.ConfigId; _data.ContextWindow = model.Config.ContextWindow; _modelDisplaySuffix = ReasoningEffort.DisplaySuffix(model.Config.ReasoningEffort); }
 
 	// Signals the bundle that the active protocol should be discarded on next turn.
 	public void InvalidateProtocol() => _bundle.InvalidateProtocol();

@@ -137,7 +137,7 @@ public class LlmService
                     int contextBaseline = conversation.ContextLength;
                     int inputBaseline = conversation.CumulativeInputTokens;
                     int outputBaseline = conversation.CumulativeOutputTokens;
-                    string modelId = conversation.Model;
+                    string modelId = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
                     string role = conversation.Role;
                     int contextWindow = _model.Config.ContextWindow;
                     LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>

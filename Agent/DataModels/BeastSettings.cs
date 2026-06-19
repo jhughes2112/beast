@@ -55,6 +55,12 @@ public class ModelConfig
     [JsonPropertyName("maxOutputTokens")]
     public int MaxOutputTokens { get; set; }
 
+    // Friendly reasoning/thinking level: none, minimal, low, medium, high, max (and common synonyms).
+    // The word is translated to each provider's native control in code (Anthropic thinking budget,
+    // OpenAI reasoning effort, etc.); the user never sees the underlying numbers. Empty means none.
+    [JsonPropertyName("reasoningEffort")]
+    public string ReasoningEffort { get; set; } = string.Empty;
+
     [JsonPropertyName("cost")]
     public CostConfig Cost { get; set; } = new();
 

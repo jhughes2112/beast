@@ -86,7 +86,7 @@ public static class ToolFactory
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
                         Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned on the first read."),
-                        Req("offset", "string", "Starting line number (1 based)"),
+                        Opt("offset", "string", "Starting line number (1 based). Empty means the beginning of the file."),
                         Opt("lines", "string", "Number of lines to read. Empty means to the end of the file."))
                 }
             },
@@ -204,7 +204,7 @@ public static class ToolFactory
                     Description = "Read a line-numbered window of a file. Fetched pages are saved under /tmp/; CWD is /workspace/.",
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
-                        Req("offset", "string", "Starting line number (1 based)"),
+                        Opt("offset", "string", "Starting line number (1 based). Empty means the beginning of the file."),
                         Opt("lines", "string", "Number of lines to read. Empty means to the end of the file (capped)."))
                 }
             },

@@ -269,6 +269,16 @@ public class ProtocolResponses
             }
         }
 
+        // Translate the friendly reasoningEffort word into the Responses-native reasoning.effort object.
+        // Applied before extras so an explicit "reasoning" block in extras can still override it.
+        string? effort = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort);
+        if (effort != null)
+        {
+            JsonObject reasoning = new JsonObject();
+            reasoning["effort"] = effort;
+            body["reasoning"] = reasoning;
+        }
+
         foreach (KeyValuePair<string, JsonNode?> kv in extraPayload)
         {
             body[kv.Key] = kv.Value?.DeepClone();

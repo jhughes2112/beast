@@ -158,18 +158,26 @@ public class SubagentRunner
         subSession.SendBusy();
         try
         {
-            // Generous turn cap so a working subagent can iterate, while still bounding runaway loops.
-            const int kMaxTurns = 50;
+            // Generous working turn cap so a working subagent can iterate. After it is reached the model
+            // is given no further work tools and a few extra "wind-down" turns whose only job is to call
+            // the terminator. The terminator cannot be truly forced (providers ignore tool_choice when
+            // extended thinking is on), so a single wrap-up turn that calls the wrong tool — or no tool —
+            // must not discard everything done so far. Instead we keep nudging across the wind-down turns
+            // until the terminator is actually called, and salvage the last assistant text if it never is.
+            const int kMaxWorkTurns = 50;
+            const int kMaxWindDownTurns = 5;
+            const int kMaxTurns = kMaxWorkTurns + kMaxWindDownTurns;
             int responseTokens = 0;
 
             for (int turn = 1; turn <= kMaxTurns; turn++)
             {
-                // On the last allotted turn the terminator is the only tool and is required, and the
-                // output is hard-capped to the budget since there is no further turn to shorten it.
+                // In the wind-down phase the terminator is the only tool and is requested, and the output
+                // is hard-capped to the budget since the work is over and only the final result is wanted.
+                bool windDown = turn > kMaxWorkTurns;
                 bool lastTurn = turn == kMaxTurns;
-                Tool[] turnTools = lastTurn ? terminatorOnlyTools : fullTools;
-                string? forcedToolName = lastTurn ? terminatorName : null;
-                int outputCap = lastTurn ? outputBudgetTokens : 0;
+                Tool[] turnTools = windDown ? terminatorOnlyTools : fullTools;
+                string? forcedToolName = windDown ? terminatorName : null;
+                int outputCap = windDown ? outputBudgetTokens : 0;
 
                 ProtocolResult result = await service.RunToCompletionAsync(subSession, turnTools, forcedToolName, 0, outputCap, _transport, ct);
                 if (result.Outcome != ProtocolCallOutcome.Success)
@@ -196,7 +204,19 @@ public class SubagentRunner
                     continue;
                 }
 
-                if (!hasToolCalls && !lastTurn)
+                if (lastTurn)
+                    break;
+
+                if (windDown)
+                {
+                    // Out of working turns and the terminator still was not called — a bare text turn, or a
+                    // wrong/failed tool call (its error result is already in context). Press it to finish via
+                    // the terminator rather than ending the session and discarding the work it has done.
+                    subSession.AddUserMessage(
+                        $"You are out of working turns. Call the {terminatorName} tool now with your final result, "
+                        + "preserving the key details (file paths, line numbers, names, key output).");
+                }
+                else if (!hasToolCalls)
                 {
                     // A turn that ends with no tool call cannot terminate the subagent: nudge it with the
                     // role's end-of-turn prompt (data-driven) to keep working and finish via its terminator.
@@ -212,7 +232,15 @@ public class SubagentRunner
             parent.RecordCost(subSession.TotalCost);
 
             if (sink.Value == null)
-                return (false, "The subagent finished without returning a result.", responseTokens);
+            {
+                // The subagent never called its terminator (e.g. it kept calling the wrong tool through the
+                // wind-down turns). Rather than throw away everything it produced, salvage its last assistant
+                // text and return that — a partial answer is far less wasteful than discarding a long run.
+                string salvaged = LastAssistantText(subSession);
+                if (string.IsNullOrEmpty(salvaged))
+                    return (false, "The subagent finished without returning a result.", responseTokens);
+                return (true, salvaged, subSession.LastTokenUsage?.CompletionTokens ?? responseTokens);
+            }
 
             string output = sink.Value;
 
@@ -230,6 +258,20 @@ public class SubagentRunner
                 SessionService.Save(subSession.Data, false);
             subSession.SendIdle();
         }
+    }
+
+    // Returns the most recent assistant text in the sub-session, used to salvage a partial result when the
+    // subagent ran out of turns without ever calling its terminator. Empty when no assistant message carried
+    // any text (only tool calls).
+    private static string LastAssistantText(Session session)
+    {
+        IReadOnlyList<CanonicalMessage> messages = session.Data.Messages;
+        for (int i = messages.Count - 1; i >= 0; i--)
+        {
+            if (messages[i] is AssistantMessage assistant && !string.IsNullOrWhiteSpace(assistant.Text))
+                return assistant.Text;
+        }
+        return string.Empty;
     }
 
     // Builds the worktree context line injected at the top of a subagent's first prompt: the branch and

@@ -150,6 +150,10 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 131078,
                             Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
+                            // Reasoning level as a word (none/minimal/low/medium/high/max). For chat-completions
+                            // backends it is sent as reasoning_effort and softly falls back to a reasoning object
+                            // if the server rejects it, so the same word works across Gemini, vLLM, OpenRouter, etc.
+                            ReasoningEffort = "",
                             // Steer OpenRouter routing by declaring a "provider" object here, e.g.
                             // { "provider": { "order": ["Anthropic"], "allow_fallbacks": false } }.
                             Extras = new List<JsonObject>
@@ -175,8 +179,10 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 200000,
                             Cost = new CostConfig { Input = 3.0m, Output = 15.0m, CacheRead = 0.3m, CacheWrite = 3.75m },
-                            // Enable extended thinking by declaring a "thinking" object here, e.g.
-                            // { "thinking": { "budget_tokens": 8192 } }.
+                            // Extended thinking: set reasoningEffort to none/minimal/low/medium/high/max and the
+                            // right thinking budget is chosen automatically. A raw "thinking" object in extras
+                            // still overrides it.
+                            ReasoningEffort = "medium",
                             Extras = new List<JsonObject>
                             {
                                 new JsonObject { ["temperature"] = null },
@@ -199,6 +205,8 @@ public class SettingsService
                             Enabled = false,
                             ContextWindow = 400000,
                             Cost = new CostConfig { Input = 0.05m, Output = 0.40m, CacheRead = 0.005m, CacheWrite = 0.0m },
+                            // Reasoning level as a word; translated to the API's reasoning.effort automatically.
+                            ReasoningEffort = "medium",
                             Extras = new List<JsonObject>
                             {
                                 new JsonObject { ["temperature"] = null },

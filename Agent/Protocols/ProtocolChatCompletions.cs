@@ -29,6 +29,12 @@ public class ProtocolChatCompletions
     private bool _parallelToolCallsSupported = true;
     private bool _streamingSupported = true;
 
+    // Backends disagree on how reasoning effort is requested, so it is advertised softly with adaptive
+    // fallback (see TryAdaptToError): 0 = the OpenAI-standard "reasoning_effort" string, 1 = a "reasoning":
+    // { "effort": ... } object (OpenRouter and several gateways), 2 = give up because the server accepts
+    // neither. Each step is taken only after the server rejects the previous form with a 400.
+    private int _reasoningMode = 0;
+
     // Native runtime state: the message chain that will be sent to the server. Thinking blocks
     // are never included. This is in-memory only and rebuilt from canonical by Rehydrate.
     private readonly JsonArray _native = new JsonArray();
@@ -284,7 +290,8 @@ public class ProtocolChatCompletions
                 return success;
             }
 
-            if (TryAdaptToError(httpResponse, responseBody))
+            bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
+            if (TryAdaptToError(httpResponse, responseBody, reasoningConfigured))
             {
                 continue;
             }
@@ -364,6 +371,23 @@ public class ProtocolChatCompletions
 
         body["seed"] = Random.Shared.Next();
         if (maxCompletionTokens > 0) body["max_completion_tokens"] = maxCompletionTokens.Value;
+
+        // Advertise the friendly reasoningEffort word in whichever form the backend currently accepts.
+        // _reasoningMode is advanced by TryAdaptToError as forms are rejected; mode 2 sends nothing.
+        string? effort = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort);
+        if (effort != null)
+        {
+            if (_reasoningMode == 0)
+            {
+                body["reasoning_effort"] = effort;
+            }
+            else if (_reasoningMode == 1)
+            {
+                JsonObject reasoning = new JsonObject();
+                reasoning["effort"] = effort;
+                body["reasoning"] = reasoning;
+            }
+        }
 
         return body;
     }
@@ -721,13 +745,22 @@ public class ProtocolChatCompletions
         return (usage, cost);
     }
 
-    private bool TryAdaptToError(HttpResponseMessage response, string responseBody)
+    private bool TryAdaptToError(HttpResponseMessage response, string responseBody, bool reasoningConfigured)
     {
         int statusCode = (int)response.StatusCode;
         if (statusCode < 400 || statusCode >= 500 || statusCode == 429) return false;
-        if (!_parallelToolCallsSupported) return false;
 
         string lowerBody = responseBody.ToLowerInvariant();
+
+        // A server that rejects the reasoning hint gets the next softer form, then no hint at all. Checked
+        // before the parallel-tool guard so a model can adapt reasoning even after parallel calls are off.
+        if (reasoningConfigured && _reasoningMode < 2 && lowerBody.Contains("reasoning"))
+        {
+            _reasoningMode++;
+            return true;
+        }
+
+        if (!_parallelToolCallsSupported) return false;
 
         if (lowerBody.Contains("parallel_tool_calls") || lowerBody.Contains("parallel tool calls"))
         {
