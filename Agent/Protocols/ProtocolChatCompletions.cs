@@ -190,6 +190,17 @@ public class ProtocolChatCompletions
         CancellationToken cancellationToken)
     {
         bool logged = false;
+
+        // A successful response that carries neither assistant text nor a tool call is a dead turn: the
+        // model emitted only thinking — typically an XML tool call buried in its reasoning that this
+        // protocol never parsed as a real call. Some local/open ChatCompletions models do this; the
+        // hosted Anthropic and Responses protocols effectively never do, which is why this lives here.
+        // Treat it like the other fixable malformations handled in this loop: discard it and re-post (a
+        // fresh seed is generated each build, so the retry is a genuinely new sample) up to the cap,
+        // rather than surfacing an empty turn the caller cannot act on.
+        int emptyRetries = 0;
+        const int kMaxEmptyRetries = 3;
+
         for (;;)
         {
             JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
@@ -198,7 +209,16 @@ public class ProtocolChatCompletions
             if (_streamingSupported)
             {
                 ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, cancellationToken);
-                if (streamResult != null) return streamResult;
+                if (streamResult != null)
+                {
+                    if (IsEmptyTurn(streamResult) && emptyRetries < kMaxEmptyRetries)
+                    {
+                        emptyRetries++;
+                        transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+                        continue;
+                    }
+                    return streamResult;
+                }
                 // null means the provider rejected streaming; fall through to non-streaming
             }
 
@@ -254,7 +274,14 @@ public class ProtocolChatCompletions
                 (TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
 
                 List<ToolResult> emptyResults = new List<ToolResult>();
-                return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+                ProtocolResult success = ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+                if (IsEmptyTurn(success) && emptyRetries < kMaxEmptyRetries)
+                {
+                    emptyRetries++;
+                    transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+                    continue;
+                }
+                return success;
             }
 
             if (TryAdaptToError(httpResponse, responseBody))
@@ -599,6 +626,16 @@ public class ProtocolChatCompletions
         decimal estimatedCost = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
                               + (estimatedOutputTokens / 1_000_000m) * model.Config.Cost.Output;
         onProgress(livePromptTokens, estimatedOutputTokens, estimatedCost);
+    }
+
+    // A successful turn that produced no tool call and no assistant text — only thinking, or nothing.
+    // There is nothing for the caller to act on, so the loop discards and re-posts it.
+    private static bool IsEmptyTurn(ProtocolResult result)
+    {
+        return result.Outcome == ProtocolCallOutcome.Success
+            && result.Payload != null
+            && result.Payload.ToolCalls.Count == 0
+            && string.IsNullOrWhiteSpace(result.Payload.AssistantText);
     }
 
     // Pulls semantic content and tool calls out of a non-streaming message object.
