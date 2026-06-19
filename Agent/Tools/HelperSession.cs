@@ -4,8 +4,8 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Runs an internal helper role (Web, Explorer) as a throwaway child session seeded with content to process,
-// and returns what the model passes to return_to_caller. The model gets up to maxTurns. Because some models
+// Runs an internal helper role (Web, Explorer) as a child session seeded with content to process, and returns
+// what the model passes to return_to_caller. The session is persisted on reload unless it is ephemeral. The model gets up to maxTurns. Because some models
 // and OpenAI-compatible servers mishandle one tool_choice form but honor another, the constraint is cycled
 // each turn: force the specific terminator, then force any tool, then leave it on auto, repeating. A turn that
 // produces no tool call is nudged with the role's end-of-turn prompt. The answer normally arrives through
@@ -104,6 +104,13 @@ public static class HelperSession
 		{
 			// Cost is spent regardless of how the run ended; roll it up into the calling session.
 			parent.RecordCost(session.TotalCost);
+
+			// Persist the helper session unless it inherited an ephemeral parent (a /session none root): a
+			// non-ephemeral helper is a real saved conversation, so it survives a reload and stays in the
+			// session tree, exactly like a subagent session. The Ephemeral flag is the single switch.
+			if (!session.Ephemeral)
+				SessionService.Save(session.Data, false);
+
 			session.SendIdle();
 		}
 	}

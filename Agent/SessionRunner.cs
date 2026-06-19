@@ -164,7 +164,8 @@ public class SessionRunner
 	// Loads a resumed root's saved child sessions (subagent tool sessions, compaction/role successors) from
 	// disk and replays each to the client so the F10 tree lists them and they can be viewed. These sessions
 	// are not re-run — they are inert history — so the constructed Session objects are used only to announce
-	// and replay, then discarded. Ordered after the root's own replay so the root stays the active view.
+	// and replay, then discarded. Called before the root's own replay so the root, replayed last, lands as
+	// the active view (the client follows the most recently replayed content).
 	private void RestoreChildSessions(Session root)
 	{
 		foreach (string childId in SessionService.ListDescendants(root.Id))
@@ -191,20 +192,22 @@ public class SessionRunner
 	public async Task<Session> RunAsync(CancellationToken ct)
 	{
 		Session session = _currentSession;
-		session.ReplayToTransport();
-		session.SendStats();
-		// A resumed or switched-in session already carries its display name; announce it so the
-		// client's session list and status show the name rather than the raw ID.
-		session.AnnounceToClient();
 
-		// On resume, also surface this root's saved child sessions so the F10 tree shows them and they can
-		// be viewed. Done after the root has announced and replayed so the client's active session stays the
-		// root, not a child whose frames would otherwise arrive first.
+		// On resume, surface this root's saved child sessions (subagent tool sessions, compaction/role
+		// successors) FIRST so the F10 tree shows them, then replay the root below. The client follows the
+		// most recently replayed content, so the root — replayed last — lands as the active view rather than
+		// a child. (Replaying the root first instead leaves the view stuck on the last child restored.)
 		if (_restoreChildren)
 		{
 			_restoreChildren = false;
 			RestoreChildSessions(session);
 		}
+
+		session.ReplayToTransport();
+		session.SendStats();
+		// A resumed or switched-in session already carries its display name; announce it so the
+		// client's session list and status show the name rather than the raw ID.
+		session.AnnounceToClient();
 
 		_cachedSessions = SessionService.List();
 		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
@@ -218,13 +221,14 @@ public class SessionRunner
 				session = await DrainInputAsync(session);
 				if (_currentSession != session)
 				{
-					// Send history to the client whenever the active session changes.
+					// Send history to the client whenever the active session changes. Surface the switched-in
+					// root's saved children first (no-op for a fresh/ephemeral session, which has no child
+					// files yet), then replay the root last so the client's active view lands on the root,
+					// not a child — the client follows the most recently replayed content.
+					RestoreChildSessions(session);
 					session.ReplayToTransport();
 					session.SendStats();
 					session.AnnounceToClient();
-					// Surface the switched-in root's saved children too (no-op for a fresh/ephemeral
-					// session, which has no child files yet), so /session <id> lists them like a resume.
-					RestoreChildSessions(session);
 					SaveRoot(_currentSession);
 					_currentSession = session;
 				}

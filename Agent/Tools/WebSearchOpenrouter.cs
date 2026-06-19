@@ -9,8 +9,8 @@ using System.Threading.Tasks;
 // live results through the OpenRouter web plugin and answers in a single step — the retrieval and the digest
 // both happen inside that model's own turn. We make one bare call and return exactly what it produced, rather
 // than feeding the result through a second LlmService loop: that model has already processed the page content,
-// so passing it through another LLM only dilutes the signal. A throwaway child session is still created so the
-// turn is visible in the session tree and its cost rolls up into the caller.
+// so passing it through another LLM only dilutes the signal. A child session is created so the turn is visible
+// in the session tree and its cost rolls up into the caller; it is persisted on reload unless ephemeral.
 public class WebSearchOpenrouter
 {
     private readonly LlmModel _model;
@@ -95,6 +95,12 @@ public class WebSearchOpenrouter
         {
             // Cost is spent regardless of how the call ended; roll it up into the calling session.
             parent.RecordCost(session.TotalCost);
+
+            // Persist the search session unless it inherited an ephemeral parent (a /session none root), so a
+            // non-ephemeral search survives a reload and stays in the session tree like any other child session.
+            if (!session.Ephemeral)
+                SessionService.Save(session.Data, false);
+
             session.SendIdle();
         }
     }
