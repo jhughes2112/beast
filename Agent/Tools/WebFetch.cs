@@ -146,7 +146,7 @@ public class WebFetch
         {
             string html = Encoding.UTF8.GetString(bytes);
 
-            string stripped = StripHtmlTags(html);
+            string stripped = WrapAtWhitespace(StripHtmlTags(html));
             string strippedPath = Path.Combine(directory, "stripped.txt");
             File.WriteAllText(strippedPath, stripped);
             manifest.Append($"- {strippedPath}  ({stripped.Length} chars) — tags removed, entities decoded, whitespace collapsed; best for reading prose\n");
@@ -393,6 +393,50 @@ public class WebFetch
                 sb.Append(c);
             }
         }
+        return sb.ToString();
+    }
+
+    // The collapsed prose view is a single line; saved as-is it is unreadable and breaks line-oriented reads.
+    // Wrap it so no line exceeds MaxLineLength, breaking at the last whitespace before the limit, or hard at
+    // the limit when a single run of non-whitespace is longer so the loop always makes progress.
+    private const int MaxLineLength = 160;
+
+    private static string WrapAtWhitespace(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return text;
+
+        StringBuilder sb = new StringBuilder(text.Length + text.Length / MaxLineLength + 1);
+        int start = 0;
+        int n = text.Length;
+        while (start < n)
+        {
+            int remaining = n - start;
+            if (remaining <= MaxLineLength)
+            {
+                sb.Append(text, start, remaining);
+                break;
+            }
+
+            int limit = start + MaxLineLength;
+            int breakAt = -1;
+            for (int i = limit - 1; i > start; i--)
+            {
+                if (char.IsWhiteSpace(text[i]))
+                {
+                    breakAt = i + 1;
+                    break;
+                }
+            }
+
+            if (breakAt <= start)
+                breakAt = limit;
+
+            sb.Append(text, start, breakAt - start);
+            sb.Append('\n');
+            start = breakAt;
+        }
+
         return sb.ToString();
     }
 }
