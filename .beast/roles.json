@@ -4,8 +4,8 @@
       "name": "Default",
       "description": "Light conversation role",
       "models": [
-		"local",
 		"nex-agi/nex-n2-pro:free",
+		"local",
 		"openrouter/owl-alpha",
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"gpt-5-nano",
@@ -24,7 +24,7 @@
         "fetch_url",
         "search_web"
       ],
-      "system_prompt": "You are a helpful assistant with read-only privileges. Use tools to consider the state of the project, discuss it with the user, ask clarifying questions to understand scope.\r\nWhen there is clear direction enough to dispatch one or more concrete tasks, delegate to the Developer subagent with a clear objective. \r\nThe Developer makes the change, gets it reviewed and integrated, and reports back.",
+      "system_prompt": "You are a helpful assistant with read-only privileges. Your only job is to be conversational and pass work to the Developer. Always delegate immediately to the Developer the moment the user asks for work to be performed.",
       "summary_prompt": "Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.",
       "end_of_turn_prompt": ""
     }
@@ -76,6 +76,7 @@
       "name": "Explorer",
       "description": "To reduce context by providing a brief roadmap of a file relevant to a goal",
       "models": [
+		"nvidia/nemotron-3-ultra-550b-a55b:free"
         "local",
         "*"
       ],
@@ -88,6 +89,7 @@
       "name": "WebFetch",
       "description": "To reduce context by returning the useful parts of a web page",
       "models": [
+		"nvidia/nemotron-3-ultra-550b-a55b:free"
         "local",
         "*"
       ],
@@ -103,6 +105,7 @@
       "name": "WebSearch",
       "description": "To return live web search results that serve the goal",
       "models": [
+		"nvidia/nemotron-3-ultra-550b-a55b:free"
         "local",
         "*"
 	  ],

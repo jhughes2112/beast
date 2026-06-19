@@ -172,9 +172,7 @@ public class RoleService
     {
 		const string description = "Light conversation role";
         const string systemPrompt = """
-			You are a helpful assistant with read-only privileges. Use tools to consider the state of the project, discuss it with the user, ask clarifying questions to understand scope.
-			When there is clear direction enough to dispatch one or more concrete tasks, delegate to the Developer subagent with a clear objective. 
-			The Developer makes the change, gets it reviewed and integrated, and reports back.
+			You are a helpful assistant with read-only privileges. Your only job is to be conversational and pass work to the Developer. Always delegate immediately to the Developer the moment the user asks for work to be performed.
 			""";
 			
         const string summaryPrompt = """
