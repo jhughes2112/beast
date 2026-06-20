@@ -88,8 +88,8 @@ public static class ToolFactory
                     Description = "Read a file's raw contents. Returns up to 500 lines starting at offset. CWD is the repo root at /workspace/.",
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
-                        Opt("offset", "string", "Starting line number (1 based). Empty means the beginning of the file."),
-                        Opt("lines", "string", "Number of lines to read. Empty means to the end of the file (capped at 500)."))
+                        Opt("offset", "integer", "Starting line number (1 based). Omit for the beginning of the file."),
+                        Opt("lines", "integer", "Number of lines to read. Omit to read to the end of the file (capped at 500)."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -121,7 +121,7 @@ public static class ToolFactory
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
                         Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned."),
-                        Opt("offset", "string", "Starting line number (1 based) for the window to digest. Empty means the beginning of the file."))
+                        Opt("offset", "integer", "Starting line number (1 based) for the window to digest. Omit for the beginning of the file."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -237,8 +237,8 @@ public static class ToolFactory
                     Description = "Read a line-numbered window of a file. Fetched pages are saved under /tmp/; CWD is /workspace/.",
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
-                        Opt("offset", "string", "Starting line number (1 based). Empty means the beginning of the file."),
-                        Opt("lines", "string", "Number of lines to read. Empty means to the end of the file (capped)."))
+                        Opt("offset", "integer", "Starting line number (1 based). Omit for the beginning of the file."),
+                        Opt("lines", "integer", "Number of lines to read. Omit to read to the end of the file (capped)."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -452,14 +452,16 @@ public static class ToolFactory
     }
 
     // Commits the current worktree and integrates it with a strictly linear, rebase-based flow — never a merge
-    // commit. It commits everything onto the feature branch, finds the base branch (the branch checked out in
-    // the primary worktree, reached with git -C since it cannot be switched here), fast-forwards that base from
-    // its remote, rebases the feature branch onto it, then fast-forwards the base onto the now-linear feature
-    // branch. The base is derived from the primary worktree (git --git-common-dir), not guessed as "main" or
-    // read from origin/HEAD, so it is correct for any base branch and with or without a remote. The commit
-    // message is passed base64-encoded so arbitrary text cannot break out of the script. A rebase conflict is
-    // left in place (not aborted) with the conflicted files listed, so the Developer can resolve it directly and
-    // call again. Returns (ok, transcript): ok is false on any git failure, with the transcript explaining why.
+    // commit. It commits everything onto the feature branch B, finds the base branch A (the branch checked out in
+    // the primary worktree, reached with git -C since B's worktree cannot check A out). If A has an upstream, A is
+    // first updated with a rebasing pull so it carries any commits other agents landed. Then B is rebased onto A,
+    // putting A's commits underneath B's recent ones, and A is fast-forwarded onto B. If A has an upstream, A is
+    // pushed. B's worktree is never moved, so there is no switch back. The base is derived from the primary
+    // worktree (git --git-common-dir), not guessed as "main" or read from origin/HEAD, so it is correct for any
+    // base branch and with or without a remote. The commit message is passed base64-encoded so arbitrary text
+    // cannot break out of the script. A rebase conflict is left in place (not aborted) with the conflicted files
+    // listed, so the Developer can resolve it directly and call again. Returns (ok, transcript): ok is false on
+    // any git failure, with the transcript explaining why.
     private static async Task<(bool ok, string transcript)> CommitAndRebaseAsync(string message, CancellationToken ct)
     {
         string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(message));
@@ -473,8 +475,12 @@ public static class ToolFactory
             "echo '" + encoded + "' | base64 -d > /tmp/beast_commit_msg\n" +
             "git add -A\n" +
             "git commit -F /tmp/beast_commit_msg || echo '(nothing to commit)'\n" +
-            "echo \"Fast-forwarding base '$base' from its remote...\"\n" +
-            "git -C \"$main_wt\" pull --ff-only || echo \"Note: could not pull '$base' (continuing with local '$base').\"\n" +
+            "if git -C \"$main_wt\" rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then\n" +
+            "  echo \"Updating base '$base' from its remote (rebasing pull)...\"\n" +
+            "  git -C \"$main_wt\" pull --rebase || { echo \"Could not update '$base' from its remote.\"; exit 1; }\n" +
+            "else\n" +
+            "  echo \"Base '$base' has no remote; integrating against local '$base'.\"\n" +
+            "fi\n" +
             "echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +
             "if ! git rebase \"$base\"; then\n" +
             "  echo \"Rebase of '$branch' onto '$base' hit conflicts. Conflicted files:\"\n" +
@@ -483,7 +489,11 @@ public static class ToolFactory
             "  exit 1\n" +
             "fi\n" +
             "echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
-            "git -C \"$main_wt\" merge --ff-only \"$branch\"\n";
+            "git -C \"$main_wt\" merge --ff-only \"$branch\" || { echo \"Could not fast-forward '$base' (its worktree may have uncommitted changes).\"; exit 1; }\n" +
+            "if git -C \"$main_wt\" rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then\n" +
+            "  echo \"Pushing base '$base' to its remote...\"\n" +
+            "  git -C \"$main_wt\" push || { echo \"Integrated locally but could not push '$base'.\"; exit 1; }\n" +
+            "fi\n";
 
         ToolResult result = await ShellTools.BashAsync("commit_and_rebase", script, null, ct);
 
@@ -530,10 +540,13 @@ public static class ToolFactory
             },
             Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
             {
-                bool approved = Bool(args, "approved");
+                bool? approved = BoolOpt(args, "approved");
+                if (approved == null)
+                    return Task.FromResult(new ToolResult(toolCallId, string.Empty, "Error: finish_review requires 'approved' to be the boolean true or false.", 1, 0));
+
                 string comments = Str(args, "comments");
-                onFinish(approved, comments);
-                string ack = approved ? "Review approved." : "Review rejected.";
+                onFinish(approved.Value, comments);
+                string ack = approved.Value ? "Review approved." : "Review rejected.";
                 return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
             }
         };
@@ -632,9 +645,11 @@ public static class ToolFactory
         return null;
     }
 
-    private static bool Bool(JsonObject args, string key)
+    // Returns null when the argument is missing or not a parseable boolean, so callers can surface a malformed
+    // value loudly instead of having it silently collapse to false.
+    private static bool? BoolOpt(JsonObject args, string key)
     {
         if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && bool.TryParse(node.ToString(), out bool v)) return v;
-        return false;
+        return null;
     }
 }

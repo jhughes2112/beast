@@ -14,13 +14,13 @@ public static class ShellTools
 	// cannot flood the context.
 	private const int MaxLsEntries = 100;
 
-	// Lists a folder in `ls -al` form. Empty folder lists the current directory. Implemented over the
+	// Lists a folder in `ls -1Ap` form. Empty folder lists the current directory. Implemented over the
 	// shell so the output format matches `ls -al` exactly, then capped to MaxLsEntries entries.
 	public static async Task<ToolResult> LsAsync(string toolCallId, string folder, CancellationToken cancellationToken)
 	{
 		string target = string.IsNullOrWhiteSpace(folder) ? "." : folder;
 		string escaped = target.Replace("'", "'\\''");
-		string command = $"ls -al -- '{escaped}'";
+		string command = $"ls -1Ap -- '{escaped}' | awk '{{print ($0 ~ /\\/$/) \"\\t\" $0}}' | sort | cut -f2-";
 		ToolResult result = await BashAsync(toolCallId, command, null, cancellationToken);
 
 		if (result.ExitCode != 0 || string.IsNullOrEmpty(result.StdOut))
@@ -59,7 +59,7 @@ public static class ShellTools
 		}
 
 		if (omitted > 0)
-			sb.Append($"[Showing the first {MaxLsEntries} entries; {omitted} more were omitted. Narrow the path or use bash to inspect the rest.]\n");
+			sb.Append($"[First {MaxLsEntries} entries shown; {omitted} more were omitted. Narrow the pattern or use bash to inspect the rest.]\n");
 
 		return new ToolResult(toolCallId, sb.ToString(), result.StdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
