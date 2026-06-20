@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -13,6 +14,11 @@ public static class ShellTools
 	// Most entries a single ls returns before the rest are omitted with a mention, so a huge directory
 	// cannot flood the context.
 	private const int MaxLsEntries = 100;
+
+	// PATH for readonly_bash: a directory of symlinks to a curated read-only command set, created in the
+	// Dockerfile. Restricted bash resolves only bare command names through PATH, so this directory is the
+	// entire universe of programs a locked-down role can run — everything else is simply unreachable.
+	private const string ReadonlyBinDir = "/opt/agent-bins/readonly";
 
 	// Lists a folder in `ls -1Ap` form. Empty folder lists the current directory. Implemented over the
 	// shell so the output format matches `ls -al` exactly, then capped to MaxLsEntries entries.
@@ -67,10 +73,35 @@ public static class ShellTools
 	[Description("""
 		Standard bash command. CWD is /workspace/
 		""")]
-	public static async Task<ToolResult> BashAsync(
+	public static Task<ToolResult> BashAsync(
 		string toolcallid,
 		[Description("Shell command to execute")] string command,
 		[Description("Timeout in seconds (default 120).")] int? timeoutSeconds,
+		CancellationToken cancellationToken)
+	{
+		return RunBashAsync(toolcallid, command, timeoutSeconds, false, cancellationToken);
+	}
+
+	// Restricted, read-only variant of bash. Launches the shell with -r (restricted mode: no output
+	// redirection, no cd, no running a program by an explicit path — only bare names resolved through PATH)
+	// and narrows PATH to ReadonlyBinDir, whose symlinks are a curated set of read-only programs. Everything
+	// outside that directory is unreachable, so the command universe is exactly the allowlist. This is a
+	// guardrail for a cooperative (or worst case, prompt-poisoned) agent, not a hardened sandbox against a
+	// determined human attacker.
+	public static Task<ToolResult> ReadonlyBashAsync(
+		string toolcallid,
+		string command,
+		int? timeoutSeconds,
+		CancellationToken cancellationToken)
+	{
+		return RunBashAsync(toolcallid, command, timeoutSeconds, true, cancellationToken);
+	}
+
+	private static async Task<ToolResult> RunBashAsync(
+		string toolcallid,
+		string command,
+		int? timeoutSeconds,
+		bool restricted,
 		CancellationToken cancellationToken)
 	{
 		ToolResult finalResult;
@@ -98,6 +129,13 @@ public static class ShellTools
 					UseShellExecute = false,
 					CreateNoWindow = true
 				};
+				// -r puts bash in restricted mode; PATH is narrowed so only the read-only allowlist resolves.
+				if (restricted)
+				{
+					psi.ArgumentList.Add("-r");
+					psi.Environment["PATH"] = ReadonlyBinDir;
+				}
+
 				psi.ArgumentList.Add("-c");
 				psi.ArgumentList.Add(command);
 
@@ -205,6 +243,50 @@ public static class ShellTools
 			finalResult = new ToolResult(toolcallid, string.Empty, "Error: Command cannot be empty or whitespace.", 1, 0);
 		}
 
+		// In restricted mode, a command not found or rejected by the shell means the model walked into the
+		// allowlist boundary. Tell it the full set up front so it adapts instead of probing to find the edges.
+		if (restricted && IsBoundaryFailure(finalResult))
+		{
+			string note = ReadonlyBoundaryNote();
+			string mergedErr = string.IsNullOrEmpty(finalResult.StdErr) ? note : finalResult.StdErr + "\n" + note;
+			finalResult = new ToolResult(toolcallid, finalResult.StdOut, mergedErr, finalResult.ExitCode, finalResult.MeasuredOutputTokens);
+		}
+
 		return finalResult;
+	}
+
+	// A restricted-shell failure is the boundary case (unknown command, or one rbash refused: cd, redirection,
+	// a path-qualified name) rather than an ordinary nonzero exit like grep finding no match. Exit 127 is
+	// "command not found"; "restricted" is what rbash prints when it blocks cd/redirection/path execution.
+	private static bool IsBoundaryFailure(ToolResult result)
+	{
+		bool boundary;
+		if (result.ExitCode == 0)
+			boundary = false;
+		else if (result.ExitCode == 127)
+			boundary = true;
+		else
+			boundary = result.StdErr.Contains("command not found", StringComparison.Ordinal) || result.StdErr.Contains("restricted", StringComparison.Ordinal);
+
+		return boundary;
+	}
+
+	// Lists the readonly_bash allowlist by reading the symlink directory directly (no extra shell spawn), so
+	// the boundary message names exactly what is runnable on this image.
+	private static string ReadonlyBoundaryNote()
+	{
+		List<string> names = new List<string>();
+		try
+		{
+			foreach (string path in Directory.GetFileSystemEntries(ReadonlyBinDir))
+				names.Add(Path.GetFileName(path));
+		}
+		catch
+		{
+		}
+
+		names.Sort(StringComparer.Ordinal);
+		string list = names.Count > 0 ? string.Join(" ", names) : "(none found)";
+		return $"[readonly_bash: restricted, read-only shell. Output redirection (>, >>), cd, and running a program by path are disabled, and only these commands are on PATH — there are no others, so don't probe: {list}]";
 	}
 }

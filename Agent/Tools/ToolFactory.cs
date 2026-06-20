@@ -29,6 +29,18 @@ public static class ToolFactory
                 return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
             });
 
+        Register(tools, "readonly_bash",
+            "Read-only bash for inspecting the repo without changing it. Runs in a restricted shell: no output redirection (>, >>), no cd, no running programs by an explicit path, and only a curated read-only toolset (cat, ls, grep, git, head/tail, wc, sort, diff, jq, ...) is on PATH. CWD is the repo root at /workspace/.",
+            Params(
+                Req("command", "string", "Read-only shell command to execute"),
+                Opt("timeout_seconds", "integer", "Timeout in seconds (default 120).")),
+            async (args, toolCallId, ct, transport, sessionId) =>
+            {
+                string command = Str(args, "command");
+                int? timeoutSeconds = IntOpt(args, "timeout_seconds");
+                return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, ct);
+            });
+
         Register(tools, "write_file",
             "Create a new file or overwrite an existing one (if you used read_file already). CWD is /workspace/ but temporary files should go in /tmp/",
             Params(
@@ -281,7 +293,7 @@ public static class ToolFactory
     // launches the Developer subagent (in a git worktree), runs it to completion, and returns its final
     // report fit to the caller's budget. Like review_work it targets one fixed role and takes no role
     // argument; the Developer reviews and integrates its own work, so the Default only delegates and waits.
-    public static Tool CreateAssignWorkTool(Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runDeveloper)
+    public static Tool CreateAssignWorkTool(Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>> runDeveloper, Action onWorkAssigned)
     {
         return new Tool
         {
@@ -291,7 +303,7 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "assign_work",
-                    Description = "Hand a concrete unit of work to the Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and returns a report.",
+                    Description = "Hand a concrete unit of work to the Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and returns a report. After this, you stay in a work loop — you are re-prompted each turn to assign the next unit of work — until you call stop_work.",
                     Parameters = Params(
                         Req("prompt", "string", "The task for the Developer, written in natural language as if you were the user instructing it."))
                 }
@@ -302,11 +314,42 @@ public static class ToolFactory
                 if (string.IsNullOrWhiteSpace(prompt))
                     return new ToolResult(toolCallId, string.Empty, "Error: assign_work requires a 'prompt'.", 1, 0);
 
+                // Delegating real work enters the work loop; stop_work is what leaves it.
+                onWorkAssigned();
+
                 (bool ok, string text, int responseTokens) = await runDeveloper(prompt, maxOutputTokens, ct);
                 if (!ok)
                     return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
                 return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
+            }
+        };
+    }
+
+    // Creates the stop_work tool, the counterpart to assign_work. It is exposed only while a delegation loop
+    // is active (the work-in-progress flag is set); calling it runs onStop to clear that flag, which ends the
+    // end-of-turn re-prompting so the session idles and returns control to the user. The required summary
+    // makes the model state what was accomplished before it stops.
+    public static Tool CreateStopWorkTool(Action onStop)
+    {
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "stop_work",
+                    Description = "End the work loop and hand control back to the user. Call this once all delegated work is complete (or should not continue). Until you call it, you are re-prompted after each turn to assign the next unit of work.",
+                    Parameters = Params(
+                        Req("summary", "string", "A brief summary of what was accomplished across the delegated work, or why the work is stopping."))
+                }
+            },
+            Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                onStop();
+                string ack = "Work loop stopped.";
+                return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
             }
         };
     }

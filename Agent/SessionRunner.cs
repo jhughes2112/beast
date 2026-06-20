@@ -36,8 +36,13 @@ public class SessionRunner
 
 	// The Default agent's delegation tool: hands a unit of work to the Developer subagent. Appended to the
 	// root's bound tools each turn; child agents never receive it, so nesting stops at one level. It targets
-	// one fixed role, so unlike the old generic subagent tool it needs no rebuild on /reload.
+	// one fixed role, so unlike the old generic subagent tool it needs no rebuild on /reload. Calling it puts
+	// the session in the work loop (BeginWork).
 	private readonly Tool _assignWorkTool;
+
+	// The counterpart to assign_work: exposed only while the session is in the work loop, it calls EndWork to
+	// leave it. Stateless like the others, built once.
+	private readonly Tool _stopWorkTool;
 
 	// fetch_url: fetches a page and filters it through the WebFetch role. Injected for roles that declare it.
 	private readonly Tool _fetchUrlTool;
@@ -80,7 +85,8 @@ public class SessionRunner
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession, settings.Settings.WebSearch);
-		_assignWorkTool = ToolFactory.CreateAssignWorkTool((prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt));
+		_assignWorkTool = ToolFactory.CreateAssignWorkTool((prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt), () => CurrentSession.BeginWork());
+		_stopWorkTool = ToolFactory.CreateStopWorkTool(() => CurrentSession.EndWork());
 		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
 		_searchWebTool = ToolFactory.CreateSearchWebTool(_settings.Settings.WebSearch, _roleService, () => this.CurrentSession);
 		_readFileTool = ToolFactory.CreateReadFileTool();
@@ -279,7 +285,8 @@ public class SessionRunner
 					session.SendBusy();
 					try
 					{
-						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, _cancellationTokenSource.Token);
+						bool workToolsActive = session.WorkInProgress;
+						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, _cancellationTokenSource.Token);
 
 						// Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
 						bool completed = false;
@@ -320,7 +327,7 @@ public class SessionRunner
 								}
 								else if (!hasToolCalls)
 								{
-									if (!string.IsNullOrEmpty(role.EndOfTurnPrompt))
+									if (session.WorkInProgress && !string.IsNullOrEmpty(role.EndOfTurnPrompt))
 									{
 										session.AddUserMessage(role.EndOfTurnPrompt);
 										completed = false;
@@ -336,6 +343,15 @@ public class SessionRunner
 								}
 
 								session.SendStats();
+
+								// assign_work and stop_work flip the work flag mid-loop. Rebuild the tool set on a
+								// flip so stop_work appears once work is delegated and is gone once it stops — only on
+								// a change, to avoid churning the tool list (and its prompt cache) needlessly.
+								if (!completed && session.WorkInProgress != workToolsActive)
+								{
+									workToolsActive = session.WorkInProgress;
+									tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, _cancellationTokenSource.Token);
+								}
 							}
 							else if (result.Outcome == ProtocolCallOutcome.ContextFull)
 							{
@@ -450,6 +466,12 @@ public class SessionRunner
 		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral, 0);
 
 		Session newSession = new Session(freshData, role.SystemPrompt, _transport, false);
+
+		// Carry the delegation loop across compaction: a long-running work loop can fill context and compact
+		// mid-flight, and it should keep delegating (and keep exposing stop_work) on the compacted successor.
+		if (_currentSession.WorkInProgress)
+			newSession.BeginWork();
+
 		newSession.AddUserMessage(summary);
 		newSession.FlushPendingMessages();
 		newSession.ReplayExchanges(tailExchanges, true);
@@ -746,7 +768,7 @@ public class SessionRunner
 	// tools are injected here for the root: read_file, find_relevant_file_sections, assign_work, fetch_url, and search_web when
 	// the role declares them by name. Child agents (isSubagent) get only their regular tools — SubagentRunner adds
 	// the terminator and the Developer's review_work / commit_and_rebase — so they cannot spawn arbitrary subagents.
-	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
+	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, bool workInProgress, CancellationToken ct)
 	{
 		if (isSubagent)
 			return Task.FromResult(role.BuiltTools);
@@ -762,6 +784,12 @@ public class SessionRunner
 			tools.Add(_fetchUrlTool);
 		if (role.Tools.Contains("search_web") && _searchWebTool != null)
 			tools.Add(_searchWebTool);
+
+		// stop_work exists only inside the delegation loop: assign_work sets the flag, this exposes the way
+		// out. Paired with assign_work, so a role that cannot delegate never sees it.
+		if (workInProgress)
+			tools.Add(_stopWorkTool);
+
 		return Task.FromResult(tools.ToArray());
 	}
 

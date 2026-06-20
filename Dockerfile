@@ -36,8 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ruby ruby-dev \
     # JVM
     openjdk-21-jdk-headless \
-    # Shell / scripting utilities
-    jq sqlite3 zip unzip bc file tree \
+    # Shell / scripting utilities (ripgrep gives the agents fast `rg` search)
+    jq sqlite3 zip unzip bc file tree ripgrep \
     # PDF text extraction (poppler-utils provides `pdftotext`, used by the WebFetch role on PDFs)
     poppler-utils \
     # Archive, document, and text-handling tools — all light. The WebFetch role and agent bash use
@@ -79,6 +79,27 @@ RUN curl -fsSL https://go.dev/dl/go1.24.3.linux-amd64.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz
 ENV PATH=/usr/local/go/bin:$PATH
+
+# Read-only command allowlist for readonly_bash. The tool launches `bash -r` (restricted) with PATH set to
+# only this directory, so a locked-down role can run just these curated, read-only programs and nothing else
+# on the image resolves. Deliberately excludes anything that can spawn an unrestricted shell by absolute path
+# or write in place — that's awk/find/xargs/sed/perl/python/env/tee/sqlite3/pandoc/less/vim, not edge cases:
+# `find -exec /bin/sh`, `awk 'BEGIN{system(...)}'`, `xargs /bin/sh` all bypass the whole restriction. Bash
+# builtins (echo, pwd, printf, test, read, ...) still work; only external command resolution is narrowed.
+# Names not present on the image are skipped, so the list can name optional tools harmlessly.
+RUN mkdir -p /opt/agent-bins/readonly \
+    && for cmd in \
+         cat head tail nl tac \
+         ls stat file readlink basename dirname realpath du df tree \
+         grep egrep fgrep rg \
+         wc sort uniq cut tr comm cmp diff diff3 paste join column fold fmt expand unexpand rev \
+         od xxd hexdump strings \
+         sha256sum sha1sum md5sum b2sum cksum base64 base32 \
+         git jq xmllint pdftotext \
+         date uname whoami id which printenv ; do \
+         target="$(command -v "$cmd" || true)" ; \
+         if [ -n "$target" ]; then ln -sf "$target" "/opt/agent-bins/readonly/$cmd" ; fi ; \
+       done
 
 # Copy the single-file published executable from the build stage
 COPY --from=build /app/publish/Agent .

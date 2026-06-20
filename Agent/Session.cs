@@ -42,6 +42,12 @@ public class Session
 	// NeedsAttention() returns false while set, so the idle loop waits for real new input.
 	private bool _interruptedAndWaiting = false;
 
+	// True while the session is in a delegation loop: assign_work sets it, stop_work clears it. While set,
+	// the runner re-injects the role's end-of-turn prompt after a no-tool-call turn (so the session is asked
+	// to delegate more or stop) and exposes the stop_work tool. Runtime-only state, not persisted; a resumed
+	// or switched-in session starts out of the loop, and compaction carries it forward explicitly.
+	private bool _workInProgress = false;
+
 	// Expose raw data only for persistence (SessionService.Save). All other access goes through
 	// the typed properties and methods below.
 	public BeastSession Data => _data;
@@ -137,6 +143,18 @@ public class Session
 		FlushPendingMessages();
 		AnnounceToClient();
 	}
+
+	// ---- Work loop ----
+
+	// True while a delegation loop is active (assign_work called, stop_work not yet). Read by the runner to
+	// decide whether to re-prompt with the end-of-turn prompt and whether to expose stop_work.
+	public bool WorkInProgress => _workInProgress;
+
+	// Enters the delegation loop. Called from the assign_work tool handler.
+	public void BeginWork() => _workInProgress = true;
+
+	// Leaves the delegation loop. Called from the stop_work tool handler.
+	public void EndWork() => _workInProgress = false;
 
 	// ---- Mutation ----
 

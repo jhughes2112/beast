@@ -178,8 +178,11 @@ public class RoleService
         const string summaryPrompt = """
             Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
             """;
-        List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "search_web" };
-        return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, string.Empty);
+        const string endOfTurnPrompt = """
+            Is all the delegated work complete? If everything the user asked for is done, call stop_work with a brief summary of what was accomplished. If work remains, call assign_work to hand the Developer the next unit of work.
+            """;
+        List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "search_web", "readonly_bash" };
+        return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
     // A full-access worker invoked as a subagent: it makes the actual code changes in the worktree and
@@ -205,7 +208,7 @@ public class RoleService
         const string systemPrompt =
             """
             You are a developer agent working in a git worktree. Use tools to make changes directly.
-            When the changes are ready, call review_work for constructive feedback. Address anything in-scope for the work requested and call review_work again until it is approved.
+            When the work has been implemented and tested, call review_work for constructive feedback. Address anything in-scope for the work requested and call review_work again until it is approved.
             Once approved, call commit_and_rebase to finish the work and integrate it onto the base branch (ff merge only, no merge commits). If a conflict happens, resolve them, run 'git rebase --continue', then call commit_and_rebase again to finish.
             Be precise, directed, and maintain a sense of purpose without spending effort on high level considerations and interpretation. Consider the code the source of truth. Do not stray from the goal.
             If the goal cannot be achieved, be brief: report this and list what you attempted along with the exact output.
@@ -229,16 +232,12 @@ public class RoleService
 		const string description = "Reviews changes read-only; approves or rejects with comments";
 		const string summaryPrompt = """
 			Output a concise summary of the preceding conversation preserving:
-			- Review target: PR/branch/commit being reviewed, its stated purpose, and the repo/codebase context
 			- Scope covered: files, modules, or sections already reviewed vs. still pending
 			- Issues found: bugs, logic errors, security concerns, performance problems, or anti-patterns flagged; include severity and file/line references where noted
 			- Positives noted: good patterns, clean abstractions, or well-handled edge cases worth acknowledging
-			- Standards & conventions: style guide, architectural patterns, or team norms applied during review
+			- Standards & conventions: compare to defined standards and mention style deviations, architectural patterns broken, or team norms violated during review
 			- Unresolved questions: things to verify, clarify with the author, or cross-reference elsewhere in the codebase
-			- Author exchanges: any discussion, pushback, or clarifications already given
-			- Current verdict: approve, request changes, or still undecided — and why
-			- Last position: the most recent file, function, or block examined
-			- Next focus: what was about to be reviewed or followed up on
+			- Current verdict: approve, reject with requested changes and why
 			Be concise. Preserve file names, function names, and issue descriptions exactly.
 			""";
         const string systemPrompt =
@@ -248,10 +247,10 @@ public class RoleService
             If the code quality violates standards, has bugs, needs more cases handled, or in any other case should be improved, reject with specific, actionable comments for the developer.
             Call finish_review to complete this review round.
             """;
-        const string endOfTurnPrompt = "Are you finished? To complete the conversation, use the return_to_caller tool and report your results.";
+        const string endOfTurnPrompt = "Are you finished? To complete the review, use the finish_review tool and report your results.";
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
         // entry, so it is listed here only as the marker that selects this role's terminator.
-        List<string> tools = new List<string> { "bash", "read_file", "ls", "finish_review" };
+        List<string> tools = new List<string> { "read_file", "ls", "finish_review", "readonly_bash" };
         return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
@@ -267,8 +266,8 @@ public class RoleService
 			You are a first-pass discovery agent. Given a goal and a block of content from the target file, generate an index of regions relevant to the stated goal so the caller can read them directly using read_file.
 			To complete the conversation, use the return_to_caller tool and deliver the citations as the output argument.
 			The format should clearly include the range of line numbers and what the agent will find there in this exact form:
-			lines <starting_line> to <ending_line> -> <names of functions and variables>
-			lines <starting_line> to <ending_line> -> <names of functions and variables>
+			lines <starting_line> to <ending_line> -> <keywords and brief summary>
+			lines <starting_line> to <ending_line> -> <keywords and brief summary>
 			
 			Rules:
 			Cite only regions whose content directly relates to the goal. Omit unrelated code, to increase signal to noise ratio.
