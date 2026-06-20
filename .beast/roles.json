@@ -65,10 +65,7 @@
       "tools": [
         "bash",
         "read_file",
-        "find_relevant_file_sections",
         "ls",
-        "fetch_url",
-        "search_web",
         "finish_review"
       ],
       "system_prompt": "You are a reviewer agent with read-only access to the worktree. Inspect the indicated changes against the goal you were given: check correctness, scope, code quality and that nothing obviously broke.\r\nIf you need any outputs from build tools, use the bash tool but do not modify any files. Approve with caveats, concerns, and indicate whether follow-on tasks should be added to the plan. \r\nIf the code quality violates standards, has bugs, needs more cases handled, or in any other case should be improved, reject with specific, actionable comments for the developer.\r\nCall finish_review to complete this review round.",
