@@ -13,6 +13,7 @@ internal struct ConsoleInputEvent
     internal int    Col;
     internal int    Row;
     internal short  WheelDelta;  // positive = wheel up, negative = wheel down
+    internal bool   Shift;       // Shift held during a MouseClick (used for shift-click = add-to-clipboard)
     internal string Text;        // full text for a coalesced paste burst (newlines preserved)
 }
 
@@ -225,7 +226,8 @@ internal static class WindowsConsole
 
             if (m.dwEventFlags == 0 && (m.dwButtonState & LEFT_BUTTON) != 0)
             {
-                return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = m.MouseX, Row = m.MouseY };
+                bool clickShift = (m.dwControlKeyState & 0x0010u) != 0;
+                return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = m.MouseX, Row = m.MouseY, Shift = clickShift };
             }
 
             if ((m.dwEventFlags & 0x0001u) != 0)  // MOUSE_MOVED
@@ -459,7 +461,7 @@ internal static class WindowsConsole
             return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
 
         if (press && (cb & 0x03) == 0)  // left button press
-            return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row };
+            return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row, Shift = (cb & 0x04) != 0 };
 
         return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
     }
@@ -489,7 +491,7 @@ internal static class WindowsConsole
             return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
 
         if ((cb & 0x03) == 0)
-            return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row };
+            return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row, Shift = (cb & 0x04) != 0 };
 
         return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
     }

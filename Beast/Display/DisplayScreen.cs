@@ -35,6 +35,8 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb MedGrey       = new Rgb(138, 138, 138);  // 245
         public static readonly Rgb ThinkingFg    = new Rgb(112, 112, 112);  // slightly dimmer than MedGrey
         public static readonly Rgb GhostFg       = new Rgb(110, 110, 110);  // ghost-text dim version of InputFg
+        public static readonly Rgb CopyIconFg    = new Rgb(120, 200, 255);  // floating "copy block" affordance glyph
+        public static readonly Rgb CopyIconBg    = new Rgb(40, 40, 40);     // small contrasting chip behind the copy glyph
         public static readonly Rgb PopupSelBg    = new Rgb(70, 70, 70);     // selected row in completion popup
         public static readonly Rgb Red           = new Rgb(255, 0, 0);      // 196
         public static readonly Rgb Blue          = new Rgb(0, 135, 215);    // 33
@@ -616,7 +618,8 @@ public class DisplayScreen : IDisplay
         {
             int panelW = Math.Min(52, Math.Max(36, w / 3));
             Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId);
-            frame.Blit(treeOverlay, w - panelW, 0, BlendMode.Normal, null);
+            // Replace (opaque) so underline/italic in the content behind the panel does not bleed through.
+            frame.Blit(treeOverlay, w - panelW, 0, BlendMode.Replace, null);
         }
 
         // Cursor glow layer (applied last so it lifts all underlying layers).
@@ -626,6 +629,13 @@ public class DisplayScreen : IDisplay
             Rect glowRect = new Rect(_mouseCol - rad, _mouseRow - rad, rad * 2 + 1, rad * 2 + 1);
             new CursorGlowEffect(_mouseCol, _mouseRow, CursorGlowRadius, CursorGlowStrength).Apply(frame, glowRect);
         }
+
+        // Copy affordance: a one-cell "copy block" glyph on the mouse's row, one column left of the
+        // scrollbar (so clicking it never lands on the scrollbar and scrolls). Shown only while the mouse
+        // is over a copyable block and the F10 panel is closed. Drawn after the glow so it stays crisp.
+        // Clicking it copies that block (Shift+click appends) — handled in the MouseClick branch.
+        if (!_sessionTreeOpen && _mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && SlotAtTerminalRow(_mouseRow).HasValue)
+            frame.WriteText(w - 3, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
 
         // 6. Emit.
         _drawBuf.Clear();
@@ -919,6 +929,49 @@ public class DisplayScreen : IDisplay
         return _lastStack.SlotAtRow(sourceRow);
     }
 
+    // Copies the block under the given terminal row to the clipboard, replacing its contents — or appending
+    // when add is true (Shift+click). Returns true when a block was found and copied. Called under _consoleLock.
+    private bool CopyBlockAtRow(int row, bool add)
+    {
+        int? slot = SlotAtTerminalRow(row);
+        if (!slot.HasValue || _model == null || slot.Value < 0 || slot.Value >= _model.Messages.Count)
+            return false;
+
+        string text = BlockCopyText(_model.Messages[slot.Value]);
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        if (add)
+        {
+            string existing = ClipboardService.GetText() ?? string.Empty;
+            ClipboardService.SetText(existing.Length == 0 ? text : existing + "\n\n" + text);
+            SetStatus("Added block to clipboard");
+        }
+        else
+        {
+            ClipboardService.SetText(text);
+            SetStatus("Copied block to clipboard");
+        }
+        return true;
+    }
+
+    // Returns the plain text to copy for a block. Tool-call blocks include the paired response body so the
+    // copy matches what is shown on screen; every other block copies its content verbatim.
+    private static string BlockCopyText(DisplayMessage msg)
+    {
+        if (msg.Type == FrameType.ToolCall)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append(msg.Content);
+            if (!string.IsNullOrEmpty(msg.PairedResponseContent))
+                sb.Append('\n').Append(msg.PairedResponseContent);
+            if (!string.IsNullOrEmpty(msg.PairedResponseError))
+                sb.Append('\n').Append(msg.PairedResponseError);
+            return sb.ToString();
+        }
+        return msg.Content;
+    }
+
     // ------------------------------------------------------------------------------------------------------
     // Input loop
     // ------------------------------------------------------------------------------------------------------
@@ -1040,6 +1093,12 @@ public class DisplayScreen : IDisplay
                     _mouseRow = inputEv.Row;
                     _mouseCol = inputEv.Col;
                     int scrollCol = Console.WindowWidth - 2;
+
+                    // Copy-block affordance sits one column left of the scrollbar on the mouse's row. A click
+                    // there copies that block to the clipboard; Shift+click appends instead of replacing.
+                    if (!_sessionTreeOpen && inputEv.Col == Console.WindowWidth - 3 && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
+                        continue;
+
                     if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
                         && inputEv.Row >= _scrollbarTopRow
                         && inputEv.Row < _scrollbarTopRow + _scrollbarHeight)

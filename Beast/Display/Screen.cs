@@ -125,8 +125,13 @@ public readonly struct Rect
 
 public enum BlendMode
 {
-    // Source replaces destination where source is non-transparent. Per-channel: Fg/Bg null = pass-through.
+    // Source replaces destination where source is non-transparent. Per-channel: Fg/Bg null = pass-through,
+    // and Style None inherits the destination's style. Use for partial overlays and effects.
     Normal,
+    // Opaque wholesale copy: source cell replaces the destination outright, including a None style (which
+    // clears any underlying Bold/Italic/Underline). Use for solid panels like the F10 overlay so styled
+    // content behind the panel does not bleed through.
+    Replace,
     // Multiply src and dst RGB channels (treats null fg/bg as identity).
     Multiply,
     // 1 - (1-src)*(1-dst) per channel.
@@ -250,6 +255,11 @@ public sealed class Screen
 
     private static Cell BlendCell(Cell dst, Cell src, BlendMode mode)
     {
+        // Replace is fully opaque: copy the source verbatim (style and all) so nothing from the
+        // destination — including underline/italic — survives under the overlay.
+        if (mode == BlendMode.Replace)
+            return new Cell(src.Ch == '\0' ? ' ' : src.Ch, src.Fg, src.Bg, src.Style);
+
         if (src.IsTransparent) return dst;
 
         char outCh        = src.Ch != '\0' ? src.Ch : dst.Ch;
