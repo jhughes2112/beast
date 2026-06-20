@@ -128,15 +128,17 @@ public class SubagentRunner
             terminatorTool = ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
         }
 
-        // Each subagent run gets its own ReadFileExplorer: exploration is self-contained, so a subagent's
-        // first read of a file always gets Explorer citations and never depends on what another agent read.
-        // These tools parent their helper sessions to this sub-session — not _currentSession (the root) —
-        // so the Explorer/Web helpers an explicitly-invoked subagent spawns nest under the subagent that
-        // actually made the call. A sub-session is fixed for its lifetime (no compaction/role switch), so
-        // capturing it directly is safe, unlike the root whose active session is read at call time.
+        // read_file is a plain raw reader; find_relevant_file_sections gets its own FileSummarizer so a subagent's digest of a
+        // file is self-contained and never depends on what another agent read. The summarize/fetch/search tools
+        // parent their helper sessions to this sub-session — not _currentSession (the root) — so the Explorer/Web
+        // helpers an explicitly-invoked subagent spawns nest under the subagent that actually made the call. A
+        // sub-session is fixed for its lifetime (no compaction/role switch), so capturing it directly is safe,
+        // unlike the root whose active session is read at call time.
         List<Tool> withTerminator = new List<Tool>(role.BuiltTools);
         if (role.Tools.Contains("read_file"))
-            withTerminator.Add(ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => subSession));
+            withTerminator.Add(ToolFactory.CreateReadFileTool());
+        if (role.Tools.Contains("find_relevant_file_sections"))
+            withTerminator.Add(ToolFactory.CreateSummarizeFileTool(new FileSummarizer(), _registry, _roleService, () => subSession));
         if (role.Tools.Contains("fetch_url"))
             withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => subSession));
         if (role.Tools.Contains("search_web"))

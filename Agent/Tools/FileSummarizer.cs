@@ -1,25 +1,22 @@
 using System;
-using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
 
-// Backs one agent's read_file tool. Every read goes through FileTools.ReadFileAsync, so the long-line
-// truncation always applies. The first time the agent reads a given file, a larger, line-numbered window is
-// handed to a throwaway Explorer sub-session along with the caller's goal, and only the Explorer's citations
-// (file, line, line count) come back — mirroring how WebFetch filters a page through the WebFetch role. Later
-// reads return the window raw at the caller's request. One instance per agent: an agent's reads never depend
-// on another's.
-public class ReadFileExplorer
+// Backs the find_relevant_file_sections tool. Reads a larger, line-numbered window of a file and routes it through the
+// Explorer role together with the caller's goal, returning only the Explorer's citations (file, line, line
+// count) — mirroring how WebFetch filters a page through the WebFetch role. A small file is handed back whole
+// instead, since digesting it costs more than just returning it. Stateless: every call summarizes, so the
+// caller's plain read_file and this tool never interfere with one another.
+public class FileSummarizer
 {
-	// A subsequent (raw) read is capped tighter so it cannot flood the calling agent's context; the first
-	// read goes to the Explorer, which digests a larger window since callers often want the whole file.
-	private const int RawMaxLines = 500;
+	// The window digested by the Explorer. Larger than a raw read_file window since callers usually want a
+	// concept map of the whole file.
 	private const int ExploreMaxLines = 2000;
 
-	// A first read of a file this small is returned whole instead of routed through the Explorer: digesting
-	// it costs more than just handing it over. Either threshold (lines or bytes) being met is enough.
+	// A file this small is returned whole instead of routed through the Explorer: digesting it costs more
+	// than just handing it over. Either threshold (lines or bytes) being met is enough.
 	private const int SmallFileMaxLines = 50;
 	private const int SmallFileMaxBytes = 2048;
 
@@ -29,18 +26,12 @@ public class ReadFileExplorer
 	// salvages the last assistant message, so a few turns are allotted rather than a single forced one.
 	private const int MaxTurns = 5;
 
-	// The full paths this agent has already read. A turn's tool calls run in parallel, so TryAdd is the
-	// first-read decision: it returns true exactly once per path even under concurrent reads.
-	private readonly ConcurrentDictionary<string, byte> _read = new(StringComparer.OrdinalIgnoreCase);
-
-	// Entry point for the read_file tool. The first read of a file reads a larger, line-numbered window and
-	// routes it through the Explorer role, returning its citations; subsequent reads honor the caller's
-	// offset/lines and return the window raw. The goal is required and only used for the first read.
-	public async Task<ToolResult> ReadAsync(
+	// Entry point for the find_relevant_file_sections tool. Reads a line-numbered window from the caller's offset and lets
+	// the Explorer cite the parts relevant to the goal. A small file (or a failed read) is returned raw.
+	public async Task<ToolResult> SummarizeAsync(
 		string toolCallId,
 		string filePath,
 		string offset,
-		string lines,
 		string goal,
 		LlmRegistry registry,
 		RoleService roleService,
@@ -57,21 +48,11 @@ public class ReadFileExplorer
 
 		string fullPath = Path.GetFullPath(filePath);
 
-		// Already read this file: return the raw window the caller asked for, fit to its budget.
-		if (_read.ContainsKey(fullPath))
-		{
-			ToolResult subsequent = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, RawMaxLines, false, cancellationToken);
-			return ToolDispatch.MeasureRawResult(subsequent, maxOutputTokens);
-		}
-
-		// First read: read a larger, line-numbered window from the caller's offset (ignoring the caller's
-		// line count so the Explorer can be more helpful), and let the Explorer cite the relevant parts. A
-		// failed read is returned as-is and not counted, so it can be retried as a first read.
+		// Read a larger, line-numbered window from the caller's offset (ignoring any line count so the Explorer
+		// can be more helpful). A failed read is returned as-is so the caller sees the error.
 		ToolResult raw = await FileTools.ReadFileAsync(toolCallId, filePath, offset, string.Empty, ExploreMaxLines, true, cancellationToken);
 		if (raw.ExitCode != 0)
 			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
-
-		_read.TryAdd(fullPath, 0);
 
 		// A small file is cheaper handed over whole than digested: under either threshold, return the
 		// line-numbered window directly with no LLM round-trip.
@@ -97,8 +78,8 @@ public class ReadFileExplorer
 		return count;
 	}
 
-	// First read of the file: interpret the line-numbered window with the Explorer role, which returns its
-	// citations (file, line, line count) via return_to_caller. Cost rolls up into the calling session.
+	// Interprets the line-numbered window with the Explorer role, which returns its citations (file, line,
+	// line count) via return_to_caller. Cost rolls up into the calling session.
 	private async Task<ToolResult> ExploreAsync(
 		string toolCallId,
 		string filePath,
@@ -121,7 +102,7 @@ public class ReadFileExplorer
 
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, service, $"read_file {filePath}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(explorerRole.Tools), transport, cancellationToken);
+		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, service, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(explorerRole.Tools), transport, cancellationToken);
 		if (!ok)
 			return new ToolResult(toolCallId, string.Empty, "Error: the Explorer role failed to interpret " + filePath, 1, 0);
 

@@ -178,7 +178,7 @@ public class RoleService
         const string summaryPrompt = """
             Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
             """;
-        List<string> tools = new List<string> { "read_file", "ls", "assign_work", "fetch_url", "search_web" };
+        List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "search_web" };
         return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, string.Empty);
     }
 
@@ -215,7 +215,7 @@ public class RoleService
         // review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
         // injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
         // work; task_complete is this role's terminator).
-        List<string> tools = new List<string> { "bash", "read_file", "write_file", "edit_file", "ls", "fetch_url", "search_web", "review_work", "commit_and_rebase", "task_complete" };
+        List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "search_web", "review_work", "commit_and_rebase", "task_complete" };
         return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
@@ -251,15 +251,14 @@ public class RoleService
         const string endOfTurnPrompt = "Are you finished? To complete the conversation, use the return_to_caller tool and report your results.";
         // finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
         // entry, so it is listed here only as the marker that selects this role's terminator.
-        List<string> tools = new List<string> { "bash", "read_file", "ls", "fetch_url", "search_web", "finish_review" };
+        List<string> tools = new List<string> { "bash", "read_file", "ls", "finish_review" };
         return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
     }
 
-    // Used internally by the read_file tool (ReadFileExplorer.ExploreAsync) on the first read of a file in a
-    // session. It is seeded with the caller's goal, the file path, and a line-numbered window of that file,
-    // and replies with citations the caller can read directly: file, start line, and line count. It runs via
-    // HelperSession, finishing by calling return_to_caller (forced on the last turn). This should be a fast
-    // model, since it runs on every first read for discovery.
+    // Used internally by the find_relevant_file_sections tool (FileSummarizer.ExploreAsync). It is seeded with the caller's
+    // goal, the file path, and a line-numbered window of that file, and replies with citations the caller can
+    // read directly: file, start line, and line count. It runs via HelperSession, finishing by calling
+    // return_to_caller (forced on the last turn). This should be a fast model, since it runs on every digest.
     private static Role ExplorerRole()
     {
 		const string description = "To reduce context by providing a brief roadmap of a file relevant to a goal";

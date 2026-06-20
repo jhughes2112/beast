@@ -19,6 +19,7 @@
       ],
       "tools": [
         "read_file",
+        "find_relevant_file_sections",
         "ls",
         "assign_work",
         "fetch_url",
@@ -40,6 +41,7 @@
       "tools": [
         "bash",
         "read_file",
+        "find_relevant_file_sections",
         "write_file",
         "edit_file",
         "ls",
@@ -63,6 +65,7 @@
       "tools": [
         "bash",
         "read_file",
+        "find_relevant_file_sections",
         "ls",
         "fetch_url",
         "search_web",

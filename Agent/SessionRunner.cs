@@ -46,9 +46,13 @@ public class SessionRunner
 	// web search is not configured/enabled. Injected for roles that declare it.
 	private readonly Tool? _searchWebTool;
 
-	// read_file: filters this agent's first read of a file through the Explorer role. The root owns its own
-	// explorer; each subagent run makes its own, so an agent's exploration never depends on another's reads.
+	// read_file: a plain, raw file reader. Stateless, so a single instance is reused for every turn.
 	private readonly Tool _readFileTool;
+
+	// find_relevant_file_sections: digests a file through the Explorer role, returning a goal-focused concept map. The root
+	// owns its own summarizer; each subagent run makes its own, so an agent's exploration never depends on
+	// another's reads.
+	private readonly Tool _summarizeFileTool;
 
 	private bool _wantsCompact = false;
 
@@ -79,7 +83,8 @@ public class SessionRunner
 		_assignWorkTool = ToolFactory.CreateAssignWorkTool((prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt));
 		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
 		_searchWebTool = ToolFactory.CreateSearchWebTool(_settings.Settings.WebSearch, _roleService, () => this.CurrentSession);
-		_readFileTool = ToolFactory.CreateReadFileTool(new ReadFileExplorer(), _registry, _roleService, () => this.CurrentSession);
+		_readFileTool = ToolFactory.CreateReadFileTool();
+		_summarizeFileTool = ToolFactory.CreateSummarizeFileTool(new FileSummarizer(), _registry, _roleService, () => this.CurrentSession);
 	}
 
 	// /finish: if the worktree's work is fully folded into the base branch and the tree is clean, detach the
@@ -294,14 +299,23 @@ public class SessionRunner
 									session.CommitToolResults(result.Payload!);
 								}
 
-								// Decide whether to keep going. User input always continues the turn. Otherwise a
+								// Pick up steering input committed during this round. Leading plain text is injected
+								// and the turn continues; a queued slash command ends the turn here so the boundary
+								// drain applies it (and any input after it) with add-user-message timing. Otherwise a
 								// turn that ran tools keeps going; a turn with no tool calls is reminded by the
 								// role's end-of-turn prompt and keeps going, or — when the role defines no such
 								// prompt — completes and idles.
-								string? newUserInput = session.TryGetPendingInput();
+								string? newUserInput = session.TryDequeueLeadingText();
 								if (!string.IsNullOrEmpty(newUserInput))
-								{
 									session.Bundle.OnUserMessage(newUserInput);
+
+								if (session.HasPending)
+								{
+									// Head of the queue is a command — yield the turn so DrainInputAsync applies it.
+									completed = true;
+								}
+								else if (!string.IsNullOrEmpty(newUserInput))
+								{
 									completed = false;
 								}
 								else if (!hasToolCalls)
@@ -487,12 +501,20 @@ public class SessionRunner
 
 	// ---- Input processing ----
 
-	// Drains all queued commands from the session in arrival order and dispatches them.
+	// Drains all queued input from the session in arrival order: plain steering text is injected
+	// straight into the bundle, slash commands are dispatched. Both are pulled from the one pending
+	// queue so a "text, /command, text" sequence is applied in exactly the order it was typed.
 	private async Task<Session> DrainInputAsync(Session session)
 	{
-		while (session.TryDequeueCommand(out string? line))
+		while (session.TryDequeuePending(out string? line))
 		{
-			string trimmed = line!.TrimStart('/').Trim();
+			if (!line!.StartsWith("/", StringComparison.Ordinal))
+			{
+				session.Bundle.OnUserMessage(line);
+				continue;
+			}
+
+			string trimmed = line.TrimStart('/').Trim();
 			string verb;
 			string? args = null;
 
@@ -721,9 +743,9 @@ public class SessionRunner
 	// ---- Helpers ----
 
 	// Returns the tools for this turn. role.BuiltTools holds the role's regular tools; the in-code special
-	// tools are injected here for the root: read_file, assign_work, fetch_url, and search_web when the role declares them
-	// by name. Child agents (isSubagent) get only their regular tools — SubagentRunner adds the terminator and
-	// the Developer's review_work / commit_and_rebase — so they cannot spawn arbitrary subagents.
+	// tools are injected here for the root: read_file, find_relevant_file_sections, assign_work, fetch_url, and search_web when
+	// the role declares them by name. Child agents (isSubagent) get only their regular tools — SubagentRunner adds
+	// the terminator and the Developer's review_work / commit_and_rebase — so they cannot spawn arbitrary subagents.
 	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, CancellationToken ct)
 	{
 		if (isSubagent)
@@ -732,6 +754,8 @@ public class SessionRunner
 		List<Tool> tools = new List<Tool>(role.BuiltTools);
 		if (role.Tools.Contains("read_file"))
 			tools.Add(_readFileTool);
+		if (role.Tools.Contains("find_relevant_file_sections"))
+			tools.Add(_summarizeFileTool);
 		if (role.Tools.Contains("assign_work"))
 			tools.Add(_assignWorkTool);
 		if (role.Tools.Contains("fetch_url"))

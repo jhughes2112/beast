@@ -92,6 +92,14 @@ public class DisplayScreen : IDisplay
 
     private string _currentInputText   = "";
     private int    _currentInputCursor = 0;
+    // Plain-text submissions that have been sent to the agent but not yet echoed back as a user
+    // message — the agent decides when to consume them mid-turn. Shown as a dim ghost overlay just
+    // above the input separator. Keyed by session id so each session keeps its own pending text: a
+    // steer can sit queued a long time, and switching sessions must swap which pending text is shown.
+    // Submissions accumulate per session and clear together when that session echoes a User frame
+    // (ClearPendingGhost). They are unmodifiable and uncancelable once sent (only /cancel, which tears
+    // down the whole turn, removes them). Guarded by _consoleLock.
+    private readonly Dictionary<string, List<string>> _pendingGhost = new Dictionary<string, List<string>>();
     private string _statusText         = "";
     // Status bar is laid out as three segments: left (path + mode), center (token/cost metrics),
     // right (model name). They're stored separately so each can be positioned independently.
@@ -281,6 +289,19 @@ public class DisplayScreen : IDisplay
     public void SetFrameDrain(Action drain) { _frameDrain = drain; }
     public void SetSessionSwitchCallback(Action<string> switchTo) { _sessionSwitchCallback = switchTo; }
     public void SetSessionDeleteCallback(Action<string> deleteSession) { _sessionDeleteCallback = deleteSession; }
+
+    public void ClearPendingGhost(string sessionId)
+    {
+        lock (_consoleLock)
+        {
+            if (!_pendingGhost.TryGetValue(sessionId, out List<string>? queued) || queued.Count == 0)
+                return;
+            _pendingGhost.Remove(sessionId);
+            // Only the viewed session's ghost is on screen, so a redraw is needed only for it.
+            if (string.Equals(sessionId, _sessionActiveId, StringComparison.Ordinal))
+                Redraw();
+        }
+    }
 
     public bool IsAutoTrackSuppressed()
     {
@@ -573,6 +594,10 @@ public class DisplayScreen : IDisplay
             frame.Blit(popupScreen, 0, popupTop, BlendMode.Normal, null);
         }
 
+        // Pending-input ghost: a dim floating strip just above the separator (or above the popup when
+        // it is open) showing steering text already sent but not yet consumed by the agent.
+        RenderPendingGhost(frame, w, (popupRows > 0 ? popupTop : separatorRow) - 1);
+
         // Status bar layer.
         if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
         {
@@ -798,6 +823,73 @@ public class DisplayScreen : IDisplay
         string pick = _completionMatches[_completionIndex];
         if (pick.Length <= _currentInputText.Length) return string.Empty;
         return pick.Substring(_currentInputText.Length);
+    }
+
+    private const int MaxGhostRows = 6;
+
+    // Renders the pending-input ghost as a dim, full-width strip whose last row sits at bottomRow.
+    // Submissions are flattened and wrapped to width; when they exceed MaxGhostRows only the most
+    // recent rows are shown so the strip never crowds out the conversation.
+    private void RenderPendingGhost(Screen frame, int w, int bottomRow)
+    {
+        if (bottomRow < 0 || w <= 0)
+            return;
+
+        List<string> entries;
+        lock (_consoleLock)
+        {
+            if (!_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued) || queued.Count == 0)
+                return;
+            entries = new List<string>(queued);
+        }
+
+        const string marker = "⧗ ";
+        const string indent = "  ";
+        int textWidth = Math.Max(1, w - marker.Length);
+
+        // Flatten every submission to raw lines, then hard-wrap each to the available width. The very
+        // first row carries the queued marker; all others are indented to align beneath it.
+        List<string> wrapped = new List<string>();
+        bool first = true;
+        foreach (string entry in entries)
+        {
+            foreach (string raw in entry.Split('\n'))
+            {
+                string remaining = raw;
+                do
+                {
+                    string slice = remaining.Length > textWidth ? remaining.Substring(0, textWidth) : remaining;
+                    wrapped.Add((first ? marker : indent) + slice);
+                    first = false;
+                    remaining = remaining.Length > textWidth ? remaining.Substring(textWidth) : string.Empty;
+                }
+                while (remaining.Length > 0);
+            }
+        }
+
+        if (wrapped.Count == 0)
+            return;
+
+        // Keep the most recent rows when the queue is taller than the cap, and clamp to the top of screen.
+        int show = Math.Min(MaxGhostRows, wrapped.Count);
+        int firstIndex = wrapped.Count - show;
+        int topRow = bottomRow - show + 1;
+        if (topRow < 0)
+        {
+            firstIndex += -topRow;
+            show += topRow;
+            topRow = 0;
+        }
+        if (show <= 0)
+            return;
+
+        for (int i = 0; i < show; i++)
+        {
+            int row = topRow + i;
+            string line = wrapped[firstIndex + i];
+            // Full-width strip so it reads as a floating object over the history beneath it.
+            frame.WriteText(0, row, line.PadRight(w), Palette.GhostFg, Palette.InputBg, CellStyle.None);
+        }
     }
 
     private void SetInput(string text, int cursor)
@@ -1095,6 +1187,21 @@ public class DisplayScreen : IDisplay
                 {
                     if (history.Count == 0 || history[history.Count - 1] != text)
                         history.Add(text);
+                    // Ghost only plain steering text; slash commands apply quickly and surface via status,
+                    // and never echo back as a User frame that would clear the ghost. Keyed by the session
+                    // being viewed — which is exactly the session the text is sent to.
+                    if (!text.StartsWith("/", StringComparison.Ordinal))
+                    {
+                        lock (_consoleLock)
+                        {
+                            if (!_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued))
+                            {
+                                queued = new List<string>();
+                                _pendingGhost[_sessionActiveId] = queued;
+                            }
+                            queued.Add(text);
+                        }
+                    }
                     _ = SendAsync(text);
                 }
 

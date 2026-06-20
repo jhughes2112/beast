@@ -21,8 +21,11 @@ public class Session
 	private readonly ITransportServer _transport;
 	private readonly ContextBudget _budget = new ContextBudget();
 
-	private readonly ConcurrentQueue<string> _inputQueue = new ConcurrentQueue<string>();
-	private readonly ConcurrentQueue<string> _commandQueue = new ConcurrentQueue<string>();
+	// Single ordered queue of pending inbound lines: plain user text and slash commands interleaved
+	// in arrival order. /cancel is never queued — Deliver handles it immediately. Both the turn-boundary
+	// drain and the mid-turn checkpoint pull from this one queue, so commands and steering text are
+	// picked up with identical timing.
+	private readonly ConcurrentQueue<string> _pending = new ConcurrentQueue<string>();
 	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0, 1);
 	private CancellationTokenSource? _turnCts;
 	private bool _isSubagent;
@@ -194,30 +197,40 @@ public class Session
 
 	// ---- Attention / input ----
 
-	public bool NeedsAttention() => !_commandQueue.IsEmpty || (!_interruptedAndWaiting && (NeedsLlmAttention() || !_inputQueue.IsEmpty));
+	public bool NeedsAttention() => !_pending.IsEmpty || (!_interruptedAndWaiting && NeedsLlmAttention());
 
 	public string? GetLastAssistantText() => _bundle.GetLastAssistantText();
 
-	// Called by LlmService between tool calls to pick up any user input that arrived mid-turn.
-	// Input is delivered directly via Deliver(), so no drain action is needed here.
-	public string? TryGetPendingInput()
+	// Drains and merges consecutive leading plain-text lines from the pending queue, stopping at the
+	// first queued slash command (left in place so the boundary drain applies it in arrival order).
+	// Returns the merged text, or null when the queue is empty or its head is a command. Called at each
+	// mid-turn checkpoint so steering text is injected the instant the in-flight tool round commits.
+	public string? TryDequeueLeadingText()
 	{
-		if (_inputQueue.IsEmpty)
-			return null;
 		string accumulated = string.Empty;
-		while (_inputQueue.TryDequeue(out string? line))
-			accumulated = string.IsNullOrEmpty(accumulated) ? line : accumulated + "\n" + line;
-		return string.IsNullOrEmpty(accumulated) ? null : accumulated;
+		while (_pending.TryPeek(out string? line))
+		{
+			if (line!.StartsWith("/", StringComparison.Ordinal))
+				break;
+			_pending.TryDequeue(out string? _);
+			accumulated = accumulated.Length == 0 ? line : accumulated + "\n" + line;
+		}
+		return accumulated.Length == 0 ? null : accumulated;
 	}
 
-	// Dequeues one pending command from the command queue, or returns false if none.
-	public bool TryDequeueCommand(out string? command) => _commandQueue.TryDequeue(out command);
+	// True while any line remains queued. After TryDequeueLeadingText returns, a true here means the
+	// head is a slash command, so the caller ends the turn to let the boundary drain apply it.
+	public bool HasPending => !_pending.IsEmpty;
+
+	// Dequeues the next pending line in arrival order (plain text or slash command), or returns false
+	// when the queue is empty. The boundary drain uses this to process everything that is waiting.
+	public bool TryDequeuePending(out string? line) => _pending.TryDequeue(out line);
 
 	public void AddChild(Session child) => _children.TryAdd(child.Id, child);
 
 	// Routes incoming text to the correct session. Commands targeting this session are parsed
-	// here: /cancel interrupts, other /commands go to the command queue, plain text goes to
-	// AddUserMessage. Routing to children only forwards /cancel and plain text — non-cancel
+	// here: /cancel interrupts, other /commands and plain text both go to the pending queue in
+	// arrival order. Routing to children only forwards /cancel and plain text — non-cancel
 	// commands are never forwarded because child command queues are never drained externally.
 	public void Deliver(string targetId, string text)
 	{
@@ -229,7 +242,7 @@ public class Session
 			}
 			else if (text.StartsWith("/"))
 			{
-				_commandQueue.Enqueue(text);
+				_pending.Enqueue(text);
 				Signal();
 			}
 			else
@@ -250,7 +263,7 @@ public class Session
 	public void AddUserMessage(string text)
 	{
 		_interruptedAndWaiting = false;
-		_inputQueue.Enqueue(text);
+		_pending.Enqueue(text);
 		Signal();
 	}
 
@@ -276,12 +289,18 @@ public class Session
 	// Used by SessionRunner to break out of the inter-turn delay early.
 	public Task WaitForInputAsync(CancellationToken ct) => _inputSignal.WaitAsync(ct);
 
-	// Drains the pending message queue into the bundle.
-	// Call before saving a session that had AddUserMessage() called outside of a running turn.
+	// Drains leading plain-text lines from the pending queue into the bundle, stopping at the first
+	// queued slash command (left for the boundary drain to apply in order). Call before saving a
+	// session that had AddUserMessage() called outside of a running turn.
 	public void FlushPendingMessages()
 	{
-		while (_inputQueue.TryDequeue(out string? text))
-			_bundle.OnUserMessage(text);
+		while (_pending.TryPeek(out string? line))
+		{
+			if (line!.StartsWith("/", StringComparison.Ordinal))
+				break;
+			_pending.TryDequeue(out string? _);
+			_bundle.OnUserMessage(line);
+		}
 	}
 
 	// ---- Replay / hydration ----
@@ -380,7 +399,7 @@ public class Session
 
 	// Prepares for a new LLM turn: repairs dangling tool calls, flushes pending messages, and
 	// arms the per-turn CTS. Returns the turn-specific cancellation token; always pair with
-	// EndTurn. LlmService polls TryGetPendingInput between tool calls to pick up mid-turn input.
+	// EndTurn. The dispatch loop polls TryDequeueLeadingText between tool rounds to pick up mid-turn input.
 	public CancellationToken BeginTurn()
 	{
 		// Repair before flushing so synthesized results land directly after their assistant

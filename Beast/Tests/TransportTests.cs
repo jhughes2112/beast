@@ -25,6 +25,7 @@ file sealed class NullDisplay : IDisplay
     public void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
     public void SetSessionSwitchCallback(Action<string> switchTo) { }
     public void SetSessionDeleteCallback(Action<string> deleteSession) { }
+    public void ClearPendingGhost(string sessionId) { }
     public bool IsAutoTrackSuppressed() => false;
     public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public void RestoreTerminal() { }

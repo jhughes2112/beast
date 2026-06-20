@@ -68,11 +68,14 @@ public static class ToolFactory
         return tools;
     }
 
-    // Creates the read_file tool. Like fetch_url it needs the registry/roleService and the current session,
-    // because the first read of a file in a session is interpreted by the Explorer role (see ReadFileExplorer)
-    // rather than returned raw. The ReadFileExplorer is shared so its per-session "already read" set persists
-    // across turns; the same instance is handed to the root and to subagents.
-    public static Tool CreateReadFileTool(ReadFileExplorer explorer, LlmRegistry registry, RoleService roleService, Func<Session> currentSession)
+    // A raw read_file window cap for the main agents: large enough to read a file in a few reads, bounded so a
+    // single read cannot flood the calling agent's context. Lines past it are reported, never errored.
+    private const int ReadFileMaxLines = 500;
+
+    // Creates the read_file tool: a plain, raw reader. It returns the requested window of a file verbatim and
+    // does nothing else, so unlike fetch_url it needs no registry/role/session. For a goal-focused concept map
+    // of a file, use find_relevant_file_sections (see CreateSummarizeFileTool) instead.
+    public static Tool CreateReadFileTool()
     {
         return new Tool
         {
@@ -82,12 +85,43 @@ public static class ToolFactory
                 Function = new FunctionDefinition
                 {
                     Name = "read_file",
-                    Description = "Read a file. The first read returns a concept map of the file relevant to your goal — cited line ranges with the functions and symbols in each — so you can target follow-up reads; every read after the first returns the file's raw contents. Small files (under 50 lines or 2KB) are returned directly. CWD is the repo root at /workspace/.",
+                    Description = "Read a file's raw contents. Returns up to 500 lines starting at offset. CWD is the repo root at /workspace/.",
                     Parameters = Params(
                         Req("file_path", "string", "File path"),
-                        Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned on the first read."),
                         Opt("offset", "string", "Starting line number (1 based). Empty means the beginning of the file."),
-                        Opt("lines", "string", "Number of lines to read. Empty means to the end of the file."))
+                        Opt("lines", "string", "Number of lines to read. Empty means to the end of the file (capped at 500)."))
+                }
+            },
+            Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+            {
+                string filePath = Str(args, "file_path");
+                string offset = Str(args, "offset");
+                string lines = Str(args, "lines");
+                ToolResult raw = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ReadFileMaxLines, false, ct);
+                return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
+            }
+        };
+    }
+
+    // Creates the find_relevant_file_sections tool. It reads a file window and routes it through the Explorer role (see
+    // FileSummarizer), returning a goal-focused concept map of cited line ranges rather than the raw contents,
+    // so like fetch_url it needs the registry/roleService and the current session. The summarizer is stateless;
+    // the root and each subagent make their own.
+    public static Tool CreateSummarizeFileTool(FileSummarizer summarizer, LlmRegistry registry, RoleService roleService, Func<Session> currentSession)
+    {
+        return new Tool
+        {
+            Definition = new ToolDefinition
+            {
+                Type = "function",
+                Function = new FunctionDefinition
+                {
+                    Name = "find_relevant_file_sections",
+                    Description = "Find the sections of a file relevant to a goal: returns a concept map — cited line ranges with the functions and symbols in each — so you can target follow-up read_file calls. Small files (under 50 lines or 2KB) are returned whole. CWD is the repo root at /workspace/.",
+                    Parameters = Params(
+                        Req("file_path", "string", "File path"),
+                        Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned."),
+                        Opt("offset", "string", "Starting line number (1 based) for the window to digest. Empty means the beginning of the file."))
                 }
             },
             Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -95,8 +129,7 @@ public static class ToolFactory
                 string filePath = Str(args, "file_path");
                 string goal = Str(args, "goal");
                 string offset = Str(args, "offset");
-                string lines = Str(args, "lines");
-                return await explorer.ReadAsync(toolCallId, filePath, offset, lines, goal, registry, roleService, transport, currentSession(), maxOutputTokens, ct);
+                return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, registry, roleService, transport, currentSession(), maxOutputTokens, ct);
             }
         };
     }

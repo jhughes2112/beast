@@ -29,6 +29,9 @@ public interface IDisplay
     void SetSessionSwitchCallback(Action<string> switchTo);
     // Wires up the callback invoked when the user deletes a subagent session in the overlay.
     void SetSessionDeleteCallback(Action<string> deleteSession);
+    // Clears the given session's pending-input ghost shown above the input separator. Called when that
+    // session echoes a user message back, meaning its queued steering text was consumed.
+    void ClearPendingGhost(string sessionId);
     // True when auto-tracking of incoming messages should be suppressed: the session overlay
     // is open or the user has scrolled away from the bottom of the conversation.
     bool IsAutoTrackSuppressed();

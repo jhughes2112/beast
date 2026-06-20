@@ -539,6 +539,9 @@ public class BeastApp : IDisposable, IAsyncDisposable
 
             case FrameType.User:
                 session.Model.Update(session.NextIndex++, FrameType.User, content);
+                // The agent echoing a user message back means this session's queued steering text was
+                // consumed — clear its pending ghost (even if a different session is currently viewed).
+                _display.ClearPendingGhost(effectiveId);
                 break;
 
             case FrameType.ToolCall:
