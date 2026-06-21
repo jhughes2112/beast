@@ -673,6 +673,8 @@ internal static class BlockRenderer
         // The delegation tools' prompt is a natural-language briefing — render it as prose, not as a labelled
         // "prompt <value>" property, so the expanded block reads as the instruction itself.
         if ((toolName == "assign_work" || toolName == "review_work") && propName.Equals("prompt", StringComparison.OrdinalIgnoreCase)) return true;
+        // The goal is the body of the call — render it as prose itself, not as a labelled "goal <value>" property.
+        if (toolName == "find_relevant_file_sections" && propName.Equals("goal", StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 
@@ -686,8 +688,8 @@ internal static class BlockRenderer
             case "read_file":
                 set.Add("file_path"); set.Add("offset"); set.Add("lines"); break;
             case "find_relevant_file_sections":
-                // file_path is in the header, goal is the condensed preview — neither belongs in the body.
-                set.Add("file_path"); set.Add("goal"); break;
+                // file_path is in the header and offset is noise; the body shows the goal.
+                set.Add("file_path"); set.Add("offset"); break;
             case "write_file":
             case "edit_file_replace":
             case "edit_file_insert":
