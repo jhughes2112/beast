@@ -90,11 +90,24 @@ public sealed class StackLayout
         return null;
     }
 
+    // Width of the block at the given slot's current (collapsed/expanded) view, or 0 if not present. Used to
+    // clamp a block's horizontal scroll offset to the range that actually reveals content.
+    public int BlockWidthOfSlot(int slotIndex)
+    {
+        for (int i = 0; i < _placements.Count; i++)
+        {
+            if (_placements[i].SlotIndex == slotIndex) return _blocks[i].Current.W;
+        }
+        return 0;
+    }
+
     // Renders only the rows visible in [viewTop, viewTop+viewportHeight) into a fresh viewport-sized Screen.
     // Cost scales with what is visible, not with the full history height: a forward scan skips blocks above
     // the window, blits each block that intersects it (clipped to the window), and stops at the first block
     // past the bottom. viewTop is in composite-row coordinates (rows from the top of the full stack).
-    public Screen RenderWindow(int viewportHeight, int viewTop, Cell background)
+    // hOffsets maps a slot to its horizontal scroll offset; a block wider than the viewport shows the window
+    // [offset, offset+Width). Pass null for no horizontal scrolling.
+    public Screen RenderWindow(int viewportHeight, int viewTop, Cell background, IReadOnlyDictionary<int, int>? hOffsets)
     {
         Screen viewport = new Screen(Width, viewportHeight, background);
         if (viewportHeight <= 0) return viewport;
@@ -114,7 +127,16 @@ public sealed class StackLayout
             int dstY      = srcTop - viewTop;
             int rows      = srcBottom - srcTop;
 
-            viewport.Blit(_blocks[i].Current, 0, dstY, BlendMode.Normal, new Rect(0, srcY, Width, rows));
+            // Horizontal window: clamp the offset into the block so it never scrolls past its content.
+            int blockW = _blocks[i].Current.W;
+            int srcX   = 0;
+            if (hOffsets != null && hOffsets.TryGetValue(p.SlotIndex, out int off) && blockW > Width)
+            {
+                int maxOff = blockW - Width;
+                srcX = off < 0 ? 0 : (off > maxOff ? maxOff : off);
+            }
+
+            viewport.Blit(_blocks[i].Current, 0, dstY, BlendMode.Normal, new Rect(srcX, srcY, Width, rows));
         }
 
         return viewport;

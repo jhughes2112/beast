@@ -114,6 +114,10 @@ public class BeastApp : IDisposable, IAsyncDisposable
         _display.SetSessionSwitchCallback(SwitchActiveSession);
         _display.SetSessionDeleteCallback(DeleteSession);
 
+        // Put the worktree (or agent) name in the console tab title so multiple Beast tabs are
+        // distinguishable; the separator animates while the agent is busy.
+        ConsoleChrome.Configure(_worktree.HasValue ? _worktree.Value.Name : _agentName);
+
         // Load settings to pick up the optional notification sound paths.
         try
         {

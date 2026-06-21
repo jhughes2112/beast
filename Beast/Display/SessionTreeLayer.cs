@@ -18,7 +18,7 @@ internal static class SessionTreeLayer
         Rgb panelBg  = new Rgb(28, 28, 28);
         Rgb borderFg = new Rgb(65, 65, 65);
         Rgb headerFg = new Rgb(138, 138, 138);
-        Rgb busyFg   = new Rgb(80, 180, 255);
+        Rgb busyFg   = new Rgb(110, 168, 210);
         Rgb idleFg   = new Rgb(100, 100, 100);
         Rgb selBg    = new Rgb(55, 55, 55);
         Rgb activeFg = new Rgb(220, 220, 220);

@@ -14,7 +14,14 @@
     <PackageReference Include="Markdig" Version="1.2.0" />
     <PackageReference Include="NAudio" Version="2.3.0" />
     <PackageReference Include="Nito.AsyncEx.Coordination" Version="5.1.2" />
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
     <PackageReference Include="TextCopy" Version="6.2.1" />
+  </ItemGroup>
+
+  <!-- beast.ico is embedded (in addition to being the win32 ApplicationIcon) so ConsoleChrome can build
+       the animated title-bar icon frames at runtime. -->
+  <ItemGroup>
+    <EmbeddedResource Include="beast.ico" />
   </ItemGroup>
 
   <ItemGroup>

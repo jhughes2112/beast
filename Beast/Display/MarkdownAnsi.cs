@@ -7,26 +7,46 @@ using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 
 
+// One rendered display line plus whether it may be word-wrapped. Prose (paragraphs, headings, lists, quotes)
+// wraps to the viewport; code blocks and tables are NoWrap — they render at their natural width and the
+// caller leaves them long so the block can be scrolled horizontally instead of reflowed.
+public readonly struct RenderLine
+{
+    public readonly string Text;
+    public readonly bool   NoWrap;
+
+    public RenderLine(string text, bool noWrap)
+    {
+        Text   = text;
+        NoWrap = noWrap;
+    }
+}
+
 // Converts markdown text to plain-text lines with embedded ANSI escape codes.
 // Returned strings contain ANSI codes; use AnsiString helpers to compute visible lengths.
 public static class MarkdownAnsi
 {
+    // How far past the viewport width code blocks and tables are allowed to render before being clipped.
+    // Bounds the natural width so a pathological minified line can't allocate an enormous block Screen.
+    private const int MaxOverscan = 1000;
+
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
         .UseAdvancedExtensions()
         .Build();
 
-    // Returns rendered lines for display in the history panel.
-    // Each string may contain ANSI codes but represents one logical display line.
-    // w is the terminal width used to bound code block rectangles.
-    public static List<string> Render(string markdown, FrameType type, int w)
+    // Returns rendered lines for display in the history panel. Each RenderLine is one logical display line
+    // (may contain ANSI codes) tagged with whether the caller may word-wrap it. w is the viewport width: it
+    // sets the natural-width clamp for code blocks and tables (w + MaxOverscan); prose is not wrapped here —
+    // the caller wraps the wrappable lines to its own width.
+    public static List<RenderLine> Render(string markdown, FrameType type, int w)
     {
-        List<string> lines = new List<string>();
+        List<RenderLine> lines = new List<RenderLine>();
         if (string.IsNullOrEmpty(markdown)) return lines;
 
         MarkdownDocument doc = Markdown.Parse(markdown, Pipeline);
         RenderTopLevel(doc, lines, type, w);
         // Trim trailing blank lines.
-        while (lines.Count > 0 && string.IsNullOrEmpty(lines[lines.Count - 1]))
+        while (lines.Count > 0 && string.IsNullOrEmpty(lines[lines.Count - 1].Text))
             lines.RemoveAt(lines.Count - 1);
         return lines;
     }
@@ -34,13 +54,13 @@ public static class MarkdownAnsi
     // Top-level pass: tracks the current heading section so blocks beneath a heading are indented
     // two spaces per heading level. A heading itself renders at its parent level's indent; the body
     // that follows it (until the next heading of equal-or-shallower level) is pushed in one level.
-    private static void RenderTopLevel(MarkdownDocument doc, List<string> lines, FrameType type, int w)
+    private static void RenderTopLevel(MarkdownDocument doc, List<RenderLine> lines, FrameType type, int w)
     {
         string sectionIndent = "";
         bool first = true;
         foreach (Block block in doc)
         {
-            if (!first) lines.Add("");
+            if (!first) lines.Add(new RenderLine("", false));
             first = false;
 
             if (block is HeadingBlock heading)
@@ -56,18 +76,18 @@ public static class MarkdownAnsi
         }
     }
 
-    private static void RenderBlocks(IEnumerable<Block> blocks, List<string> lines, string indent, FrameType type, int w)
+    private static void RenderBlocks(IEnumerable<Block> blocks, List<RenderLine> lines, string indent, FrameType type, int w)
     {
         bool first = true;
         foreach (Block block in blocks)
         {
-            if (!first) lines.Add("");
+            if (!first) lines.Add(new RenderLine("", false));
             first = false;
             RenderBlock(block, lines, indent, type, w);
         }
     }
 
-    private static void RenderBlock(Block block, List<string> lines, string indent, FrameType type, int w)
+    private static void RenderBlock(Block block, List<RenderLine> lines, string indent, FrameType type, int w)
     {
         if (block is HeadingBlock heading)
         {
@@ -76,13 +96,13 @@ public static class MarkdownAnsi
             // No literal '#' markers — hierarchy is conveyed by the section indent and a muted color
             // per level (kept calm for a medium-dark background). H1 also carries an underline rule.
             string code = level == 1 ? Codes.H1 : level == 2 ? Codes.H2 : Codes.H3;
-            lines.Add(indent + code + text + Codes.Reset);
+            lines.Add(new RenderLine(indent + code + text + Codes.Reset, false));
         }
         else if (block is ParagraphBlock para)
         {
             string text = InlinesToAnsi(para.Inline, type);
             foreach (string segment in text.Split('\n'))
-                lines.Add(indent + segment + Codes.Reset);
+                lines.Add(new RenderLine(indent + segment + Codes.Reset, false));
         }
         else if (block is FencedCodeBlock fenced)
         {
@@ -116,7 +136,7 @@ public static class MarkdownAnsi
                             bool firstSegment = true;
                             foreach (string segment in InlinesToAnsi(cp.Inline, type).Split('\n'))
                             {
-                                lines.Add((firstSegment ? childIndent : hangingIndent) + segment + Codes.Reset);
+                                lines.Add(new RenderLine((firstSegment ? childIndent : hangingIndent) + segment + Codes.Reset, false));
                                 firstSegment = false;
                             }
                         }
@@ -134,7 +154,7 @@ public static class MarkdownAnsi
         }
         else if (block is ThematicBreakBlock)
         {
-            lines.Add(indent + Codes.DimGrey + new string('─', 40) + Codes.Reset);
+            lines.Add(new RenderLine(indent + Codes.DimGrey + new string('─', 40) + Codes.Reset, false));
         }
         else if (block is Table table)
         {
@@ -146,8 +166,10 @@ public static class MarkdownAnsi
         }
     }
 
-    // Renders a markdown table with pipe-delimited columns and a header separator row.
-    private static void RenderTable(Table table, List<string> lines, string indent, FrameType type, int w)
+    // Renders a markdown table with pipe-delimited columns and a header separator row. The table renders at
+    // its natural width (rows tagged NoWrap) so wide tables scroll horizontally rather than reflow; only a
+    // pathological width past the overscan clamp gets its columns shaved to bound memory.
+    private static void RenderTable(Table table, List<RenderLine> lines, string indent, FrameType type, int w)
     {
         // First pass: extract cell text and measure column widths.
         List<List<string>> rows = new List<List<string>>();
@@ -183,40 +205,66 @@ public static class MarkdownAnsi
 
         if (rows.Count == 0) return;
 
-        // Second pass: emit rows.
+        // Cap each column so no single column is wider than about a third of the viewport. A wide free-text
+        // column otherwise spreads the whole table out uselessly; capped cells word-wrap within their column
+        // (below) instead of forcing the table wide.
+        int maxColWidth = Math.Max(8, (w - indent.Length) / 3);
+        for (int ci = 0; ci < colWidths.Count; ci++)
+            if (colWidths[ci] > maxColWidth) colWidths[ci] = maxColWidth;
+
+        // Clamp only against the natural-width overscan (not the viewport) so the table keeps its column
+        // widths and scrolls; the layout is the leading border plus, per column, a leading space, the content,
+        // a trailing space and a closing border — 1 + Σ(width + 3). Past the clamp (only reachable with many
+        // columns now that each is capped), shave the widest columns first so narrow data columns keep width.
+        int clamp = Math.Max(8, w + MaxOverscan - indent.Length);
+        FitColumns(colWidths, clamp);
+
+        // Second pass: emit rows. Each cell is word-wrapped to its column width, so a tall cell spans several
+        // display lines with the other columns left blank on the continuation lines.
         for (int r = 0; r < rows.Count; r++)
         {
             List<string> cells = rows[r];
-            StringBuilder sb = new StringBuilder();
-            sb.Append(indent);
-            sb.Append(Codes.Border);
-            sb.Append('│');
-            sb.Append(Codes.Reset);
+
+            // Wrap every cell to its column width up front and find the tallest cell — that is the row height.
+            List<List<string>> wrapped = new List<List<string>>();
+            int rowHeight = 1;
             for (int ci = 0; ci < colWidths.Count; ci++)
             {
                 string cell = ci < cells.Count ? cells[ci] : string.Empty;
-                int vis = AnsiString.VisibleLength(cell);
-                int pad = colWidths[ci] - vis;
-                sb.Append(' ');
-                if (isHeader[r])
+                List<string> cellLines = AnsiString.WordWrap(cell, colWidths[ci]);
+                if (cellLines.Count == 0) cellLines.Add(string.Empty);
+                wrapped.Add(cellLines);
+                if (cellLines.Count > rowHeight) rowHeight = cellLines.Count;
+            }
+
+            for (int sub = 0; sub < rowHeight; sub++)
+            {
+                StringBuilder sb = new StringBuilder();
+                sb.Append(indent);
+                sb.Append(Codes.Border);
+                sb.Append('│');
+                sb.Append(Codes.Reset);
+                for (int ci = 0; ci < colWidths.Count; ci++)
                 {
-                    sb.Append(Codes.Bold);
-                    sb.Append(cell);
+                    List<string> cellLines = wrapped[ci];
+                    string frag = sub < cellLines.Count ? cellLines[sub] : string.Empty;
+                    int vis = AnsiString.VisibleLength(frag);
+                    int pad = colWidths[ci] - vis;
+                    if (pad < 0) pad = 0;
+                    sb.Append(' ');
+                    if (isHeader[r])
+                        sb.Append(Codes.Bold);
+                    sb.Append(frag);
                     sb.Append(Codes.Reset);
                     // Re-apply the border color after reset so padding spaces render with the block's
                     // background rather than the terminal default, keeping the row visually the right width.
                     sb.Append(Codes.Border);
+                    sb.Append(new string(' ', pad + 1));
+                    sb.Append('│');
+                    sb.Append(Codes.Reset);
                 }
-                else
-                {
-                    sb.Append(cell);
-                }
-                sb.Append(new string(' ', pad + 1));
-                sb.Append(Codes.Border);
-                sb.Append('│');
-                sb.Append(Codes.Reset);
+                lines.Add(new RenderLine(sb.ToString(), true));
             }
-            lines.Add(sb.ToString());
 
             // Separator after header row.
             if (isHeader[r])
@@ -231,15 +279,43 @@ public static class MarkdownAnsi
                     sep.Append(ci < colWidths.Count - 1 ? '┼' : '┤');
                 }
                 sep.Append(Codes.Reset);
-                lines.Add(sep.ToString());
+                lines.Add(new RenderLine(sep.ToString(), true));
             }
         }
     }
 
-    // Renders a code block as a bordered rectangle.
-    // Lines are NOT word-wrapped; each is truncated to fit the terminal.
-    // All lines are padded to the same width so the background forms a solid rectangle.
-    private static void RenderCodeBlock(string raw, string lang, List<string> lines, string indent, int w)
+    // Shrinks column widths in place until the table fits within available columns. Each column costs its
+    // width plus three (a leading space, a trailing space and a border); the leading border adds one more.
+    // The widest column above a small floor is shaved one cell at a time so narrow data columns are left at
+    // full width and only the wide free-text columns give ground.
+    private static void FitColumns(List<int> colWidths, int available)
+    {
+        const int MinCol = 3;
+        int total = 1;
+        foreach (int cw in colWidths)
+            total += cw + 3;
+
+        int overflow = total - available;
+        while (overflow > 0)
+        {
+            int widest = -1;
+            for (int i = 0; i < colWidths.Count; i++)
+            {
+                if (colWidths[i] <= MinCol) continue;
+                if (widest < 0 || colWidths[i] > colWidths[widest]) widest = i;
+            }
+            if (widest < 0) break;
+
+            colWidths[widest]--;
+            overflow--;
+        }
+    }
+
+    // Renders a code block as a bordered rectangle. Lines are NOT word-wrapped and the box is sized to the
+    // widest line (clamped to the overscan) so wide code scrolls horizontally; every line is padded to the
+    // box width so the background forms a solid rectangle. Rows are tagged NoWrap so the caller leaves them
+    // at full width.
+    private static void RenderCodeBlock(string raw, string lang, List<RenderLine> lines, string indent, int w)
     {
         string[] codeLines = raw.TrimEnd('\n', '\r').Split('\n');
         string[] highlighted = new string[codeLines.Length];
@@ -254,9 +330,9 @@ public static class MarkdownAnsi
             if (visLens[i] > maxContent) maxContent = visLens[i];
         }
 
-        // Box width = content width + 2 padding chars, bounded by terminal width minus indent and borders.
-        int indentLen = indent.Length;
-        int maxBox = Math.Max(1, w - indentLen - 2);
+        // Box width = the natural content width, clamped only by the overscan (the viewport plus headroom)
+        // so wide code keeps its true width and is reachable by horizontal scroll instead of being truncated.
+        int maxBox = Math.Max(1, w + MaxOverscan - indent.Length - 2);
         int boxContent = Math.Min(maxContent, maxBox);
         if (boxContent < 1) boxContent = 1;
 
@@ -265,7 +341,7 @@ public static class MarkdownAnsi
         string topBorder    = Codes.Border + "╭" + labelSuffix + new string('─', topFillLen) + "╮" + Codes.Reset;
         string bottomBorder = Codes.Border + "╰" + new string('─', boxContent) + "╯" + Codes.Reset;
 
-        lines.Add(indent + topBorder);
+        lines.Add(new RenderLine(indent + topBorder, true));
 
         // Second pass: emit each line truncated and padded to boxContent.
         for (int i = 0; i < codeLines.Length; i++)
@@ -273,10 +349,10 @@ public static class MarkdownAnsi
             // Truncate visible content to boxContent chars.
             string hl = AnsiString.TruncateVisible(highlighted[i], boxContent);
             int pad = Math.Max(0, boxContent - Math.Min(visLens[i], boxContent));
-            lines.Add(indent + Codes.Border + "│" + Codes.Reset + Codes.CodeBg + hl + Codes.CodeBg + new string(' ', pad) + Codes.Reset + Codes.Border + "│" + Codes.Reset);
+            lines.Add(new RenderLine(indent + Codes.Border + "│" + Codes.Reset + Codes.CodeBg + hl + Codes.CodeBg + new string(' ', pad) + Codes.Reset + Codes.Border + "│" + Codes.Reset, true));
         }
 
-        lines.Add(indent + bottomBorder);
+        lines.Add(new RenderLine(indent + bottomBorder, true));
     }
 
     private static string InlinesToAnsi(ContainerInline? container, FrameType type)
@@ -378,6 +454,95 @@ public static class MarkdownAnsi
             FrameType.Error    => Codes.Error,
             _                  => Codes.Output
         };
+    }
+
+    // True when a file path is a markdown document by extension. Such files render through the markdown
+    // pipeline rather than the code path, regardless of content.
+    internal static bool IsMarkdownFile(string filePath)
+    {
+        if (string.IsNullOrEmpty(filePath)) return false;
+        int dot = filePath.LastIndexOf('.');
+        if (dot < 0) return false;
+        string ext = filePath.Substring(dot + 1).ToLowerInvariant();
+        return ext == "md" || ext == "markdown" || ext == "mdown" || ext == "mkd";
+    }
+
+    // Heuristic: does this text read as markdown rather than plain prose / code / tool output? Scans for
+    // structural markers (headings, fences, lists, quotes, tables, rules) plus a couple of inline markers,
+    // and only commits when at least two signals are present so a stray bullet in grep output or a lone
+    // "- " in prose does not trip it. Used to decide whether a tool response should be rendered as markdown
+    // or preserved verbatim line-for-line.
+    internal static bool LooksLikeMarkdown(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        string[] lines = text.Replace("\r\n", "\n").Split('\n');
+        int signals = 0;
+        bool fence = false;
+
+        foreach (string raw in lines)
+        {
+            string line = raw.TrimStart();
+
+            if (line.StartsWith("```"))
+            {
+                signals += 2;
+                fence = !fence;
+                continue;
+            }
+            if (fence) continue;
+
+            // ATX heading: one to six '#' followed by a space.
+            if (line.Length >= 2 && line[0] == '#')
+            {
+                int h = 0;
+                while (h < line.Length && line[h] == '#') h++;
+                if (h <= 6 && h < line.Length && line[h] == ' ')
+                {
+                    signals += 2;
+                    continue;
+                }
+            }
+
+            if (line.StartsWith("- ") || line.StartsWith("* ") || line.StartsWith("+ "))
+            {
+                signals += 1;
+                continue;
+            }
+
+            // Ordered list: digits then ". ".
+            int d = 0;
+            while (d < line.Length && char.IsDigit(line[d])) d++;
+            if (d > 0 && d + 1 < line.Length && line[d] == '.' && line[d + 1] == ' ')
+            {
+                signals += 1;
+                continue;
+            }
+
+            if (line.StartsWith("> "))
+            {
+                signals += 1;
+                continue;
+            }
+
+            if (line.StartsWith("|") && line.IndexOf('|', 1) > 0)
+            {
+                signals += 1;
+                continue;
+            }
+
+            if (line == "---" || line == "***" || line == "___")
+            {
+                signals += 1;
+                continue;
+            }
+        }
+
+        // Inline markers are weaker on their own, so they only nudge an already-suspicious body over the line.
+        if (text.Contains("](")) signals += 1;
+        if (text.Contains("**")) signals += 1;
+
+        return signals >= 2;
     }
 
     // Guesses a syntax-highlight language tag from a file path extension.
@@ -524,29 +689,33 @@ public static class MarkdownAnsi
         public const string Bold       = "\x1b[1m";
         public const string Italic     = "\x1b[3m";
 
-        // Heading colors — desaturated blue/teal tones chosen to read well on a medium-dark background.
-        public const string H1         = "\x1b[1m\x1b[4m\x1b[38;5;75m";
-        public const string H2         = "\x1b[1m\x1b[38;5;73m";
-        public const string H3         = "\x1b[1m\x1b[38;5;110m";
+        // Heading colors — desaturated blue tones that read well on the dark slate background without
+        // shouting. H1 also carries an underline rule.
+        public const string H1         = "\x1b[1m\x1b[4m\x1b[38;2;124;170;214m";
+        public const string H2         = "\x1b[1m\x1b[38;2;120;166;190m";
+        public const string H3         = "\x1b[1m\x1b[38;2;138;160;196m";
 
-        public const string Output     = "\x1b[38;5;250m";
-        public const string Thinking   = "\x1b[2;3;38;5;59m";
-        public const string Tool       = "\x1b[38;5;33m";
-        public const string System     = "\x1b[38;5;166m";
-        public const string User       = "\x1b[38;5;244m";
-        public const string Error      = "\x1b[38;5;196m";
+        // These "base" colors are re-applied after every inline span (bold, code, link) and at the start of
+        // each word-wrapped continuation line, so each must equal the block's own base foreground — otherwise
+        // a paragraph visibly shifts color the moment it hits its first inline element or wraps to a new line.
+        public const string Output     = "\x1b[38;2;206;206;210m";    // matches Palette.Silver (Output base fg)
+        public const string Thinking   = "\x1b[3m\x1b[38;2;128;128;132m"; // matches Palette.ThinkingFg (no dim — block is already italic)
+        public const string Tool       = "\x1b[38;2;126;192;196m";    // calm teal
+        public const string System     = "\x1b[38;2;204;140;82m";     // soft amber
+        public const string User       = "\x1b[38;2;244;244;246m";    // matches Palette.BrightUser (User base fg)
+        public const string Error      = "\x1b[38;2;214;102;102m";    // softened red
 
-        public const string InlineCode = "\x1b[38;5;221m";
+        public const string InlineCode = "\x1b[38;2;212;182;120m";    // soft gold
         public const string DarkBg     = "\x1b[48;5;236m";            // background for markdown code blocks
-        public const string CodeBg     = "\x1b[38;5;250m\x1b[48;5;236m";
-        public const string CodeText   = "\x1b[38;5;252m\x1b[48;5;236m";
-        public const string Keyword    = "\x1b[38;5;75m\x1b[48;5;236m";
-        public const string StringLit  = "\x1b[38;5;150m\x1b[48;5;236m";
-        public const string Number     = "\x1b[38;5;215m\x1b[48;5;236m";
-        public const string Comment    = "\x1b[38;5;244m\x1b[48;5;236m\x1b[3m";
+        public const string CodeBg     = "\x1b[38;2;206;206;210m\x1b[48;5;236m";
+        public const string CodeText   = "\x1b[38;2;210;212;216m\x1b[48;5;236m";
+        public const string Keyword    = "\x1b[38;2;124;170;214m\x1b[48;5;236m";   // soft blue
+        public const string StringLit  = "\x1b[38;2;152;186;130m\x1b[48;5;236m";   // soft green
+        public const string Number     = "\x1b[38;2;206;160;110m\x1b[48;5;236m";   // soft amber
+        public const string Comment    = "\x1b[38;2;142;142;146m\x1b[48;5;236m\x1b[3m";
 
-        public const string LinkText   = "\x1b[38;5;75m\x1b[4m";
-        public const string DimGrey    = "\x1b[2;38;5;244m";
-        public const string Border     = "\x1b[38;5;240m";
+        public const string LinkText   = "\x1b[38;2;124;170;214m\x1b[4m";
+        public const string DimGrey    = "\x1b[2m\x1b[38;2;142;142;146m";
+        public const string Border     = "\x1b[38;2;108;108;114m";
     }
 }

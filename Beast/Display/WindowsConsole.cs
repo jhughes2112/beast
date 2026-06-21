@@ -12,8 +12,9 @@ internal struct ConsoleInputEvent
     internal ConsoleKeyInfo Key;
     internal int    Col;
     internal int    Row;
-    internal short  WheelDelta;  // positive = wheel up, negative = wheel down
-    internal bool   Shift;       // Shift held during a MouseClick (used for shift-click = add-to-clipboard)
+    internal short  WheelDelta;  // wheel: positive = up / right, negative = down / left
+    internal bool   Shift;       // Shift held during a MouseClick or wheel (shift-click = add-to-clipboard; shift+wheel = pan)
+    internal bool   Horizontal;  // a horizontal wheel (tilt / trackpad) rather than the vertical wheel
     internal string Text;        // full text for a coalesced paste burst (newlines preserved)
 }
 
@@ -34,6 +35,7 @@ internal static class WindowsConsole
     private const ushort KEY_EVENT_TYPE   = 0x0001;
     private const ushort MOUSE_EVENT_TYPE = 0x0002;
     private const uint   MOUSE_WHEELED  = 0x0004;
+    private const uint   MOUSE_HWHEELED = 0x0008;
     private const uint   LEFT_BUTTON    = 0x0001;
 
     // Bracketed paste: when enabled, the terminal wraps any paste in ESC[200~ ... ESC[201~ and hands
@@ -218,10 +220,12 @@ internal static class WindowsConsole
         {
             MOUSE_EVENT_RECORD m = rec.MouseEvent;
 
-            if ((m.dwEventFlags & MOUSE_WHEELED) != 0)
+            if ((m.dwEventFlags & MOUSE_WHEELED) != 0 || (m.dwEventFlags & MOUSE_HWHEELED) != 0)
             {
+                bool horizontal = (m.dwEventFlags & MOUSE_HWHEELED) != 0;
                 short delta = (short)(m.dwButtonState >> 16);
-                return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = m.MouseX, Row = m.MouseY, WheelDelta = delta };
+                bool wheelShift = (m.dwControlKeyState & 0x0010u) != 0;
+                return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = m.MouseX, Row = m.MouseY, WheelDelta = delta, Shift = wheelShift, Horizontal = horizontal };
             }
 
             if (m.dwEventFlags == 0 && (m.dwButtonState & LEFT_BUTTON) != 0)
@@ -453,8 +457,15 @@ internal static class WindowsConsole
 
         if ((cb & 0x40) != 0)  // wheel
         {
-            short delta = (short)((cb & 0x01) == 0 ? 120 : -120);  // bit0: 0=up, 1=down
-            return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta };
+            // Low two bits select the wheel axis/direction: 0=up, 1=down, 2=left, 3=right. Without this the
+            // horizontal (trackpad/tilt) deltas fold onto the vertical axis and scroll the view up/down.
+            int btn = cb & 0x03;
+            bool horizontal = btn == 2 || btn == 3;
+            short delta = horizontal
+                ? (short)(btn == 3 ? 120 : -120)   // right vs left
+                : (short)(btn == 0 ? 120 : -120);  // up vs down
+            bool wheelShift = (cb & 0x04) != 0;
+            return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta, Horizontal = horizontal, Shift = wheelShift };
         }
 
         if ((cb & 0x20) != 0)  // motion
@@ -483,8 +494,14 @@ internal static class WindowsConsole
 
         if ((cb & 0x40) != 0)
         {
-            short delta = (short)((cb & 0x01) == 0 ? 120 : -120);
-            return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta };
+            // 0=up, 1=down, 2=left, 3=right — keep the horizontal deltas off the vertical axis.
+            int btn = cb & 0x03;
+            bool horizontal = btn == 2 || btn == 3;
+            short delta = horizontal
+                ? (short)(btn == 3 ? 120 : -120)
+                : (short)(btn == 0 ? 120 : -120);
+            bool wheelShift = (cb & 0x04) != 0;
+            return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta, Horizontal = horizontal, Shift = wheelShift };
         }
 
         if ((cb & 0x20) != 0)

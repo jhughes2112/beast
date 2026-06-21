@@ -281,7 +281,7 @@ public static class FileTools
 						{
 							string newContent = fileContent.Substring(0, exactIdx) + replacement + fileContent.Substring(exactIdx + oldText.Length);
 							await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
-							result = new ToolResult(toolCallId, BuildEditEcho(newContent, exactIdx, replacement.Length), string.Empty, 0, 0);
+							result = new ToolResult(toolCallId, BuildEditEcho(newContent, exactIdx, oldText, replacement), string.Empty, 0, 0);
 						}
 						else
 						{
@@ -320,9 +320,12 @@ public static class FileTools
 								{
 									int origStart = posMap[matchIdx];
 									int origEnd = posMap[matchIdx + strippedOld.Length - 1] + 1;
+									// Fuzzy match ignores whitespace, so the span actually removed from the file can
+									// differ from the model's old_text. Diff against what was really there.
+									string removedText = fileContent.Substring(origStart, origEnd - origStart);
 									string newContent = fileContent.Substring(0, origStart) + replacement + fileContent.Substring(origEnd);
 									await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
-									result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, replacement.Length), string.Empty, 0, 0);
+									result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, removedText, replacement), string.Empty, 0, 0);
 								}
 								else
 								{
@@ -354,45 +357,72 @@ public static class FileTools
 		return result;
 	}
 
-	// Echoes where the edit landed: three lines before the change, a [hunk inserted]/[hunk deleted]
-	// marker in place of the new text (the model already knows what it changed), then three lines after.
-	// This confirms placement, which matters because the whitespace-normalized fallback can land
-	// on a different region than the model pictured.
-	private static string BuildEditEcho(string content, int replaceStart, int replaceLength)
+	// Echoes the edit as a unified diff: a few context lines before, the removed ('-') and added ('+')
+	// lines, then context after. Lines identical at the top and bottom of the replaced span are folded
+	// back into context so a pure insertion shows only the new lines, not a delete-then-re-add of the
+	// shared text. This confirms placement (the whitespace-normalized fallback can land on a different
+	// region than the model pictured) and reads cleanly both for the human display and the model.
+	private static string BuildEditEcho(string newContent, int replaceStart, string oldText, string newText)
 	{
 		const int contextLines = 3;
 
-		string[] lines = content.Split('\n');
-		int startLine = LineOfIndex(content, replaceStart);
-		int lastIdx = replaceLength > 0 ? replaceStart + replaceLength - 1 : replaceStart;
-		int endLine = LineOfIndex(content, lastIdx);
+		string[] allLines = newContent.Split('\n');
+		string[] oldLines = SplitOrEmpty(oldText);
+		string[] newLines = SplitOrEmpty(newText);
 
-		int firstBefore = Math.Max(0, startLine - contextLines);
-		int lastAfter = Math.Min(lines.Length - 1, endLine + contextLines);
+		// Fold away identical leading/trailing lines of the replaced span.
+		int prefix = 0;
+		while (prefix < oldLines.Length && prefix < newLines.Length && oldLines[prefix] == newLines[prefix])
+			prefix++;
+
+		int suffix = 0;
+		while (suffix < oldLines.Length - prefix && suffix < newLines.Length - prefix
+			&& oldLines[oldLines.Length - 1 - suffix] == newLines[newLines.Length - 1 - suffix])
+			suffix++;
+
+		// Everything before the change is identical in both files, so the first changed line has the
+		// same number in each. Added lines reuse that numbering; removed lines map to the same range.
+		int changeStartLine = LineOfIndex(newContent, replaceStart);
+		int realStart = changeStartLine + prefix;
+		int removedCount = oldLines.Length - prefix - suffix;
+		int addedCount = newLines.Length - prefix - suffix;
+
+		int firstBefore = Math.Max(0, realStart - contextLines);
+		int afterStart = realStart + addedCount;
+		int lastAfter = Math.Min(allLines.Length - 1, afterStart - 1 + contextLines);
 
 		StringBuilder sb = new StringBuilder();
-		sb.Append($"Edit applied at line {startLine + 1}:\n");
+		sb.Append($"Edit applied at line {realStart + 1}:\n");
 
-		for (int i = firstBefore; i < startLine; i++)
-		{
-			AppendNumbered(sb, i + 1, lines[i]);
-		}
+		for (int i = firstBefore; i < realStart; i++)
+			AppendDiffLine(sb, i + 1, '|', allLines[i]);
 
-		sb.Append(replaceLength > 0 ? "      | [hunk inserted]\n" : "      | [hunk deleted]\n");
+		for (int i = 0; i < removedCount; i++)
+			AppendDiffLine(sb, realStart + 1 + i, '-', oldLines[prefix + i]);
 
-		for (int i = endLine + 1; i <= lastAfter; i++)
-		{
-			AppendNumbered(sb, i + 1, lines[i]);
-		}
+		for (int i = 0; i < addedCount; i++)
+			AppendDiffLine(sb, realStart + 1 + i, '+', newLines[prefix + i]);
+
+		for (int i = afterStart; i <= lastAfter; i++)
+			AppendDiffLine(sb, i + 1, '|', allLines[i]);
 
 		return sb.ToString();
 	}
 
-	// Appends one right-aligned, line-numbered row matching the marker column width.
-	private static void AppendNumbered(StringBuilder sb, int lineNumber, string text)
+	// Splits into lines, treating empty input as no lines (so a pure deletion adds no phantom '+' row).
+	private static string[] SplitOrEmpty(string text)
+	{
+		return text.Length == 0 ? Array.Empty<string>() : text.Split('\n');
+	}
+
+	// Appends one diff row: a right-aligned line number, a single-char gutter ('|' context, '-' removed,
+	// '+' added) at a fixed column, then the line text. The display layer colors rows by their gutter.
+	private static void AppendDiffLine(StringBuilder sb, int lineNumber, char marker, string text)
 	{
 		sb.Append(lineNumber.ToString().PadLeft(5));
-		sb.Append(" | ");
+		sb.Append(' ');
+		sb.Append(marker);
+		sb.Append(' ');
 		sb.Append(text.TrimEnd('\r'));
 		sb.Append('\n');
 	}

@@ -26,36 +26,37 @@ public class DisplayScreen : IDisplay
 
     internal static class Palette
     {
-        // RGB equivalents of the indexed colors used by DisplayAnsi.
-        public static readonly Rgb InputFg       = new Rgb(238, 238, 238);  // 255
-        public static readonly Rgb InputBg       = new Rgb(38, 38, 38);     // 235
-        public static readonly Rgb Silver        = new Rgb(188, 188, 188);  // 250
-        public static readonly Rgb BrightUser    = new Rgb(255, 255, 255);  // 231
-        public static readonly Rgb UserBg        = new Rgb(80, 80, 80);     // light gray for user message background
-        public static readonly Rgb MedGrey       = new Rgb(138, 138, 138);  // 245
-        public static readonly Rgb ThinkingFg    = new Rgb(112, 112, 112);  // slightly dimmer than MedGrey
-        public static readonly Rgb GhostFg       = new Rgb(110, 110, 110);  // ghost-text dim version of InputFg
-        public static readonly Rgb CopyIconFg    = new Rgb(120, 200, 255);  // floating "copy block" affordance glyph
-        public static readonly Rgb CopyIconBg    = new Rgb(40, 40, 40);     // small contrasting chip behind the copy glyph
-        public static readonly Rgb PopupSelBg    = new Rgb(70, 70, 70);     // selected row in completion popup
-        public static readonly Rgb Red           = new Rgb(255, 0, 0);      // 196
-        public static readonly Rgb Blue          = new Rgb(0, 135, 215);    // 33
-        public static readonly Rgb Orange        = new Rgb(215, 95, 0);     // 166
-        public static readonly Rgb Yellow        = new Rgb(215, 175, 0);    // 178
-        public static readonly Rgb BrightWhite   = new Rgb(238, 238, 238);  // 255
-        public static readonly Rgb ToolCallFg    = new Rgb(95, 255, 255);   // 51
-        public static readonly Rgb ToolCallBg    = new Rgb(0, 0, 95);       // 17
-        public static readonly Rgb ToolCallErrFg = new Rgb(255, 230, 230);  // pale red text on the first line
-        public static readonly Rgb ToolCallErrBg = new Rgb(120, 30, 30);    // muted red background for the error first line
-        public static readonly Rgb ToolRespFg    = new Rgb(95, 175, 175);   // 73
-        public static readonly Rgb ToolRespBg    = new Rgb(0, 25, 60);      // same dark blue as FileBodyBg
-        public static readonly Rgb FileBodyBg    = new Rgb(0, 25, 60);      // dark/dim blue used as the body background for read/write file content
-        public static readonly Rgb FileBodyFg    = new Rgb(210, 215, 225);  // soft off-white text on the dark-blue file body
-        public static readonly Rgb FileErrBodyBg = new Rgb(70, 10, 10);     // duller red used for the body of an errored tool call
-        public static readonly Rgb FileErrBodyFg = new Rgb(255, 200, 200);
-        public static readonly Rgb ScrollThumb   = new Rgb(88, 88, 88);     // 240
-        public static readonly Rgb ScrollTrack   = new Rgb(18, 18, 18);     // 233
-        public static readonly Rgb HoverBar      = new Rgb(128, 128, 128);  // 244
+        // A restrained dark theme: accents are desaturated rather than primary, and the "colored"
+        // backgrounds are dark neutral slates with only a hint of hue so text stays legible on them.
+        public static readonly Rgb InputFg       = new Rgb(232, 232, 234);  // crisp text on the input line
+        public static readonly Rgb InputBg       = new Rgb(34, 34, 38);     // near-neutral dark input strip
+        public static readonly Rgb Silver        = new Rgb(206, 206, 210);  // primary body text (lifted for legibility)
+        public static readonly Rgb BrightUser    = new Rgb(244, 244, 246);  // user message text — bright but not pure white
+        public static readonly Rgb UserBg        = new Rgb(48, 50, 56);     // dark slate behind user messages (was a too-bright grey)
+        public static readonly Rgb MedGrey       = new Rgb(146, 146, 150);  // secondary/muted text
+        public static readonly Rgb ThinkingFg    = new Rgb(128, 128, 132);  // dim, but a touch brighter than before
+        public static readonly Rgb GhostFg       = new Rgb(116, 116, 120);  // ghost-text dim version of InputFg
+        public static readonly Rgb CopyIconFg    = new Rgb(130, 184, 222);  // floating "copy block" affordance glyph
+        public static readonly Rgb CopyIconBg    = new Rgb(40, 40, 44);     // small contrasting chip behind the copy glyph
+        public static readonly Rgb PopupSelBg    = new Rgb(66, 68, 74);     // selected row in completion popup
+        public static readonly Rgb Red           = new Rgb(214, 102, 102);  // softened error red (was pure 255,0,0)
+        public static readonly Rgb Blue          = new Rgb(98, 158, 204);   // softened accent blue
+        public static readonly Rgb Orange        = new Rgb(204, 140, 82);   // softened amber (system)
+        public static readonly Rgb Yellow        = new Rgb(206, 182, 112);  // softened gold
+        public static readonly Rgb BrightWhite   = new Rgb(232, 232, 234);
+        public static readonly Rgb ToolCallFg    = new Rgb(126, 192, 196);  // calm teal header (was harsh cyan)
+        public static readonly Rgb ToolCallBg    = new Rgb(28, 33, 50);     // dark blue-slate tool block (was saturated blue)
+        public static readonly Rgb ToolCallErrFg = new Rgb(240, 208, 208);  // pale red text on the error first line
+        public static readonly Rgb ToolCallErrBg = new Rgb(94, 50, 50);     // muted red background for the error first line
+        public static readonly Rgb ToolRespFg    = new Rgb(128, 174, 176);  // muted teal
+        public static readonly Rgb ToolRespBg    = new Rgb(22, 30, 44);     // same dark slate as FileBodyBg
+        public static readonly Rgb FileBodyBg    = new Rgb(22, 30, 44);     // dark neutral slate (faint blue) for read/write file content
+        public static readonly Rgb FileBodyFg    = new Rgb(206, 212, 222);  // soft off-white text on the file body
+        public static readonly Rgb FileErrBodyBg = new Rgb(52, 32, 32);     // muted dark red for the body of an errored tool call
+        public static readonly Rgb FileErrBodyFg = new Rgb(238, 198, 198);
+        public static readonly Rgb ScrollThumb   = new Rgb(84, 84, 88);     // 240
+        public static readonly Rgb ScrollTrack   = new Rgb(20, 20, 22);     // 233
+        public static readonly Rgb HoverBar      = new Rgb(124, 124, 128);  // 244
         public static readonly Rgb Background    = new Rgb(0, 0, 0);
 
         // Pre-built SGR strings derived from the palette above.
@@ -63,8 +64,23 @@ public class DisplayScreen : IDisplay
         public static readonly string ErrBodyAnsi   = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
         public static readonly string BodyBgAnsi    = $"\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
         public static readonly string ErrBodyBgAnsi = $"\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
-        public static readonly string FileNameAnsi  = "\x1b[38;5;226m";  // yellow filename highlight
+        public static readonly string FileNameAnsi  = "\x1b[38;2;212;182;120m";  // soft gold filename highlight
         public static readonly string ResetAnsi     = "\x1b[39m";         // reset foreground only
+
+        // Diff rows for the edit_file echo. Added lines use a soft dark blue (no green); removed lines a
+        // muted dark red. The *HiBg variants are the slightly brighter background marking the intra-line
+        // changed span. Each *Ansi sets both fg and the tinted row bg.
+        public static readonly Rgb DiffAddFg   = new Rgb(198, 212, 232);  // soft light text on the blue add row
+        public static readonly Rgb DiffAddBg   = new Rgb(30, 46, 76);     // soft dark blue add row (a step up from the slate body)
+        public static readonly Rgb DiffAddHiBg = new Rgb(46, 74, 116);    // brighter blue for the changed span
+        public static readonly Rgb DiffDelFg   = new Rgb(216, 188, 188);  // muted text on the red remove row
+        public static readonly Rgb DiffDelBg   = new Rgb(54, 32, 32);     // muted dark red remove row background
+        public static readonly Rgb DiffDelHiBg = new Rgb(94, 54, 54);     // brighter red for the changed span
+
+        public static readonly string DiffAddAnsi   = $"\x1b[38;2;{DiffAddFg.R};{DiffAddFg.G};{DiffAddFg.B}m\x1b[48;2;{DiffAddBg.R};{DiffAddBg.G};{DiffAddBg.B}m";
+        public static readonly string DiffAddHiAnsi = $"\x1b[48;2;{DiffAddHiBg.R};{DiffAddHiBg.G};{DiffAddHiBg.B}m";
+        public static readonly string DiffDelAnsi   = $"\x1b[38;2;{DiffDelFg.R};{DiffDelFg.G};{DiffDelFg.B}m\x1b[48;2;{DiffDelBg.R};{DiffDelBg.G};{DiffDelBg.B}m";
+        public static readonly string DiffDelHiAnsi = $"\x1b[48;2;{DiffDelHiBg.R};{DiffDelHiBg.G};{DiffDelHiBg.B}m";
     }
 
     // Collapse mode applied to each attached model; starts at the launch mode and follows Ctrl+O
@@ -86,8 +102,6 @@ public class DisplayScreen : IDisplay
     private int  _sessionTotal = 0;
     private readonly List<SessionDisplayInfo> _sessionList = new List<SessionDisplayInfo>();
     private string _sessionActiveId = "";
-    // Session that was active when the overlay opened; restored if the user cancels with Escape.
-    private string _sessionTreeRestoreId = "";
 
     private readonly List<string> _completions = new List<string> { "/verbose" };
     private readonly object       _consoleLock = new object();
@@ -142,6 +156,10 @@ public class DisplayScreen : IDisplay
     private readonly Dictionary<int, BlockLayer> _blockCache = new Dictionary<int, BlockLayer>();
     private int _renderedWidth = 0;
 
+    // Effective width of the history area (full terminal width, minus the session-tree panel when open).
+    // Set every Redraw; used by mouse hit-testing so column math matches the reflowed layout.
+    private int _historyWidth = 0;
+
     // Last frame's StackLayout — captured during Redraw so mouse handlers can map row→slot without recomputing.
     // _lastViewTop is that frame's window offset (rows from the top of the stack); valid only when _lastStack
     // is non-null, which is how a "no prior frame" state is signaled.
@@ -155,6 +173,19 @@ public class DisplayScreen : IDisplay
 
     private int  _hoverSlot         = -1;
     private long _scrollbarShowUntil = 0;
+
+    // A click-toggle (collapse/expand) requests that the toggled block stay pinned under the cursor through
+    // the height change rather than letting the view jump. -1 means no pending request; _pendingToggleRow is
+    // the terminal row the block's top should land on once the new layout is built.
+    private int _pendingToggleSlot = -1;
+    private int _pendingToggleRow  = 0;
+
+    // Per-slot horizontal scroll offset (columns), for blocks whose wide code/tables extend past the viewport.
+    // Absent / zero means the block sits at its left edge. Driven by horizontal wheel, Shift+wheel and
+    // Alt/Shift+arrows over the hovered block.
+    private readonly Dictionary<int, int> _blockHScroll = new Dictionary<int, int>();
+    private const int HScrollWheelStep = 8;
+    private const int HScrollKeyStep   = 6;
 
     // Last known mouse position in terminal cell coordinates. -1 means "no mouse event seen yet" and
     // suppresses the cursor glow until the user actually moves the mouse over the window.
@@ -468,10 +499,19 @@ public class DisplayScreen : IDisplay
         int h = Console.WindowHeight;
         if (w < 10 || h < 5) return;
 
-        if (w != _renderedWidth)
+        // When the session tree panel is open it claims the right edge, so the history reflows into the
+        // remaining width rather than being painted over. Every width-dependent step below (block layout,
+        // the rendered window, the scrollbar, hover/copy hit-testing) works in historyW, not the full w.
+        int panelW   = _sessionTreeOpen ? Math.Min(52, Math.Max(36, w / 3)) : 0;
+        int historyW = w - panelW;
+        _historyWidth = historyW;
+
+        if (historyW != _renderedWidth)
         {
             _blockCache.Clear();
-            _renderedWidth = w;
+            // Block widths change with the viewport, so horizontal offsets no longer mean the same thing.
+            _blockHScroll.Clear();
+            _renderedWidth = historyW;
             // Reflow changes every block height; the previous layout is not a valid anchoring basis.
             _lastStack = null;
         }
@@ -501,8 +541,8 @@ public class DisplayScreen : IDisplay
         // 1. Lay out one BlockLayer per visible message. Only placements (top/height) are computed here;
         // no full-history Screen is built. SpacerRows=1 gives every block one row of breathing room beneath
         // it without making the spacer part of the block (so toggle/hover math stays clean).
-        StackLayout stack = new StackLayout(w, spacerRows: 1);
-        BuildBlockLayers(stack, w);
+        StackLayout stack = new StackLayout(historyW, spacerRows: 1);
+        BuildBlockLayers(stack, historyW);
 
         Cell bgCell = new Cell(' ', null, Palette.Background, CellStyle.None);
 
@@ -511,8 +551,14 @@ public class DisplayScreen : IDisplay
 
         // 2. Re-anchor against the previous frame's layout so block height changes (collapse,
         // expand, streaming growth, blocks appearing or hiding) keep the on-screen content stable,
-        // then clamp the animation values into the new valid range.
-        ApplyLayoutAnchoring(stack);
+        // then clamp the animation values into the new valid range. A click-toggle pins its own block
+        // under the cursor and takes precedence over the generic frame-to-frame anchoring — except when
+        // pinned to the bottom, where following new content is the right behavior.
+        if (_pendingToggleSlot >= 0 && _scrollTarget >= 0.5f)
+            ResolvePendingToggleAnchor(stack, totalRows, historyH, maxOffset);
+        else
+            ApplyLayoutAnchoring(stack);
+        _pendingToggleSlot = -1;
 
         if (_scrollTarget        > maxOffset) _scrollTarget        = maxOffset;
         if (_scrollTarget        < 0f)        _scrollTarget        = 0f;
@@ -528,7 +574,7 @@ public class DisplayScreen : IDisplay
         if (viewOffsetFromTop < 0) viewOffsetFromTop = 0;
 
         // Render only the visible window directly — cost scales with what is on screen, not history size.
-        Screen historyView = stack.RenderWindow(historyH, viewOffsetFromTop, bgCell);
+        Screen historyView = stack.RenderWindow(historyH, viewOffsetFromTop, bgCell, _blockHScroll);
 
         _lastStack         = stack;
         _lastViewTop       = viewOffsetFromTop;
@@ -547,11 +593,11 @@ public class DisplayScreen : IDisplay
                 int clipBottom   = Math.Min(historyH, bottomInView);
                 if (clipBottom > clipTop)
                 {
-                    Rect hoverRect = new Rect(0, clipTop, w, clipBottom - clipTop);
-                    new ChannelBrightnessEffect(fgFactor: 1.6f, bgFactor: 1.15f).Apply(historyView, hoverRect);
+                    Rect hoverRect = new Rect(0, clipTop, historyW, clipBottom - clipTop);
+                    new ChannelBrightnessEffect(fgFactor: 1.3f, bgFactor: 1.075f).Apply(historyView, hoverRect);
                     // Small lerp-to-white on the background so the highlight is still visible when
                     // the underlying cell bg is true black (where multiplicative scaling does nothing).
-                    new BackgroundTintEffect(Rgb.White, 0.06f).Apply(historyView, hoverRect);
+                    new BackgroundTintEffect(Rgb.White, 0.03f).Apply(historyView, hoverRect);
                 }
             }
         }
@@ -567,11 +613,11 @@ public class DisplayScreen : IDisplay
             thumbTop = (int)Math.Round((double)(maxOffset - _historyScrollOffset) / maxOffset * (historyH - thumbH));
             thumbTop = Math.Max(0, Math.Min(historyH - thumbH, thumbTop));
 
-            Rect trackRect = new Rect(w - 2, 0, 2, historyH);
+            Rect trackRect = new Rect(historyW - 2, 0, 2, historyH);
             new TintEffect(Palette.ScrollTrack, scrollbarOpacity).Apply(historyView, trackRect);
             if (thumbH > 0)
             {
-                Rect thumbRect = new Rect(w - 2, thumbTop, 2, thumbH);
+                Rect thumbRect = new Rect(historyW - 2, thumbTop, 2, thumbH);
                 new TintEffect(Palette.ScrollThumb, scrollbarOpacity).Apply(historyView, thumbRect);
             }
         }
@@ -583,6 +629,9 @@ public class DisplayScreen : IDisplay
         // Separator layer. Carries the "{Role} F10(N/T)" status at its right end.
         Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex, _currentRole, _sessionActive, _sessionTotal);
         frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
+
+        // Animate the console tab title/icon off the same busy state and tick as the separator.
+        ConsoleChrome.Update(_agentBusy, _busyStartTick);
 
         // Input layer.
         string ghostSuffix = ComputeGhostSuffix();
@@ -614,12 +663,13 @@ public class DisplayScreen : IDisplay
         frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
 
         // Session tree overlay layer (optional): narrow right-side panel so agent output stays visible.
+        // The history was already laid out in historyW (= w - panelW), so the panel sits flush beside it
+        // rather than on top of it.
         if (_sessionTreeOpen)
         {
-            int panelW = Math.Min(52, Math.Max(36, w / 3));
             Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId);
             // Replace (opaque) so underline/italic in the content behind the panel does not bleed through.
-            frame.Blit(treeOverlay, w - panelW, 0, BlendMode.Replace, null);
+            frame.Blit(treeOverlay, historyW, 0, BlendMode.Replace, null);
         }
 
         // Cursor glow layer (applied last so it lifts all underlying layers).
@@ -631,11 +681,13 @@ public class DisplayScreen : IDisplay
         }
 
         // Copy affordance: a one-cell "copy block" glyph on the mouse's row, three columns left of the
-        // scrollbar (so clicking it never lands on the scrollbar and scrolls). Shown only while the mouse
-        // is over a copyable block and the F10 panel is closed. Drawn after the glow so it stays crisp.
-        // Clicking it copies that block (Shift+click appends) — handled in the MouseClick branch.
-        if (!_sessionTreeOpen && _mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && SlotAtTerminalRow(_mouseRow).HasValue)
-            frame.WriteText(w - 5, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
+        // scrollbar (so clicking it never lands on the scrollbar and scrolls). Shown whenever the mouse is
+        // over a copyable block in the history area — including while the F10 panel is open, where it tracks
+        // the narrowed history width and sits just left of the moved scrollbar rather than hiding under the
+        // panel. Drawn after the glow (and after the panel) so it stays crisp. Clicking it copies that block
+        // (Shift+click appends) — handled in the MouseClick branch.
+        if (_mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && _mouseCol < historyW && SlotAtTerminalRow(_mouseRow).HasValue)
+            frame.WriteText(historyW - 5, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
 
         // 6. Emit.
         _drawBuf.Clear();
@@ -702,6 +754,46 @@ public class DisplayScreen : IDisplay
     // in rows from the bottom, which already follows content through changes entirely above the view
     // top, so only blocks at or below the view top need an explicit correction. Walks the new layout
     // against the previous frame's layout and sums the required correction per changed block.
+    // Pins the just-toggled block so its top lands on the requested terminal row in the newly built layout.
+    // Sets the scroll offset directly (rows-from-bottom), clamped into the valid range, so collapsing a block
+    // that filled the viewport leaves it visible under the cursor instead of snapping the view to the top.
+    private void ResolvePendingToggleAnchor(StackLayout stack, int totalRows, int historyH, int maxOffset)
+    {
+        BlockPlacement? tp = stack.PlacementOfSlot(_pendingToggleSlot);
+        if (!tp.HasValue) return;
+
+        int desiredViewTop = tp.Value.Top - _pendingToggleRow;
+        float offset = totalRows - historyH - desiredViewTop;
+        if (offset < 0f) offset = 0f;
+        if (offset > maxOffset) offset = maxOffset;
+
+        _historyScrollOffset = offset;
+        _scrollTarget        = offset;
+    }
+
+    // Pans the block currently under the cursor by delta columns (positive = right). Clamped so it never
+    // scrolls past the block's content; a block no wider than the viewport ignores the gesture. Called under
+    // _consoleLock. Returns true if a scrollable block absorbed the gesture.
+    private bool ScrollHoveredBlockHorizontally(int delta)
+    {
+        if (_hoverSlot < 0 || _lastStack == null) return false;
+
+        int blockW = _lastStack.BlockWidthOfSlot(_hoverSlot);
+        int maxOff = blockW - _historyWidth;
+        if (maxOff <= 0) return false;   // nothing hidden to the side
+
+        int cur  = _blockHScroll.TryGetValue(_hoverSlot, out int v) ? v : 0;
+        int next = cur + delta;
+        if (next < 0) next = 0;
+        if (next > maxOff) next = maxOff;
+
+        if (next == 0) _blockHScroll.Remove(_hoverSlot);
+        else _blockHScroll[_hoverSlot] = next;
+
+        Redraw();
+        return true;
+    }
+
     private void ApplyLayoutAnchoring(StackLayout stack)
     {
         if (_lastStack == null) return;
@@ -1013,6 +1105,7 @@ public class DisplayScreen : IDisplay
                         _lastHeight = curH;
                         _needsErase = true;
                         _blockCache.Clear();
+                        _blockHScroll.Clear();
                         _renderedWidth = curW;
                         _lastStack = null;
                         needRedraw = true;
@@ -1065,7 +1158,9 @@ public class DisplayScreen : IDisplay
                 {
                     _mouseRow = inputEv.Row;
                     _mouseCol = inputEv.Col;
-                    int? slot = SlotAtTerminalRow(inputEv.Row);
+                    // Over the session-tree panel there is no history block to highlight.
+                    bool overPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
+                    int? slot = overPanel ? null : SlotAtTerminalRow(inputEv.Row);
                     _hoverSlot = slot ?? -1;
                     Redraw();
                 }
@@ -1078,6 +1173,21 @@ public class DisplayScreen : IDisplay
                 {
                     _mouseRow = inputEv.Row;
                     _mouseCol = inputEv.Col;
+                    // Re-resolve the block under the cursor: it's the wheel target, and on a vertical scroll the
+                    // content moves under a stationary mouse so the highlight should track it.
+                    bool wheelOverPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
+                    _hoverSlot = wheelOverPanel ? -1 : (SlotAtTerminalRow(inputEv.Row) ?? -1);
+
+                    // A horizontal wheel (tilt / trackpad) or Shift+wheel pans the hovered block sideways;
+                    // positive delta scrolls right. If the block has nothing hidden to the side, fall through
+                    // to vertical scrolling so the gesture is never swallowed.
+                    if (inputEv.Horizontal || inputEv.Shift)
+                    {
+                        int hDelta = inputEv.WheelDelta > 0 ? HScrollWheelStep : -HScrollWheelStep;
+                        if (ScrollHoveredBlockHorizontally(hDelta))
+                            continue;
+                    }
+
                     _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
                     // Any scroll gesture resets the follow timer, even one that lands back at the bottom.
                     _followReadyTick = 0;
@@ -1092,11 +1202,18 @@ public class DisplayScreen : IDisplay
                 {
                     _mouseRow = inputEv.Row;
                     _mouseCol = inputEv.Col;
-                    int scrollCol = Console.WindowWidth - 2;
+                    int scrollCol = _historyWidth - 2;
+
+                    // A click inside the session-tree panel is the panel's, not the history's — never toggle a
+                    // block underneath it.
+                    if (_sessionTreeOpen && inputEv.Col >= _historyWidth)
+                        continue;
 
                     // Copy-block affordance sits three columns left of the scrollbar on the mouse's row. A click
-                    // there copies that block to the clipboard; Shift+click appends instead of replacing.
-                    if (!_sessionTreeOpen && inputEv.Col == Console.WindowWidth - 5 && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
+                    // there copies that block to the clipboard; Shift+click appends instead of replacing. The
+                    // panel-area guard above already excluded clicks over the F10 panel, so this works whether
+                    // the panel is open or closed.
+                    if (inputEv.Col == _historyWidth - 5 && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
                         continue;
 
                     if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
@@ -1114,7 +1231,23 @@ public class DisplayScreen : IDisplay
                         int? slot = SlotAtTerminalRow(inputEv.Row);
                         if (slot.HasValue)
                         {
-                            // Redraw's layout anchoring keeps the view stable through the height change.
+                            // Decide where the toggled block's top should land after the height change so the
+                            // view stays put under the cursor. If the block's header is currently on-screen,
+                            // keep it on the same row; otherwise (a block taller than the viewport, whose top
+                            // is scrolled off above) drop its top to the clicked row so the collapsed block
+                            // sits directly under the mouse and can be toggled back open.
+                            int desiredRow = inputEv.Row;
+                            BlockPlacement? op = _lastStack?.PlacementOfSlot(slot.Value);
+                            if (op.HasValue)
+                            {
+                                int topRow = op.Value.Top - _lastViewTop;
+                                if (topRow >= 0 && topRow < _lastHistoryHeight)
+                                    desiredRow = topRow;
+                            }
+                            _pendingToggleSlot = slot.Value;
+                            _pendingToggleRow  = desiredRow;
+
+                            // Redraw's pending-toggle anchoring keeps the block stable through the height change.
                             _model?.ToggleCollapsed(slot.Value);
                             // Keep hover indicator after the click — mouse is still over the block.
                             _hoverSlot = slot.Value;
@@ -1142,13 +1275,17 @@ public class DisplayScreen : IDisplay
             bool alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
             bool shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
 
-            // When the session tree overlay is open, intercept all keystrokes for tree navigation.
-            // No input goes to the agent while the overlay is active.
+            // The session-tree panel is non-modal: it stays open beside the input line without blocking
+            // typing. It borrows only the bare Up/Down arrows for tree navigation (so they don't also move
+            // the input caret) and Delete to drop a session while the input line is empty. Every other key —
+            // printable text, Enter to send, F10 to toggle the panel — falls through to normal handling below.
+            // Navigation previews live, so arrowing is itself the commit; there is no separate accept step.
             if (_sessionTreeOpen)
             {
+                bool treeHandled = false;
                 lock (_consoleLock)
                 {
-                    if (key.Key == ConsoleKey.UpArrow)
+                    if (key.Key == ConsoleKey.UpArrow && !ctrl && !alt && !shift)
                     {
                         if (_sessionTreeSelected > 0)
                         {
@@ -1159,8 +1296,9 @@ public class DisplayScreen : IDisplay
                             PreviewSelectedSession();
                         }
                         Redraw();
+                        treeHandled = true;
                     }
-                    else if (key.Key == ConsoleKey.DownArrow)
+                    else if (key.Key == ConsoleKey.DownArrow && !ctrl && !alt && !shift)
                     {
                         if (_sessionTreeSelected < _sessionList.Count - 1)
                         {
@@ -1171,18 +1309,13 @@ public class DisplayScreen : IDisplay
                             PreviewSelectedSession();
                         }
                         Redraw();
+                        treeHandled = true;
                     }
-                    else if (key.Key == ConsoleKey.F10 || key.Key == ConsoleKey.Enter)
+                    else if (key.Key == ConsoleKey.Delete && inputBuffer.Length == 0)
                     {
-                        // Commit the highlighted session (already previewed) and close the overlay.
-                        _sessionTreeOpen = false;
-                        PreviewSelectedSession();
-                        Redraw();
-                    }
-                    else if (key.Key == ConsoleKey.Delete)
-                    {
-                        // Delete removes a subagent session from memory and disk. The root session
-                        // (depth 0) is never deletable, and a session still running is left alone.
+                        // Delete removes a subagent session from memory and disk — but only when the input
+                        // line is empty, so it never steals the forward-delete from text editing. The root
+                        // session (depth 0) is never deletable, and a session still running is left alone.
                         if (_sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
                         {
                             SessionDisplayInfo target = _sessionList[_sessionTreeSelected];
@@ -1197,17 +1330,10 @@ public class DisplayScreen : IDisplay
                                 Redraw();
                             }
                         }
-                    }
-                    else if (key.Key == ConsoleKey.Escape)
-                    {
-                        _sessionTreeOpen = false;
-                        // Cancel: restore the session that was active when the overlay opened.
-                        if (!string.IsNullOrEmpty(_sessionTreeRestoreId))
-                            _sessionSwitchCallback?.Invoke(_sessionTreeRestoreId);
-                        Redraw();
+                        treeHandled = true;
                     }
                 }
-                continue;
+                if (treeHandled) continue;
             }
 
             if (key.Key == ConsoleKey.Enter && !shift && !alt)
@@ -1346,6 +1472,27 @@ public class DisplayScreen : IDisplay
                 {
                     inputBuffer.Remove(cursorPos, 1);
                     SetInput(inputBuffer.ToString(), cursorPos);
+                }
+            }
+            else if ((key.Key == ConsoleKey.LeftArrow || key.Key == ConsoleKey.RightArrow) && (alt || shift))
+            {
+                // Alt/Shift + Left/Right pans the block under the cursor sideways instead of moving the text
+                // caret. It is dedicated to block scrolling — with no hovered scrollable block it is a no-op
+                // rather than caret motion, so it never disturbs the input line.
+                int dir = key.Key == ConsoleKey.RightArrow ? HScrollKeyStep : -HScrollKeyStep;
+                lock (_consoleLock)
+                    ScrollHoveredBlockHorizontally(dir);
+            }
+            else if ((key.Key == ConsoleKey.UpArrow || key.Key == ConsoleKey.DownArrow) && alt)
+            {
+                // Alt + Up/Down nudges the history scroll one row, the vertical counterpart to Alt + Left/Right.
+                // Kept distinct from the bare arrows so it never disturbs the input caret or history recall.
+                lock (_consoleLock)
+                {
+                    _scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
+                    _followReadyTick = 0;
+                    if (key.Key == ConsoleKey.UpArrow) _scrollTarget += 1;
+                    else _scrollTarget = Math.Max(0f, _scrollTarget - 1);
                 }
             }
             else if (key.Key == ConsoleKey.LeftArrow && ctrl)
@@ -1497,7 +1644,6 @@ public class DisplayScreen : IDisplay
                         _sessionTreeOpen = !_sessionTreeOpen;
                         if (_sessionTreeOpen)
                         {
-                            _sessionTreeRestoreId = _sessionActiveId;
                             // Pre-select the currently active session.
                             _sessionTreeSelected = 0;
                             for (int i = 0; i < _sessionList.Count; i++)

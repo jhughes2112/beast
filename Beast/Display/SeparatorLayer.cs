@@ -31,6 +31,10 @@ internal static class SeparatorLayer
         "Diving", "Scaling", "Ascending", "Descending", "Encroaching", "Invading"
     };
 
+    // Each entry is one animation: an array of frames cycled in order. The frame count is arbitrary —
+    // Build() moduloes by the animation's own length — so animations can be as short or as lengthy as you
+    // like. The one rule: every frame within a single animation must be the same visible width (use only
+    // single-cell glyphs, no emoji) so the word that follows the spinner doesn't jitter as it cycles.
     internal static readonly string[][] BusyAnimations = new string[][]
     {
         new[] { "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙" }, // Worm
@@ -49,12 +53,33 @@ internal static class SeparatorLayer
         new[] { "⌞⌜⌝⌟", "⌜⌝⌟⌞", "⌝⌟⌞⌜", "⌟⌞⌜⌝" },                         // Corner spin
         new[] { "[●  ]", "[ ● ]", "[  ●]", "[ ● ]" },                     // Scanner
         new[] { "{  }", " { }", "{  }", " { }" },                         // Pulse brackets
-        new[] { "<  >", "<==>", " <  >", "  <  >" },                      // Jaws
+        new[] { "<  >", "< > ", " >< ", "< > " },                         // Jaws
         new[] { "v   ", " v  ", "  v ", "   v", "  ^ ", " ^  " },          // Gravity bounce
         new[] { "◰◱◲◳", "◱◲◳◰", "◲◳◰◱", "◳◰◱◲" },                         // Box corners
         new[] { "◴◵◶◷", "◵◶◷◴", "◶◷◴◵", "◷◴◵◶" },                         // Clock rotate
         new[] { "⠐⠠⢀⡀", "⠠⢀⡀⠐", "⢀⡀⠐⠠", "⡀⠐⠠⢀" },                   // Marquee
-        new[] { "⠁⠂⠄⡀", "⠂⠄⡀⠠", "⠄⡀⠠⠐", "⡀⠠⠐⠈" }                    // Staircase
+        new[] { "⠁⠂⠄⡀", "⠂⠄⡀⠠", "⠄⡀⠠⠐", "⡀⠠⠐⠈" },                   // Staircase
+
+        // --- Single-cell spinners (width 1) ---
+        new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },     // Braille spin
+        new[] { "◐", "◓", "◑", "◒" },                                     // Half-circle spin
+        new[] { "◜", "◝", "◞", "◟" },                                     // Arc corners spin
+        new[] { "○", "◔", "◑", "◕", "●", "◕", "◑", "◔" },                 // Moon phases
+        new[] { "∙", "•", "●", "◉", "●", "•" },                           // Fisheye pulse
+        new[] { "✶", "✷", "✸", "✹", "✺", "✹", "✸", "✷" },                 // Star twinkle
+        new[] { "⠁", "⠂", "⠄", "⡀", "⠄", "⠂" },                           // Gravity drip
+        new[] { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂" }, // Equalizer column
+
+        // --- Lengthy multi-cell animations ---
+        new[] { "●       ", " ●      ", "  ●     ", "   ●    ", "    ●   ", "     ●  ", "      ● ", "       ●", "      ● ", "     ●  ", "    ●   ", "   ●    ", "  ●     ", " ●      " }, // Bouncing ball
+        new[] { "▰▱▱▱▱▱▱▱▱▱", "▱▰▱▱▱▱▱▱▱▱", "▱▱▰▱▱▱▱▱▱▱", "▱▱▱▰▱▱▱▱▱▱", "▱▱▱▱▰▱▱▱▱▱", "▱▱▱▱▱▰▱▱▱▱", "▱▱▱▱▱▱▰▱▱▱", "▱▱▱▱▱▱▱▰▱▱", "▱▱▱▱▱▱▱▱▰▱", "▱▱▱▱▱▱▱▱▱▰", "▱▱▱▱▱▱▱▱▰▱", "▱▱▱▱▱▱▱▰▱▱", "▱▱▱▱▱▱▰▱▱▱", "▱▱▱▱▱▰▱▱▱▱", "▱▱▱▱▰▱▱▱▱▱", "▱▱▱▰▱▱▱▱▱▱", "▱▱▰▱▱▱▱▱▱▱", "▱▰▱▱▱▱▱▱▱▱" }, // Knight Rider
+        new[] { "▁▂▃▄▅▆▇█", "▂▃▄▅▆▇█▇", "▃▄▅▆▇█▇▆", "▄▅▆▇█▇▆▅", "▅▆▇█▇▆▅▄", "▆▇█▇▆▅▄▃", "▇█▇▆▅▄▃▂", "█▇▆▅▄▃▂▁", "▇▆▅▄▃▂▁▂", "▆▅▄▃▂▁▂▃", "▅▄▃▂▁▂▃▄", "▄▃▂▁▂▃▄▅", "▃▂▁▂▃▄▅▆", "▂▁▂▃▄▅▆▇" }, // Scrolling wave
+        new[] { "▶▷▷▷▷▷", "▷▶▷▷▷▷", "▷▷▶▷▷▷", "▷▷▷▶▷▷", "▷▷▷▷▶▷", "▷▷▷▷▷▶" }, // Arrow march
+        new[] { "╲   ╱", " ╲ ╱ ", "  ╳  ", " ╱ ╲ ", "╱   ╲", " ╱ ╲ ", "  ╳  ", " ╲ ╱ " }, // Weaving helix
+        new[] { "━━━━━━━━━✦", "━━━━━━━━✦ ", "━━━━━━━✦  ", "━━━━━━✦   ", "━━━━━✦    ", "━━━━✦     ", "━━━✦      ", "━━✦       ", "━✦        ", "✦         ", "          ", "    ✸     ", "          " }, // Burning fuse
+        new[] { "⊙         ", "·⊙        ", "··⊙       ", " ··⊙      ", "  ··⊙     ", "   ··⊙    ", "    ··⊙   ", "     ··⊙  ", "      ··⊙ ", "       ··⊙" }, // Comet
+        new[] { "      ", "▰     ", "▰▰    ", "▰▰▰   ", "▰▰▰▰  ", "▰▰▰▰▰ ", "▰▰▰▰▰▰", "▱▰▰▰▰▰", "▱▱▰▰▰▰", "▱▱▱▰▰▰", "▱▱▱▱▰▰", "▱▱▱▱▱▰", "▱▱▱▱▱▱" }, // Fill and drain
+        new[] { "●           ", " ●          ", "  ●         ", "   ●        ", "    ●       ", "     ●      ", "      ●     ", "       ●    ", "        ●   ", "         ●  ", "          ● ", "           ●", "          ● ", "         ●  ", "        ●   ", "       ●    ", "      ●     ", "     ●      ", "    ●       ", "   ●        ", "  ●         ", " ●          " } // Long ping-pong
     };
 
     internal static int AnimationCount => BusyAnimations.Length;
@@ -84,7 +109,7 @@ internal static class SeparatorLayer
                 : $"{ts.TotalSeconds:F1}s";
 
         string label = $" {frames} {word} {timeLabel} ";
-        Rgb busyFg = new Rgb(80, 200, 200);
+        Rgb busyFg = new Rgb(126, 192, 196);
         AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, DisplayScreen.Palette.Background);
 
         return sep;
