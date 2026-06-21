@@ -17,12 +17,13 @@ internal static class BlockRenderer
     {
         bool isToolCall = msg.Type == FrameType.ToolCall;
         bool isError   = isToolCall && msg.PairedResponseIsError;
-        // The header line is red whenever the response shows any error content, not only on a non-zero
-        // exit: the stderr field (PairedResponseError) is always rendered red below, so a command that
-        // writes to stderr but still exits 0 gets a red body and the header must match it. The stdout
-        // body keeps its normal color (driven by isError) — only the header reflects stderr's presence.
+        // The header line and the stderr block go red whenever the response carries any error content —
+        // a non-zero exit, or any stderr text even on a clean exit. The block's base color stays normal,
+        // though: only the header row and the stderr region are painted red, so stdout keeps its normal
+        // (blue) background and reads as distinct from stderr below it.
         bool headerError = isError || (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseError));
-        (Rgb fg, Rgb? bg) = ColorsForType(msg.Type, headerError);
+        (Rgb fg, Rgb? bg) = ColorsForType(msg.Type, false);
+        (Rgb headerFg, Rgb? headerBg) = ColorsForType(msg.Type, headerError);
         int spacer = 0;
 
         string prefix = PrefixTextForType(msg.Type);
@@ -37,18 +38,28 @@ internal static class BlockRenderer
             toolName = paren >= 0 ? msg.Content.Substring(0, paren).Trim() : msg.Content;
         }
 
-        int availW = Math.Max(1, w - prefix.Length);
-        bool truncated = AnsiString.VisibleLength(summary) > availW - 1;
+        // Thinking/tool/tool-response blocks indent their whole expanded body (header included) two spaces
+        // so it nests under the message. The collapsed header must carry the same indent or the text shifts
+        // right when the block is expanded.
+        string headerIndent = (msg.Type == FrameType.Thinking || msg.Type == FrameType.Tool
+                            || msg.Type == FrameType.ToolResponse) ? "  " : string.Empty;
 
-        string respAnsi   = isError ? DisplayScreen.Palette.ErrBodyAnsi   : DisplayScreen.Palette.BodyAnsi;
-        string respBgAnsi = isError ? DisplayScreen.Palette.ErrBodyBgAnsi : DisplayScreen.Palette.BodyBgAnsi;
+        int availW = Math.Max(1, w - prefix.Length - headerIndent.Length);
+        // The collapsed header shows up to availW visible chars, so it is only actually truncated past availW.
+        // (Using availW - 1 here flagged a summary that exactly fills the line, producing an ellipsis with
+        // nothing extra to reveal when expanded.)
+        bool truncated = AnsiString.VisibleLength(summary) > availW;
+
+        // The collapsed preview is always stdout (bash output, a file's contents) — never stderr — so it
+        // keeps the normal body background regardless of exit code.
+        string respBgAnsi = DisplayScreen.Palette.BodyBgAnsi;
         string fileLang = string.Empty;
         if (!isError && (toolName == "read_file" || toolName == "write_file"
                       || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
             fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
         List<string> collapsedLines = new List<string>();
-        collapsedLines.Add(prefix + AnsiString.TruncateVisible(summary, availW));
+        collapsedLines.Add(headerIndent + prefix + AnsiString.TruncateVisible(summary, availW));
 
         if (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
@@ -57,13 +68,13 @@ internal static class BlockRenderer
             {
                 int start = Math.Max(0, respLines.Length - 5);
                 for (int i = start; i < respLines.Length; i++)
-                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), "bash", respBgAnsi));
+                    collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), "bash", respBgAnsi));
             }
             else if (toolName == "read_file")
             {
                 int end = Math.Min(respLines.Length, 5);
                 for (int i = 0; i < end; i++)
-                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), fileLang, respBgAnsi));
+                    collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), fileLang, respBgAnsi));
             }
         }
         if (isToolCall && toolName == "write_file")
@@ -74,7 +85,19 @@ internal static class BlockRenderer
                 string[] wlines = writeContent.Replace("\r\n", "\n").Split('\n');
                 int end = Math.Min(wlines.Length, 5);
                 for (int i = 0; i < end; i++)
-                    collapsedLines.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(wlines[i]), fileLang, respBgAnsi));
+                    collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(wlines[i]), fileLang, respBgAnsi));
+            }
+        }
+
+        // The header already carries the filename, so the condensed preview is just the goal — one line per
+        // source line so a multi-line goal keeps its newlines rather than being collapsed onto a single row.
+        if (isToolCall && toolName == "find_relevant_file_sections")
+        {
+            string goal = ExtractStringArg(msg.Content, "goal");
+            if (!string.IsNullOrEmpty(goal))
+            {
+                foreach (string gline in goal.Replace("\r\n", "\n").Split('\n'))
+                    collapsedLines.Add("  " + ExpandTabs(gline));
             }
         }
 
@@ -88,8 +111,10 @@ internal static class BlockRenderer
         // path). Output rows render on a slightly darker body background so the response reads as distinct
         // from the call header and its arguments above it.
         int responseStart = -1;
+        // Row index where the stderr block begins (-1 when there is none). Those rows are painted red.
+        int errorStart = -1;
         if (isToolCall)
-            ansiLines = plainText ? RenderMessageRowsRaw(msg, w) : RenderToolCallRows(msg, w, out responseStart);
+            ansiLines = plainText ? RenderMessageRowsRaw(msg, w) : RenderToolCallRows(msg, w, out responseStart, out errorStart);
         else if (plainText && msg.Type != FrameType.Thinking)
             ansiLines = RenderMessageRowsRaw(msg, w);
         else
@@ -97,13 +122,15 @@ internal static class BlockRenderer
 
         bool needsEllipsis = truncated || ansiLines.Count > collapsedLines.Count;
         if (needsEllipsis)
-            collapsedLines[0] = prefix + AnsiString.TruncateVisible(summary, availW - 1) + "…";
+            collapsedLines[0] = headerIndent + prefix + AnsiString.TruncateVisible(summary, availW - 1) + "…";
 
         Cell rowBg = new Cell(' ', fg, bg, CellStyle.None);
         Screen collapsed = new Screen(w, collapsedLines.Count + spacer, rowBg);
         for (int r = 0; r < collapsedLines.Count; r++)
         {
-            (int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, r, collapsedLines[r], fg, bg);
+            Rgb lineFg = r == 0 ? headerFg : fg;
+            Rgb? lineBg = r == 0 ? headerBg : bg;
+            (int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, r, collapsedLines[r], lineFg, lineBg);
             AnsiToScreen.PadRowBackground(collapsed, endX, r, cFg, cBg);
         }
 
@@ -123,20 +150,31 @@ internal static class BlockRenderer
         Screen expanded = new Screen(contentW, expandedRows + spacer, rowBg);
         // Output rows fall back to the body background (slightly darker than the block) on any reset, so prose
         // and markdown responses — which carry no explicit background of their own — still read as distinct
-        // output rather than blending into the call block.
-        Rgb? responseBaseBg = isError ? DisplayScreen.Palette.FileErrBodyBg : DisplayScreen.Palette.FileBodyBg;
+        // output rather than blending into the call block. stdout always uses the normal body background;
+        // only the header (row 0) and the stderr block fall back to the red error background.
+        Rgb? responseBaseBg = DisplayScreen.Palette.FileBodyBg;
+        Rgb? errorBaseBg = DisplayScreen.Palette.FileErrBodyBg;
         for (int r = 0; r < ansiLines.Count; r++)
         {
-            Rgb? rowBaseBg = (responseStart >= 0 && r >= responseStart) ? responseBaseBg : bg;
-            (int endCx, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], fg, rowBaseBg);
+            Rgb rowFg = r == 0 ? headerFg : fg;
+            Rgb? rowBaseBg;
+            if (r == 0)
+                rowBaseBg = headerBg;
+            else if (errorStart >= 0 && r >= errorStart)
+                rowBaseBg = errorBaseBg;
+            else if (responseStart >= 0 && r >= responseStart)
+                rowBaseBg = responseBaseBg;
+            else
+                rowBaseBg = bg;
+            (int endCx, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], rowFg, rowBaseBg);
             AnsiToScreen.PadRowBackground(expanded, endCx, r, eFg, eBg);
         }
 
         if (isToolCall && !isError && msg.ToolDuration.HasValue && msg.ToolDuration.Value.TotalSeconds >= 0.1)
         {
             string tag = $"Took {msg.ToolDuration.Value.TotalSeconds:F1}s";
-            StampRightOnRow(collapsed, 0, tag, fg, bg);
-            StampRightOnRow(expanded,  0, tag, fg, bg);
+            StampRightOnRow(collapsed, 0, tag, headerFg, headerBg);
+            StampRightOnRow(expanded,  0, tag, headerFg, headerBg);
         }
 
         if (msg.Type == FrameType.Thinking)
@@ -288,9 +326,10 @@ internal static class BlockRenderer
         return result;
     }
 
-    private static List<string> RenderToolCallRows(DisplayMessage msg, int w, out int responseStart)
+    private static List<string> RenderToolCallRows(DisplayMessage msg, int w, out int responseStart, out int errorStart)
     {
         responseStart = -1;
+        errorStart = -1;
         List<string> result = new List<string>();
         string content = msg.Content;
 
@@ -300,9 +339,12 @@ internal static class BlockRenderer
         if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
             argsJson = argsJson.Substring(0, argsJson.Length - 1);
 
+        // The header stays a single truncated line even when expanded — wrapping the summary across several
+        // rows reads worse than a clean one-line header with the body opened beneath it.
         string summary = FormatToolCallSummary(content, msg.PairedResponseContent);
-        foreach (string wrappedLine in AnsiString.WordWrap(summary, w))
-            result.Add(wrappedLine);
+        result.Add(AnsiString.VisibleLength(summary) > w
+            ? AnsiString.TruncateVisible(summary, w - 1) + "…"
+            : summary);
 
         // Everything emitted past here is the body that nests under the summary header; it gets indented
         // two spaces at the end so it reads as part of the block.
@@ -310,8 +352,9 @@ internal static class BlockRenderer
 
         HashSet<string> summaryProps = SummaryPropertiesFor(name);
 
-        string respBodyAnsi   = msg.PairedResponseIsError ? DisplayScreen.Palette.ErrBodyAnsi   : DisplayScreen.Palette.BodyAnsi;
-        string respBodyBgAnsi = msg.PairedResponseIsError ? DisplayScreen.Palette.ErrBodyBgAnsi : DisplayScreen.Palette.BodyBgAnsi;
+        // Arguments and stdout always render on the normal body background — only the stderr block below
+        // carries the red error background.
+        string respBodyBgAnsi = DisplayScreen.Palette.BodyBgAnsi;
         string fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
         // edit_file's parameters (the old/new text) are redundant with the diff shown below, so its
@@ -415,16 +458,16 @@ internal static class BlockRenderer
         if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
         {
             if (responseStart < 0) responseStart = result.Count;
-            string respBgAnsi = msg.PairedResponseIsError ? DisplayScreen.Palette.ErrBodyBgAnsi : respBodyBgAnsi;
-            RespMode mode = msg.PairedResponseIsError
-                ? RespMode.Code
-                : ResponseModeFor(name, ExtractStringArg(msg.Content, "file_path"), msg.PairedResponseContent!);
-            EmitResponseLines(result, msg.PairedResponseContent, mode, fileLang, respBgAnsi, w);
+            // stdout renders on the normal body background whatever the exit code — its red counterpart is
+            // the stderr block below, so the two stay visually distinct.
+            RespMode mode = ResponseModeFor(name, ExtractStringArg(msg.Content, "file_path"), msg.PairedResponseContent!);
+            EmitResponseLines(result, msg.PairedResponseContent, mode, fileLang, respBodyBgAnsi, w);
         }
 
         if (!string.IsNullOrEmpty(msg.PairedResponseError))
         {
             if (responseStart < 0) responseStart = result.Count;
+            errorStart = result.Count;
             foreach (string errLine in msg.PairedResponseError.Split('\n'))
                 result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(errLine), fileLang, DisplayScreen.Palette.ErrBodyBgAnsi));
         }
@@ -623,6 +666,9 @@ internal static class BlockRenderer
     {
         if (toolName == "return_to_caller" && propName.Equals("output", StringComparison.OrdinalIgnoreCase)) return true;
         if (toolName == "finish_review" && propName.Equals("comments", StringComparison.OrdinalIgnoreCase)) return true;
+        // task_complete's single argument is the whole review/integration summary the caller receives — it
+        // is the message itself, so render it as markdown prose rather than a labelled "results …" property.
+        if (toolName == "task_complete" && propName.Equals("results_of_review_work", StringComparison.OrdinalIgnoreCase)) return true;
         if (toolName == "state_transition" && propName.Equals("context", StringComparison.OrdinalIgnoreCase)) return true;
         // The delegation tools' prompt is a natural-language briefing — render it as prose, not as a labelled
         // "prompt <value>" property, so the expanded block reads as the instruction itself.
@@ -639,6 +685,9 @@ internal static class BlockRenderer
                 set.Add("statement"); break;
             case "read_file":
                 set.Add("file_path"); set.Add("offset"); set.Add("lines"); break;
+            case "find_relevant_file_sections":
+                // file_path is in the header, goal is the condensed preview — neither belongs in the body.
+                set.Add("file_path"); set.Add("goal"); break;
             case "write_file":
             case "edit_file_replace":
             case "edit_file_insert":

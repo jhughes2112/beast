@@ -265,9 +265,9 @@ public class RoleService
             """
 			You are a first-pass discovery agent. Given a goal and a block of content from the target file, generate an index of regions relevant to the stated goal so the caller can read them directly using read_file.
 			To complete the conversation, use the return_to_caller tool and deliver the citations as the output argument.
-			The format should clearly include the range of line numbers and what the agent will find there in this exact form:
-			lines <starting_line> to <ending_line> -> <keywords and brief summary>
-			lines <starting_line> to <ending_line> -> <keywords and brief summary>
+			The format should clearly include the range of line numbers and what the agent will find there in this exact format:
+			lines <starting_line> to <ending_line> -> <keywords and brief summary>\\n
+			lines <starting_line> to <ending_line> -> <keywords and brief summary>\\n
 			
 			Rules:
 			Cite only regions whose content directly relates to the goal. Omit unrelated code, to increase signal to noise ratio.

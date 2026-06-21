@@ -154,7 +154,12 @@ public static class MarkdownAnsi
         }
         else if (block is ThematicBreakBlock)
         {
-            lines.Add(new RenderLine(indent + Codes.DimGrey + new string('─', 40) + Codes.Reset, false));
+            // Start the rule flush with the block's own indent (not pushed in further), and pull the right end
+            // in by the same indent width so it sits symmetrically inside the block rather than running the full
+            // width of the screen. Plain (non-dim) grey so the rule sits on the block's own background.
+            int ruleLen = Math.Max(4, w - indent.Length * 2);
+            string rule = new string('─', ruleLen);
+            lines.Add(new RenderLine(indent + Codes.Border + rule + Codes.Reset, true));
         }
         else if (block is Table table)
         {
@@ -415,14 +420,31 @@ public static class MarkdownAnsi
         }
         else if (inline is LinkInline link)
         {
-            sb.Append(Codes.LinkText);
-            AppendInlines(link, sb, type);
-            if (!string.IsNullOrEmpty(link.Url))
+            // When the display text is identical to the URL, drop the redundant "text (url)" form and
+            // show the bare URL — underlined so it still reads as a link, and saving horizontal space.
+            string linkText = InlinesToString(link);
+            if (!string.IsNullOrEmpty(link.Url) && linkText == link.Url)
             {
-                sb.Append(Codes.DimGrey);
-                sb.Append(" (");
+                sb.Append(Codes.LinkUrl);
+                sb.Append("\x1b[4m");
                 sb.Append(link.Url);
-                sb.Append(")");
+                sb.Append("\x1b[24m");
+            }
+            else
+            {
+                sb.Append(Codes.LinkText);
+                AppendInlines(link, sb, type);
+                if (!string.IsNullOrEmpty(link.Url))
+                {
+                    // Underline only the URL itself — the parens stay plain so the line reads as less noisy.
+                    sb.Append(Codes.Reset);
+                    sb.Append(Codes.LinkUrl);
+                    sb.Append(" (");
+                    sb.Append("\x1b[4m");
+                    sb.Append(link.Url);
+                    sb.Append("\x1b[24m");
+                    sb.Append(")");
+                }
             }
             sb.Append(Codes.Reset);
             sb.Append(BaseCodeForType(type));
@@ -542,7 +564,36 @@ public static class MarkdownAnsi
         if (text.Contains("](")) signals += 1;
         if (text.Contains("**")) signals += 1;
 
+        // A genuine inline code span (`like this`) is on its own a strong signal — often a backtick-wrapped
+        // word or two is the only markdown a short message carries — so it alone clears the threshold.
+        if (HasInlineCodeSpan(text)) signals += 2;
+
         return signals >= 2;
+    }
+
+    // True when some line contains a `…` inline code span: a backtick, one or more non-backtick chars, then a
+    // closing backtick on the same line. Fence lines (``` …) do not match because their run of backticks has
+    // no non-backtick content before a closing backtick on the line.
+    private static bool HasInlineCodeSpan(string text)
+    {
+        string[] lines = text.Replace("\r\n", "\n").Split('\n');
+        foreach (string line in lines)
+        {
+            int tick = line.IndexOf('`');
+            while (tick >= 0)
+            {
+                int p = tick + 1;
+                bool sawContent = false;
+                while (p < line.Length && line[p] != '`')
+                {
+                    sawContent = true;
+                    p++;
+                }
+                if (p < line.Length && sawContent) return true;
+                tick = line.IndexOf('`', tick + 1);
+            }
+        }
+        return false;
     }
 
     // Guesses a syntax-highlight language tag from a file path extension.
@@ -714,7 +765,8 @@ public static class MarkdownAnsi
         public const string Number     = "\x1b[38;2;206;160;110m\x1b[48;5;236m";   // soft amber
         public const string Comment    = "\x1b[38;2;142;142;146m\x1b[48;5;236m\x1b[3m";
 
-        public const string LinkText   = "\x1b[38;2;124;170;214m\x1b[4m";
+        public const string LinkText   = "\x1b[38;2;124;170;214m";                 // visible link text — blue, not underlined (only the URL is)
+        public const string LinkUrl    = "\x1b[38;2;158;160;166m";                 // the parenthesized URL — medium grey, no dim so its background matches the block
         public const string DimGrey    = "\x1b[2m\x1b[38;2;142;142;146m";
         public const string Border     = "\x1b[38;2;108;108;114m";
     }

@@ -45,7 +45,7 @@ public class DisplayScreen : IDisplay
         public static readonly Rgb Yellow        = new Rgb(206, 182, 112);  // softened gold
         public static readonly Rgb BrightWhite   = new Rgb(232, 232, 234);
         public static readonly Rgb ToolCallFg    = new Rgb(126, 192, 196);  // calm teal header (was harsh cyan)
-        public static readonly Rgb ToolCallBg    = new Rgb(28, 33, 50);     // dark blue-slate tool block (was saturated blue)
+        public static readonly Rgb ToolCallBg    = new Rgb(40, 48, 72);     // dark blue-slate tool block; kept brighter than the response body so the call header reads as distinct
         public static readonly Rgb ToolCallErrFg = new Rgb(240, 208, 208);  // pale red text on the error first line
         public static readonly Rgb ToolCallErrBg = new Rgb(94, 50, 50);     // muted red background for the error first line
         public static readonly Rgb ToolRespFg    = new Rgb(128, 174, 176);  // muted teal
