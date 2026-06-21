@@ -13,7 +13,12 @@ internal static class BlockRenderer
     {
         bool isToolCall = msg.Type == FrameType.ToolCall;
         bool isError   = isToolCall && msg.PairedResponseIsError;
-        (Rgb fg, Rgb? bg) = ColorsForType(msg.Type, isError);
+        // The header line is red whenever the response shows any error content, not only on a non-zero
+        // exit: the stderr field (PairedResponseError) is always rendered red below, so a command that
+        // writes to stderr but still exits 0 gets a red body and the header must match it. The stdout
+        // body keeps its normal color (driven by isError) — only the header reflects stderr's presence.
+        bool headerError = isError || (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseError));
+        (Rgb fg, Rgb? bg) = ColorsForType(msg.Type, headerError);
         int spacer = 0;
 
         string prefix = PrefixTextForType(msg.Type);

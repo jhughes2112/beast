@@ -630,12 +630,12 @@ public class DisplayScreen : IDisplay
             new CursorGlowEffect(_mouseCol, _mouseRow, CursorGlowRadius, CursorGlowStrength).Apply(frame, glowRect);
         }
 
-        // Copy affordance: a one-cell "copy block" glyph on the mouse's row, two columns left of the
+        // Copy affordance: a one-cell "copy block" glyph on the mouse's row, three columns left of the
         // scrollbar (so clicking it never lands on the scrollbar and scrolls). Shown only while the mouse
         // is over a copyable block and the F10 panel is closed. Drawn after the glow so it stays crisp.
         // Clicking it copies that block (Shift+click appends) — handled in the MouseClick branch.
         if (!_sessionTreeOpen && _mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && SlotAtTerminalRow(_mouseRow).HasValue)
-            frame.WriteText(w - 4, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
+            frame.WriteText(w - 5, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
 
         // 6. Emit.
         _drawBuf.Clear();
@@ -1094,9 +1094,9 @@ public class DisplayScreen : IDisplay
                     _mouseCol = inputEv.Col;
                     int scrollCol = Console.WindowWidth - 2;
 
-                    // Copy-block affordance sits two columns left of the scrollbar on the mouse's row. A click
+                    // Copy-block affordance sits three columns left of the scrollbar on the mouse's row. A click
                     // there copies that block to the clipboard; Shift+click appends instead of replacing.
-                    if (!_sessionTreeOpen && inputEv.Col == Console.WindowWidth - 4 && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
+                    if (!_sessionTreeOpen && inputEv.Col == Console.WindowWidth - 5 && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
                         continue;
 
                     if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
