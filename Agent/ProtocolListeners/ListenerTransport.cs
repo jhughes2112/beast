@@ -16,9 +16,11 @@ public class ListenerTransport
 
     public void OnAssistantTurn(string text, string thinking, System.Collections.Generic.IReadOnlyList<SemanticToolCall> toolCalls)
     {
-        if (!string.IsNullOrEmpty(thinking))
+        if (!string.IsNullOrWhiteSpace(thinking))
             _transport.Thinking(_sessionId, thinking);
-        if (!string.IsNullOrEmpty(text))
+        // Whitespace-only assistant text (common when the turn is just thinking plus a tool call) must not
+        // produce a visible output block — treat it as no text at all, not just the strictly-empty case.
+        if (!string.IsNullOrWhiteSpace(text))
             _transport.Output(_sessionId, text);
         foreach (SemanticToolCall tc in toolCalls)
             _transport.ToolCallWithId(_sessionId, tc.Id, tc.Name + "(" + tc.ArgumentsJson + ")");

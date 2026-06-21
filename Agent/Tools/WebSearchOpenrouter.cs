@@ -51,7 +51,15 @@ public class WebSearchOpenrouter
         // session for the same reason. Availability is shared so rate-limit state still carries across calls.
         LlmService service = new LlmService(_model, DetectedProtocol.Unknown, _availability);
 
-        BeastSession data = new BeastSession(parent.AllocateChildId(), $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+        // Allocate the child id and immediately persist the parent so its bumped ChildCounter reaches disk
+        // before this (non-ephemeral) search writes its own file. Without it a reload restores the old counter
+        // and the next child reissues this id, overwriting the file. Root parent updates lastSession; a
+        // subagent parent does not. Skipped for an ephemeral parent, whose children are never saved anyway.
+        string childId = parent.AllocateChildId();
+        if (!parent.Ephemeral)
+            SessionService.Save(parent.Data, !parent.IsSubagent);
+
+        BeastSession data = new BeastSession(childId, $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
         Session session = new Session(data, searchRole.SystemPrompt, transport, true);
 
         // The constructor no longer displays the system prompt; a helper session has no other replay path, so

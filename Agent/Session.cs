@@ -373,9 +373,11 @@ public class Session
 			}
 			else if (msg is AssistantMessage am)
 			{
-				if (!string.IsNullOrEmpty(am.Thinking))
+				if (!string.IsNullOrWhiteSpace(am.Thinking))
 					_transport.Thinking(id, am.Thinking);
-				if (!string.IsNullOrEmpty(am.Text))
+				// Skip whitespace-only assistant text so replaying history never reproduces a blank output
+				// block for a turn that was really just thinking plus a tool call.
+				if (!string.IsNullOrWhiteSpace(am.Text))
 					_transport.Output(id, am.Text);
 				foreach (SemanticToolCall tc in am.ToolCalls)
 					_transport.ToolCallWithId(id, tc.Id, tc.Name + "(" + tc.ArgumentsJson + ")");

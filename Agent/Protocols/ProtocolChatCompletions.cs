@@ -557,20 +557,28 @@ public class ProtocolChatCompletions
                     string? contentDelta = delta["content"]?.GetValue<string>();
                     if (!string.IsNullOrEmpty(contentDelta))
                     {
-                        if (openStreamTag != StreamTag.Assistant)
-                        {
-                            if (openStreamTag != null)
-                            {
-                                bundle.Transport?.OnStreamEnd(openStreamTag);
-                            }
-                            bundle.Transport?.OnStreamStart(StreamTag.Assistant);
-                            openStreamTag = StreamTag.Assistant;
-                        }
-
+                        // Always accumulate the committed text and progress; only gate what reaches the client.
                         contentBuilder.Append(contentDelta);
-                        bundle.Transport?.OnStreamChunk(StreamTag.Assistant, contentDelta);
                         streamedCharCount += contentDelta.Length;
                         EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
+
+                        // Don't open the assistant output block on leading whitespace: a thinking+tool-call
+                        // turn that emits a stray newline would otherwise leave an empty block. Wait for the
+                        // first non-whitespace text; once open, stream every delta including whitespace.
+                        bool assistantOpen = openStreamTag == StreamTag.Assistant;
+                        if (assistantOpen || !string.IsNullOrWhiteSpace(contentDelta))
+                        {
+                            if (!assistantOpen)
+                            {
+                                if (openStreamTag != null)
+                                {
+                                    bundle.Transport?.OnStreamEnd(openStreamTag);
+                                }
+                                bundle.Transport?.OnStreamStart(StreamTag.Assistant);
+                                openStreamTag = StreamTag.Assistant;
+                            }
+                            bundle.Transport?.OnStreamChunk(StreamTag.Assistant, contentDelta);
+                        }
                     }
 
                     JsonArray? tcDeltas = delta["tool_calls"]?.AsArray();

@@ -449,6 +449,19 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 }
                 return;
 
+            case FrameType.SessionReset:
+                // The agent started a fresh root (/session new or /session none). Forget every session we
+                // knew so the F10 list and the active view collapse to just the new one.
+                _sessions.Clear();
+                _busySessions.Clear();
+                _sessionDisplayNames.Clear();
+                _activeSessionId = "";
+                _display.OnStreamEnd();
+                _display.SetAgentBusy(false, 0);
+                SessionState reset = EnsureSession(sessionId);
+                _display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0);
+                return;
+
             case FrameType.SessionAnnounce:
                 // Handled below to ensure session is created.
                 break;

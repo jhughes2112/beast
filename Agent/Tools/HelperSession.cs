@@ -29,7 +29,15 @@ public static class HelperSession
 		ITransportServer transport,
 		CancellationToken cancellationToken)
 	{
-		BeastSession data = new BeastSession(parent.AllocateChildId(), displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+		// Allocate the child id and immediately persist the parent so its bumped ChildCounter reaches disk
+		// before this (non-ephemeral) helper writes its own file. Without it a reload restores the old counter
+		// and the next child reissues this id, overwriting the file. Root parent updates lastSession; a
+		// subagent parent does not. Skipped for an ephemeral parent, whose children are never saved anyway.
+		string childId = parent.AllocateChildId();
+		if (!parent.Ephemeral)
+			SessionService.Save(parent.Data, !parent.IsSubagent);
+
+		BeastSession data = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
 		Session session = new Session(data, role.SystemPrompt, transport, true);
 
 		// The constructor no longer displays the system prompt; a helper session has no other replay path,

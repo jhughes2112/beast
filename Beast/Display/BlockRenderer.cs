@@ -445,7 +445,13 @@ internal static class BlockRenderer
         string Get(string key)
         {
             if (!parsed) return string.Empty;
-            return root.TryGetProperty(key, out JsonElement el) ? el.GetString() ?? string.Empty : string.Empty;
+            if (!root.TryGetProperty(key, out JsonElement el)) return string.Empty;
+            // Schema args can be typed (numbers, bools) not just strings, so read the raw
+            // text for anything that is not a string rather than forcing GetString(), which
+            // throws on a Number/Boolean element.
+            if (el.ValueKind == JsonValueKind.String) return el.GetString() ?? string.Empty;
+            if (el.ValueKind == JsonValueKind.Null || el.ValueKind == JsonValueKind.Undefined) return string.Empty;
+            return el.GetRawText();
         }
 
         string label = name.Replace('_', ' ');

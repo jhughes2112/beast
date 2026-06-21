@@ -389,16 +389,24 @@ public class ProtocolResponses
                         string? delta = eventNode["delta"]?.GetValue<string>();
                         if (!string.IsNullOrEmpty(delta))
                         {
-                            if (openStreamTag != StreamTag.Assistant)
+                            // Don't open the assistant output block on leading whitespace: a thinking+tool-call
+                            // turn that emits a stray newline would otherwise leave an empty block. Wait for the
+                            // first non-whitespace text; once open, stream every delta. Committed text comes from
+                            // the final response, so it is unaffected by what we skip here.
+                            bool assistantOpen = openStreamTag == StreamTag.Assistant;
+                            if (assistantOpen || !string.IsNullOrWhiteSpace(delta))
                             {
-                                if (openStreamTag != null)
+                                if (!assistantOpen)
                                 {
-                                    bundle.Transport?.OnStreamEnd(openStreamTag);
+                                    if (openStreamTag != null)
+                                    {
+                                        bundle.Transport?.OnStreamEnd(openStreamTag);
+                                    }
+                                    bundle.Transport?.OnStreamStart(StreamTag.Assistant);
+                                    openStreamTag = StreamTag.Assistant;
                                 }
-                                bundle.Transport?.OnStreamStart(StreamTag.Assistant);
-                                openStreamTag = StreamTag.Assistant;
+                                bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
                             }
-                            bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
                             EmitProgress(model, liveInputTokens, onProgress);
                         }
                     }

@@ -570,6 +570,7 @@ public class SessionRunner
 						session = CreateFreshSession(session.Role, false);
 						_service = null;
 						_cachedSessions = SessionService.List();
+						_transport.SessionReset(session.Id);
 						_transport.Status(session.Id, "New session started.");
 					}
 					else if (args == "none")
@@ -579,6 +580,7 @@ public class SessionRunner
 						session = CreateFreshSession(session.Role, true);
 						_service = null;
 						_cachedSessions = SessionService.List();
+						_transport.SessionReset(session.Id);
 						_transport.Status(session.Id, "Ephemeral session started (not saved).");
 					}
 					else if (args != null && args.StartsWith("delete ", StringComparison.OrdinalIgnoreCase))
@@ -597,7 +599,7 @@ public class SessionRunner
 						else if (SessionService.Delete(deleteId))
 						{
 							_cachedSessions = SessionService.List();
-							_transport.Status(session.Id, "Deleted session: " + deleteId);
+						_transport.Status(session.Id, "Deleted session: " + deleteId);
 						}
 						else
 						{
@@ -624,7 +626,7 @@ public class SessionRunner
 							session = new Session(loaded, string.Empty, _transport, false);
 							_service = null;
 							_cachedSessions = SessionService.List();
-							_transport.Status(session.Id, "Switched to session: " + loaded.DisplayName);
+						_transport.Status(session.Id, "Switched to session: " + loaded.DisplayName);
 						}
 						else
 						{
@@ -666,7 +668,7 @@ public class SessionRunner
 							session.UpdateModel(targetModel);
 							_registry.ResetAvailability(modelArg);
 							_service = null;  // force fresh service with new model next turn
-							_transport.Status(session.Id, $"Model set to {modelArg}");
+						_transport.Status(session.Id, $"Model set to {modelArg}");
 							// Reflect the new model on the client status line immediately rather than
 							// waiting for the next turn's Stats frame.
 							session.SendStats();

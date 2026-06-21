@@ -258,12 +258,13 @@ public static class ShellTools
 	// A restricted-shell failure is the boundary case (unknown command, or one rbash refused: cd, redirection,
 	// a path-qualified name) rather than an ordinary nonzero exit like grep finding no match. Exit 127 is
 	// "command not found"; "restricted" is what rbash prints when it blocks cd/redirection/path execution.
+	// The stderr markers are checked regardless of exit code: a pipeline ("dotnet ... | tail") exits with the
+	// last stage's status, so a missing command or rejected redirection upstream leaves the marker in stderr
+	// while the overall exit code is 0 — without this the boundary note would never reach the model.
 	private static bool IsBoundaryFailure(ToolResult result)
 	{
 		bool boundary;
-		if (result.ExitCode == 0)
-			boundary = false;
-		else if (result.ExitCode == 127)
+		if (result.ExitCode == 127)
 			boundary = true;
 		else
 			boundary = result.StdErr.Contains("command not found", StringComparison.Ordinal) || result.StdErr.Contains("restricted", StringComparison.Ordinal);

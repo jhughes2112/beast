@@ -21,6 +21,7 @@ public class TransportClientConsole : ITransportServer
     public void ToolCallWithId(string sessionId, string callId, string text)           { }
     public void ToolResponseWithId(string sessionId, ToolResult result) { }
     public void SessionAnnounce(string sessionId, string json) { }
+    public void SessionReset(string sessionId)             { }
     public void StreamStart(string sessionId, string tag)   { }
     public void StreamChunk(string sessionId, string chunk) { }
     public void StreamEnd(string sessionId, string tag)     { }

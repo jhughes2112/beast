@@ -303,16 +303,25 @@ public class ProtocolAnthropic
                 if (!string.IsNullOrEmpty(assistantDelta))
                 {
                     streamedChars += assistantDelta.Length;
-                    if (openStreamTag != StreamTag.Assistant)
+                    // Don't open the assistant output block on leading whitespace: a turn that is only
+                    // thinking plus a tool call may still emit a stray newline, and opening here would leave an
+                    // empty block behind. Wait for the first non-whitespace text; once open, every delta
+                    // (including whitespace) streams normally. Committed text is assembled separately, so it
+                    // keeps any leading whitespace regardless.
+                    bool assistantOpen = openStreamTag == StreamTag.Assistant;
+                    if (assistantOpen || !string.IsNullOrWhiteSpace(assistantDelta))
                     {
-                        if (openStreamTag != null)
+                        if (!assistantOpen)
                         {
-                            bundle.Transport?.OnStreamEnd(openStreamTag);
+                            if (openStreamTag != null)
+                            {
+                                bundle.Transport?.OnStreamEnd(openStreamTag);
+                            }
+                            bundle.Transport?.OnStreamStart(StreamTag.Assistant);
+                            openStreamTag = StreamTag.Assistant;
                         }
-                        bundle.Transport?.OnStreamStart(StreamTag.Assistant);
-                        openStreamTag = StreamTag.Assistant;
+                        bundle.Transport?.OnStreamChunk(StreamTag.Assistant, assistantDelta);
                     }
-                    bundle.Transport?.OnStreamChunk(StreamTag.Assistant, assistantDelta);
                 }
 
                 string? thinkingDelta = res.Delta?.Thinking;

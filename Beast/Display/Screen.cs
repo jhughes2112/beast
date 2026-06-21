@@ -203,10 +203,17 @@ public sealed class Screen
         int cx = x;
         foreach (char c in text)
         {
+            // Surrogate halves can't occupy a single-char cell; placeholder keeps columns aligned.
+            char glyph = char.IsSurrogate(c) ? '?' : c;
+            int width = CharWidth.Of(glyph);
+            if (width == 0) continue;               // zero-width combining mark: consumes no column
             if (cx >= W) break;
+            // A wide glyph at the right edge has no room for its second column; pad with a space instead.
+            if (width == 2 && cx == W - 1) { glyph = ' '; width = 1; }
             if (cx >= 0)
-                _cells[rowBase + cx] = new Cell(c, fg, bg, style);
-            cx++;
+                _cells[rowBase + cx] = new Cell(glyph, fg, bg, style);
+            // A wide glyph reserves the next cell too; the ANSI writer skips it to preserve its width.
+            cx += width;
         }
         return cx;
     }

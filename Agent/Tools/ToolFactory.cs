@@ -30,7 +30,7 @@ public static class ToolFactory
             });
 
         Register(tools, "readonly_bash",
-            "Read-only bash for inspecting the repo without changing it. Runs in a restricted shell: no output redirection (>, >>), no cd, no running programs by an explicit path, and only a curated read-only toolset (cat, ls, grep, git, head/tail, wc, sort, diff, jq, ...) is on PATH. CWD is the repo root at /workspace/.",
+            "Read-only bash for inspecting the repo without changing it. Runs in a restricted shell, so several things FAIL with errors — do not use them: no redirection of any stream (>, >>, and stderr redirects like 2>, 2>&1, 2>/dev/null are all rejected), no cd, no running a program by an explicit path, and PATH is read-only so you cannot extend it (export PATH=... fails). Only a curated read-only toolset (cat, ls, grep, git, head/tail, wc, sort, diff, jq, ...) is on PATH; a 'command not found' means it is not installed here, not that you should look harder. CWD is the repo root at /workspace/.",
             Params(
                 Req("command", "string", "Read-only shell command to execute"),
                 Opt("timeout_seconds", "integer", "Timeout in seconds (default 120).")),

@@ -31,6 +31,7 @@ public class TestCaptureTransport : ITransportServer
     public void ToolCallWithId(string sessionId, string callId, string text)           => Send(FrameType.ToolCall,     sessionId, text);
     public void ToolResponseWithId(string sessionId, ToolResult result) => Send(FrameType.ToolResponse, sessionId, result.StdOut);
     public void SessionAnnounce(string sessionId, string json) => Send(FrameType.SessionAnnounce, sessionId, json);
+    public void SessionReset(string sessionId)             => Send(FrameType.SessionReset,    sessionId, string.Empty);
     public void StreamStart(string sessionId, string tag)   => Send(FrameType.StreamStart, sessionId, tag);
     public void StreamChunk(string sessionId, string chunk) => Send(FrameType.StreamChunk, sessionId, chunk);
     public void StreamEnd(string sessionId, string tag)     => Send(FrameType.StreamEnd,   sessionId, tag);

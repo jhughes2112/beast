@@ -40,6 +40,13 @@ public static class ScreenAnsiWriter
                 }
 
                 buf.Append(c.Ch == '\0' ? ' ' : c.Ch);
+
+                // A wide glyph (CJK, emoji, checkbox mark) advances the terminal cursor two columns on its
+                // own, so skip the reserved trailing cell the layout left blank — keeping the grid and the
+                // terminal column-aligned. Driving the skip off the glyph's width (not a marker cell) also
+                // keeps a wide glyph two columns wide even if an overlay overwrote the cell behind it.
+                if (CharWidth.Of(c.Ch) == 2)
+                    x++;
             }
         }
 

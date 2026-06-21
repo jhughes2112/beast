@@ -43,18 +43,38 @@ public static class AnsiToScreen
                 continue;
             }
 
+            // Map stray control characters (a leftover '\r' from a \r\n system prompt, a backspace, etc.)
+            // to a space. Emitted raw they would move the terminal cursor — a '\r' returns it to column 0,
+            // scrambling the row and leaving it unfilled — so they never reach a cell. ESC is consumed by
+            // the escape branch above; tabs and newlines are expanded/split by callers before this point.
+            char glyph = (c < ' ' || c == '\x7f') ? ' ' : c;
+            // A surrogate half cannot live in a single-char cell, so an astral emoji would corrupt the row;
+            // show a placeholder so the column count stays in step with what the terminal draws.
+            if (char.IsSurrogate(glyph)) glyph = '?';
+
+            int width = CharWidth.Of(glyph);
+            if (width == 0)
+            {
+                // Zero-width combining mark: it composes onto the previous cell and consumes no column.
+                i++;
+                continue;
+            }
+            // A wide glyph that would straddle the right edge has no room for its second column; drop it to
+            // a space so the terminal does not wrap a half-drawn glyph past the row.
+            if (width == 2 && cx == target.W - 1)
+            {
+                glyph = ' ';
+                width = 1;
+            }
+
             if (cx < target.W && cx >= 0)
             {
                 Rgb? renderFg = dim && fg.HasValue ? fg.Value.Scale(0.5f) : fg;
                 Rgb? renderBg = dim && bg.HasValue ? bg.Value.Scale(0.5f) : bg;
-                // Map stray control characters (a leftover '\r' from a \r\n system prompt, a backspace, etc.)
-                // to a space. Emitted raw they would move the terminal cursor — a '\r' returns it to column 0,
-                // scrambling the row and leaving it unfilled — so they never reach a cell. ESC is consumed by
-                // the escape branch above; tabs and newlines are expanded/split by callers before this point.
-                char glyph = (c < ' ' || c == '\x7f') ? ' ' : c;
                 target.Set(cx, y, new Cell(glyph, renderFg, renderBg, style));
             }
-            cx++;
+            // A wide glyph reserves the next cell too; the ANSI writer skips it so the glyph keeps its width.
+            cx += width;
             i++;
         }
 
