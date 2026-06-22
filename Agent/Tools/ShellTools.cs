@@ -177,6 +177,16 @@ public static class ShellTools
 						}
 						catch (OperationCanceledException)
 						{
+							// Kill the process tree whether this was a user /cancel or a timeout — otherwise the
+							// command keeps running orphaned after we stop waiting on it.
+							try
+							{
+								process.Kill(true);
+							}
+							catch
+							{
+							}
+
 							if (cancellationToken.IsCancellationRequested)
 							{
 								throw;
@@ -184,13 +194,6 @@ public static class ShellTools
 							else
 							{
 								timedOut = true;
-								try
-								{
-									process.Kill(true);
-								}
-								catch
-								{
-								}
 							}
 						}
 

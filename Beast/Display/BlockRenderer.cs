@@ -425,8 +425,11 @@ internal static class BlockRenderer
                         }
                         else
                         {
+                            // Not markdown: keep the source newlines (a subagent's citation list), but still
+                            // word-wrap each line to the viewport so long prose paragraphs don't run off-screen.
                             foreach (string valLine in bp.Val.Split('\n'))
-                                result.Add(ExpandTabs(valLine));
+                                foreach (string wrapped in AnsiString.WordWrapIndented(ExpandTabs(valLine), w))
+                                    result.Add(wrapped);
                         }
                     }
                     else if (bp.Kind == 1)
@@ -449,6 +452,18 @@ internal static class BlockRenderer
             {
                 foreach (string rawLine in argsJson.Split('\n'))
                     result.Add(rawLine);
+            }
+        }
+
+        // bash's command shows as a one-line "$ …" header; when it spans multiple lines the header only
+        // carries the first, so emit the full command shell-highlighted in the body so its newlines survive.
+        if (name == "bash" || name == "readonly_bash")
+        {
+            string command = ExtractStringArg(msg.Content, "command");
+            if (command.IndexOf('\n') >= 0)
+            {
+                foreach (string cmdLine in command.Replace("\r\n", "\n").Split('\n'))
+                    result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(cmdLine), "bash", respBodyBgAnsi));
             }
         }
 
@@ -515,10 +530,10 @@ internal static class BlockRenderer
         }
     }
 
-    // Emits a tool response into result. Markdown mode interprets and word-wraps prose; Plain mode preserves
-    // each source line verbatim (newlines and indentation intact, no parsing); the code/shell modes emit one
-    // highlighted line per source line. All non-markdown modes leave columns un-wrapped so output scrolls
-    // horizontally rather than reflowing.
+    // Emits a tool response into result. Markdown mode interprets and word-wraps prose; Plain mode keeps the
+    // source newlines and indentation (no parsing) but still word-wraps each line to the viewport, since plain
+    // text is neither code nor a table; the code/shell modes emit one highlighted line per source line and
+    // leave columns un-wrapped so code/output scrolls horizontally rather than reflowing.
     private static void EmitResponseLines(List<string> result, string content, RespMode mode, string fileLang, string bgAnsi, int w)
     {
         if (mode == RespMode.Markdown)
@@ -540,8 +555,11 @@ internal static class BlockRenderer
         }
         else if (mode == RespMode.Plain)
         {
+            // Keep the source newlines, but word-wrap each line: plain text is neither code nor a table, so it
+            // should reflow to the viewport rather than run off the right edge.
             foreach (string respLine in content.Replace("\r\n", "\n").Split('\n'))
-                result.Add(ExpandTabs(respLine));
+                foreach (string wrapped in AnsiString.WordWrapIndented(ExpandTabs(respLine), w))
+                    result.Add(wrapped);
         }
         else
         {

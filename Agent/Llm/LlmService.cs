@@ -176,10 +176,14 @@ public class LlmService
             }
 			catch (OperationCanceledException ex)
 			{
-				// the user interrupted us
-				if (turnToken.IsCancellationRequested && cancellationToken.IsCancellationRequested==false)
+				// Either token tripping is an intentional cancel, not a model failure: turnToken is this
+				// session's own /cancel (during the LLM call), while cancellationToken is the runner's whole-turn
+				// scope — also cancelled by /cancel, plus by a parent or app shutdown. Only the session's own
+				// /cancel sets the wait state; a parent/shutdown just unwinds. A cancel with neither token tripped
+				// is a client-side timeout and is surfaced as a failure.
+				if (turnToken.IsCancellationRequested || cancellationToken.IsCancellationRequested)
 					{
-						interrupted = true;
+						interrupted = turnToken.IsCancellationRequested;
 						result = result.Outcome == ProtocolCallOutcome.Success
 							? ProtocolResult.Interrupted("Interrupted by user", result.Payload)
 							: ProtocolResult.Interrupted("Interrupted by user");

@@ -59,6 +59,12 @@ public static class HelperSession
 		int tokens = 0;
 		string lastAssistantText = string.Empty;
 
+		// This helper's own cancellation scope, linked to the caller's token so a /cancel targeting the caller
+		// (or any ancestor) still cascades down and stops the helper, while a /cancel targeting the helper alone
+		// stays contained here and the caller keeps running. Registered so Interrupt can reach a running tool.
+		using CancellationTokenSource scope = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		session.SetDispatchScope(scope);
+
 		session.SendBusy();
 		try
 		{
@@ -75,9 +81,15 @@ public static class HelperSession
 					default: forcedToolName = null; break;
 				}
 
-				ProtocolResult result = await service.RunToCompletionAsync(session, tools, forcedToolName, 0, maxOutputTokens, transport, cancellationToken);
+				ProtocolResult result = await service.RunToCompletionAsync(session, tools, forcedToolName, 0, maxOutputTokens, transport, scope.Token);
 				if (result.Outcome != ProtocolCallOutcome.Success)
+				{
+					// A /cancel hand back a "cancelled by the user" answer so the caller is unblocked and keeps
+					// going, rather than hanging on this helper. Anything else is a genuine failure.
+					if (scope.IsCancellationRequested)
+						return (true, "Cancelled by the user.", 1);
 					return (false, string.Empty, 0);
+				}
 
 				session.CommitAssistantTurn(result.Payload!);
 
@@ -85,7 +97,15 @@ public static class HelperSession
 				if (!string.IsNullOrWhiteSpace(result.Payload!.AssistantText))
 					lastAssistantText = result.Payload!.AssistantText;
 
-				bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, transport, cancellationToken);
+				bool hasToolCalls;
+				try
+				{
+					hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, transport, scope.Token);
+				}
+				catch (OperationCanceledException) when (scope.IsCancellationRequested)
+				{
+					return (true, "Cancelled by the user.", 1);
+				}
 				if (hasToolCalls)
 					session.CommitToolResults(result.Payload!);
 
@@ -110,6 +130,8 @@ public static class HelperSession
 		}
 		finally
 		{
+			session.SetDispatchScope(null);
+
 			// Cost is spent regardless of how the run ended; roll it up into the calling session.
 			parent.RecordCost(session.TotalCost);
 

@@ -72,14 +72,24 @@ public class WebSearchOpenrouter
         session.AnnounceToClient();
         parent.AddChild(session);
 
+        // This search's own cancellation scope, linked to the caller's token: a /cancel on the caller cascades
+        // down and stops the search, while a /cancel on the search alone leaves the caller running.
+        using CancellationTokenSource scope = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        session.SetDispatchScope(scope);
+
         session.SendBusy();
         try
         {
             // One bare call: no tools, no forced tool choice. The web plugin runs inside the model's turn and
             // the assistant text it returns is the answer we hand straight back to the caller.
-            ProtocolResult result = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, cancellationToken);
+            ProtocolResult result = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, scope.Token);
             if (result.Outcome != ProtocolCallOutcome.Success)
+            {
+                // A /cancel returns "cancelled by the user" so the caller is unblocked; anything else is a failure.
+                if (scope.IsCancellationRequested)
+                    return new ToolResult(toolCallId, "Cancelled by the user.", string.Empty, 0, 1);
                 return new ToolResult(toolCallId, string.Empty, $"Error: OpenRouter search failed for query \"{query}\": {result.ErrorMessage}", 1, 0);
+            }
 
             session.CommitAssistantTurn(result.Payload!);
 
@@ -89,7 +99,11 @@ public class WebSearchOpenrouter
         }
         catch (OperationCanceledException)
         {
-            return new ToolResult(toolCallId, string.Empty, "Error: Search request timed out or cancelled for query: " + query, 1, 0);
+            // A /cancel returns "cancelled by the user" so the caller is unblocked; a client-side timeout (the
+            // caller's token is untouched) is a real failure.
+            if (scope.IsCancellationRequested)
+                return new ToolResult(toolCallId, "Cancelled by the user.", string.Empty, 0, 1);
+            return new ToolResult(toolCallId, string.Empty, "Error: Search request timed out for query: " + query, 1, 0);
         }
         catch (HttpRequestException ex)
         {
@@ -101,6 +115,8 @@ public class WebSearchOpenrouter
         }
         finally
         {
+            session.SetDispatchScope(null);
+
             // Cost is spent regardless of how the call ended; roll it up into the calling session.
             parent.RecordCost(session.TotalCost);
 

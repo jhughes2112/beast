@@ -148,6 +148,40 @@ public class LlmRegistry
 		return new LlmService(model, protocol, avail);
 	}
 
+	// Picks a fresh service for the next usable model in the role's priority order, excluding the
+	// model that just exhausted its rate-limit retries and any model currently down or backing off.
+	// Used to fall back when the preferred model is sustained-rate-limited so a session keeps running
+	// on a lower-ranked model instead of halting. Returns null when no other model is available now.
+	public LlmService? CreateFallbackService(Role? role, string excludeModelId, int minContextRequired)
+	{
+		if (role == null)
+			return null;
+
+		DateTimeOffset now = DateTimeOffset.UtcNow;
+		foreach (string modelId in role.Models)
+		{
+			if (string.Equals(modelId, excludeModelId, StringComparison.OrdinalIgnoreCase))
+				continue;
+			if (!_models.TryGetValue(modelId, out LlmModel? model))
+				continue;
+			if (_availability.TryGetValue(modelId, out ModelAvailability? avail))
+			{
+				if (avail.IsDown)
+					continue;
+				if (avail.AvailableAt > now)
+					continue;  // currently rate-limited; skip to the next-ranked model
+			}
+			if (model.Config.ContextWindow <= minContextRequired)
+				continue;
+
+			DetectedProtocol protocol = DetectedProtocol.Unknown;
+			_probeCache.TryGetValue(model.Endpoint, out protocol);
+			return new LlmService(model, protocol, GetOrCreateAvailability(modelId));
+		}
+
+		return null;
+	}
+
 	// Creates a fresh LlmService for a specific model ID regardless of role ordering.
 	// Used by tests that need to exercise a particular model directly.
 	public LlmService? CreateServiceById(string modelId, int minContextRequired)

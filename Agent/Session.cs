@@ -28,6 +28,10 @@ public class Session
 	private readonly ConcurrentQueue<string> _pending = new ConcurrentQueue<string>();
 	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0, 1);
 	private CancellationTokenSource? _turnCts;
+	// The whole-turn cancellation scope owned by the runner. Unlike _turnCts (alive only for the duration of a
+	// single LLM call), this spans the entire turn including the tool-dispatch rounds between LLM calls, so a
+	// /cancel that arrives while a tool is running still interrupts it instead of being dropped.
+	private CancellationTokenSource? _dispatchCts;
 	private bool _isSubagent;
 
 	// " (high)" style suffix for the active model's reasoning level, shown after the model name in stats.
@@ -497,10 +501,26 @@ public class Session
 		return fork;
 	}
 
-	// Cancels the in-progress turn, if any — including a turn running in a same-ID fork.
+	// Cancels the in-progress turn, if any. Both scopes are cancelled: _turnCts catches an LLM call that is
+	// streaming right now, and _dispatchCts catches a tool that is running between LLM calls (when _turnCts is
+	// null). Either may be null; cancelling both makes /cancel take effect immediately whatever is in flight.
 	public void Interrupt()
 	{
 		_turnCts?.Cancel();
+		_dispatchCts?.Cancel();
+	}
+
+	// Registers (or clears) the runner's whole-turn cancellation scope so Interrupt can reach a running tool.
+	public void SetDispatchScope(CancellationTokenSource? cts)
+	{
+		_dispatchCts = cts;
+	}
+
+	// Marks the turn interrupted so the loop idles until new user text arrives. Used when a /cancel lands
+	// during tool dispatch (no LLM call is active to run EndTurn).
+	public void MarkInterrupted()
+	{
+		_interruptedAndWaiting = true;
 	}
 
 	// ---- Private logic ----

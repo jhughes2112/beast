@@ -283,16 +283,22 @@ public class SessionRunner
 					// the inferred name immediately, not the raw ID until the turn completes and saves.
 					session.EnsureNamedAndAnnounce();
 					session.SendBusy();
+
+					// One cancellation scope for the whole turn — both the LLM calls and the tool-dispatch
+					// rounds between them run on this token, and it is registered with the session so a
+					// /cancel interrupts a running tool, not just a streaming LLM call.
+					using CancellationTokenSource turnScope = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token);
+					session.SetDispatchScope(turnScope);
 					try
 					{
 						bool workToolsActive = session.WorkInProgress;
-						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, _cancellationTokenSource.Token);
+						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, turnScope.Token);
 
 						// Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
 						bool completed = false;
 						while (!completed)
 						{
-							ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, _cancellationTokenSource.Token);
+							ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, turnScope.Token);
 
 							if (result.Outcome == ProtocolCallOutcome.Success)
 							{
@@ -300,7 +306,7 @@ public class SessionRunner
 								session.CommitAssistantTurn(result.Payload!);
 
 								// Process the assistant response and dispatch any tool calls.
-								bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, _transport, _cancellationTokenSource.Token);
+								bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, _transport, turnScope.Token);
 								if (hasToolCalls)
 								{
 									session.CommitToolResults(result.Payload!);
@@ -350,7 +356,7 @@ public class SessionRunner
 								if (!completed && session.WorkInProgress != workToolsActive)
 								{
 									workToolsActive = session.WorkInProgress;
-									tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, _cancellationTokenSource.Token);
+									tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, turnScope.Token);
 								}
 							}
 							else if (result.Outcome == ProtocolCallOutcome.ContextFull)
@@ -361,9 +367,27 @@ public class SessionRunner
 							}
 							else if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
 							{
-								// Rate-limited repeatedly; caller should try another model or abort.
-								_transport.Error(session.Id, "Rate limited after too many retries");
-								completed = true;
+								// The current model is sustained-rate-limited. The role defines an ordered model
+								// list precisely so a lower-ranked model can take over here. Fall back to the next
+								// usable one (skipping any down or currently backing off) and keep the turn running
+								// on it; only abort when no other model is available.
+								int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
+								LlmService? fallback = _registry.CreateFallbackService(role, _service.Model.ConfigId, minCtx);
+								if (fallback != null)
+								{
+									_transport.Status(session.Id, $"Rate limited on {_service.Model.ConfigId}; falling back to {fallback.Model.ConfigId}");
+									_service = fallback;
+									session.UpdateModel(fallback.Model);
+									session.SendStats();
+									// Model-only change; tools are role-based, so the existing tool set still applies.
+									// completed stays false so the loop retries this turn on the fallback model.
+								}
+								else
+								{
+									// Rate-limited repeatedly and no fallback model is available.
+									_transport.Error(session.Id, "Rate limited after too many retries");
+									completed = true;
+								}
 							}
 							else if (result.Outcome == ProtocolCallOutcome.Interrupted)
 							{
@@ -380,8 +404,16 @@ public class SessionRunner
 						// Interrupted: _interruptedAndWaiting is set in EndTurn;
 						// NeedsAttention() returns false until AddUserMessage() is called with new input.
 					}
+					catch (OperationCanceledException) when (turnScope.IsCancellationRequested && !_cancellationTokenSource.IsCancellationRequested)
+					{
+						// A /cancel landed while a tool was running between LLM calls — there was no active LLM
+						// call to turn it into an Interrupted result, so mark the wait state here. The dangling
+						// tool calls left by the aborted round are repaired on the next BeginTurn.
+						session.MarkInterrupted();
+					}
 					finally
 					{
+						session.SetDispatchScope(null);
 						session.SendIdle();
 
 						// Persist the root each turn so its on-disk record and lastSession.json stay current.

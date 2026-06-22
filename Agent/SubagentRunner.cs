@@ -165,6 +165,13 @@ public class SubagentRunner
         Tool[] fullTools = withTerminator.ToArray();
         Tool[] terminatorOnlyTools = new Tool[] { terminatorTool };
 
+        // This subagent's own cancellation scope, linked to the caller's token. A /cancel on an ancestor
+        // cascades down through the link and ends the whole subtree; a /cancel targeting this subagent alone
+        // trips only this scope (ct stays live), which the loop below treats as "wait for the user to steer"
+        // rather than returning to the caller — the caller's delegating tool call stays blocked meanwhile.
+        CancellationTokenSource scope = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        subSession.SetDispatchScope(scope);
+
         subSession.SendBusy();
         try
         {
@@ -189,12 +196,42 @@ public class SubagentRunner
                 string? forcedToolName = windDown ? terminatorName : null;
                 int outputCap = windDown ? outputBudgetTokens : 0;
 
-                ProtocolResult result = await service.RunToCompletionAsync(subSession, turnTools, forcedToolName, 0, outputCap, _transport, ct);
+                ProtocolResult result = await service.RunToCompletionAsync(subSession, turnTools, forcedToolName, 0, outputCap, _transport, scope.Token);
+
+                // A /cancel that tripped this scope (Interrupted is how the LLM call reports it). If it cascaded
+                // from an ancestor (ct is down too) the whole subtree ends; otherwise it targeted this subagent
+                // directly, so idle for user steering and resume with a fresh scope instead of returning.
+                if (result.Outcome == ProtocolCallOutcome.Interrupted)
+                {
+                    if (ct.IsCancellationRequested)
+                        break;
+                    CancellationTokenSource? resumed = await WaitForSteeringAsync(subSession, scope, ct);
+                    if (resumed == null)
+                        break;
+                    scope = resumed;
+                    continue;
+                }
                 if (result.Outcome != ProtocolCallOutcome.Success)
                     break;
 
                 subSession.CommitAssistantTurn(result.Payload!);
-                bool hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, turnTools, subSession, _transport, ct);
+                bool hasToolCalls;
+                try
+                {
+                    hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, turnTools, subSession, _transport, scope.Token);
+                }
+                catch (OperationCanceledException) when (scope.IsCancellationRequested)
+                {
+                    // Same as above, but the cancel landed while a tool was running (dispatch throws rather than
+                    // returning Interrupted). The aborted round's dangling tool calls are repaired on the next turn.
+                    if (ct.IsCancellationRequested)
+                        break;
+                    CancellationTokenSource? resumed = await WaitForSteeringAsync(subSession, scope, ct);
+                    if (resumed == null)
+                        break;
+                    scope = resumed;
+                    continue;
+                }
                 if (hasToolCalls)
                     subSession.CommitToolResults(result.Payload!);
 
@@ -264,10 +301,37 @@ public class SubagentRunner
         }
         finally
         {
+            subSession.SetDispatchScope(null);
+            scope.Dispose();
             if (!subSession.Ephemeral)
                 SessionService.Save(subSession.Data, false);
             subSession.SendIdle();
         }
+    }
+
+    // Parks a directly-cancelled subagent until the user sends steering input, then disposes the old scope and
+    // returns a fresh one (already registered) so the loop can resume. Returns null (caller should end) if the
+    // wait is cancelled by an ancestor or app shutdown. The user's text is flushed in by the next BeginTurn.
+    private async Task<CancellationTokenSource?> WaitForSteeringAsync(Session subSession, CancellationTokenSource current, CancellationToken ct)
+    {
+        subSession.SendIdle();
+        try
+        {
+            await subSession.WaitForInputAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        if (ct.IsCancellationRequested)
+            return null;
+
+        subSession.SendBusy();
+        subSession.SetDispatchScope(null);
+        current.Dispose();
+        CancellationTokenSource fresh = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        subSession.SetDispatchScope(fresh);
+        return fresh;
     }
 
     // Returns the most recent assistant text in the sub-session, used to salvage a partial result when the
