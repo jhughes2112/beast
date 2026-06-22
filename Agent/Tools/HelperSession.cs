@@ -21,6 +21,7 @@ public static class HelperSession
 		Session parent,
 		Role role,
 		LlmService service,
+		LlmRegistry registry,
 		string displayName,
 		string seedMessage,
 		int maxTurns,
@@ -82,6 +83,21 @@ public static class HelperSession
 				}
 
 				ProtocolResult result = await service.RunToCompletionAsync(session, tools, forcedToolName, 0, maxOutputTokens, transport, scope.Token);
+				if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
+				{
+					// Sustained-rate-limited on this model. Swap in the next usable model from the role's list
+					// (like /model) and retry the same turn; don't spend a turn on the swap. Give up only when
+					// the list is exhausted, which falls through to the genuine-failure return below.
+					LlmService? fallback = registry.CreateFallbackService(service, 0);
+					if (fallback != null)
+					{
+						service = fallback;
+						session.UpdateModel(service.Model);
+						transport.Status(session.Id, $"Rate limited; falling back to {service.Model.Config.Name}");
+						turn--;
+						continue;
+					}
+				}
 				if (result.Outcome != ProtocolCallOutcome.Success)
 				{
 					// A /cancel hand back a "cancelled by the user" answer so the caller is unblocked and keeps

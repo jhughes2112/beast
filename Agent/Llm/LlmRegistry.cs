@@ -137,53 +137,59 @@ public class LlmRegistry
 	// Returns null if no suitable model is available (all down, context too small, or no role).
 	public LlmService? CreateService(Role? role, string preferredModelId, int minContextRequired)
 	{
+		if (role == null)
+			return null;
+
 		LlmModel? model = PickModel(role, preferredModelId, minContextRequired);
 		if (model == null)
 			return null;
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
-
-		ModelAvailability avail = GetOrCreateAvailability(model.ConfigId);
-		return new LlmService(model, protocol, avail);
+		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models);
 	}
 
-	// Picks a fresh service for the next usable model in the role's priority order, excluding the
-	// model that just exhausted its rate-limit retries and any model currently down or backing off.
-	// Used to fall back when the preferred model is sustained-rate-limited so a session keeps running
-	// on a lower-ranked model instead of halting. Returns null when no other model is available now.
-	public LlmService? CreateFallbackService(Role? role, string excludeModelId, int minContextRequired)
+	// Builds a service for the next model below the current one in its role list — the automatic equivalent
+	// of the user typing /model <next> after a model is sustained-rate-limited. Resumes just past the current
+	// model and skips any that is gone, too small, or itself down/backing off, so the fallback lands on one
+	// that can serve now. The new service carries the same list, so it can fall back again. Returns null when
+	// the list is exhausted, at which point the caller surfaces the rate-limit failure.
+	public LlmService? CreateFallbackService(LlmService current, int minContextRequired)
 	{
-		if (role == null)
-			return null;
-
+		IReadOnlyList<string> modelIds = current.RoleModelIds;
 		DateTimeOffset now = DateTimeOffset.UtcNow;
-		foreach (string modelId in role.Models)
+
+		int start = 0;
+		for (int i = 0; i < modelIds.Count; i++)
 		{
-			if (string.Equals(modelId, excludeModelId, StringComparison.OrdinalIgnoreCase))
-				continue;
+			if (string.Equals(modelIds[i], current.Model.ConfigId, StringComparison.OrdinalIgnoreCase))
+			{
+				start = i + 1;
+				break;
+			}
+		}
+
+		for (int i = start; i < modelIds.Count; i++)
+		{
+			string modelId = modelIds[i];
 			if (!_models.TryGetValue(modelId, out LlmModel? model))
 				continue;
-			if (_availability.TryGetValue(modelId, out ModelAvailability? avail))
-			{
-				if (avail.IsDown)
-					continue;
-				if (avail.AvailableAt > now)
-					continue;  // currently rate-limited; skip to the next-ranked model
-			}
+			if (_availability.TryGetValue(modelId, out ModelAvailability? avail) && (avail.IsDown || avail.AvailableAt > now))
+				continue;
 			if (model.Config.ContextWindow <= minContextRequired)
 				continue;
 
 			DetectedProtocol protocol = DetectedProtocol.Unknown;
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
-			return new LlmService(model, protocol, GetOrCreateAvailability(modelId));
+			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds);
 		}
 
 		return null;
 	}
 
 	// Creates a fresh LlmService for a specific model ID regardless of role ordering.
-	// Used by tests that need to exercise a particular model directly.
+	// Used by tests that need to exercise a particular model directly. Its model list is just that one
+	// model, so the service never falls back — the test exercises exactly that model.
 	public LlmService? CreateServiceById(string modelId, int minContextRequired)
 	{
 		if (!_models.TryGetValue(modelId, out LlmModel? model))
@@ -197,8 +203,7 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
-
-		return new LlmService(model, protocol, avail);
+		return new LlmService(model, protocol, avail, new List<string> { modelId });
 	}
 
 	// Returns the best available model for the role without creating a service.

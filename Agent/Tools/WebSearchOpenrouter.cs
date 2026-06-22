@@ -49,7 +49,8 @@ public class WebSearchOpenrouter
         // rehydrates from canonical when that instance is null; reusing one service across calls would leak the
         // previous search's messages into the next. This mirrors LlmRegistry, which builds a fresh service per
         // session for the same reason. Availability is shared so rate-limit state still carries across calls.
-        LlmService service = new LlmService(_model, DetectedProtocol.Unknown, _availability);
+        // A single-model list: there is only the configured search model, so the service never falls back.
+        LlmService service = new LlmService(_model, DetectedProtocol.Unknown, _availability, new List<string> { _model.ConfigId });
 
         // Allocate the child id and immediately persist the parent so its bumped ChildCounter reaches disk
         // before this (non-ephemeral) search writes its own file. Without it a reload restores the old counter

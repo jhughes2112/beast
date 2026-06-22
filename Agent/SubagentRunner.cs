@@ -211,6 +211,21 @@ public class SubagentRunner
                     scope = resumed;
                     continue;
                 }
+                if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
+                {
+                    // Sustained-rate-limited on this model. Swap in the next usable model from the role's list
+                    // (like /model) and keep going on the same turn; the service holds its slot, so this stays
+                    // on the fallback for the rest of the subagent's run. Give up only when the list runs out.
+                    LlmService? fallback = _registry.CreateFallbackService(service, 0);
+                    if (fallback != null)
+                    {
+                        service = fallback;
+                        subSession.UpdateModel(service.Model);
+                        _transport.Status(subSession.Id, $"Rate limited; falling back to {service.Model.Config.Name}");
+                        continue;
+                    }
+                    break;
+                }
                 if (result.Outcome != ProtocolCallOutcome.Success)
                     break;
 

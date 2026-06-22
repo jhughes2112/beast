@@ -47,17 +47,28 @@ public class LlmService
     private readonly LlmModel _model;
     private readonly ModelAvailability _availability;
 
+    // The role's flat model list this service belongs to. The service still represents exactly one model
+    // (Model); the list just lets a caller ask the registry for the next lower-ranked model when this one is
+    // sustained-rate-limited, and build a fresh service for it the same way /model does. A standalone
+    // single-model service (e.g. web search) carries just its own id, so it never falls back.
+    private readonly IReadOnlyList<string> _roleModelIds;
+
     public LlmModel Model => _model;
     public bool IsDown => _availability.IsDown;
 
+    // The role's model list, read by the registry to find this service's slot and build the next fallback.
+    public IReadOnlyList<string> RoleModelIds => _roleModelIds;
+
     // detectedProtocol is resolved by LlmRegistry.ProbeEndpointsAsync before any session starts.
     // availability is shared across all service instances for the same model so rate-limit and
-    // down state set by one session are visible to others picking that model next.
-    public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability)
+    // down state set by one session are visible to others picking that model next. roleModelIds is the
+    // role's priority list this model came from, so fallback can advance past it.
+    public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability, IReadOnlyList<string> roleModelIds)
     {
         _model = model;
         _availability = availability;
         _handler = new ProtocolProxy(model, detectedProtocol);
+        _roleModelIds = roleModelIds;
     }
 
 	// forcedToolName (null = free choice) requires the model to call that exact tool this turn.
@@ -108,7 +119,8 @@ public class LlmService
                     }
                     else
                     {
-                        // Rate limiting is a caller-side budget issue, not a model failure.
+                        // Rate limiting is a caller-side budget issue, not a model failure. The caller falls
+                        // back to the next model in the role's list (RoleModelIds) on this outcome.
                         result = ProtocolResult.TooManyRetries();
                         break;
                     }

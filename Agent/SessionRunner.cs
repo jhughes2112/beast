@@ -367,24 +367,22 @@ public class SessionRunner
 							}
 							else if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
 							{
-								// The current model is sustained-rate-limited. The role defines an ordered model
-								// list precisely so a lower-ranked model can take over here. Fall back to the next
-								// usable one (skipping any down or currently backing off) and keep the turn running
-								// on it; only abort when no other model is available.
+								// This model is sustained-rate-limited. The role lists models in priority order so a
+								// lower-ranked one can take over: build a service for the next usable model (the same
+								// swap /model performs) and keep the turn going. Only abort when the list is exhausted.
 								int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
-								LlmService? fallback = _registry.CreateFallbackService(role, _service.Model.ConfigId, minCtx);
+								LlmService? fallback = _registry.CreateFallbackService(_service, minCtx);
 								if (fallback != null)
 								{
-									_transport.Status(session.Id, $"Rate limited on {_service.Model.ConfigId}; falling back to {fallback.Model.ConfigId}");
 									_service = fallback;
 									session.UpdateModel(fallback.Model);
 									session.SendStats();
+									_transport.Status(session.Id, $"Rate limited; falling back to {fallback.Model.Config.Name}");
 									// Model-only change; tools are role-based, so the existing tool set still applies.
 									// completed stays false so the loop retries this turn on the fallback model.
 								}
 								else
 								{
-									// Rate-limited repeatedly and no fallback model is available.
 									_transport.Error(session.Id, "Rate limited after too many retries");
 									completed = true;
 								}
