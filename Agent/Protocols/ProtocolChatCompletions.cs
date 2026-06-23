@@ -35,6 +35,14 @@ public class ProtocolChatCompletions
     // neither. Each step is taken only after the server rejects the previous form with a 400.
     private int _reasoningMode = 0;
 
+    // Servers disagree on how a forced tool call is requested. Advanced adaptively by ExecuteAsync when a
+    // forced turn returns no tool call: 0 = the OpenAI object form ({"type":"function","function":{"name":X}}),
+    // 1 = the "required" string honored by llama.cpp and others that reject the object form and silently fall
+    // back to "auto". Unlike _reasoningMode the rejection is not a 400 — the server answers 200 with no call —
+    // so it is detected by the missing call, not an error. Cached for the life of this protocol instance so the
+    // working form is reused on later turns of the same session.
+    private int _toolChoiceMode = 0;
+
     // Native runtime state: the message chain that will be sent to the server. Thinking blocks
     // are never included. This is in-memory only and rebuilt from canonical by Rehydrate.
     private readonly JsonArray _native = new JsonArray();
@@ -217,6 +225,12 @@ public class ProtocolChatCompletions
                 ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, cancellationToken);
                 if (streamResult != null)
                 {
+                    if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
+                    {
+                        _toolChoiceMode = 1;
+                        transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
+                        continue;
+                    }
                     if (IsEmptyTurn(streamResult) && emptyRetries < kMaxEmptyRetries)
                     {
                         emptyRetries++;
@@ -281,6 +295,12 @@ public class ProtocolChatCompletions
 
                 List<ToolResult> emptyResults = new List<ToolResult>();
                 ProtocolResult success = ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+                if (ShouldAdaptToolChoice(success, forcedToolName, tools))
+                {
+                    _toolChoiceMode = 1;
+                    transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
+                    continue;
+                }
                 if (IsEmptyTurn(success) && emptyRetries < kMaxEmptyRetries)
                 {
                     emptyRetries++;
@@ -356,12 +376,25 @@ public class ProtocolChatCompletions
             }
             else if (!string.IsNullOrEmpty(forcedToolName))
             {
-                JsonObject fn = new JsonObject();
-                fn["name"] = forcedToolName;
-                JsonObject choice = new JsonObject();
-                choice["type"] = "function";
-                choice["function"] = fn;
-                body["tool_choice"] = choice;
+                // Force a specific tool. Servers encode this differently and some (llama.cpp) reject the
+                // OpenAI object form outright — they expect a plain string and silently fall back to "auto"
+                // otherwise, dropping the call. _toolChoiceMode (advanced by ExecuteAsync when a forced turn
+                // produces no call) picks the form: mode 0 is the object form, mode 1 the "required" string.
+                // With only one tool on offer the object form disambiguates nothing that "required" doesn't,
+                // so start straight at the string and skip a wasted round trip.
+                if (_toolChoiceMode == 0 && tools.Count > 1)
+                {
+                    JsonObject fn = new JsonObject();
+                    fn["name"] = forcedToolName;
+                    JsonObject choice = new JsonObject();
+                    choice["type"] = "function";
+                    choice["function"] = fn;
+                    body["tool_choice"] = choice;
+                }
+                else
+                {
+                    body["tool_choice"] = "required";
+                }
             }
             else if (_parallelToolCallsSupported)
             {
@@ -668,6 +701,21 @@ public class ProtocolChatCompletions
             && result.Payload != null
             && result.Payload.ToolCalls.Count == 0
             && string.IsNullOrWhiteSpace(result.Payload.AssistantText);
+    }
+
+    // A forced turn that returned no tool call means the server did not honor the tool_choice form — some
+    // accept only the "required" string and silently drop the OpenAI object form to "auto". True only while
+    // an unused encoding remains: the object form (mode 0, more than one tool) can still fall back to
+    // "required". AnyTool and the single-tool case already send "required", so there is nothing left to try.
+    private bool ShouldAdaptToolChoice(ProtocolResult result, string? forcedToolName, List<ToolDefinition> tools)
+    {
+        return _toolChoiceMode == 0
+            && !string.IsNullOrEmpty(forcedToolName)
+            && forcedToolName != ProtocolProxy.AnyTool
+            && tools.Count > 1
+            && result.Outcome == ProtocolCallOutcome.Success
+            && result.Payload != null
+            && result.Payload.ToolCalls.Count == 0;
     }
 
     // Pulls semantic content and tool calls out of a non-streaming message object.
