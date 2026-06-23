@@ -56,7 +56,15 @@ RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-micro
     && rm /tmp/packages-microsoft-prod.deb \
     && apt-get update \
     && apt-get install -y --no-install-recommends dotnet-sdk-10.0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Warm the SDK's first-run experience here, during the build. On the first "real" CLI command the SDK
+    # prints the "Welcome to .NET" banner, the telemetry notice, and the dev HTTPS certificate notice, then
+    # writes one-time sentinel files (~/.dotnet/*Sentinel) so it never repeats them. Doing it once now bakes
+    # those sentinels into the image, so every `dotnet` command the agent runs at runtime stays quiet instead
+    # of re-emitting the banner and wasting output tokens. `nuget locals --list` is used because it triggers
+    # the first-run path with no project and no side effects; intrinsic options like `--version`/`--info` are
+    # handled before the first-run configurer and do NOT consume it.
+    && dotnet nuget locals all --list >/dev/null
 
 # Node.js current LTS — installed via the official NodeSource setup script so we get a
 # recent version rather than the outdated one bundled with Ubuntu 24.04.

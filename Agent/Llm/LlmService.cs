@@ -95,7 +95,9 @@ public class LlmService
                 }
 
                 int rateLimitRetries = 0;
+                int transientRetries = 0;
                 const int kMaxRateLimitRetries = 10;
+                const int kMaxTransientRetries = 5;
 
                 // Central context accounting for this turn. Seeded with the model's window and limits, the
                 // compaction reserve, and the sub-session output cap. It owns all "how much room is left"
@@ -105,25 +107,12 @@ public class LlmService
 
                 for (; ; )
                 {
-                    if (rateLimitRetries <= kMaxRateLimitRetries)
-                    {
-                        TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
-                        if (delay > TimeSpan.Zero)
-                        {
-                            if (rateLimitRetries>0)
-                            {
-                                transport.Status(conversation.Id, $"Rate limited {(int)Math.Ceiling(delay.TotalSeconds)}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
-                            }
-                            await Task.Delay(delay, linked.Token);
-                        }
-                    }
-                    else
-                    {
-                        // Rate limiting is a caller-side budget issue, not a model failure. The caller falls
-                        // back to the next model in the role's list (RoleModelIds) on this outcome.
-                        result = ProtocolResult.TooManyRetries();
-                        break;
-                    }
+                    // Honor any backoff a prior attempt (or a prior turn) recorded — a rate-limit RetryAfter or
+                    // a transient-error backoff — before making the next call. Both retry budgets are bounded, so
+                    // an exhausted budget escalates to TooManyRetries below rather than parking here forever.
+                    TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
+                    if (delay > TimeSpan.Zero)
+                        await Task.Delay(delay, linked.Token);
 
                     if (budget.IsExhausted())
                     {
@@ -171,16 +160,43 @@ public class LlmService
                     else if (result.Outcome == ProtocolCallOutcome.RateLimited)
                     {
                         rateLimitRetries++;
+                        if (rateLimitRetries > kMaxRateLimitRetries)
+                        {
+                            // Sustained rate limiting is a caller-side budget issue, not a model failure. The
+                            // caller falls back to the next model in the role's list (RoleModelIds) on this outcome.
+                            result = ProtocolResult.TooManyRetries();
+                            break;
+                        }
                         _availability.AvailableAt = result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
-                        // loop and retry
+                        int waitSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
+                        transport.Status(conversation.Id, $"Rate limited {waitSeconds}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
+                        // loop and retry once the backoff is honored at the top of the loop
                     }
                     else if (result.Outcome == ProtocolCallOutcome.Transient)
                     {
-                        _availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(300);  // give it five minutes to try another LLM
-                        break;
+                        // A recoverable error (5xx/overload/network/timeout). Back off and retry on the SAME model
+                        // a few times so a momentary blip does not abandon an in-progress turn. Only once the
+                        // retries are spent do we escalate to TooManyRetries — the caller then falls back to the
+                        // next model in the role's list instead of the model being killed outright.
+                        transientRetries++;
+                        if (transientRetries > kMaxTransientRetries)
+                        {
+                            result = ProtocolResult.TooManyRetries();
+                            break;
+                        }
+                        // Prefer the server-stated retry time when the response carried one (the helper already
+                        // folds in a one-second margin); otherwise fall back to exponential backoff capped at 60s.
+                        if (result.RetryAfter.HasValue)
+                            _availability.AvailableAt = result.RetryAfter.Value;
+                        else
+                            _availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1)));
+                        int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
+                        transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{kMaxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
+                        // loop and retry once the backoff is honored at the top of the loop
                     }
                     else
                     {
+                        // Unrecoverable (auth failure, unknown protocol): mark the model down so it is not retried.
                         _availability.AvailableAt = DateTimeOffset.MaxValue;
                         break;
                     }

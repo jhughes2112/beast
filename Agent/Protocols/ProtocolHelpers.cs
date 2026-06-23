@@ -42,6 +42,15 @@ static class ProtocolHelpers
         return seconds > 0 ? DateTimeOffset.UtcNow.AddSeconds(seconds) : DateTimeOffset.UtcNow.AddSeconds(5);
     }
 
+    // Like ComputeRetryAfterTime, but returns null when the response carried no retry timing at all, so a
+    // transient (non-rate-limit) failure can prefer a server-stated retry time and otherwise fall back to
+    // the caller's own backoff. ParseRateLimitSeconds already folds in the +1s margin.
+    public static DateTimeOffset? TryGetRetryAfter(HttpResponseMessage response, string responseBody)
+    {
+        int seconds = ParseRateLimitSeconds(response, responseBody);
+        return seconds > 0 ? DateTimeOffset.UtcNow.AddSeconds(seconds) : (DateTimeOffset?)null;
+    }
+
     private static int ParseRateLimitSeconds(HttpResponseMessage response, string responseBody)
     {
         string? retryAfter = GetFirstHeaderValue(response.Headers, "Retry-After");

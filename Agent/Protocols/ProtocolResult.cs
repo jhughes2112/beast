@@ -5,7 +5,7 @@ public enum ProtocolCallOutcome
 {
 	Success,      // A well-formed assistant turn was received and written to session state.
 	RateLimited,  // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
-	Transient,    // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off briefly.
+	Transient,    // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off and retries the same model a few times, then escalates to TooManyRetries so the caller can fall back.
 	Failed,       // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
 	Interrupted,  // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
 	TooManyRetries, // Rate-limited repeatedly; caller should try another model or abort.
@@ -76,7 +76,8 @@ public class ProtocolResult
 	// Populated when Outcome == Success.
 	public ProtocolCallPayload? Payload { get; }
 
-	// Populated when Outcome == RateLimited; null if the provider had no timing information.
+	// Populated when Outcome == RateLimited, and when a Transient error's response carried retry timing;
+	// null if the provider gave no timing information (the caller then backs off on its own schedule).
 	public DateTimeOffset? RetryAfter { get; }
 
 	// Human-readable detail for non-success outcomes.
@@ -100,9 +101,9 @@ public class ProtocolResult
 		return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "");
 	}
 
-	public static ProtocolResult Transient(string errorMessage)
+	public static ProtocolResult Transient(string errorMessage, DateTimeOffset? retryAfter)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.Transient, null, null, errorMessage);
+		return new ProtocolResult(ProtocolCallOutcome.Transient, null, retryAfter, errorMessage);
 	}
 
 	public static ProtocolResult Failed(string errorMessage)

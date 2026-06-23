@@ -61,6 +61,10 @@ public class SessionRunner
 
 	private bool _wantsCompact = false;
 
+	// Set when the active root is deleted: the outgoing session's files are gone, so the session-switch in
+	// RunAsync must NOT re-save (resurrect) it. Consumed and cleared by that switch.
+	private bool _currentSessionDeleted = false;
+
 	// True for the runner that resumes a saved root at startup: it restores that root's saved child sessions
 	// into the client's session list on first run. Consumed once, then cleared, so a compaction-failure
 	// restart on the same runner (or a fresh runner with it false) never replays the children twice.
@@ -240,7 +244,11 @@ public class SessionRunner
 					session.ReplayToTransport();
 					session.SendStats();
 					session.AnnounceToClient();
-					SaveRoot(_currentSession);
+					// Persist the session we are leaving — unless it was just deleted, in which case saving
+					// would re-create the file we removed.
+					if (!_currentSessionDeleted)
+						SaveRoot(_currentSession);
+					_currentSessionDeleted = false;
 					_currentSession = session;
 				}
 
@@ -365,28 +373,6 @@ public class SessionRunner
 								contextFull = true;
 								completed = true;
 							}
-							else if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
-							{
-								// This model is sustained-rate-limited. The role lists models in priority order so a
-								// lower-ranked one can take over: build a service for the next usable model (the same
-								// swap /model performs) and keep the turn going. Only abort when the list is exhausted.
-								int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
-								LlmService? fallback = _registry.CreateFallbackService(_service, minCtx);
-								if (fallback != null)
-								{
-									_service = fallback;
-									session.UpdateModel(fallback.Model);
-									session.SendStats();
-									_transport.Status(session.Id, $"Rate limited; falling back to {fallback.Model.Config.Name}");
-									// Model-only change; tools are role-based, so the existing tool set still applies.
-									// completed stays false so the loop retries this turn on the fallback model.
-								}
-								else
-								{
-									_transport.Error(session.Id, "Rate limited after too many retries");
-									completed = true;
-								}
-							}
 							else if (result.Outcome == ProtocolCallOutcome.Interrupted)
 							{
 								// User cancelled the turn — do not surface as error.
@@ -394,9 +380,31 @@ public class SessionRunner
 							}
 							else
 							{
-								// Failed, transient, or other error.
-								_transport.Error(session.Id, result.ErrorMessage);
-								completed = true;
+								// Any model failure — sustained rate limiting (TooManyRetries), a permanent failure
+								// (Failed: auth/unknown protocol, which already marked the model down), or any other
+								// non-success — falls back to the next model in the role's priority list, exactly like the
+								// user typing /model <next>, and keeps the turn going. Tools are role-based, so the existing
+								// tool set still applies. Only when the list is exhausted do we surface the error and end
+								// the turn so the user can intervene.
+								int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
+								LlmService? fallback = _registry.CreateFallbackService(_service, minCtx);
+								if (fallback != null)
+								{
+									_service = fallback;
+									session.UpdateModel(fallback.Model);
+									session.SendStats();
+									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
+									_transport.Status(session.Id, $"{reason}; falling back to {fallback.Model.Config.Name}");
+									// completed stays false so the loop retries this turn on the fallback model.
+								}
+								else
+								{
+									string detail = result.Outcome == ProtocolCallOutcome.TooManyRetries
+										? "Rate limited after too many retries, and no fallback model is available."
+										: (string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage);
+									_transport.Error(session.Id, detail);
+									completed = true;
+								}
 							}
 						}
 						// Interrupted: _interruptedAndWaiting is set in EndTurn;
@@ -615,8 +623,9 @@ public class SessionRunner
 					}
 					else if (args != null && args.StartsWith("delete ", StringComparison.OrdinalIgnoreCase))
 					{
-						// Drop exactly one subagent session file from disk. Refuse to delete the live root
-						// session, and refuse an empty target so a blank id can never reach the disk layer.
+						// Delete a session and its whole descendant subtree from disk. An empty target is refused
+						// so a blank id can never reach the disk layer. Deleting the active root tears its tree
+						// down and then starts a fresh session, exactly like /session new.
 						string deleteId = args.Substring("delete ".Length).Trim();
 						if (string.IsNullOrEmpty(deleteId))
 						{
@@ -624,16 +633,22 @@ public class SessionRunner
 						}
 						else if (string.Equals(deleteId, session.Id, StringComparison.Ordinal))
 						{
-							_transport.Error(session.Id, "Cannot delete the active session.");
-						}
-						else if (SessionService.Delete(deleteId))
-						{
+							// The outgoing session's files are gone; flag it so the RunAsync switch does not
+							// re-save it, then stand up a fresh session and reset the client to it.
+							SessionService.DeleteTree(session.Id);
+							_currentSessionDeleted = true;
+							session = CreateFreshSession(session.Role, false);
+							_service = null;
 							_cachedSessions = SessionService.List();
-						_transport.Status(session.Id, "Deleted session: " + deleteId);
+							_transport.SessionReset(session.Id);
+							_transport.Status(session.Id, "Deleted session and started a new one.");
 						}
 						else
 						{
-							_transport.Error(session.Id, "Session file not found: " + deleteId);
+							// Idempotent: whether or not files existed, the session is gone afterward.
+							SessionService.DeleteTree(deleteId);
+							_cachedSessions = SessionService.List();
+							_transport.Status(session.Id, "Deleted session: " + deleteId);
 						}
 					}
 					else if (args != null)

@@ -182,17 +182,17 @@ public class ProtocolResponses
         }
         catch (HttpRequestException ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
 
         if (httpResponse.IsSuccessStatusCode)
         {
             JsonNode? root = JsonNode.Parse(responseBody);
-            if (root == null) return ProtocolResult.Transient("Empty response from Responses API");
+            if (root == null) return ProtocolResult.Transient("Empty response from Responses API", null);
 
             return CommitResponse(bundle, root, model);
         }
@@ -205,7 +205,7 @@ public class ProtocolResponses
         int statusCode = (int)httpResponse.StatusCode;
         if (statusCode == 401 || statusCode == 403)
             return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
-        return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
+        return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
     }
 
     private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
@@ -328,7 +328,7 @@ public class ProtocolResponses
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
 
         if (!httpResponse.IsSuccessStatusCode)
@@ -349,7 +349,7 @@ public class ProtocolResponses
 
             if (statusCode == 401 || statusCode == 403)
                 return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
-            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}");
+            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
         }
 
                 JsonNode? finalResponseNode = null;
@@ -442,7 +442,7 @@ public class ProtocolResponses
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
         finally
         {
@@ -457,7 +457,7 @@ public class ProtocolResponses
             return CommitResponse(bundle, finalResponseNode, model);
         }
 
-        return ProtocolResult.Transient("Stream ended without a response.completed event");
+        return ProtocolResult.Transient("Stream ended without a response.completed event", null);
     }
 
     // The Responses SSE stream does not surface usage on text deltas, but response.created and
@@ -484,7 +484,7 @@ public class ProtocolResponses
         if (output == null || output.Count == 0)
         {
             string? errMsg = responseRoot["error"]?["message"]?.GetValue<string>();
-            return ProtocolResult.Transient(errMsg ?? "Empty response from Responses API");
+            return ProtocolResult.Transient(errMsg ?? "Empty response from Responses API", null);
         }
 
         StringBuilder assistantTextBuilder = new StringBuilder();

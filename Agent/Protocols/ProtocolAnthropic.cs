@@ -379,7 +379,7 @@ public class ProtocolAnthropic
 
         if (outputs.Count == 0)
         {
-            return ProtocolResult.Transient("Empty response from Anthropic API");
+            return ProtocolResult.Transient("Empty response from Anthropic API", null);
         }
 
         return CommitStreamedResponse(outputs, model, bundle);
@@ -532,20 +532,20 @@ public class ProtocolAnthropic
             }
             else if (status >= 400 && status < 500)
             {
-                result = ProtocolResult.Transient($"HTTP {status}: {ex.Message}");
+                result = ProtocolResult.Transient($"HTTP {status}: {ex.Message}", null);
             }
             else
             {
-                result = ProtocolResult.Transient($"HTTP {status}: {ex.Message}");
+                result = ProtocolResult.Transient($"HTTP {status}: {ex.Message}", null);
             }
         }
         else if (ex is HttpRequestException)
         {
-            result = ProtocolResult.Transient(ex.Message);
+            result = ProtocolResult.Transient(ex.Message, null);
         }
         else
         {
-            result = ProtocolResult.Transient(ex.Message);
+            result = ProtocolResult.Transient(ex.Message, null);
         }
 
         return result;

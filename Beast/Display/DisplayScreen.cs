@@ -1313,13 +1313,14 @@ public class DisplayScreen : IDisplay
                     }
                     else if (key.Key == ConsoleKey.Delete && inputBuffer.Length == 0)
                     {
-                        // Delete removes a subagent session from memory and disk — but only when the input
-                        // line is empty, so it never steals the forward-delete from text editing. The root
-                        // session (depth 0) is never deletable, and a session still running is left alone.
+                        // Delete removes a session and its descendants from memory and disk — but only when
+                        // the input line is empty, so it never steals the forward-delete from text editing. A
+                        // session still running is left alone. Deleting the root tears the whole tree down and
+                        // the agent starts a fresh session in its place.
                         if (_sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
                         {
                             SessionDisplayInfo target = _sessionList[_sessionTreeSelected];
-                            if (target.Depth > 0 && !target.IsBusy)
+                            if (!target.IsBusy)
                             {
                                 // The callback rebuilds the list via SetSessionList; clamp afterward,
                                 // then preview whatever now sits at the selection so the view follows.

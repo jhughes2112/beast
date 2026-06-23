@@ -241,11 +241,11 @@ public class ProtocolChatCompletions
             }
             catch (HttpRequestException ex)
             {
-                return ProtocolResult.Transient(ex.Message);
+                return ProtocolResult.Transient(ex.Message, null);
             }
             catch (Exception ex)
             {
-                return ProtocolResult.Transient(ex.Message);
+                return ProtocolResult.Transient(ex.Message, null);
             }
 
             if (httpResponse.IsSuccessStatusCode)
@@ -253,20 +253,20 @@ public class ProtocolChatCompletions
                 JsonNode? root = JsonNode.Parse(responseBody);
                 if (root == null)
                 {
-                    return ProtocolResult.Transient("Empty response from API");
+                    return ProtocolResult.Transient("Empty response from API", null);
                 }
 
                 string? errMsg = root["error"]?["message"]?.GetValue<string>();
                 JsonArray? choices = root["choices"]?.AsArray();
                 if (choices == null || choices.Count == 0 || errMsg != null)
                 {
-                    return ProtocolResult.Transient(errMsg ?? "Empty response from API");
+                    return ProtocolResult.Transient(errMsg ?? "Empty response from API", null);
                 }
 
                 JsonNode? messageNode = choices[0]?["message"];
                 if (messageNode is not JsonObject messageObj)
                 {
-                    return ProtocolResult.Transient("Response missing message object");
+                    return ProtocolResult.Transient("Response missing message object", null);
                 }
 
                 (string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
@@ -304,7 +304,7 @@ public class ProtocolChatCompletions
             int statusCode = (int)httpResponse.StatusCode;
             if (statusCode == 401 || statusCode == 403)
                 return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
-            return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}");
+            return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
         }
     }
 
@@ -460,11 +460,11 @@ public class ProtocolChatCompletions
         }
         catch (HttpRequestException ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
 
         if (!httpResponse.IsSuccessStatusCode)
@@ -485,7 +485,7 @@ public class ProtocolChatCompletions
 
             if (statusCode == 401 || statusCode == 403)
                 return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
-            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}");
+            return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
         }
 
         StringBuilder contentBuilder = new StringBuilder();
@@ -610,7 +610,7 @@ public class ProtocolChatCompletions
         }
         catch (Exception ex)
         {
-            return ProtocolResult.Transient(ex.Message);
+            return ProtocolResult.Transient(ex.Message, null);
         }
         finally
         {

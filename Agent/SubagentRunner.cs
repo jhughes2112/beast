@@ -186,6 +186,10 @@ public class SubagentRunner
             const int kMaxTurns = kMaxWorkTurns + kMaxWindDownTurns;
             int responseTokens = 0;
 
+            // Records why the run stopped when every model in the role's list has been exhausted, so the reason is
+            // returned to the caller via the terminator path instead of the subagent dying silently.
+            string? lastFailure = null;
+
             for (int turn = 1; turn <= kMaxTurns; turn++)
             {
                 // In the wind-down phase the terminator is the only tool and is requested, and the output
@@ -211,23 +215,30 @@ public class SubagentRunner
                     scope = resumed;
                     continue;
                 }
-                if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
+                if (result.Outcome != ProtocolCallOutcome.Success)
                 {
-                    // Sustained-rate-limited on this model. Swap in the next usable model from the role's list
-                    // (like /model) and keep going on the same turn; the service holds its slot, so this stays
-                    // on the fallback for the rest of the subagent's run. Give up only when the list runs out.
-                    LlmService? fallback = _registry.CreateFallbackService(service, 0);
+                    // Any model failure — sustained rate limiting (TooManyRetries), a permanent failure (Failed),
+                    // or context exhaustion (ContextFull, terminal for a subagent since it never compacts) — swaps
+                    // in the next usable model from the role's list (like /model) and keeps going on the same turn;
+                    // the service holds its slot, so the run stays on the fallback. The fallback must be able to
+                    // hold the current conversation, so it requires a window larger than what is already in context.
+                    // Give up only when the list runs out, recording the reason so it is RETURNED to the caller.
+                    LlmService? fallback = _registry.CreateFallbackService(service, subSession.ContextLength);
                     if (fallback != null)
                     {
                         service = fallback;
                         subSession.UpdateModel(service.Model);
-                        _transport.Status(subSession.Id, $"Rate limited; falling back to {service.Model.Config.Name}");
+                        string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
+                        _transport.Status(subSession.Id, $"{reason}; falling back to {service.Model.Config.Name}");
                         continue;
                     }
+                    lastFailure = result.Outcome == ProtocolCallOutcome.TooManyRetries
+                        ? "all models are rate limited after repeated retries"
+                        : result.Outcome == ProtocolCallOutcome.ContextFull
+                            ? "the context window filled and no larger model is available"
+                            : string.IsNullOrEmpty(result.ErrorMessage) ? "all models failed" : result.ErrorMessage;
                     break;
                 }
-                if (result.Outcome != ProtocolCallOutcome.Success)
-                    break;
 
                 subSession.CommitAssistantTurn(result.Payload!);
                 bool hasToolCalls;
@@ -295,10 +306,19 @@ public class SubagentRunner
 
             if (sink.Value == null)
             {
-                // The subagent never called its terminator (e.g. it kept calling the wrong tool through the
-                // wind-down turns). Rather than throw away everything it produced, salvage its last assistant
-                // text and return that — a partial answer is far less wasteful than discarding a long run.
+                // The subagent never called its terminator. Salvage its last assistant text either way so a long
+                // run is not thrown away. If it stopped because every model was exhausted, RETURN that error to the
+                // caller (with the partial progress appended) as a failure, so the delegating call completes with a
+                // clear reason rather than a silent or misleading result. Otherwise it merely ran out of working
+                // turns (e.g. it kept calling the wrong tool), so return the salvaged text as a partial success.
                 string salvaged = LastAssistantText(subSession);
+                if (!string.IsNullOrEmpty(lastFailure))
+                {
+                    string message = string.IsNullOrEmpty(salvaged)
+                        ? $"The {role.Name} subagent could not finish: {lastFailure}."
+                        : $"The {role.Name} subagent could not finish: {lastFailure}.\n\nLast progress before it stopped:\n{salvaged}";
+                    return (false, message, responseTokens);
+                }
                 if (string.IsNullOrEmpty(salvaged))
                     return (false, "The subagent finished without returning a result.", responseTokens);
                 return (true, salvaged, subSession.LastTokenUsage?.CompletionTokens ?? responseTokens);

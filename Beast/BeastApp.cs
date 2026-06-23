@@ -242,28 +242,56 @@ public class BeastApp : IDisposable, IAsyncDisposable
         NotifySessionList();
     }
 
-    // Deletes a subagent session from the client's memory and tells the agent to drop its file from
-    // the session folder. Invoked from the F10 overlay (under the display lock, like ProcessFrame).
-    // The root session is never deletable, and a still-running session is left alone.
+    // Deletes a session and its whole descendant subtree from the client's memory and tells the agent to
+    // drop the matching .json files from the session folder. Invoked from the F10 overlay (under the
+    // display lock, like ProcessFrame). A still-running session (or one with a running descendant) is left
+    // alone. Deleting the active root tears the tree down and the agent starts a fresh session in its
+    // place, announced back via SessionReset — so for the root we just send the command and let that frame
+    // rebuild the client state.
     private void DeleteSession(string sessionId)
     {
         if (string.IsNullOrEmpty(sessionId)) return;
-        if (GetParentId(sessionId) == null) return;
         if (!_sessions.ContainsKey(sessionId)) return;
-        if (_busySessions.Contains(sessionId)) return;
 
-        // The session files live in the agent's folder, so the agent performs the disk delete. The
-        // command is routed through the root session — only its command queue is drained externally.
+        // Refuse while anything in the subtree is still running.
+        string subtreePrefix = sessionId + "_";
+        foreach (string busyId in _busySessions)
+        {
+            if (string.Equals(busyId, sessionId, StringComparison.Ordinal) || busyId.StartsWith(subtreePrefix, StringComparison.Ordinal))
+                return;
+        }
+
+        // The session files live in the agent's folder, so the agent performs the disk delete recursively.
+        // The command is routed through the root session — only its command queue is drained externally.
         string rootId = GetRootSessionId();
-        if (!string.IsNullOrEmpty(rootId) && _wsClient != null)
-            _ = _wsClient.SendAsync(rootId + "|/session delete " + sessionId);
+        if (string.IsNullOrEmpty(rootId) || _wsClient == null) return;
+        _ = _wsClient.SendAsync(rootId + "|/session delete " + sessionId);
 
-        bool wasActive = string.Equals(_activeSessionId, sessionId, StringComparison.Ordinal);
-        _sessions.Remove(sessionId);
-        _busySessions.Remove(sessionId);
-        _sessionDisplayNames.Remove(sessionId);
+        if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
+        {
+            // Root: the agent replies with SessionReset for the new root, which clears and rebuilds the
+            // client's session map and active view. Leave that to the frame so the two never disagree.
+            return;
+        }
 
-        if (wasActive && !string.IsNullOrEmpty(rootId))
+        // Non-root: drop this session and every descendant from client memory now.
+        bool wasActiveInSubtree = false;
+        List<string> toRemove = new List<string>();
+        foreach (string id in _sessions.Keys)
+        {
+            if (string.Equals(id, sessionId, StringComparison.Ordinal) || id.StartsWith(subtreePrefix, StringComparison.Ordinal))
+                toRemove.Add(id);
+        }
+        foreach (string id in toRemove)
+        {
+            if (string.Equals(_activeSessionId, id, StringComparison.Ordinal))
+                wasActiveInSubtree = true;
+            _sessions.Remove(id);
+            _busySessions.Remove(id);
+            _sessionDisplayNames.Remove(id);
+        }
+
+        if (wasActiveInSubtree)
             SwitchActiveSession(rootId);
         else
             NotifySessionList();
