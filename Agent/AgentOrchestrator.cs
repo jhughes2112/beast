@@ -46,16 +46,18 @@ public class AgentOrchestrator
         // client's list; later runners (compaction-failure restarts) reuse the live session and must not.
         SessionRunner runner = new SessionRunner(LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource, true);
 
-        using CancellationTokenSource inputCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-
         while (!ct.IsCancellationRequested)
         {
+            // A fresh linked CTS per iteration: cancelling it stops only this runner's input loop. Reusing
+            // one across iterations would leave it cancelled, so a compaction-failure restart's input loop
+            // would exit immediately and the user could never issue another command.
+            using CancellationTokenSource inputCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             Task inputTask = ReadInputAsync(runner, inputCts.Token);
             Session currentSession = await runner.RunAsync(ct);
             inputCts.Cancel();
             await inputTask;
 
-            if (ct.IsCancellationRequested) 
+            if (ct.IsCancellationRequested)
                 break;
 
             // RunAsync exited without cancellation (compaction failure) — keep the server alive

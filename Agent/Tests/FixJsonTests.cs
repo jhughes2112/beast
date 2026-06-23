@@ -171,9 +171,14 @@ public static class FixJsonTests
 		string? r6 = FixJson.FuzzyMatchToolName("completely_wrong_name", tools, 3, null);
 		ctx.AssertNull(r6, "Fuzzy: far miss returns null");
 
-		// Exact match — returns null (distance=0 excluded; caller already did exact match)
+		// Exact match — returns null (ordinally identical; caller already did exact match)
 		string? r7 = FixJson.FuzzyMatchToolName("bash", tools, 3, null);
 		ctx.AssertNull(r7, "Fuzzy: exact match returns null");
+
+		// Case-only mismatch (distance 0 case-insensitively) — corrects the casing since the caller's
+		// exact match was case-sensitive and failed.
+		string? r7b = FixJson.FuzzyMatchToolName("Bash", tools, 3, null);
+		ctx.AssertEqual("bash", r7b, "Fuzzy: Bash → bash (case correction)");
 
 		// Empty input — all distances > threshold
 		string? r8 = FixJson.FuzzyMatchToolName("", tools, 3, null);

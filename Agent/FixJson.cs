@@ -120,7 +120,11 @@ public static class FixJson
 
 		string? result = null;
 
-		if (bestMatch != null && bestDistance > 0 && bestDistance <= threshold)
+		// Distance is measured case-insensitively, so a case-only mismatch (e.g. "Bash" vs "bash") scores 0.
+		// The caller already failed an exact (case-sensitive) match, so accept distance 0 too and correct the
+		// casing — but only when the name actually differs ordinally, so a truly-identical input still yields
+		// no correction.
+		if (bestMatch != null && bestDistance <= threshold && !string.Equals(input, bestMatch, StringComparison.Ordinal))
 		{
 			Interlocked.Increment(ref _toolNameCorrections);
 			log?.Invoke($"json-heal [name] '{input}' → '{bestMatch}': {GetCounters()}");

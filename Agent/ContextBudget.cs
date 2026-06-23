@@ -84,6 +84,9 @@ public class ContextBudget
     // over-count outstanding tool output, never under-count it.
     public int ReserveToolResponses(int count)
     {
+        if (count <= 0)
+            return 0;
+
         int round = Math.Max(0, _windowSize - _measured - ResponseReserve - _compactionReserve);
         int perTool = round / count;
         _pendingReserve += perTool * count;
