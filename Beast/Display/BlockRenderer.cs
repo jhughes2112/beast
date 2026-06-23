@@ -101,11 +101,11 @@ internal static class BlockRenderer
             }
         }
 
-        // While streaming (plainText), tool calls and assistant output stay on the raw path — partial markdown
-        // (half-open fences, dangling tables) renders badly mid-stream. Thinking is the exception: it reads
-        // well as markdown as it arrives, and RenderMessageRows only treats it as markdown once it actually
-        // looks like markdown, so plain reasoning prose still streams verbatim. The committed block is rebuilt
-        // through the full markdown path once streaming ends.
+        // While streaming (plainText), tool calls stay on the raw path — partial markdown (half-open fences,
+        // dangling tables) renders badly mid-stream, and a tool call's arguments are not markdown anyway.
+        // Thinking and assistant output both render as markdown as they arrive: it reads well streaming, and
+        // because committed output already renders as markdown, routing the streaming preview through the same
+        // path means the live view matches the final render rather than reflowing when streaming ends.
         List<string> ansiLines;
         // Row index where the tool's returned output begins (-1 when there is none, or on the streaming raw
         // path). Output rows render on a slightly darker body background so the response reads as distinct
@@ -115,7 +115,7 @@ internal static class BlockRenderer
         int errorStart = -1;
         if (isToolCall)
             ansiLines = plainText ? RenderMessageRowsRaw(msg, w) : RenderToolCallRows(msg, w, out responseStart, out errorStart);
-        else if (plainText && msg.Type != FrameType.Thinking)
+        else if (plainText && msg.Type != FrameType.Thinking && msg.Type != FrameType.Output)
             ansiLines = RenderMessageRowsRaw(msg, w);
         else
             ansiLines = RenderMessageRows(msg, w);
