@@ -109,36 +109,38 @@ public static class LlmServiceTests
 	private static void TestTryAdaptToError(TestContext ctx)
 	{
 		ProtocolChatCompletions protocol = new ProtocolChatCompletions();
-		Type[] types = new Type[] { typeof(HttpResponseMessage), typeof(string) };
+		Type[] types = new Type[] { typeof(HttpResponseMessage), typeof(string), typeof(bool) };
 
+		// reasoningConfigured is false throughout: these cases exercise the parallel-tool-calls adaptation,
+		// not the reasoning-hint fallback.
 		// 400 with parallel_tool_calls triggers adaptation
 		HttpResponseMessage r400 = new HttpResponseMessage(HttpStatusCode.BadRequest);
 		string parallelBody = "{\"error\": \"parallel_tool_calls not supported\"}";
-		bool adapted = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody })!;
+		bool adapted = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody, false })!;
 		ctx.Assert(adapted, "TryAdaptToError: disables parallel_tool_calls on 400");
 
 		// Subsequent call with same error returns false (already disabled)
-		bool second = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody })!;
+		bool second = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody, false })!;
 		ctx.Assert(!second, "TryAdaptToError: already disabled returns false");
 
 		// 400 with upstream_error triggers adaptation
 		ProtocolChatCompletions fresh = new ProtocolChatCompletions();
 		string upstreamBody = "{\"error\": \"upstream_error occurred\"}";
-		bool upstream = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, upstreamBody })!;
+		bool upstream = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, upstreamBody, false })!;
 		ctx.Assert(upstream, "TryAdaptToError: disables parallel_tool_calls on upstream_error");
 
 		// 500 returns false
 		HttpResponseMessage r500 = new HttpResponseMessage(HttpStatusCode.InternalServerError);
-		bool serverErr = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r500, upstreamBody })!;
+		bool serverErr = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r500, upstreamBody, false })!;
 		ctx.Assert(!serverErr, "TryAdaptToError: 500 status returns false");
 
 		// 429 returns false
 		HttpResponseMessage r429 = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-		bool rateLimit = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r429, upstreamBody })!;
+		bool rateLimit = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r429, upstreamBody, false })!;
 		ctx.Assert(!rateLimit, "TryAdaptToError: 429 status returns false");
 
 		// 400 without parallel_tool_calls or upstream_error returns false
-		bool noMatch = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, "{\"error\": \"other\"}" })!;
+		bool noMatch = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, "{\"error\": \"other\"}", false })!;
 		ctx.Assert(!noMatch, "TryAdaptToError: unrelated 400 returns false");
 	}
 }

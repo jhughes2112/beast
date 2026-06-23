@@ -82,16 +82,13 @@ public static class ToolDispatch
 		await Task.WhenAll(tasks);
 
 		// The payload's ToolResults arrives empty from the protocol; fill it in call order so
-		// CommitToolResults fans the results out in the same order as the calls.
+		// CommitToolResults fans the results out in the same order as the calls. The round's full
+		// reservation stays charged against the budget until the next provider response measures the
+		// real context size — we never settle it down to an estimate of what each tool returned.
 		payload.ToolResults.Clear();
 		for (int i = 0; i < toolCalls.Count; i++)
 		{
-			ToolResult result = completedTools[i];
-			payload.ToolResults.Add(result);
-
-			// A sub-session tool reports its reply's exact size; free the unused part of its
-			// reservation so the next request can size against the real remaining room.
-			session.Budget.SettleToolResponse(perToolBudget, result.MeasuredOutputTokens);
+			payload.ToolResults.Add(completedTools[i]);
 		}
 
 		return true;

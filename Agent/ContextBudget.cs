@@ -7,11 +7,12 @@ using System;
 // one obvious place that knows how much room the session has, instead of the math being re-derived
 // inline at every call site.
 //
-// Token counts fed in here come from provider responses. The one exception is a raw tool output the
-// provider never measured: it is estimated (~4 chars/token) and truncated to its budget at the tool
-// boundary, so the value handed to SettleToolResponse is still a real, bounded count.
-// Reservations are allocations (room we hand a tool), not claims about actual size; the actual size
-// is reconciled exactly when the next response reports the new context size.
+// Every number the budget reasons about is either a provider-reported measurement (the context size)
+// or a reservation we ourselves allocated and truncated a tool output to fit — never a token-count
+// estimate. A tool output the provider has not measured yet is charged the FULL reservation it was
+// handed (a guaranteed upper bound) until the next response reports the exact new context size and
+// RecordMeasurement folds it in. So the figures used to decide whether a request fits are always
+// conservative: the real input can never exceed measured + pendingReserve.
 public class ContextBudget
 {
     // Room kept free for the next response when neither an output limit nor a sub-session cap is set,
@@ -47,19 +48,22 @@ public class ContextBudget
         _pendingReserve = 0;
     }
 
-    // The committed conversation already leaves no room above the compaction reserve.
+    // The input we would send next — the measured conversation plus any not-yet-measured tool
+    // reservations — already leaves no room above the compaction reserve. Including the pending
+    // reservation here is what keeps a tool-heavy round from passing the gate and then overflowing.
     public bool IsExhausted()
     {
-        return _measured + _compactionReserve >= _windowSize;
+        return _measured + _pendingReserve + _compactionReserve >= _windowSize;
     }
 
-    // Max output tokens to request next: whatever the window has left after the measured conversation
-    // and any pending tool outputs, tightened by the model's output ceiling and the sub-session cap.
-    // Null means "unbounded" — let the provider use its own default — and only happens when neither
-    // bound is configured.
+    // Max output tokens to request next: whatever the window has left after the measured conversation,
+    // any pending tool outputs, AND the compaction reserve, tightened by the model's output ceiling and
+    // the sub-session cap. Subtracting the compaction reserve is what keeps it genuinely free, so input
+    // + output always lands at least that far inside the window. Null means "unbounded" — let the
+    // provider use its own default — and only happens when neither bound is configured.
     public int? MaxCompletionTokens()
     {
-        long available = _windowSize - (_measured + _pendingReserve);
+        long available = _windowSize - _measured - _pendingReserve - _compactionReserve;
         if (available <= 0)
             return 0;
 
@@ -73,23 +77,17 @@ public class ContextBudget
     }
 
     // Allocates the round's tool-response budget out of the room left after the response reserve and
-    // the compaction reserve, split evenly across the calls so the combined outputs always fit.
-    // Returns the per-tool budget and records the whole round as pending.
+    // the compaction reserve, split evenly across the calls so the combined outputs always fit. Returns
+    // the per-tool budget (which each tool output is truncated to fit) and records the WHOLE round as
+    // pending. The reservation is held in full — never reduced by an estimate of what a tool actually
+    // returned — until the next provider response measures the real size, so the budget can only ever
+    // over-count outstanding tool output, never under-count it.
     public int ReserveToolResponses(int count)
     {
         int round = Math.Max(0, _windowSize - _measured - ResponseReserve - _compactionReserve);
         int perTool = round / count;
         _pendingReserve += perTool * count;
         return perTool;
-    }
-
-    // A tool returned a reply whose exact size the provider measured. Free only the unused remainder
-    // of its reservation; never grow pending, so a truncated or over-budget reply stays safe.
-    public void SettleToolResponse(int reserved, int measuredTokens)
-    {
-        int unused = reserved - measuredTokens;
-        if (unused > 0)
-            _pendingReserve -= unused;
     }
 
     // A provider response reported the new context size, which already includes every tool output

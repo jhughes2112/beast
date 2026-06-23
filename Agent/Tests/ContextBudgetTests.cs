@@ -9,7 +9,7 @@ public static class ContextBudgetTests
 
         TestMaxCompletionTokens(ctx);
         TestIsExhausted(ctx);
-        TestReserveAndSettle(ctx);
+        TestReserveHoldsFullReservation(ctx);
         TestRecordMeasurement(ctx);
     }
 
@@ -39,6 +39,18 @@ public static class ContextBudgetTests
         ContextBudget e = new ContextBudget();
         e.Configure(1000, 4096, 0, 0, 1000);
         ctx.AssertEqual<int?>(0, e.MaxCompletionTokens(), "MaxCompletionTokens: zero when window full");
+
+        // The compaction reserve is held free: output is the window remainder MINUS the reserve.
+        ContextBudget f = new ContextBudget();
+        f.Configure(10000, 8000, 2000, 0, 1000);
+        // available = 10000 - 1000 - 0 - 2000 = 7000.
+        ctx.AssertEqual<int?>(7000, f.MaxCompletionTokens(), "MaxCompletionTokens: subtracts the compaction reserve");
+
+        // When only the compaction reserve would be left, there is no room to complete.
+        ContextBudget g = new ContextBudget();
+        g.Configure(10000, 8000, 2000, 0, 8000);
+        // available = 10000 - 8000 - 0 - 2000 = 0.
+        ctx.AssertEqual<int?>(0, g.MaxCompletionTokens(), "MaxCompletionTokens: zero when only the compaction reserve remains");
     }
 
     private static void TestIsExhausted(TestContext ctx)
@@ -52,7 +64,7 @@ public static class ContextBudgetTests
         ctx.Assert(!under.IsExhausted(), "IsExhausted: false one token under the reserve boundary");
     }
 
-    private static void TestReserveAndSettle(TestContext ctx)
+    private static void TestReserveHoldsFullReservation(TestContext ctx)
     {
         // Window 100000, output ceiling large enough to be re-floored to the 4096 default reserve,
         // so the window remainder (not the ceiling) is what MaxCompletionTokens reports.
@@ -62,20 +74,21 @@ public static class ContextBudgetTests
         // round = 100000 - 1000(measured) - 4096(response reserve) - 0(compaction) = 94904.
         int perTool = budget.ReserveToolResponses(1);
         ctx.AssertEqual(94904, perTool, "ReserveToolResponses: per-tool budget from window remainder");
-        // available = 100000 - (1000 + 94904) = 4096.
-        ctx.AssertEqual<int?>(4096, budget.MaxCompletionTokens(), "ReserveToolResponses: pending reservation reduces completion room");
 
-        // Reply measured at 904 tokens frees 94000 of the reservation.
-        budget.SettleToolResponse(perTool, 904);
-        // available = 100000 - (1000 + 904) = 98096.
-        ctx.AssertEqual<int?>(98096, budget.MaxCompletionTokens(), "SettleToolResponse: frees the unused remainder");
+        // The whole reservation stays charged — never settled down to an estimate of what the tool
+        // actually returned — so the room left for the completion holds steady until the next measurement.
+        // available = 100000 - 1000 - 94904 - 0 = 4096.
+        ctx.AssertEqual<int?>(4096, budget.MaxCompletionTokens(), "ReserveToolResponses: full reservation stays charged");
 
-        // An over-budget reply never grows pending beyond the reservation.
-        ContextBudget over = new ContextBudget();
-        over.Configure(100000, 200000, 0, 0, 1000);
-        int perTool2 = over.ReserveToolResponses(1);
-        over.SettleToolResponse(perTool2, 200000);
-        ctx.AssertEqual<int?>(4096, over.MaxCompletionTokens(), "SettleToolResponse: over-budget reply does not grow pending");
+        // With a compaction reserve set, the round is smaller and the completion room excludes the
+        // reserve, so it is genuinely held free on top of the response room.
+        ContextBudget reserved = new ContextBudget();
+        reserved.Configure(100000, 200000, 5000, 0, 1000);
+        // round = 100000 - 1000 - 4096 - 5000 = 89904.
+        int perTool2 = reserved.ReserveToolResponses(1);
+        ctx.AssertEqual(89904, perTool2, "ReserveToolResponses: compaction reserve shrinks the tool round");
+        // available = 100000 - 1000 - 89904 - 5000 = 4096.
+        ctx.AssertEqual<int?>(4096, reserved.MaxCompletionTokens(), "ReserveToolResponses: completion room excludes the compaction reserve");
     }
 
     private static void TestRecordMeasurement(TestContext ctx)
