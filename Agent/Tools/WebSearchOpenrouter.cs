@@ -121,7 +121,7 @@ public class WebSearchOpenrouter
             // Cost is spent regardless of how the call ended; roll it up into the calling session.
             parent.RecordCost(session.TotalCost);
 
-            // Persist the search session unless it inherited an ephemeral parent (a /session none root), so a
+            // Persist the search session unless it inherited an ephemeral parent (a no-worktree root), so a
             // non-ephemeral search survives a reload and stays in the session tree like any other child session.
             if (!session.Ephemeral)
                 SessionService.Save(session.Data, false);

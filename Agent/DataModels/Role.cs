@@ -41,7 +41,7 @@ public class Role
 	public string SummaryPrompt { get; }
 
 	// Reminder appended after a turn that ends without the agent calling its terminator tool (the root's
-	// task_complete, a subagent's return_to_caller). Empty = no reminder: the agent idles and waits for
+	// stop_work, a subagent's return_to_caller). Empty = no reminder: the agent idles and waits for
 	// the user instead of being kept on task. Data-drives how each role tells the model to finish.
 	[JsonPropertyName("end_of_turn_prompt")]
 	public string EndOfTurnPrompt { get; }

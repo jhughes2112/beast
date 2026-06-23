@@ -37,16 +37,40 @@ public class LaunchDocker : ILauncher
     {
         bool reaped = await RemoveStaleContainerByNameAsync(name);
         if (!reaped)
-            throw new InvalidOperationException($"Worktree '{_worktree.Name}' is already in use by a running container ('{name}').");
+            throw new InvalidOperationException($"'{_worktree.Name}' is already in use by a running container ('{name}').");
 
-        // The real repo is bound to /git as a pristine reference checkout; the worktree folder is bound to
-        // /workspace, where all tools operate. The agent runs `git worktree add /workspace` against /git
-        // once it is up, using the branch passed as the --worktree-branch startup argument.
+        // Worktree run: the real repo is bound to /git as a pristine reference checkout and the worktree folder
+        // to /workspace, where all tools operate. The agent runs `git worktree add /workspace` against /git once
+        // it is up, using the branch passed as the --worktree-branch startup argument.
+        // Ephemeral run: the current folder is bound straight to /workspace with no /git and no branch, so the
+        // agent operates in place and skips all git worktree setup.
         string repoCwd = _worktree.RepoCwd;
         string worktreeHostPath = _worktree.HostPath;
         string beastConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
         Directory.CreateDirectory(beastConfigDir);
+
+        List<string> cmd;
+        List<string> binds;
+        if (_worktree.Ephemeral)
+        {
+            cmd = new List<string>();
+            binds = new List<string>
+            {
+                $"{repoCwd}:/workspace",
+                $"{beastConfigDir}:/root/.beast"
+            };
+        }
+        else
+        {
+            cmd = new List<string> { "--worktree-branch", _worktree.Branch };
+            binds = new List<string>
+            {
+                $"{repoCwd}:/git",
+                $"{worktreeHostPath}:/workspace",
+                $"{beastConfigDir}:/root/.beast"
+            };
+        }
 
         // Find an available port on the host
         _hostPort = FindAvailablePort();
@@ -57,8 +81,8 @@ public class LaunchDocker : ILauncher
             Name = name,
             WorkingDir = "/workspace",
             Env = new List<string> { },
-            // The worktree branch is passed as a startup argument to the agent entrypoint (never an env var).
-            Cmd = new List<string> { "--worktree-branch", _worktree.Branch },
+            // Startup arguments to the agent entrypoint (never env vars); empty for an ephemeral run.
+            Cmd = cmd,
             ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
             HostConfig = new HostConfig
             {
@@ -71,12 +95,7 @@ public class LaunchDocker : ILauncher
                         new PortBinding { HostIP = "127.0.0.1", HostPort = _hostPort.ToString() }
                     }
                 },
-                Binds = new List<string>
-                {
-                    $"{repoCwd}:/git",
-                    $"{worktreeHostPath}:/workspace",
-                    $"{beastConfigDir}:/root/.beast"
-                }
+                Binds = binds
             }
         };
 

@@ -151,7 +151,7 @@ public static class HelperSession
 			// Cost is spent regardless of how the run ended; roll it up into the calling session.
 			parent.RecordCost(session.TotalCost);
 
-			// Persist the helper session unless it inherited an ephemeral parent (a /session none root): a
+			// Persist the helper session unless it inherited an ephemeral parent (a no-worktree root): a
 			// non-ephemeral helper is a real saved conversation, so it survives a reload and stays in the
 			// session tree, exactly like a subagent session. The Ephemeral flag is the single switch.
 			if (!session.Ephemeral)

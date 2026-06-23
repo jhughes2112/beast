@@ -19,6 +19,9 @@ public static class Worktrees
         public readonly string Branch;
         public readonly string HostPath;
         public readonly string RepoCwd;
+        // Ephemeral: the current folder is mounted directly, with no git worktree and no saved session.
+        // Branch is empty in that case, which is the signal the launcher and agent both key off.
+        public readonly bool Ephemeral;
 
         public Selection(string name, string hostPath, string repoCwd)
         {
@@ -26,6 +29,24 @@ public static class Worktrees
             Branch = name;
             HostPath = hostPath;
             RepoCwd = repoCwd;
+            Ephemeral = false;
+        }
+
+        private Selection(string name, string cwd)
+        {
+            Name = name;
+            Branch = string.Empty;
+            HostPath = cwd;
+            RepoCwd = cwd;
+            Ephemeral = true;
+        }
+
+        // An ephemeral selection: run in place in the current folder, touching no git and persisting nothing.
+        // Name is the folder leaf for display; the container lock name is derived from the full path instead.
+        public static Selection ForCurrentFolder(string cwd)
+        {
+            string leaf = Path.GetFileName(cwd.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            return new Selection(string.IsNullOrEmpty(leaf) ? "current folder" : leaf, cwd);
         }
     }
 
@@ -132,11 +153,28 @@ public static class Worktrees
         }
     }
 
-    // The deterministic container name for a worktree: beast_<name>. A running container with this name
-    // means the worktree is currently occupied, which the launch menu surfaces and the launcher enforces.
-    public static string ContainerName(string worktreeName)
+    // The deterministic container name for a selection: beast_<name> for a worktree, or beast_eph_<hash> for
+    // an ephemeral current-folder run (keyed by the full path so two folders with the same leaf never collide).
+    // A running container with this name means that worktree/folder is occupied — surfaced in the launch menu
+    // and enforced by the launcher.
+    public static string ContainerName(Selection selection)
     {
-        return "beast_" + worktreeName;
+        if (selection.Ephemeral)
+            return "beast_eph_" + ShortHash(selection.RepoCwd);
+        return "beast_" + selection.Name;
+    }
+
+    // FNV-1a 32-bit hex of the path (lower-cased, since Windows paths are case-insensitive): a stable per-folder
+    // id for the ephemeral container lock name.
+    private static string ShortHash(string input)
+    {
+        uint hash = 2166136261;
+        foreach (char c in input.ToLowerInvariant())
+        {
+            hash ^= c;
+            hash *= 16777619;
+        }
+        return hash.ToString("x8");
     }
 
     // Removes a worktree's host folder after the agent has detached it via `git worktree remove`. Best

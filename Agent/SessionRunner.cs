@@ -70,7 +70,6 @@ public class SessionRunner
 	// restart on the same runner (or a fresh runner with it false) never replays the children twice.
 	private bool _restoreChildren;
 
-	private List<(string id, string displayName, int messageCount)> _cachedSessions = new List<(string, string, int)>();
 
 	public SessionRunner(
 		Session session,
@@ -224,7 +223,6 @@ public class SessionRunner
 		// client's session list and status show the name rather than the raw ID.
 		session.AnnounceToClient();
 
-		_cachedSessions = SessionService.List();
 		string lastCompletionCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
 		_transport.Completions(session.Id, lastCompletionCandidates);
 
@@ -520,7 +518,6 @@ public class SessionRunner
 		if (!newSession.Ephemeral)
 			SaveRoot(newSession);
 
-		_cachedSessions = SessionService.List();
 		_transport.Status(_currentSession.Id, "[Compaction] Complete.");
 		return newSession;
 	}
@@ -600,84 +597,33 @@ public class SessionRunner
 				case "compact":
 					_wantsCompact = true;
 					break;
-				case "session":
-					if (args == "new")
-					{
-						if (!session.Ephemeral)
-							SaveRoot(session);
-						session = CreateFreshSession(session.Role, false);
-						_service = null;
-						_cachedSessions = SessionService.List();
-						_transport.SessionReset(session.Id);
-						_transport.Status(session.Id, "New session started.");
-					}
-					else if (args == "none")
-					{
-						if (!session.Ephemeral)
-							SaveRoot(session);
-						session = CreateFreshSession(session.Role, true);
-						_service = null;
-						_cachedSessions = SessionService.List();
-						_transport.SessionReset(session.Id);
-						_transport.Status(session.Id, "Ephemeral session started (not saved).");
-					}
-					else if (args != null && args.StartsWith("delete ", StringComparison.OrdinalIgnoreCase))
-					{
-						// Delete a session and its whole descendant subtree from disk. An empty target is refused
-						// so a blank id can never reach the disk layer. Deleting the active root tears its tree
-						// down and then starts a fresh session, exactly like /session new.
-						string deleteId = args.Substring("delete ".Length).Trim();
-						if (string.IsNullOrEmpty(deleteId))
+				case "delete-session":
+						// Internal command from the F10 session tree (not a user-facing command): delete a session
+						// and its whole descendant subtree from disk. An empty target is refused so a blank id can
+						// never reach the disk layer. Deleting the active root tears its tree down and stands up a
+						// fresh session in its place (keeping the launch's ephemeral mode), mirrored to the client
+						// via SessionReset.
+						if (string.IsNullOrEmpty(args))
 						{
 							_transport.Error(session.Id, "No session specified to delete.");
 						}
-						else if (string.Equals(deleteId, session.Id, StringComparison.Ordinal))
+						else if (string.Equals(args, session.Id, StringComparison.Ordinal))
 						{
 							// The outgoing session's files are gone; flag it so the RunAsync switch does not
 							// re-save it, then stand up a fresh session and reset the client to it.
 							SessionService.DeleteTree(session.Id);
 							_currentSessionDeleted = true;
-							session = CreateFreshSession(session.Role, false);
+							session = CreateFreshSession(session.Role, session.Ephemeral);
 							_service = null;
-							_cachedSessions = SessionService.List();
 							_transport.SessionReset(session.Id);
 							_transport.Status(session.Id, "Deleted session and started a new one.");
 						}
 						else
 						{
 							// Idempotent: whether or not files existed, the session is gone afterward.
-							SessionService.DeleteTree(deleteId);
-							_cachedSessions = SessionService.List();
-							_transport.Status(session.Id, "Deleted session: " + deleteId);
+							SessionService.DeleteTree(args);
+							_transport.Status(session.Id, "Deleted session: " + args);
 						}
-					}
-					else if (args != null)
-					{
-						string resolvedId = args;
-						foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
-						{
-							if (string.Equals(s.displayName, args, StringComparison.Ordinal) ||
-								string.Equals(s.id, args, StringComparison.Ordinal))
-							{
-								resolvedId = s.id;
-								break;
-							}
-						}
-						BeastSession? loaded = SessionService.Load(resolvedId);
-						if (loaded != null)
-						{
-							if (!session.Ephemeral)
-								SaveRoot(session);
-							session = new Session(loaded, string.Empty, _transport, false);
-							_service = null;
-							_cachedSessions = SessionService.List();
-						_transport.Status(session.Id, "Switched to session: " + loaded.DisplayName);
-						}
-						else
-						{
-							_transport.Error(session.Id, "Session not found: " + args);
-						}
-					}
 					break;
 				case "reload":
 					try
@@ -721,7 +667,7 @@ public class SessionRunner
 					}
 					break;
 				case "help":
-					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /session new, /session none, /session <id>, /session delete <id>, /finish, /test, /quit");
+					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /finish, /test, /quit");
 					break;
 				case "test":
 					await RunTestsAsync(session.Id, args);
@@ -735,13 +681,13 @@ public class SessionRunner
 		return session;
 	}
 
-	// Returns all completable tokens: slash commands, model names, and session ids.
+	// Returns all completable tokens: slash commands and model names.
 	private List<string> BuildCompletionCandidates(Session session)
 	{
 		List<string> candidates = new List<string>
 		{
 			"/compact", "/reload", "/model",
-			"/session", "/finish", "/help"
+			"/finish", "/help"
 		};
 
 		Role? activeRole = _roleService.GetRole(session.Role);
@@ -763,16 +709,6 @@ public class SessionRunner
 					continue;
 				candidates.Add("/model " + modelId + ModelPricingLabel(modelId));
 			}
-		}
-
-		candidates.Add("/session new");
-		candidates.Add("/session none");
-		foreach ((string id, string displayName, int messageCount) s in _cachedSessions)
-		{
-			if (!string.IsNullOrEmpty(s.displayName))
-				candidates.Add("/session " + s.displayName);
-			else
-				candidates.Add("/session " + s.id);
 		}
 
 		return candidates;

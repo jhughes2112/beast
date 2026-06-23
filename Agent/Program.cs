@@ -32,6 +32,9 @@ public class Program
 		// comes from the --worktree-branch startup argument (never an env var). No-op for debug/native runs
 		// without the /git mount. A failure here means /workspace is unusable, so abort.
 		string worktreeBranch = ArgValue(args, "--worktree-branch");
+		// No worktree branch means an ephemeral, current-folder launch: the session is not saved and no git
+		// worktree is set up. A named worktree launch passes its branch and gets a persisted session.
+		bool ephemeral = string.IsNullOrEmpty(worktreeBranch);
 		(bool wtOk, string wtDetail) = await WorktreeBootstrap.EnsureAsync(worktreeBranch, cts.Token);
 		if (!wtOk)
 		{
@@ -57,7 +60,7 @@ public class Program
 		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
 		ITransportServer transport = wsServer;
-		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts);
+		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts, ephemeral);
 
 		try
 		{

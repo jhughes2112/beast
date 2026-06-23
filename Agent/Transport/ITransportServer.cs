@@ -24,7 +24,7 @@ public enum FrameType : byte
     Idle = 16,             // agent is waiting for user input (not processing anything)
     Busy = 17,             // agent is actively processing
     SessionAnnounce = 18,  // agent announces a session; content is JSON {id, name}
-    SessionReset = 19      // agent reset its session set (e.g. /session new); client forgets all sessions and adopts the named one
+    SessionReset = 19      // agent reset its session set (e.g. active root deleted from F10); client forgets all sessions and adopts the named one
 }
 
 // Single-character tags that identify the type of a streaming block.
@@ -62,7 +62,7 @@ public interface ITransportServer
     // Announces the session's ID and display name so Beast can show a human-readable label.
     void SessionAnnounce(string sessionId, string json);
     // Tells the client to forget every session it knows and adopt the named one as the sole active session.
-    // Sent when the agent starts a fresh root (/session new, /session none) so the F10 list resets.
+    // Sent when the agent stands up a fresh root (e.g. the active root was deleted from F10) so the F10 list resets.
     void SessionReset(string sessionId);
     // Streaming: bracket a sequence of incremental chunks with start/end frames.
     // Use StreamTag constants for the tag argument.

@@ -14,19 +14,23 @@ public class AgentOrchestrator
     private readonly LlmRegistry _registry;
     private readonly RoleService _roleService;
     private readonly SettingsService _settings;
+    // True for a current-folder launch with no worktree: the root session is ephemeral and nothing is resumed.
+    private readonly bool _ephemeral;
 
     public AgentOrchestrator(
         LlmRegistry registry,
         RoleService roleService,
         SettingsService settings,
         ITransportServer transport,
-        CancellationTokenSource cancellationTokenSource)
+        CancellationTokenSource cancellationTokenSource,
+        bool ephemeral)
     {
         _registry = registry;
         _roleService = roleService;
         _settings = settings;
         _transport = transport;
         _cancellationTokenSource = cancellationTokenSource;
+        _ephemeral = ephemeral;
     }
 
     public async Task RunAsync()
@@ -62,12 +66,17 @@ public class AgentOrchestrator
 
     private Session LoadOrCreateSession()
     {
-        string? lastSessionId = SessionService.LoadLastSession();
-        BeastSession? lastData = SessionService.LoadBySessionId(lastSessionId);
-        if (lastData != null)
+        // A worktree launch resumes the session saved in that worktree; an ephemeral launch always starts fresh
+        // and never persists, so it skips the resume entirely.
+        if (!_ephemeral)
         {
-            _transport.Status(lastData.Id, "Resumed session: " + lastData.DisplayName);
-            return new Session(lastData, string.Empty, _transport, false);
+            string? lastSessionId = SessionService.LoadLastSession();
+            BeastSession? lastData = SessionService.LoadBySessionId(lastSessionId);
+            if (lastData != null)
+            {
+                _transport.Status(lastData.Id, "Resumed session: " + lastData.DisplayName);
+                return new Session(lastData, string.Empty, _transport, false);
+            }
         }
 
         string roleName = string.Empty;
@@ -80,7 +89,7 @@ public class AgentOrchestrator
         string systemPrompt = role?.SystemPrompt ?? string.Empty;
         LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
         string modelId = model?.ConfigId ?? string.Empty;
-        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, false, 0);
+        BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _ephemeral, 0);
         return new Session(fresh, systemPrompt, _transport, false);
     }
 

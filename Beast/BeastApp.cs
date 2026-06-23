@@ -265,7 +265,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         // The command is routed through the root session — only its command queue is drained externally.
         string rootId = GetRootSessionId();
         if (string.IsNullOrEmpty(rootId) || _wsClient == null) return;
-        _ = _wsClient.SendAsync(rootId + "|/session delete " + sessionId);
+        _ = _wsClient.SendAsync(rootId + "|/delete-session " + sessionId);
 
         if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
         {
@@ -482,8 +482,8 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 return;
 
             case FrameType.SessionReset:
-                // The agent started a fresh root (/session new or /session none). Forget every session we
-                // knew so the F10 list and the active view collapse to just the new one.
+                // The agent started a fresh root (e.g. after the active root was deleted from the F10 tree).
+                // Forget every session we knew so the F10 list and the active view collapse to just the new one.
                 _sessions.Clear();
                 _busySessions.Clear();
                 _sessionDisplayNames.Clear();
@@ -720,8 +720,9 @@ public class BeastApp : IDisposable, IAsyncDisposable
         await Task.WhenAny(stop, Task.Delay(2000));
 
         // After /finish the container is gone and the worktree detached; remove its host folder so the
-        // next launch's menu no longer lists it. Only on an explicit finish — ordinary exits keep it.
-        if (_worktreeFinished && _worktree != null)
+        // next launch's menu no longer lists it. Only on an explicit finish — ordinary exits keep it. Never
+        // for an ephemeral run: there is no worktree folder, and Name there is the current folder's leaf.
+        if (_worktreeFinished && _worktree != null && !_worktree.Value.Ephemeral)
             Worktrees.RemoveFolder(_worktree.Value.RepoCwd, _worktree.Value.Name);
 
         _cts?.Dispose();

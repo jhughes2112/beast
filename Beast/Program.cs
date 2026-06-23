@@ -120,37 +120,51 @@ public class Program
                 return 0;   // user cancelled the worktree menu
             worktree = sel;
             agentContext = new LaunchDocker("beastagent", log, sel.Value);
-            agentName = Worktrees.ContainerName(sel.Value.Name);
+            agentName = Worktrees.ContainerName(sel.Value);
         }
 
         await using BeastApp app = new BeastApp(agentContext, messages, display, log, agentName, worktree);
         return await app.Run();
     }
 
-    // Resolves which worktree this launch attaches to: an explicit --worktree name, a headless default for
-    // non-interactive runs, or the interactive chooser. Returns null only when the user cancels the menu.
+    // Menu sentinel for "run in the current folder, ephemerally". The colons can never survive SanitizeName,
+    // so this value cannot collide with a chosen or typed worktree name.
+    private const string EphemeralChoice = "::current-folder::";
+
+    // Resolves what this launch attaches to. A worktree name (explicit --worktree <name>) creates/attaches a
+    // git worktree with a saved session; "none", or no name on a non-interactive run, runs ephemerally in the
+    // current folder with no git and no saved session; an interactive run with no name shows the chooser, which
+    // itself offers the current-folder option alongside the existing worktrees. Returns null only on cancel.
     private static Worktrees.Selection? ResolveWorktree(string cwd, string? nameArg, bool nonInteractive)
     {
+        if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase))
+            return Worktrees.Selection.ForCurrentFolder(cwd);
+
         if (!string.IsNullOrWhiteSpace(nameArg))
             return Worktrees.Ensure(cwd, nameArg!);
 
         if (nonInteractive)
-            return Worktrees.Ensure(cwd, "work");
+            return Worktrees.Selection.ForCurrentFolder(cwd);
 
         List<Worktrees.Info> existing = Worktrees.List(cwd);
         HashSet<string> running = LaunchDocker.RunningWorktreeNamesAsync().GetAwaiter().GetResult();
 
         List<SelectMenu.Item> items = new List<SelectMenu.Item>();
+        items.Add(new SelectMenu.Item("Current folder (ephemeral, no git)", EphemeralChoice, string.Empty, false));
         foreach (Worktrees.Info info in existing)
         {
             bool inUse = running.Contains(info.Name);
             items.Add(new SelectMenu.Item(info.Name, info.Name, inUse ? "in use" : string.Empty, inUse));
         }
 
+        // Pre-select the most recent worktree if any exist, otherwise the current-folder option.
+        int initialIndex = existing.Count > 0 ? 1 : 0;
         string suggestion = existing.Count == 0 ? "work" : string.Empty;
-        SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, 0, LaunchNotes.Pick());
+        SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, initialIndex, LaunchNotes.Pick());
         if (result.Cancelled)
             return null;
+        if (!result.IsNew && string.Equals(result.Value, EphemeralChoice, StringComparison.Ordinal))
+            return Worktrees.Selection.ForCurrentFolder(cwd);
 
         return Worktrees.Ensure(cwd, result.Value);
     }
@@ -187,6 +201,7 @@ public class Program
         Console.WriteLine("Options:");
         Console.WriteLine("  <switch>          Any command switch forwarded to the agent container");
         Console.WriteLine("  -p <text>         Prompt text; everything after -p is treated as the prompt");
+        Console.WriteLine("  --worktree <name> Create/attach a git worktree and run there, with a session saved in it");
         Console.WriteLine("  --test            Run Beast transport tests locally");
         Console.WriteLine("  --debug           Connect to an agent already running on port 13131 (for VS debugging).");
         Console.WriteLine("  --verbose         Show diagnostic debug output from the Agent");
