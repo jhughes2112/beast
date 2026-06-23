@@ -72,7 +72,7 @@ beast
 In each case, Beast launches a Docker container in a git worktree. The Default agent is for chatting and inspecting the project. If there is work to do that requires modifying files, it delegates to the Developer to implement (which may be a different model).  The Developer asks the Reviewer to check its work (which is ideally from a different model family), and if approved, commits the changes back to the originating branch.
 
 Alt-up/down - scrolls vertically
-Alt-left/right - scrolls horizally
+Alt-left/right - scrolls horizontally
 Click - expand/contract a block
 ^O - change global level of detail
 /commands - autocomplete and will show you only relevant completions, press tab to accept the completion and keep typing, or enter to just accept and submit immediately

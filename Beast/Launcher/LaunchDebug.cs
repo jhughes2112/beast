@@ -23,7 +23,7 @@ public class LaunchDebug : ILauncher
         return Task.FromResult(true);
     }
 
-    public Task<string> GetLogsAsync()
+    public Task<string> GetLogsAsync(CancellationToken cancellationToken)
     {
         return Task.FromResult(string.Empty);
     }

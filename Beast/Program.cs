@@ -115,7 +115,7 @@ public class Program
             if (!PreflightConfig(cwd))
                 return 1;
 
-            Worktrees.Selection? sel = ResolveWorktree(cwd, worktreeArg, nonInteractive);
+            Worktrees.Selection? sel = await ResolveWorktree(cwd, worktreeArg, nonInteractive);
             if (sel == null)
                 return 0;   // user cancelled the worktree menu
             worktree = sel;
@@ -135,7 +135,7 @@ public class Program
     // git worktree with a saved session; "none", or no name on a non-interactive run, runs ephemerally in the
     // current folder with no git and no saved session; an interactive run with no name shows the chooser, which
     // itself offers the current-folder option alongside the existing worktrees. Returns null only on cancel.
-    private static Worktrees.Selection? ResolveWorktree(string cwd, string? nameArg, bool nonInteractive)
+    private static async Task<Worktrees.Selection?> ResolveWorktree(string cwd, string? nameArg, bool nonInteractive)
     {
         if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase))
             return Worktrees.Selection.ForCurrentFolder(cwd);
@@ -147,7 +147,7 @@ public class Program
             return Worktrees.Selection.ForCurrentFolder(cwd);
 
         List<Worktrees.Info> existing = Worktrees.List(cwd);
-        HashSet<string> running = LaunchDocker.RunningWorktreeNamesAsync().GetAwaiter().GetResult();
+        HashSet<string> running = await LaunchDocker.RunningWorktreeNamesAsync();
 
         List<SelectMenu.Item> items = new List<SelectMenu.Item>();
         items.Add(new SelectMenu.Item("Current folder (ephemeral, no git)", EphemeralChoice, string.Empty, false));

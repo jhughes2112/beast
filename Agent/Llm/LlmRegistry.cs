@@ -89,28 +89,23 @@ public class LlmRegistry
 	{
 		// Collect unique endpoints that haven't been probed yet.
 		Dictionary<string, (string apiKey, List<string> modelIds)> unprobed = new(StringComparer.OrdinalIgnoreCase);
-		foreach (KeyValuePair<string, LlmModel> kv in _models)
+		foreach ((string modelId, LlmModel model) in _models)
 		{
-			string ep = kv.Value.Endpoint;
+			string ep = model.Endpoint;
 			if (_probeCache.ContainsKey(ep)) continue;
 			if (!unprobed.ContainsKey(ep))
-				unprobed[ep] = (kv.Value.ApiKey, new List<string>());
-			unprobed[ep].modelIds.Add(kv.Key);
+				unprobed[ep] = (model.ApiKey, new List<string>());
+			unprobed[ep].modelIds.Add(modelId);
 		}
 
 		// Kick off all the probes simultaneously, so they all happen in parallel.
 		Dictionary<string, Task<(DetectedProtocol, string)>> detectionTasks = new Dictionary<string, Task<(DetectedProtocol, string)>>();
-		foreach (KeyValuePair<string, (string apiKey, List<string> modelIds)> entry in unprobed)
+		foreach ((string originalEndpoint, _) in unprobed)
 		{
-			string originalEndpoint = entry.Key;
-			string apiKey = entry.Value.apiKey;
-
 			detectionTasks.Add(originalEndpoint, ProtocolProxy.ProbeEndpointAsync(originalEndpoint, ct));
 		}
-		foreach (KeyValuePair<string, (string apiKey, List<string> modelIds)> entry in unprobed)
+		foreach ((string originalEndpoint, (string _, List<string> modelIds)) in unprobed)
 		{
-			string originalEndpoint = entry.Key;
-
 			Console.WriteLine($"Probing {originalEndpoint}");
 			(DetectedProtocol detected, string effectiveEndpoint) = await detectionTasks[originalEndpoint];
 			Console.WriteLine($"Probed {originalEndpoint} -> protocol={detected}, effective={effectiveEndpoint}");
@@ -121,7 +116,7 @@ public class LlmRegistry
 				// Localhost fallback fired: rewrite stored models to the effective endpoint and
 				// cache it separately so future models at the same URL match immediately.
 				_probeCache[effectiveEndpoint] = detected;
-				foreach (string modelId in entry.Value.modelIds)
+				foreach (string modelId in modelIds)
 				{
 					if (_models.TryGetValue(modelId, out LlmModel? old))
 						_models[modelId] = new LlmModel(old.ConfigId, effectiveEndpoint, old.ApiKey, old.Extras, old.Headers, old.Config);

@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 // WebSocket server transport for the Agent.  Listens on the given port, accepts exactly one client,
 // and exposes the ITransportServer interface for the orchestrator.
-public class TransportWebSocketServer : ITransportServer, IDisposable
+public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 {
     private readonly int _port;
     private HttpListener _listener = new HttpListener();
@@ -30,7 +30,7 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
     // Returns true if the ACL was added successfully, false if the user cancelled.
     private bool EnsureUrlAcl()
     {
-        var psi = new ProcessStartInfo
+        ProcessStartInfo psi = new ProcessStartInfo
         {
             FileName = "netsh",
             Arguments = $"http add urlacl url=http://*:{_port}/ user=Everyone",
@@ -180,20 +180,32 @@ public class TransportWebSocketServer : ITransportServer, IDisposable
         }
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
+        // Bound the graceful close so shutdown can't hang; _cts may already be cancelled here.
         if (_ws != null && _ws.State == WebSocketState.Open)
         {
+            using CancellationTokenSource closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
             try
             {
-                _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None)
-                    .GetAwaiter().GetResult();
+                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", closeCts.Token);
             }
             catch { }
         }
+
         _cts.Cancel();
         _outbound.Writer.TryComplete();
-        _writeTask?.Wait(2000);
+
+        if (_writeTask != null)
+        {
+            try
+            {
+                await _writeTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch { }
+        }
+
         _listener.Stop();
         _ws?.Dispose();
         _cts.Dispose();

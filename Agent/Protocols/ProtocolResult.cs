@@ -111,7 +111,7 @@ public class ProtocolResult
 		return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage);
 	}
 
-	public static ProtocolResult Interrupted(string errorMessage, ProtocolCallPayload? payload = null)
+	public static ProtocolResult Interrupted(string errorMessage, ProtocolCallPayload? payload)
 	{
 		return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage);
 	}

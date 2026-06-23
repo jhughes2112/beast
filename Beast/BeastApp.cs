@@ -8,7 +8,7 @@ using NAudio.Wave;
 
 
 // Beast app: starts the agent backend via IAgentContext and drives a session via the provided display.
-public class BeastApp : IDisposable, IAsyncDisposable
+public class BeastApp : IAsyncDisposable
 {
     // Per-session conversation model and streaming state, keyed by session ID.
     private class SessionState
@@ -84,7 +84,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
             try
             {
                 if (_wsClient != null)
-                    await _wsClient.SendAsync(_activeSessionId + "|/quit");
+                    await _wsClient.SendAsync(_activeSessionId + "|/quit", _cts!.Token);
             }
             catch { }
 
@@ -108,7 +108,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         // Create the root session placeholder and attach it.
         SessionState rootState = new SessionState();
         _display.Attach(rootState.Model);
-        _display.SetSendAsync(text => _wsClient!.SendAsync(_activeSessionId + "|" + text));
+        _display.SetSendAsync(text => _wsClient!.SendAsync(_activeSessionId + "|" + text, _cts!.Token));
         _display.SetRequestExit(RequestGracefulExit);
         _display.SetFrameDrain(DrainFrameQueue);
         _display.SetSessionSwitchCallback(SwitchActiveSession);
@@ -265,7 +265,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
         // The command is routed through the root session — only its command queue is drained externally.
         string rootId = GetRootSessionId();
         if (string.IsNullOrEmpty(rootId) || _wsClient == null) return;
-        _ = _wsClient.SendAsync(rootId + "|/delete-session " + sessionId);
+        _ = _wsClient.SendAsync(rootId + "|/delete-session " + sessionId, _cts!.Token);
 
         if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
         {
@@ -415,7 +415,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
                     async Task SendMessagesAsync()
                     {
                         foreach (string msg in _messages)
-                            await _wsClient!.SendAsync(readySessionId + "|" + msg);
+                            await _wsClient!.SendAsync(readySessionId + "|" + msg, _cts!.Token);
                     }
                     _ = SendMessagesAsync();
                 }
@@ -681,7 +681,7 @@ public class BeastApp : IDisposable, IAsyncDisposable
                 // instead of painting it onto the worktree menu's alt screen where it would be lost.
                 if (!await launcher.IsAliveAsync())
                 {
-                    string containerLog = await launcher.GetLogsAsync();
+                    string containerLog = await launcher.GetLogsAsync(cancellationToken);
                     string body = string.IsNullOrWhiteSpace(containerLog) ? "(no output captured)" : containerLog.TrimEnd();
                     throw new InvalidOperationException(
                         "Agent backend exited before its server started. Container log follows:\n" + body);
@@ -693,20 +693,19 @@ public class BeastApp : IDisposable, IAsyncDisposable
         throw new OperationCanceledException(cancellationToken);
     }
 
-    public void Dispose()
-    {
-        _readCts?.Cancel();
-        _readTask?.Wait(2000);
-        _readCts?.Dispose();
-        _wsClient?.Dispose();
-        _agentContext.Dispose();
-        _cts?.Dispose();
-    }
-
     public async ValueTask DisposeAsync()
     {
         _readCts?.Cancel();
-        _readTask?.Wait(2000);
+
+        if (_readTask != null)
+        {
+            try
+            {
+                await _readTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch { }
+        }
+
         _readCts?.Dispose();
         _wsClient?.Dispose();
 

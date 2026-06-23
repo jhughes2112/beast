@@ -29,7 +29,7 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
     }
 
     // Sends a plain text message over the websocket.
-    public async Task SendAsync(string text, CancellationToken cancellationToken = default)
+    public async Task SendAsync(string text, CancellationToken cancellationToken)
     {
         if (_ws == null || _ws.State != WebSocketState.Open) return;
         byte[] bytes = Encoding.UTF8.GetBytes(text);

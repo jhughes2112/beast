@@ -57,7 +57,7 @@ public class Program
 		}
 
 		LlmRegistry registry = new LlmRegistry();
-		TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
+		await using TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
 		ITransportServer transport = wsServer;
 		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts, ephemeral);

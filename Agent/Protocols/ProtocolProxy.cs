@@ -229,7 +229,7 @@ public class ProtocolProxy
     // never skipped — they are always intentional.
     private static bool IsEmptyExtra(JsonNode? node) =>
         node is null ||
-        (node is JsonValue jv && jv.TryGetValue<string>(out var s) && string.IsNullOrEmpty(s));
+        (node is JsonValue jv && jv.TryGetValue<string>(out string? s) && string.IsNullOrEmpty(s));
 
     // Builds the extra-headers and extra-payload dictionaries from the model's headers and extras.
     // Both are replicated verbatim with no key interpretation: each extras entry's properties are
@@ -250,25 +250,25 @@ public class ProtocolProxy
 
         foreach (JsonObject headerObject in headerObjects)
         {
-            foreach (KeyValuePair<string, JsonNode?> kv in headerObject)
+            foreach ((string name, JsonNode? value) in headerObject)
             {
-                if (IsEmptyExtra(kv.Value))  // empty/null values are ignored, so the settings file can be self-documenting
+                if (IsEmptyExtra(value))  // empty/null values are ignored, so the settings file can be self-documenting
                     continue;
 
-                headers[kv.Key] = kv.Value!.ToString();
+                headers[name] = value!.ToString();
             }
         }
 
         foreach (JsonObject extraObject in extras)
         {
-            foreach (KeyValuePair<string, JsonNode?> kv in extraObject)
+            foreach ((string name, JsonNode? value) in extraObject)
             {
-                if (IsEmptyExtra(kv.Value))
+                if (IsEmptyExtra(value))
                     continue;
 
                 // DeepClone: the node belongs to the extras tree and gets parented into the
                 // request body downstream; re-using it across turns would throw.
-                payload[kv.Key] = kv.Value!.DeepClone();
+                payload[name] = value!.DeepClone();
             }
         }
 

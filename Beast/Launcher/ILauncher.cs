@@ -20,5 +20,5 @@ public interface ILauncher : IDisposable
 	Task<bool> IsAliveAsync();
 
 	// Returns the agent backend's captured output for diagnostics when it failed to start. May be empty.
-	Task<string> GetLogsAsync();
+	Task<string> GetLogsAsync(CancellationToken cancellationToken);
 }

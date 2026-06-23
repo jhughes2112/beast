@@ -112,7 +112,7 @@ public class LaunchDocker : ILauncher
     {
         const int startPort = 20000;
         const int endPort = 21000;
-        var usedPorts = GetUsedPorts();
+        HashSet<int> usedPorts = GetUsedPorts();
 
         for (int port = startPort; port <= endPort; port++)
         {
@@ -125,17 +125,17 @@ public class LaunchDocker : ILauncher
 
     private static HashSet<int> GetUsedPorts()
     {
-        var properties = IPGlobalProperties.GetIPGlobalProperties();
+        IPGlobalProperties properties = IPGlobalProperties.GetIPGlobalProperties();
 
-        var used = new HashSet<int>();
+        HashSet<int> used = new HashSet<int>();
 
-        foreach (var ep in properties.GetActiveTcpListeners())
+        foreach (IPEndPoint ep in properties.GetActiveTcpListeners())
             used.Add(ep.Port);
 
-        foreach (var ep in properties.GetActiveUdpListeners())
+        foreach (IPEndPoint ep in properties.GetActiveUdpListeners())
             used.Add(ep.Port);
 
-        foreach (var conn in properties.GetActiveTcpConnections())
+        foreach (TcpConnectionInformation conn in properties.GetActiveTcpConnections())
             used.Add(conn.LocalEndPoint.Port);
 
         return used;
@@ -161,7 +161,7 @@ public class LaunchDocker : ILauncher
     }
 
     // Returns the container's combined stdout/stderr so a startup crash is visible to the user.
-    public async Task<string> GetLogsAsync()
+    public async Task<string> GetLogsAsync(CancellationToken cancellationToken)
     {
         if (_containerId == null)
             return string.Empty;
@@ -176,8 +176,8 @@ public class LaunchDocker : ILauncher
             };
 
             using MultiplexedStream stream = await _dockerClient.Containers.GetContainerLogsAsync(
-                _containerId, false, parameters, CancellationToken.None);
-            (string stdout, string stderr) = await stream.ReadOutputToEndAsync(CancellationToken.None);
+                _containerId, false, parameters, cancellationToken);
+            (string stdout, string stderr) = await stream.ReadOutputToEndAsync(cancellationToken);
 
             return string.IsNullOrEmpty(stderr) ? stdout : stdout + stderr;
         }

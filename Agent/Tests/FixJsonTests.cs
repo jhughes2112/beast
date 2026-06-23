@@ -389,7 +389,7 @@ public static class FixJsonTests
 	private static int CountKeys(JsonObject obj)
 	{
 		int count = 0;
-		foreach (KeyValuePair<string, JsonNode?> _ in obj)
+		foreach ((string _, JsonNode? _) in obj)
 			count++;
 		return count;
 	}

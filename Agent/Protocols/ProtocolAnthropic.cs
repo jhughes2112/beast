@@ -272,9 +272,9 @@ public class ProtocolAnthropic
             BaseAddress = new Uri(model.Endpoint)
         };
 
-        foreach (KeyValuePair<string, string> kv in extraHeaders)
+        foreach ((string name, string value) in extraHeaders)
         {
-            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(kv.Key, kv.Value);
+            httpClient.DefaultRequestHeaders.TryAddWithoutValidation(name, value);
         }
 
         return new AnthropicClient(new APIAuthentication(model.ApiKey), httpClient);

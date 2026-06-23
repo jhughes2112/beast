@@ -397,9 +397,9 @@ public class ProtocolChatCompletions
         string url = model.Endpoint;
 
         JsonObject obj = (JsonObject)body.DeepClone();
-        foreach (KeyValuePair<string, JsonNode?> kv in extraPayload)
+        foreach ((string name, JsonNode? value) in extraPayload)
         {
-            obj[kv.Key] = kv.Value?.DeepClone();
+            obj[name] = value?.DeepClone();
         }
 
         string requestJson = obj.ToJsonString();
@@ -408,9 +408,9 @@ public class ProtocolChatCompletions
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
-        foreach (KeyValuePair<string, string> kv in extraHeaders)
+        foreach ((string name, string value) in extraHeaders)
         {
-            req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            req.Headers.TryAddWithoutValidation(name, value);
         }
 
         return await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
@@ -433,9 +433,9 @@ public class ProtocolChatCompletions
         obj["stream"] = true;
         obj["stream_options"] = new JsonObject { ["include_usage"] = true };
 
-        foreach (KeyValuePair<string, JsonNode?> kv in extraPayload)
+        foreach ((string name, JsonNode? value) in extraPayload)
         {
-            obj[kv.Key] = kv.Value?.DeepClone();
+            obj[name] = value?.DeepClone();
         }
 
         string requestJson = obj.ToJsonString();
@@ -444,9 +444,9 @@ public class ProtocolChatCompletions
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
-        foreach (KeyValuePair<string, string> kv in extraHeaders)
+        foreach ((string name, string value) in extraHeaders)
         {
-            req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            req.Headers.TryAddWithoutValidation(name, value);
         }
 
         HttpResponseMessage httpResponse;

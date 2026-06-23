@@ -164,9 +164,9 @@ public class ProtocolResponses
         HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
-        foreach (KeyValuePair<string, string> kv in extraHeaders)
+        foreach ((string name, string value) in extraHeaders)
         {
-            req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            req.Headers.TryAddWithoutValidation(name, value);
         }
 
         HttpResponseMessage httpResponse;
@@ -279,9 +279,9 @@ public class ProtocolResponses
             body["reasoning"] = reasoning;
         }
 
-        foreach (KeyValuePair<string, JsonNode?> kv in extraPayload)
+        foreach ((string name, JsonNode? value) in extraPayload)
         {
-            body[kv.Key] = kv.Value?.DeepClone();
+            body[name] = value?.DeepClone();
         }
 
         return body;
@@ -312,9 +312,9 @@ public class ProtocolResponses
         req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
         req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
-        foreach (KeyValuePair<string, string> kv in extraHeaders)
+        foreach ((string name, string value) in extraHeaders)
         {
-            req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+            req.Headers.TryAddWithoutValidation(name, value);
         }
 
         HttpResponseMessage httpResponse;

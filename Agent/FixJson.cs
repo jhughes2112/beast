@@ -415,10 +415,9 @@ public static class FixJson
 		JsonObject? props = parameters?["properties"]?.AsObject();
 		if (props == null) return;
 
-		foreach (KeyValuePair<string, JsonNode?> prop in props)
+		foreach ((string key, JsonNode? schema) in props)
 		{
-			string key = prop.Key;
-			string? schemaType = prop.Value?["type"]?.GetValue<string>();
+			string? schemaType = schema?["type"]?.GetValue<string>();
 			if (schemaType == null || !obj.ContainsKey(key)) continue;
 
 			JsonNode? value = obj[key];
@@ -479,10 +478,10 @@ public static class FixJson
 		if (props == null) return;
 
 		List<string> toRemove = new List<string>();
-		foreach (KeyValuePair<string, JsonNode?> kv in obj)
+		foreach ((string key, JsonNode? _) in obj)
 		{
-			if (!props.ContainsKey(kv.Key))
-				toRemove.Add(kv.Key);
+			if (!props.ContainsKey(key))
+				toRemove.Add(key);
 		}
 
 		foreach (string key in toRemove)

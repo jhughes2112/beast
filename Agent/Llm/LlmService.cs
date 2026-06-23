@@ -214,7 +214,7 @@ public class LlmService
 						interrupted = turnToken.IsCancellationRequested;
 						result = result.Outcome == ProtocolCallOutcome.Success
 							? ProtocolResult.Interrupted("Interrupted by user", result.Payload)
-							: ProtocolResult.Interrupted("Interrupted by user");
+							: ProtocolResult.Interrupted("Interrupted by user", null);
 					}
 				else // The LLM cancelled on its own
 				{

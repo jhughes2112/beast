@@ -33,7 +33,7 @@ Tests are an in-process harness inside the Agent project — not xUnit/NUnit. Th
 dotnet run --project Agent\Agent.csproj -- --test
 ```
 
-Individual test classes: `LlmServiceTests`, `FileToolsTests`, `SearchToolsTests`, `ShellToolsTests`, `WebToolsTests`, `PerModelLlmTests`.
+Individual test classes (in `Agent/Tests/`): `LlmServiceTests`, `FileToolsTests`, `ShellToolsTests`, `WebToolsTests`, `PerModelLlmTests`, `ContextBudgetTests`, `FixJsonTests`, `ProtocolSwitchTests`.
 
 ## Architecture
 
@@ -46,37 +46,40 @@ Beast (Windows CLI / TUI)
 
 Agent (Docker container)
   └── WebSocket server (port 13131)
-  └── AgentOrchestrator → manages conversation lifecycle
+  └── AgentOrchestrator → manages conversation lifecycle (via SessionRunner / SubagentRunner)
       └── LlmService → runs LLM conversation loop
-          └── IProtocol implementations → Anthropic / ChatCompletions / Responses API
-          └── ITool implementations → file, search, shell, web
+          └── Protocol classes → Anthropic / ChatCompletions / Responses API (routed by ProtocolProxy)
+          └── Tool instances → file, search, shell, web
 ```
 
 ### Agent Startup Flow
 
-`Program.cs` → loads `SettingsService` → loads `RoleService` → builds `LlmRegistry` → calls `ToolsFactory.Build()` → starts WebSocket server → `AgentOrchestrator` runs the message loop.
+`Program.cs` → loads `SettingsService` → loads `RoleService` → builds `LlmRegistry` (which calls `ToolFactory.Build()`) → starts the WebSocket server (`TransportWebSocketServer`) → `AgentOrchestrator` runs the message loop.
 
 ### Key Agent Directories
 
-- **Agent/Providers/** — Protocol implementations (`IProtocol`): Anthropic messages API, OpenAI ChatCompletions, OpenAI Responses API. Each converts between Beast's internal `Conversation` format and the wire format.
-- **Agent/Llm/** — `LlmService` (conversation loop, tool dispatch, rate limiting), `LlmRegistry` (holds all configured models), `LlmModel` (a single API endpoint connection).
-- **Agent/Services/** — `SettingsService` (loads `.beast/settings.json`), `RoleService` (loads `.beast/roles.json`), `SessionService` (persists conversations).
-- **Agent/Tools/** — All `ITool` implementations. Registered explicitly in `ToolsFactory.Build()` (no reflection).
-- **Agent/DataModels/** — Shared data structures: `BeastSettings`, `ConversationModels`, `LlmRole`.
-- **Agent/Workflow/** — `Workflow.cs` state machine; `workflow.md` documents the architecture.
+- **Agent/Protocols/** — Wire-protocol classes: `ProtocolAnthropic` (messages API), `ProtocolChatCompletions`, `ProtocolResponses`, plus `ProtocolProxy` which detects the protocol from the endpoint URL and routes calls. Each converts between Beast's canonical conversation format and the wire format.
+- **Agent/ProtocolListeners/** — `CanonicalConversation` (the source-of-truth conversation state), `ListenerBundle` (fans events out to multiple listeners), `ListenerTransport`.
+- **Agent/Llm/** — `LlmService` (conversation loop, tool dispatch, rate limiting), `LlmRegistry` (holds all configured models, builds the shared tool set), `LlmModel` (a single API endpoint connection), `ReasoningEffort`.
+- **Agent/Services/** — `SettingsService` (loads `.beast/settings.json`), `RoleService` (loads `.beast/roles.json`, holds the built-in default roles), `SessionService` (persists conversations).
+- **Agent/Tools/** — All tools (concrete `Tool` instances). Registered explicitly in `ToolFactory.Build()` (no reflection).
+- **Agent/DataModels/** — Shared data structures: `BeastSettings`, `BeastSession`, `CanonicalMessage`, `Role`, `TokenUsageInfo`.
+- **Conversation orchestration** — `AgentOrchestrator.cs`, `SessionRunner.cs`, `SubagentRunner.cs`, `Session.cs` (no separate `Workflow` directory).
 - **Agent/Transport/** — `ITransportServer`, WebSocket server, console debug transport.
 
 ### Configuration
 
-Settings are loaded at startup from `.beast/settings.json` (project dir first, then `~/.beast/`). The `BEAST_HOST` env var rewrites localhost provider URLs (used inside Docker to reach the host).
+Settings are loaded at startup from `.beast/settings.json` (project dir first, then `~/.beast/`). To reach a provider on the host from inside the container, point its `baseUrl` at `host.docker.internal`; on a native/debugger run `ProtocolProxy` transparently falls back to `localhost` if `host.docker.internal` is unreachable.
 
-Roles are defined in `.beast/roles.json` or fall back to built-in defaults in `LLMRole.cs`. Role filtering controls which tools `LlmService` exposes to the LLM.
+Roles are defined in `.beast/roles.json` or fall back to built-in defaults in `RoleService.cs` (the `Role` type lives in `DataModels/Role.cs`). Role filtering controls which tools `LlmService` exposes to the LLM.
 
 ## Coding Standards
 
 - **No `var`** — always explicit types
 - **No LINQ** — use `foreach` loops
-- **No default parameters** — all parameters must be explicit; never assign made-up default values to properties (use `""`, `0`, or `null`)
+- **No default parameters** — all parameters must be explicit; never assign made-up default values to properties (use `""`, `0`, or `null`). This includes `CancellationToken` — never `= default`.
+- **No `CancellationToken.None` in production code** — if a method takes a token, thread a real one through. Only tests may pass `CancellationToken.None`.
+- **No sync-over-async** — never `.GetAwaiter().GetResult()`, `.Result`, or a blocking `.Wait()` outside tests; make the method `async` and `await`, or keep the work synchronous.
 - **ANSI braces** — opening brace on its own line
 - **Single return** at the bottom of functions (success as the first `if` branch, failure in `else`)
 - **No partial classes**
