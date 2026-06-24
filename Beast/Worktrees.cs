@@ -70,6 +70,17 @@ public static class Worktrees
         return Path.Combine(cwd, ".beast", "worktrees");
     }
 
+    // Whether the launch folder is the root of a git repository. Beast binds cwd to /git as "the real repo",
+    // so a per-launch worktree (git worktree add) is only possible when cwd is itself a git repo. A normal
+    // repo has a .git directory at its root; a linked worktree or submodule has a .git file instead — both
+    // count. This is a dependency-free check (no git process) since the launch resolves worktrees before the
+    // container starts. A non-repo folder falls back to an ephemeral run, which touches no git at all.
+    public static bool IsGitRepo(string cwd)
+    {
+        string dotGit = Path.Combine(cwd, ".git");
+        return Directory.Exists(dotGit) || File.Exists(dotGit);
+    }
+
     // Restricts a user-entered name to a folder- and branch-safe charset (letters, digits, '.', '_', '-'),
     // collapsing other runs to '-'. The same string is used for the folder and the git branch, so '/' is
     // not allowed here. Empty input becomes "work".

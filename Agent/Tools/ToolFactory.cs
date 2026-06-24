@@ -505,19 +505,26 @@ public static class ToolFactory
     // cannot break out of the script. A rebase conflict is left in place (not aborted) with the conflicted files
     // listed, so the Developer can resolve it directly and call again. Returns (ok, transcript): ok is false on
     // any git failure, with the transcript explaining why.
+    //
+    // Two non-worktree cases short-circuit to success before any rebase is attempted, so a project that is not
+    // wired for the full flow still succeeds: (1) the folder is not a git repository at all (a /worktree none /
+    // ephemeral run with no git), in which case nothing is done; (2) it is a git repo but there is no distinct
+    // base branch (running directly on the base, not in a per-launch worktree), in which case the work is simply
+    // committed in place. Only when a distinct base branch exists does the integration (pull/rebase/ff/push) run.
     private static async Task<(bool ok, string transcript)> CommitAndRebaseAsync(string message, CancellationToken ct)
     {
         string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(message));
         string script =
+            "if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo 'Not a git repository; nothing to commit or integrate.'; exit 0; fi\n" +
             "branch=$(git rev-parse --abbrev-ref HEAD)\n" +
             "common=$(git rev-parse --git-common-dir)\n" +
             "main_wt=$(cd \"$common\" && cd .. && pwd)\n" +
             "base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
-            "if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Could not determine a distinct base branch (base='$base', feature='$branch').\"; exit 1; fi\n" +
             "echo \"Committing work on '$branch'...\"\n" +
             "echo '" + encoded + "' | base64 -d > /tmp/beast_commit_msg\n" +
             "git add -A\n" +
             "git commit -F /tmp/beast_commit_msg || echo '(nothing to commit)'\n" +
+            "if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Not running in a per-launch worktree (no distinct base branch); committed in place.\"; exit 0; fi\n" +
             "if git -C \"$main_wt\" rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then\n" +
             "  echo \"Updating base '$base' from its remote (rebasing pull)...\"\n" +
             "  git -C \"$main_wt\" pull --rebase || { echo \"Could not update '$base' from its remote.\"; exit 1; }\n" +

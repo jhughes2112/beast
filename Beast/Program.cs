@@ -135,9 +135,16 @@ public class Program
     // git worktree with a saved session; "none", or no name on a non-interactive run, runs ephemerally in the
     // current folder with no git and no saved session; an interactive run with no name shows the chooser, which
     // itself offers the current-folder option alongside the existing worktrees. Returns null only on cancel.
+    //
+    // A folder that is not a git repository cannot host a worktree, so every path falls back to an ephemeral
+    // run there — including an explicit --worktree <name> — rather than failing later when the agent tries to
+    // git worktree add. This is what lets a non-git project run safely as /worktree none with no git operations.
     private static async Task<Worktrees.Selection?> ResolveWorktree(string cwd, string? nameArg, bool nonInteractive)
     {
         if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase))
+            return Worktrees.Selection.ForCurrentFolder(cwd);
+
+        if (!Worktrees.IsGitRepo(cwd))
             return Worktrees.Selection.ForCurrentFolder(cwd);
 
         if (!string.IsNullOrWhiteSpace(nameArg))
