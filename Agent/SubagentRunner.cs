@@ -181,7 +181,7 @@ public class SubagentRunner
             // extended thinking is on), so a single wrap-up turn that calls the wrong tool — or no tool —
             // must not discard everything done so far. Instead we keep nudging across the wind-down turns
             // until the terminator is actually called, and salvage the last assistant text if it never is.
-            const int kMaxWorkTurns = 50;
+            const int kMaxWorkTurns = 75;
             const int kMaxWindDownTurns = 5;
             const int kMaxTurns = kMaxWorkTurns + kMaxWindDownTurns;
             int responseTokens = 0;
