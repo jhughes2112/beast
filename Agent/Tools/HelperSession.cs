@@ -77,9 +77,15 @@ public static class HelperSession
 				string? forcedToolName;
 				switch ((turn - 1) % 3)
 				{
-					case 0:  forcedToolName = "return_to_caller"; break;
-					case 1:  forcedToolName = ProtocolProxy.AnyTool; break;
-					default: forcedToolName = null; break;
+					case 0:
+						forcedToolName = "return_to_caller";
+						break;
+					case 1:
+						forcedToolName = ProtocolProxy.AnyTool;
+						break;
+					default:
+						forcedToolName = null;
+						break;
 				}
 
 				ProtocolResult result = await service.RunToCompletionAsync(session, tools, forcedToolName, 0, maxOutputTokens, transport, scope.Token);

@@ -598,32 +598,32 @@ public class SessionRunner
 					_wantsCompact = true;
 					break;
 				case "delete-session":
-						// Internal command from the F10 session tree (not a user-facing command): delete a session
-						// and its whole descendant subtree from disk. An empty target is refused so a blank id can
-						// never reach the disk layer. Deleting the active root tears its tree down and stands up a
-						// fresh session in its place (keeping the launch's ephemeral mode), mirrored to the client
-						// via SessionReset.
-						if (string.IsNullOrEmpty(args))
-						{
-							_transport.Error(session.Id, "No session specified to delete.");
-						}
-						else if (string.Equals(args, session.Id, StringComparison.Ordinal))
-						{
-							// The outgoing session's files are gone; flag it so the RunAsync switch does not
-							// re-save it, then stand up a fresh session and reset the client to it.
-							SessionService.DeleteTree(session.Id);
-							_currentSessionDeleted = true;
-							session = CreateFreshSession(session.Role, session.Ephemeral);
-							_service = null;
-							_transport.SessionReset(session.Id);
-							_transport.Status(session.Id, "Deleted session and started a new one.");
-						}
-						else
-						{
-							// Idempotent: whether or not files existed, the session is gone afterward.
-							SessionService.DeleteTree(args);
-							_transport.Status(session.Id, "Deleted session: " + args);
-						}
+					// Internal command from the F10 session tree (not a user-facing command): delete a session
+					// and its whole descendant subtree from disk. An empty target is refused so a blank id can
+					// never reach the disk layer. Deleting the active root tears its tree down and stands up a
+					// fresh session in its place (keeping the launch's ephemeral mode), mirrored to the client
+					// via SessionReset.
+					if (string.IsNullOrEmpty(args))
+					{
+						_transport.Error(session.Id, "No session specified to delete.");
+					}
+					else if (string.Equals(args, session.Id, StringComparison.Ordinal))
+					{
+						// The outgoing session's files are gone; flag it so the RunAsync switch does not
+						// re-save it, then stand up a fresh session and reset the client to it.
+						SessionService.DeleteTree(session.Id);
+						_currentSessionDeleted = true;
+						session = CreateFreshSession(session.Role, session.Ephemeral);
+						_service = null;
+						_transport.SessionReset(session.Id);
+						_transport.Status(session.Id, "Deleted session and started a new one.");
+					}
+					else
+					{
+						// Idempotent: whether or not files existed, the session is gone afterward.
+						SessionService.DeleteTree(args);
+						_transport.Status(session.Id, "Deleted session: " + args);
+					}
 					break;
 				case "reload":
 					try
@@ -659,7 +659,7 @@ public class SessionRunner
 							session.UpdateModel(targetModel);
 							_registry.ResetAvailability(modelArg);
 							_service = null;  // force fresh service with new model next turn
-						_transport.Status(session.Id, $"Model set to {modelArg}");
+							_transport.Status(session.Id, $"Model set to {modelArg}");
 							// Reflect the new model on the client status line immediately rather than
 							// waiting for the next turn's Stats frame.
 							session.SendStats();

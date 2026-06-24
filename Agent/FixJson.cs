@@ -219,7 +219,8 @@ public static class FixJson
 			if (inDoubleStr)
 			{
 				sb.Append(c);
-				if (c == '"') inDoubleStr = false;
+				if (c == '"')
+					inDoubleStr = false;
 				continue;
 			}
 
@@ -242,13 +243,20 @@ public static class FixJson
 			}
 
 			// NORMAL mode
-			if (c == '"')   { inDoubleStr = true; expectingKey = false; sb.Append(c); continue; }
-			if (c == '\'')  { inSingleStr = true; expectingKey = false; sb.Append('"'); continue; }
-			if (c == '{')   { expectingKey = true;  sb.Append(c); continue; }
-			if (c == '[')   { expectingKey = false; sb.Append(c); continue; }
-			if (c == '}' || c == ']') { expectingKey = false; sb.Append(c); continue; }
-			if (c == ',')   { expectingKey = true;  sb.Append(c); continue; }
-			if (c == ':')   { expectingKey = false; sb.Append(c); continue; }
+			if (c == '"')
+			{ inDoubleStr = true; expectingKey = false; sb.Append(c); continue; }
+			if (c == '\'')
+			{ inSingleStr = true; expectingKey = false; sb.Append('"'); continue; }
+			if (c == '{')
+			{ expectingKey = true; sb.Append(c); continue; }
+			if (c == '[')
+			{ expectingKey = false; sb.Append(c); continue; }
+			if (c == '}' || c == ']')
+			{ expectingKey = false; sb.Append(c); continue; }
+			if (c == ',')
+			{ expectingKey = true; sb.Append(c); continue; }
+			if (c == ':')
+			{ expectingKey = false; sb.Append(c); continue; }
 
 			// Unquoted key: letter/underscore/$ immediately followed (after whitespace) by ':'
 			if (expectingKey && (char.IsLetter(c) || c == '_' || c == '$'))
@@ -294,12 +302,18 @@ public static class FixJson
 
 		foreach (char c in json)
 		{
-			if (esc) { esc = false; continue; }
-			if (c == '\\' && inStr) { esc = true; continue; }
-			if (c == '"') { inStr = !inStr; continue; }
-			if (inStr) continue;
-			if (c == '{' || c == '[') depth++;
-			else if (c == '}' || c == ']') depth--;
+			if (esc)
+			{ esc = false; continue; }
+			if (c == '\\' && inStr)
+			{ esc = true; continue; }
+			if (c == '"')
+			{ inStr = !inStr; continue; }
+			if (inStr)
+				continue;
+			if (c == '{' || c == '[')
+				depth++;
+			else if (c == '}' || c == ']')
+				depth--;
 		}
 
 		return depth > 0 || inStr;
@@ -316,10 +330,14 @@ public static class FixJson
 		for (int i = 0; i < json.Length; i++)
 		{
 			char c = json[i];
-			if (escaped) { escaped = false; continue; }
-			if (c == '\\' && inString) { escaped = true; continue; }
-			if (c == '"') { inString = !inString; continue; }
-			if (inString) continue;
+			if (escaped)
+			{ escaped = false; continue; }
+			if (c == '\\' && inString)
+			{ escaped = true; continue; }
+			if (c == '"')
+			{ inString = !inString; continue; }
+			if (inString)
+				continue;
 
 			if (c == '{' || c == '[')
 			{
@@ -327,9 +345,11 @@ public static class FixJson
 			}
 			else if (c == '}' || c == ']')
 			{
-				if (openers.Count == 0) return null;
+				if (openers.Count == 0)
+					return null;
 				char open = openers.Pop();
-				if ((c == '}') != (open == '{')) return null;
+				if ((c == '}') != (open == '{'))
+					return null;
 			}
 		}
 
@@ -338,7 +358,8 @@ public static class FixJson
 		if (openers.Count > 0 || inString)
 		{
 			string work = json.TrimEnd();
-			if (inString) work += '"';
+			if (inString)
+				work += '"';
 			work = StripTrailingStructural(work);
 
 			StringBuilder sb = new StringBuilder(work);
@@ -360,7 +381,8 @@ public static class FixJson
 		{
 			changed = false;
 			string t = work.TrimEnd();
-			if (t.Length == 0) break;
+			if (t.Length == 0)
+				break;
 
 			char last = t[t.Length - 1];
 			if (last == ',')
@@ -395,7 +417,8 @@ public static class FixJson
 					int slashes = 0;
 					for (int j = i - 1; j >= 0 && t[j] == '\\'; j--)
 						slashes++;
-					if (slashes % 2 == 0) { openIdx = i; break; }
+					if (slashes % 2 == 0)
+					{ openIdx = i; break; }
 				}
 			}
 
@@ -417,15 +440,18 @@ public static class FixJson
 	private static void ApplyTypeCoercions(JsonObject obj, JsonObject? parameters, Action<string>? log)
 	{
 		JsonObject? props = parameters?["properties"]?.AsObject();
-		if (props == null) return;
+		if (props == null)
+			return;
 
 		foreach ((string key, JsonNode? schema) in props)
 		{
 			string? schemaType = schema?["type"]?.GetValue<string>();
-			if (schemaType == null || !obj.ContainsKey(key)) continue;
+			if (schemaType == null || !obj.ContainsKey(key))
+				continue;
 
 			JsonNode? value = obj[key];
-			if (value == null) continue;
+			if (value == null)
+				continue;
 
 			bool coerced = false;
 
@@ -479,7 +505,8 @@ public static class FixJson
 	private static void StripExtraArgs(JsonObject obj, JsonObject? parameters, Action<string>? log)
 	{
 		JsonObject? props = parameters?["properties"]?.AsObject();
-		if (props == null) return;
+		if (props == null)
+			return;
 
 		List<string> toRemove = new List<string>();
 		foreach ((string key, JsonNode? _) in obj)
@@ -500,12 +527,14 @@ public static class FixJson
 	private static string? CheckRequiredArgs(JsonObject obj, string toolName, JsonObject? parameters)
 	{
 		JsonArray? required = parameters?["required"]?.AsArray();
-		if (required == null) return null;
+		if (required == null)
+			return null;
 
 		string? error = null;
 		foreach (JsonNode? req in required)
 		{
-			if (req == null) continue;
+			if (req == null)
+				continue;
 			string fieldName = req.GetValue<string>();
 			if (!string.IsNullOrEmpty(fieldName) && !obj.ContainsKey(fieldName))
 			{

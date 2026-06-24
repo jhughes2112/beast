@@ -27,7 +27,7 @@ public class Role
 	[JsonIgnore]
 	public RoleKind Kind { get; }
 
-    // '*' expands at load time to all enabled model IDs at that position. Order is still respected.
+	// '*' expands at load time to all enabled model IDs at that position. Order is still respected.
 	[JsonPropertyName("models")]
 	public List<string> Models { get; }
 

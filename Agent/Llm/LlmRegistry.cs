@@ -9,8 +9,8 @@ using System.Threading.Tasks;
 // rate-limit discovered by one session is immediately visible to others.
 public class ModelAvailability
 {
-    public DateTimeOffset AvailableAt = DateTimeOffset.MinValue;
-    public bool IsDown => AvailableAt == DateTimeOffset.MaxValue;
+	public DateTimeOffset AvailableAt = DateTimeOffset.MinValue;
+	public bool IsDown => AvailableAt == DateTimeOffset.MaxValue;
 }
 
 // Registry of model configs, per-endpoint protocol detection, and per-model availability.
@@ -92,7 +92,8 @@ public class LlmRegistry
 		foreach ((string modelId, LlmModel model) in _models)
 		{
 			string ep = model.Endpoint;
-			if (_probeCache.ContainsKey(ep)) continue;
+			if (_probeCache.ContainsKey(ep))
+				continue;
 			if (!unprobed.ContainsKey(ep))
 				unprobed[ep] = (model.ApiKey, new List<string>());
 			unprobed[ep].modelIds.Add(modelId);
@@ -238,12 +239,17 @@ public class LlmRegistry
 		DateTimeOffset now = DateTimeOffset.UtcNow;
 		foreach (string cid in role.Models)
 		{
-			if (!_models.ContainsKey(cid)) continue;
-			if (!_availability.TryGetValue(cid, out ModelAvailability? avail)) return 0;
-			if (avail.IsDown) continue;
+			if (!_models.ContainsKey(cid))
+				continue;
+			if (!_availability.TryGetValue(cid, out ModelAvailability? avail))
+				return 0;
+			if (avail.IsDown)
+				continue;
 			long wait = (long)(avail.AvailableAt - now).TotalMilliseconds;
-			if (wait <= 0) return 0;
-			if (wait < best) best = wait;
+			if (wait <= 0)
+				return 0;
+			if (wait < best)
+				best = wait;
 		}
 		return best;
 	}
@@ -268,7 +274,8 @@ public class LlmRegistry
 
 	private LlmModel? PickModel(Role? role, string preferredModelId, int minContextRequired)
 	{
-		if (role == null) return null;
+		if (role == null)
+			return null;
 
 		// Try the preferred model first if it is in the role's list and not permanently down.
 		if (!string.IsNullOrEmpty(preferredModelId) && role.Models.Contains(preferredModelId))
@@ -284,10 +291,13 @@ public class LlmRegistry
 		// Fall through to the role's ordered list.
 		foreach (string modelId in role.Models)
 		{
-			if (!_models.TryGetValue(modelId, out LlmModel? model)) continue;
+			if (!_models.TryGetValue(modelId, out LlmModel? model))
+				continue;
 			bool down = _availability.TryGetValue(modelId, out ModelAvailability? ma) && ma.IsDown;
-			if (down) continue;
-			if (model.Config.ContextWindow <= minContextRequired) continue;
+			if (down)
+				continue;
+			if (model.Config.ContextWindow <= minContextRequired)
+				continue;
 			return model;
 		}
 

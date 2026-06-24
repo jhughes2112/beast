@@ -1,7 +1,7 @@
 using System;
 using System.IO;
-using System.Threading.Tasks;
 using System.Threading;
+using System.Threading.Tasks;
 
 
 public static class FileToolsTests

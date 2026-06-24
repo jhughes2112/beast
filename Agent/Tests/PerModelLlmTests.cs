@@ -8,114 +8,114 @@ using System.Threading.Tasks;
 // configured for each role. Tests are skipped gracefully when API keys or models are absent.
 public static class PerModelLlmTests
 {
-    public static async Task TestAsync(TestContext ctx, LlmRegistry registry, RoleService roleService, SettingsService settings, CancellationToken cancellationToken)
-    {
-        ctx.Log("  PerModelLlmTests");
+	public static async Task TestAsync(TestContext ctx, LlmRegistry registry, RoleService roleService, SettingsService settings, CancellationToken cancellationToken)
+	{
+		ctx.Log("  PerModelLlmTests");
 
-        List<Role> roles = new List<Role>(roleService.Roles.Values);
-        if (roles.Count == 0)
-        {
-            ctx.Log("    SKIP: no roles configured");
-            return;
-        }
+		List<Role> roles = new List<Role>(roleService.Roles.Values);
+		if (roles.Count == 0)
+		{
+			ctx.Log("    SKIP: no roles configured");
+			return;
+		}
 
-        foreach (Role role in roles)
-        {
-            await RunRoleTestsAsync(ctx, registry, settings, role, cancellationToken);
-        }
-    }
+		foreach (Role role in roles)
+		{
+			await RunRoleTestsAsync(ctx, registry, settings, role, cancellationToken);
+		}
+	}
 
-    private static async Task RunRoleTestsAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, Role role, CancellationToken cancellationToken)
-    {
-        ctx.Log($"    Role: {role.Name}");
+	private static async Task RunRoleTestsAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, Role role, CancellationToken cancellationToken)
+	{
+		ctx.Log($"    Role: {role.Name}");
 
-        if (role.Models.Count == 0)
-        {
-            ctx.Log($"      SKIP: role '{role.Name}' has no model names");
-            return;
-        }
+		if (role.Models.Count == 0)
+		{
+			ctx.Log($"      SKIP: role '{role.Name}' has no model names");
+			return;
+		}
 
-        foreach (string modelId in role.Models)
-        {
-            await RunSingleModelTestAsync(ctx, registry, settings, role, modelId, cancellationToken);
-        }
-    }
+		foreach (string modelId in role.Models)
+		{
+			await RunSingleModelTestAsync(ctx, registry, settings, role, modelId, cancellationToken);
+		}
+	}
 
-    private static async Task RunSingleModelTestAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, Role role, string modelId, CancellationToken cancellationToken)
-    {
-        ctx.Log($"      Model: {modelId}");
+	private static async Task RunSingleModelTestAsync(TestContext ctx, LlmRegistry registry, SettingsService settings, Role role, string modelId, CancellationToken cancellationToken)
+	{
+		ctx.Log($"      Model: {modelId}");
 
-        LlmService? service = null;
-        try
-        {
-            service = registry.CreateServiceById(modelId, 0);
-            if (service == null)
-            {
-                ctx.Log($"        SKIP: model '{modelId}' service not found");
-                return;
-            }
+		LlmService? service = null;
+		try
+		{
+			service = registry.CreateServiceById(modelId, 0);
+			if (service == null)
+			{
+				ctx.Log($"        SKIP: model '{modelId}' service not found");
+				return;
+			}
 
-            if (service.IsDown)
-            {
-                ctx.Log($"        SKIP: model '{modelId}' is permanently down");
-                return;
-            }
+			if (service.IsDown)
+			{
+				ctx.Log($"        SKIP: model '{modelId}' is permanently down");
+				return;
+			}
 
-            if (string.IsNullOrEmpty(service.Model.ApiKey))
-            {
-                ctx.Log($"        SKIP: model '{modelId}' has no API key");
-                return;
-            }
-        }
-        catch (Exception ex)
-        {
-            ctx.Log($"        SKIP: pre-check error for '{modelId}': {ex.Message}");
-            return;
-        }
+			if (string.IsNullOrEmpty(service.Model.ApiKey))
+			{
+				ctx.Log($"        SKIP: model '{modelId}' has no API key");
+				return;
+			}
+		}
+		catch (Exception ex)
+		{
+			ctx.Log($"        SKIP: pre-check error for '{modelId}': {ex.Message}");
+			return;
+		}
 
-        // Run a minimal single-turn conversation.
-        try
-        {
-            TestCaptureTransport localTransport = new TestCaptureTransport();
-            BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true, 0);
-            Session session = new Session(data, role.SystemPrompt, localTransport, false);
-            session.AddUserMessage("Reply with exactly: PING");
+		// Run a minimal single-turn conversation.
+		try
+		{
+			TestCaptureTransport localTransport = new TestCaptureTransport();
+			BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true, 0);
+			Session session = new Session(data, role.SystemPrompt, localTransport, false);
+			session.AddUserMessage("Reply with exactly: PING");
 
-            using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-            using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-            Tool[] tools = role.BuiltTools;
+			using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+			using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+			Tool[] tools = role.BuiltTools;
 
-            session.UpdateModel(service.Model);
-            CancellationToken turnToken = session.BeginTurn();
-            using CancellationTokenSource turnLinked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, linkedCts.Token);
-            ProtocolResult result = await service.RunToCompletionAsync(session, tools, null, 0, 0, localTransport, turnLinked.Token);
-            session.EndTurn(false);
+			session.UpdateModel(service.Model);
+			CancellationToken turnToken = session.BeginTurn();
+			using CancellationTokenSource turnLinked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, linkedCts.Token);
+			ProtocolResult result = await service.RunToCompletionAsync(session, tools, null, 0, 0, localTransport, turnLinked.Token);
+			session.EndTurn(false);
 
-            bool gotResponse = false;
-            foreach ((FrameType type, string text) in localTransport.Sent)
-            {
-                if (type == FrameType.Output && text.IndexOf("PING", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    gotResponse = true;
-                    break;
-                }
-            }
+			bool gotResponse = false;
+			foreach ((FrameType type, string text) in localTransport.Sent)
+			{
+				if (type == FrameType.Output && text.IndexOf("PING", StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					gotResponse = true;
+					break;
+				}
+			}
 
-            if (result.Outcome != ProtocolCallOutcome.Success)
-            {
-                ctx.Log($"        SKIP [{role.Name}/{modelId}]: {result.ErrorMessage}");
-                return;
-            }
-            ctx.Assert(gotResponse, $"PerModel [{role.Name}/{modelId}]: response contains PING");
-            ctx.Log($"        PASS [{role.Name}/{modelId}]");
-        }
-        catch (OperationCanceledException)
-        {
-            ctx.Log($"        TIMEOUT [{role.Name}/{modelId}]: timed out after 30s");
-        }
-        catch (Exception ex)
-        {
-            ctx.Log($"        ERROR [{role.Name}/{modelId}]: {ex.Message}");
-        }
-    }
+			if (result.Outcome != ProtocolCallOutcome.Success)
+			{
+				ctx.Log($"        SKIP [{role.Name}/{modelId}]: {result.ErrorMessage}");
+				return;
+			}
+			ctx.Assert(gotResponse, $"PerModel [{role.Name}/{modelId}]: response contains PING");
+			ctx.Log($"        PASS [{role.Name}/{modelId}]");
+		}
+		catch (OperationCanceledException)
+		{
+			ctx.Log($"        TIMEOUT [{role.Name}/{modelId}]: timed out after 30s");
+		}
+		catch (Exception ex)
+		{
+			ctx.Log($"        ERROR [{role.Name}/{modelId}]: {ex.Message}");
+		}
+	}
 }

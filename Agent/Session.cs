@@ -177,9 +177,9 @@ public class Session
 	{
 		_bundle.OnAssistantTurn(payload.AssistantText, payload.Thinking, payload.ToolCalls);
 
-        // RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
-        // which resets pending reservations: the size already includes any prior tool outputs.
-        RecordTurnUsage(payload.Usage);
+		// RecordTurnUsage feeds the reported size into the budget (ContextBudget.RecordMeasurement),
+		// which resets pending reservations: the size already includes any prior tool outputs.
+		RecordTurnUsage(payload.Usage);
 	}
 
 	public void CommitToolResults(ProtocolCallPayload payload)

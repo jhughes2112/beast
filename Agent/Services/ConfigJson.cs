@@ -7,16 +7,16 @@ using System.Text.Json;
 // message has already been printed, so the top level can exit without dumping a call stack.
 public static class ConfigJson
 {
-    public static readonly JsonSerializerOptions Options = new JsonSerializerOptions
-    {
-        AllowTrailingCommas = true,
-        ReadCommentHandling = JsonCommentHandling.Skip
-    };
+	public static readonly JsonSerializerOptions Options = new JsonSerializerOptions
+	{
+		AllowTrailingCommas = true,
+		ReadCommentHandling = JsonCommentHandling.Skip
+	};
 }
 
 public class ConfigException : Exception
 {
-    public ConfigException(string message) : base(message)
-    {
-    }
+	public ConfigException(string message) : base(message)
+	{
+	}
 }
