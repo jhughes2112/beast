@@ -236,7 +236,7 @@ public static class TransportTests
 	private static void TestAgentTransportProcessing(TestContext ctx)
 	{
 		const string SID = "test-session";
-		BeastApp app = new BeastApp(new LaunchDebug(), new List<string>(), new NullDisplay(), new Log(false), "beast_test", null);
+		BeastApp app = new BeastApp(new LaunchDebug(), new List<string>(), new NullDisplay(), new ClientLog(false), "beast_test", null);
 
 		// Simulate a Status frame arriving — should not add to any session model.
 		ProcessFrame(app, FrameType.Status, "", "Agent ready");

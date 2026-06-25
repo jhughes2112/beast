@@ -4,10 +4,10 @@
       "name": "Default",
       "description": "Light conversation role",
       "models": [
-		"z-ai/glm-5.2",
-		"nvidia/nemotron-3-ultra-550b-a55b:free",
-		"xiaomi/mimo-v2.5-pro",
 		"local",
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
+		"z-ai/glm-5.2",
+		"xiaomi/mimo-v2.5-pro",
         "*"
       ],
       "tools": [
@@ -30,8 +30,8 @@
       "description": "Implements changes with full read/write/shell access, and gets them reviewed",
       "models": [
 		"z-ai/glm-5.2",
-		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"local",
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
       ],
       "tools": [
         "bash",
@@ -54,8 +54,8 @@
       "name": "Reviewer",
       "description": "Reviews changes read-only; approves or rejects with comments",
       "models": [
-		"xiaomi/mimo-v2.5-pro",
 		"local",
+		"xiaomi/mimo-v2.5-pro",
       ],
       "tools": [
         "read_file",
@@ -71,8 +71,8 @@
       "name": "Explorer",
       "description": "To reduce context by providing a brief roadmap of a file relevant to a goal",
       "models": [
-		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"local",
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
         "*"
       ],
       "tools": [],
@@ -84,8 +84,8 @@
       "name": "WebFetch",
       "description": "To reduce context by returning the useful parts of a web page",
       "models": [
-		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"local",
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
         "*"
       ],
       "tools": [
@@ -100,8 +100,8 @@
       "name": "WebSearch",
       "description": "To return live web search results that serve the goal",
       "models": [
-		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"local",
+		"nvidia/nemotron-3-ultra-550b-a55b:free",
         "*"
 	  ],
       "tools": [],

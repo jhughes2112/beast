@@ -7,7 +7,7 @@ using System.Text;
 // Writes to stderr (visible in container logs) and optionally to a persistent error log file.
 // Unlike QueryLogger (which logs successful requests), this logs FAILURES with full context
 // so operators can immediately diagnose: which model, what endpoint, what error, what happened next.
-public static class Log
+public static class AgentLog
 {
     private static readonly string ErrorLogDir = Path.Combine(Environment.CurrentDirectory, ".beast", "logs");
     private static readonly object _fileLock = new object();

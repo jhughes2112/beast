@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 // Blocks in RunAsync until cancellation fires.
 public class DisplayConsole : IDisplay
 {
-	private readonly Log _log;
+	private readonly ClientLog _log;
 	private readonly bool _verbose;
 	private int _streamIndex = -1;
 	private FrameType _streamType = FrameType.Output;
@@ -18,7 +18,7 @@ public class DisplayConsole : IDisplay
 	private readonly HashSet<int> _streamedSlots = new HashSet<int>();
 	private Action? _frameDrain;
 
-	public DisplayConsole(Log log, bool verbose)
+	public DisplayConsole(ClientLog log, bool verbose)
 	{
 		_log = log;
 		_verbose = verbose;

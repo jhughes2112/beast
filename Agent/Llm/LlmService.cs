@@ -1,11 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Agent.Services;
-
 
 public enum LlmExitReason
 {
@@ -120,7 +116,7 @@ public class LlmService
 					// Context-full is a caller-side constraint, not a model failure.
 					// Detection happens in CommitTurn when ADDING content to the session.
 					result = ProtocolResult.ContextFull("Context budget exhausted");
-					Log.ModelFailure(
+					AgentLog.ModelFailure(
 						modelId: _model.ConfigId,
 						modelName: _model.Config.Name,
 						endpoint: _model.Endpoint,
@@ -192,7 +188,7 @@ public class LlmService
 						{
 							// Sustained rate limiting is a caller-side budget issue, not a model failure. The
 							// caller falls back to the next model in the role's list (RoleModelIds) on this outcome.
-							Log.ModelFailure(
+							AgentLog.ModelFailure(
 								modelId: _model.ConfigId,
 								modelName: _model.Config.Name,
 								endpoint: _model.Endpoint,
@@ -210,7 +206,7 @@ public class LlmService
 						_availability.AvailableAt = result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
 						int waitSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, $"Rate limited {waitSeconds}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
-						Log.ModelFailure(
+						AgentLog.ModelFailure(
 							modelId: _model.ConfigId,
 							modelName: _model.Config.Name,
 							endpoint: _model.Endpoint,
@@ -237,7 +233,7 @@ public class LlmService
 							// collapsing it into TooManyRetries, which the caller would otherwise report as
 							// rate-limiting and bury the real cause. Rate-limit exhaustion (above) keeps
 							// TooManyRetries; this transient path carries its reason.
-							Log.ModelFailure(
+							AgentLog.ModelFailure(
 								modelId: _model.ConfigId,
 								modelName: _model.Config.Name,
 								endpoint: _model.Endpoint,
@@ -264,7 +260,7 @@ public class LlmService
 							_availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1)));
 						int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{kMaxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
-						Log.ModelFailure(
+						AgentLog.ModelFailure(
 							modelId: _model.ConfigId,
 							modelName: _model.Config.Name,
 							endpoint: _model.Endpoint,
@@ -281,7 +277,7 @@ public class LlmService
 					else
 					{
 						// Unrecoverable (auth failure, unknown protocol): mark the model down so it is not retried.
-						Log.ModelFailure(
+						AgentLog.ModelFailure(
 							modelId: _model.ConfigId,
 							modelName: _model.Config.Name,
 							endpoint: _model.Endpoint,
@@ -308,7 +304,7 @@ public class LlmService
 				if (turnToken.IsCancellationRequested || cancellationToken.IsCancellationRequested)
 				{
 					interrupted = turnToken.IsCancellationRequested;
-					Log.ModelFailure(
+					AgentLog.ModelFailure(
 						modelId: _model.ConfigId,
 						modelName: _model.Config.Name,
 						endpoint: _model.Endpoint,
@@ -331,7 +327,7 @@ public class LlmService
 					// Surface it explicitly as a timeout (Transient, so the caller retries/falls back) instead
 					// of an opaque "cancelled". A TimeoutException inner confirms the HttpClient.Timeout case.
 					bool timedOut = ex is TaskCanceledException && ex.InnerException is TimeoutException;
-					Log.ModelFailure(
+					AgentLog.ModelFailure(
 						modelId: _model.ConfigId,
 						modelName: _model.Config.Name,
 						endpoint: _model.Endpoint,
@@ -355,7 +351,7 @@ public class LlmService
 				// Cancellation without our token = client-side timeout (e.g. HttpClient). Surface it
 				// as a failure so the user sees it instead of a silent retry loop.
 				string reason = ex.InnerException != null ? ex.InnerException.Message : ex.ToString();
-				Log.ModelFailure(
+				AgentLog.ModelFailure(
 					modelId: _model.ConfigId,
 					modelName: _model.Config.Name,
 					endpoint: _model.Endpoint,

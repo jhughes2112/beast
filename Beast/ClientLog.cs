@@ -1,11 +1,11 @@
 using System;
 
 // Centralised logger for Beast. Verbose messages are only emitted when the verbose flag is set.
-public class Log
+public class ClientLog
 {
 	private readonly bool _verbose;
 
-	public Log(bool verbose)
+	public ClientLog(bool verbose)
 	{
 		_verbose = verbose;
 	}

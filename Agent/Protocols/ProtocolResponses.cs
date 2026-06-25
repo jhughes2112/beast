@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Agent.Services;
 
 // OpenAI Responses API 
 // Wire protocol is stateful by default: passing previous_response_id continues
@@ -151,120 +150,136 @@ public class ProtocolResponses
 		QueryLogger? queryLogger,
 		CancellationToken cancellationToken)
 	{
-		JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
-		queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-
-		if (_streamingSupported)
-		{
-			ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, transport, sessionId, cancellationToken);
-			if (streamResult != null)
-				return streamResult;
-		}
-
-		string requestJson = body.ToJsonString();
-
-		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
-		foreach ((string name, string value) in extraHeaders)
-		{
-			req.Headers.TryAddWithoutValidation(name, value);
-		}
-
-		HttpResponseMessage httpResponse;
-		string responseBody;
 		try
 		{
-			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
-			responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-		}
-		catch (OperationCanceledException)
-		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
-			if (timeout != null)
-				return timeout;
-			throw;
-		}
-		catch (HttpRequestException ex)
-		{
-			Log.ProtocolFailure(
+			JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
+			queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+			if (_streamingSupported)
+			{
+				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, transport, sessionId, cancellationToken);
+				if (streamResult != null)
+					return streamResult;
+			}
+
+			string requestJson = body.ToJsonString();
+
+			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
+			req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+			foreach ((string name, string value) in extraHeaders)
+			{
+				req.Headers.TryAddWithoutValidation(name, value);
+			}
+
+			HttpResponseMessage httpResponse;
+			string responseBody;
+			try
+			{
+				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
+				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			}
+			catch (OperationCanceledException)
+			{
+				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+				if (timeout != null)
+					return timeout;
+				throw;
+			}
+			catch (HttpRequestException ex)
+			{
+				AgentLog.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: "NetworkError",
+					httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+					errorMessage: ex.Message,
+					responseBody: null,
+					exception: ex);
+				return ProtocolResult.Transient(ex.ToString(), null);
+			}
+			catch (Exception ex)
+			{
+				AgentLog.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: "Exception",
+					httpStatusCode: null,
+					errorMessage: ex.Message,
+					exception: ex);
+				return ProtocolResult.Transient(ex.ToString(), null);
+			}
+
+			if (httpResponse.IsSuccessStatusCode)
+			{
+				JsonNode? root = JsonNode.Parse(responseBody);
+				if (root == null)
+					return ProtocolResult.Transient("Empty response from Responses API", null);
+
+				return CommitResponse(bundle, root, model);
+			}
+
+			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
+			{
+				AgentLog.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: "RateLimited",
+					httpStatusCode: (int)httpResponse.StatusCode,
+					errorMessage: responseBody,
+					responseBody: responseBody);
+				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
+			}
+
+			int statusCode = (int)httpResponse.StatusCode;
+			// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
+			// client error: the request itself is bad, so retrying just burns the transient budget and then
+			// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
+			// 5xx and the retryable 4xx stay transient.
+			bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
+			if (permanentClientError)
+			{
+				AgentLog.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+					httpStatusCode: statusCode,
+					errorMessage: responseBody,
+					responseBody: responseBody);
+				return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+			}
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
 				protocol: "Responses",
-				failureType: "NetworkError",
-				httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-				errorMessage: ex.Message,
-				responseBody: null,
-				exception: ex);
-			return ProtocolResult.Transient(ex.ToString(), null);
+				failureType: statusCode >= 500 ? "ServerError" : "Transient",
+				httpStatusCode: statusCode,
+				errorMessage: responseBody,
+				responseBody: responseBody);
+			return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
 		}
 		catch (Exception ex)
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
-				protocol: "Responses",
+				protocol: DetectedProtocol.Responses.ToString(),
 				failureType: "Exception",
 				httpStatusCode: null,
 				errorMessage: ex.Message,
 				exception: ex);
 			return ProtocolResult.Transient(ex.ToString(), null);
 		}
-
-		if (httpResponse.IsSuccessStatusCode)
-		{
-			JsonNode? root = JsonNode.Parse(responseBody);
-			if (root == null)
-				return ProtocolResult.Transient("Empty response from Responses API", null);
-
-			return CommitResponse(bundle, root, model);
-		}
-
-		if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
-		{
-			Log.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "Responses",
-				failureType: "RateLimited",
-				httpStatusCode: (int)httpResponse.StatusCode,
-				errorMessage: responseBody,
-				responseBody: responseBody);
-			return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
-		}
-
-		int statusCode = (int)httpResponse.StatusCode;
-		// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
-		// client error: the request itself is bad, so retrying just burns the transient budget and then
-		// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
-		// 5xx and the retryable 4xx stay transient.
-		bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
-		if (permanentClientError)
-		{
-			Log.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "Responses",
-				failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
-				httpStatusCode: statusCode,
-				errorMessage: responseBody,
-				responseBody: responseBody);
-			return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
-		}
-		Log.ProtocolFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: "Responses",
-			failureType: statusCode >= 500 ? "ServerError" : "Transient",
-			httpStatusCode: statusCode,
-			errorMessage: responseBody,
-			responseBody: responseBody);
-		return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
 	}
 
 	private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
@@ -393,7 +408,7 @@ public class ProtocolResponses
 		}
 		catch (HttpRequestException ex)
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -407,7 +422,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -427,7 +442,7 @@ public class ProtocolResponses
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -441,7 +456,7 @@ public class ProtocolResponses
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -455,7 +470,7 @@ public class ProtocolResponses
 
 			if (statusCode == 401 || statusCode == 403)
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -466,7 +481,7 @@ public class ProtocolResponses
 					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
 			}
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

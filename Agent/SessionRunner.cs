@@ -1,13 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Agent.Services;
-
 
 // Executes a session: LLM turns, tool dispatch, and role transitions. Subagent-wrapped tool
 // calls are delegated to SubagentRunner; single-turn execution lives in TurnRunner.
@@ -418,7 +414,7 @@ public class SessionRunner
 								if (fallback != null)
 								{
 									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
-									Log.FallbackTransition(
+									AgentLog.FallbackTransition(
 										fromModelId: _service.Model.ConfigId,
 										fromModelName: _service.Model.Config.Name,
 										toModelId: fallback.Model.ConfigId,
@@ -436,7 +432,7 @@ public class SessionRunner
 									string detail = result.Outcome == ProtocolCallOutcome.TooManyRetries
 										? "Rate limited after too many retries, and no fallback model is available."
 										: (string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage);
-									Log.SessionFailure(
+									AgentLog.SessionFailure(
 										sessionId: session.Id,
 										modelId: _service.Model.ConfigId,
 										modelName: _service.Model.Config.Name,

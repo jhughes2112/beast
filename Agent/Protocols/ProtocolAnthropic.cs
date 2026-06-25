@@ -10,7 +10,6 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using AnthropicSystemMessage = Anthropic.SDK.Messaging.SystemMessage;
-using Agent.Services;
 
 // -- Anthropic Messages API (native SDK) ---------------------------------------
 // This protocol talks to Claude exclusively through Anthropic.SDK. The SDK's own
@@ -144,14 +143,51 @@ public class ProtocolAnthropic
 		QueryLogger? queryLogger,
 		CancellationToken cancellationToken)
 	{
-		AnthropicClient client = BuildClient(model, extraHeaders, queryLogger);
-		MessageParameters parameters = BuildParameters(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
+		try
+		{
+			return await ExecuteWithLogging(model, async () =>
+			{
+				AnthropicClient client = BuildClient(model, extraHeaders, queryLogger);
+				MessageParameters parameters = BuildParameters(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
 
-		ProtocolResult result;
-		parameters.Stream = true;
-		result = await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, sessionId, cancellationToken);
+				parameters.Stream = true;
+				return await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, sessionId, cancellationToken);
+			});
+		}
+		catch (Exception ex)
+		{
+			AgentLog.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: DetectedProtocol.Anthropic.ToString(),
+				failureType: "Exception",
+				httpStatusCode: null,
+				errorMessage: ex.Message,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
+		}
+	}
 
-		return result;
+	private async Task<ProtocolResult> ExecuteWithLogging(LlmModel model, Func<Task<ProtocolResult>> execute)
+	{
+		try
+		{
+			return await execute();
+		}
+		catch (Exception ex)
+		{
+			AgentLog.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Anthropic",
+				failureType: "Exception",
+				httpStatusCode: null,
+				errorMessage: ex.Message,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
+		}
 	}
 
 	private MessageParameters BuildParameters(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
@@ -530,7 +566,7 @@ public class ProtocolAnthropic
 			int status = (int)http.StatusCode.Value;
 			if (status == 429)
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -543,7 +579,7 @@ public class ProtocolAnthropic
 			}
 			else if (status == 401 || status == 403)
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -556,7 +592,7 @@ public class ProtocolAnthropic
 			}
 			else if (status >= 400 && status < 500)
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -569,7 +605,7 @@ public class ProtocolAnthropic
 			}
 			else
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -583,7 +619,7 @@ public class ProtocolAnthropic
 		}
 		else if (ex is HttpRequestException)
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -596,7 +632,7 @@ public class ProtocolAnthropic
 		}
 		else
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

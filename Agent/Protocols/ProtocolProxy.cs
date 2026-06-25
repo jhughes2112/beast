@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Agent.Services;
 
 
 // The wire protocol spoken by an endpoint — detected once per endpoint and cached in LlmRegistry.
@@ -177,15 +175,15 @@ LiveUsageProgress onProgress, ITransportServer transport, string sessionId, Quer
 		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
 		if (_detected == DetectedProtocol.Anthropic)
-			return await ExecuteWithLoggingAsync(EnsureProtocolAnthropic(canonical), _model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+			return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
 		if (_detected == DetectedProtocol.Responses)
-			return await ExecuteWithLoggingAsync(EnsureProtocolResponses(canonical), _model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+			return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
 		if (_detected == DetectedProtocol.ChatCompletions)
-			return await ExecuteWithLoggingAsync(EnsureProtocolChatCompletions(canonical), _model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
-		Log.ProtocolFailure(
+		AgentLog.ProtocolFailure(
 			modelId: _model.ConfigId,
 			modelName: _model.Config.Name,
 			endpoint: _model.Endpoint,
@@ -195,27 +193,6 @@ LiveUsageProgress onProgress, ITransportServer transport, string sessionId, Quer
 			errorMessage: $"Endpoint speaks no recognized protocol: {endpoint}");
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
-
-	private async Task<ProtocolResult> ExecuteWithLoggingAsync(IProtocol protocol, LlmModel model, ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)
-	{
-		try
-		{
-			return await protocol.ExecuteAsync(model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
-		}
-		catch (Exception ex)
-		{
-			Log.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: _detected.ToString(),
-				failureType: "Exception",
-				httpStatusCode: null,
-				errorMessage: ex.Message,
-				exception: ex);
-			return ProtocolResult.Transient(ex.ToString(), null);
-		}
-			}
 
 	internal ProtocolChatCompletions EnsureProtocolChatCompletions(IReadOnlyList<CanonicalMessage> canonical)
 	{

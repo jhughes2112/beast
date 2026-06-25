@@ -9,11 +9,11 @@ using System.Threading.Tasks;
 public class TransportClientWebsocket : ITransportClient, IDisposable
 {
 	private readonly string _url;
-	private readonly Log _log;
+	private readonly ClientLog _log;
 	private ClientWebSocket? _ws;
 	private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
 
-	public TransportClientWebsocket(string url, Log log)
+	public TransportClientWebsocket(string url, ClientLog log)
 	{
 		_url = url;
 		_log = log;

@@ -40,7 +40,7 @@ public class BeastApp : IAsyncDisposable
 	private readonly ILauncher _agentContext;
 	private readonly List<string> _messages;
 	private readonly IDisplay _display;
-	private readonly Log _log;
+	private readonly ClientLog _log;
 	private readonly string _agentName;
 	private readonly Worktrees.Selection? _worktree;
 	// Set when the agent reports a successful /finish; on shutdown the worktree's host folder is removed.
@@ -65,7 +65,7 @@ public class BeastApp : IAsyncDisposable
 	private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string SessionId, string Content)> _frameQueue
 		= new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string, string)>();
 
-	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, Log log, string agentName, Worktrees.Selection? worktree)
+	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, ClientLog log, string agentName, Worktrees.Selection? worktree)
 	{
 		_agentContext = agentContext;
 		_messages = messages;
@@ -674,7 +674,7 @@ public class BeastApp : IAsyncDisposable
 	}
 
 	// Retries WebSocket connection until success or cancellation, with 200ms delays.
-	private static async Task<ITransportClient> RetryConnectAsync(string url, ILauncher launcher, Log log, CancellationToken cancellationToken)
+	private static async Task<ITransportClient> RetryConnectAsync(string url, ILauncher launcher, ClientLog log, CancellationToken cancellationToken)
 	{
 		while (!cancellationToken.IsCancellationRequested)
 		{

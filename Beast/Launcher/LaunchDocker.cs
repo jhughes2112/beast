@@ -15,12 +15,12 @@ public class LaunchDocker : ILauncher
 {
 	private readonly string _image;
 	private readonly DockerClient _dockerClient;
-	private readonly Log _log;
+	private readonly ClientLog _log;
 	private readonly Worktrees.Selection _worktree;
 	private string? _containerId;
 	private int _hostPort;
 
-	public LaunchDocker(string image, Log log, Worktrees.Selection worktree)
+	public LaunchDocker(string image, ClientLog log, Worktrees.Selection worktree)
 	{
 		_image = image;
 		_log = log;

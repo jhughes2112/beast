@@ -90,7 +90,7 @@ public class Program
 		if (nonInteractive)
 			messages.Add("/quit");
 
-		Log log = new Log(verbose);
+		ClientLog log = new ClientLog(verbose);
 		CollapseMode initialMode = verbose ? CollapseMode.Verbose : CollapseMode.Minimized;
 		IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayScreen(initialMode);
 

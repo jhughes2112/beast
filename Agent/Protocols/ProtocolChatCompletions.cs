@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using Agent.Services;
 
 // -- OpenAI Chat Completions API -----------------------------------------------
 // Wire protocol requires strict userâ†’assistant alternation; two consecutive
@@ -205,187 +204,203 @@ public class ProtocolChatCompletions
 		QueryLogger? queryLogger,
 		CancellationToken cancellationToken)
 	{
-		bool logged = false;
-
-		// A successful response that carries neither assistant text nor a tool call is a dead turn: the
-		// model emitted only thinking — typically an XML tool call buried in its reasoning that this
-		// protocol never parsed as a real call. Some local/open ChatCompletions models do this; the
-		// hosted Anthropic and Responses protocols effectively never do, which is why this lives here.
-		// Treat it like the other fixable malformations handled in this loop: discard it and re-post (a
-		// fresh seed is generated each build, so the retry is a genuinely new sample) up to the cap,
-		// rather than surfacing an empty turn the caller cannot act on.
-		int emptyRetries = 0;
-		const int kMaxEmptyRetries = 3;
-
-		for (; ; )
+		try
 		{
-			JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
-			if (!logged)
-			{ logged = true; queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
+			bool logged = false;
 
-			if (_streamingSupported)
+			// A successful response that carries neither assistant text nor a tool call is a dead turn: the
+			// model emitted only thinking — typically an XML tool call buried in its reasoning that this
+			// protocol never parsed as a real call. Some local/open ChatCompletions models do this; the
+			// hosted Anthropic and Responses protocols effectively never do, which is why this lives here.
+			// Treat it like the other fixable malformations handled in this loop: discard it and re-post (a
+			// fresh seed is generated each build, so the retry is a genuinely new sample) up to the cap,
+			// rather than surfacing an empty turn the caller cannot act on.
+			int emptyRetries = 0;
+			const int kMaxEmptyRetries = 3;
+
+			for (; ; )
 			{
-				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, 
-cancellationToken);
-				if (streamResult != null)
+				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
+				if (!logged)
+				{ logged = true; queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
+
+				if (_streamingSupported)
 				{
-					if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
+					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, 
+	cancellationToken);
+					if (streamResult != null)
+					{
+						if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
+						{
+							_toolChoiceMode = 1;
+							transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
+							continue;
+						}
+						if (IsEmptyTurn(streamResult) && emptyRetries < kMaxEmptyRetries)
+						{
+							emptyRetries++;
+							transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+							continue;
+						}
+						return streamResult;
+					}
+					// null means the provider rejected streaming; fall through to non-streaming
+				}
+
+				HttpResponseMessage httpResponse;
+				string responseBody;
+				try
+				{
+					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, sessionId, cancellationToken);
+					responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+				}
+				catch (OperationCanceledException)
+				{
+					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+					if (timeout != null)
+						return timeout;
+					throw;
+				}
+				catch (HttpRequestException ex)
+				{
+					AgentLog.ProtocolFailure(
+						modelId: model.ConfigId,
+						modelName: model.Config.Name,
+						endpoint: model.Endpoint,
+						protocol: "ChatCompletions",
+						failureType: "NetworkError",
+						httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+						errorMessage: ex.Message,
+						responseBody: null,
+						exception: ex);
+					return ProtocolResult.Transient(ex.ToString(), null);
+				}
+				catch (Exception ex)
+				{
+					AgentLog.ProtocolFailure(
+						modelId: model.ConfigId,
+						modelName: model.Config.Name,
+						endpoint: model.Endpoint,
+						protocol: "ChatCompletions",
+						failureType: "Exception",
+						httpStatusCode: null,
+						errorMessage: ex.Message,
+						exception: ex);
+					return ProtocolResult.Transient(ex.ToString(), null);
+				}
+
+				if (httpResponse.IsSuccessStatusCode)
+				{
+					JsonNode? root = JsonNode.Parse(responseBody);
+					if (root == null)
+					{
+						return ProtocolResult.Transient("Empty response from API", null);
+					}
+
+					string? errMsg = root["error"]?["message"]?.GetValue<string>();
+					JsonArray? choices = root["choices"]?.AsArray();
+					if (choices == null || choices.Count == 0 || errMsg != null)
+					{
+						return ProtocolResult.Transient(errMsg ?? "Empty response from API", null);
+					}
+
+					JsonNode? messageNode = choices[0]?["message"];
+					if (messageNode is not JsonObject messageObj)
+					{
+						return ProtocolResult.Transient("Response missing message object", null);
+					}
+
+					(string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
+					string thinking = ExtractThinking(messageObj);
+
+
+
+					string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
+					if (toolCalls.Count > 0)
+						finishReason = "tool_calls";
+
+					(TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
+
+					List<ToolResult> emptyResults = new List<ToolResult>();
+					ProtocolResult success = ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+					if (ShouldAdaptToolChoice(success, forcedToolName, tools))
 					{
 						_toolChoiceMode = 1;
 						transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
 						continue;
 					}
-					if (IsEmptyTurn(streamResult) && emptyRetries < kMaxEmptyRetries)
+					if (IsEmptyTurn(success) && emptyRetries < kMaxEmptyRetries)
 					{
 						emptyRetries++;
 						transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
 						continue;
 					}
-					return streamResult;
-				}
-				// null means the provider rejected streaming; fall through to non-streaming
-			}
-
-			HttpResponseMessage httpResponse;
-			string responseBody;
-			try
-			{
-				httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, sessionId, cancellationToken);
-				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-			}
-			catch (OperationCanceledException)
-			{
-				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
-				if (timeout != null)
-					return timeout;
-				throw;
-			}
-			catch (HttpRequestException ex)
-			{
-				Log.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: "NetworkError",
-					httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-					errorMessage: ex.Message,
-					responseBody: null,
-					exception: ex);
-				return ProtocolResult.Transient(ex.ToString(), null);
-			}
-			catch (Exception ex)
-			{
-				Log.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: "Exception",
-					httpStatusCode: null,
-					errorMessage: ex.Message,
-					exception: ex);
-				return ProtocolResult.Transient(ex.ToString(), null);
-			}
-
-			if (httpResponse.IsSuccessStatusCode)
-			{
-				JsonNode? root = JsonNode.Parse(responseBody);
-				if (root == null)
-				{
-					return ProtocolResult.Transient("Empty response from API", null);
+					return success;
 				}
 
-				string? errMsg = root["error"]?["message"]?.GetValue<string>();
-				JsonArray? choices = root["choices"]?.AsArray();
-				if (choices == null || choices.Count == 0 || errMsg != null)
+				bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
+				if (TryAdaptToError(httpResponse, responseBody, reasoningConfigured))
 				{
-					return ProtocolResult.Transient(errMsg ?? "Empty response from API", null);
-				}
-
-				JsonNode? messageNode = choices[0]?["message"];
-				if (messageNode is not JsonObject messageObj)
-				{
-					return ProtocolResult.Transient("Response missing message object", null);
-				}
-
-				(string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
-				string thinking = ExtractThinking(messageObj);
-
-
-
-				string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
-				if (toolCalls.Count > 0)
-					finishReason = "tool_calls";
-
-				(TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
-
-				List<ToolResult> emptyResults = new List<ToolResult>();
-				ProtocolResult success = ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
-				if (ShouldAdaptToolChoice(success, forcedToolName, tools))
-				{
-					_toolChoiceMode = 1;
-					transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
 					continue;
 				}
-				if (IsEmptyTurn(success) && emptyRetries < kMaxEmptyRetries)
+
+				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 				{
-					emptyRetries++;
-					transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
-					continue;
+					AgentLog.ProtocolFailure(
+						modelId: model.ConfigId,
+						modelName: model.Config.Name,
+						endpoint: model.Endpoint,
+						protocol: "ChatCompletions",
+						failureType: "RateLimited",
+						httpStatusCode: (int)httpResponse.StatusCode,
+						errorMessage: responseBody,
+						responseBody: responseBody);
+					return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
 				}
-				return success;
-			}
 
-			bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
-			if (TryAdaptToError(httpResponse, responseBody, reasoningConfigured))
-			{
-				continue;
-			}
-
-			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
-			{
-				Log.ProtocolFailure(
+				int statusCode = (int)httpResponse.StatusCode;
+				// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
+				// client error: the request itself is bad, so retrying just burns the transient budget and then
+				// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
+				// 5xx and the retryable 4xx stay transient.
+				bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
+				if (permanentClientError)
+				{
+					AgentLog.ProtocolFailure(
+						modelId: model.ConfigId,
+						modelName: model.Config.Name,
+						endpoint: model.Endpoint,
+						protocol: "ChatCompletions",
+						failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+						httpStatusCode: statusCode,
+						errorMessage: responseBody,
+						responseBody: responseBody);
+					return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+				}
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
 					protocol: "ChatCompletions",
-					failureType: "RateLimited",
-					httpStatusCode: (int)httpResponse.StatusCode,
-					errorMessage: responseBody,
-					responseBody: responseBody);
-				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
-			}
-
-			int statusCode = (int)httpResponse.StatusCode;
-			// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
-			// client error: the request itself is bad, so retrying just burns the transient budget and then
-			// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
-			// 5xx and the retryable 4xx stay transient.
-			bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
-			if (permanentClientError)
-			{
-				Log.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+					failureType: statusCode >= 500 ? "ServerError" : "Transient",
 					httpStatusCode: statusCode,
 					errorMessage: responseBody,
 					responseBody: responseBody);
-				return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+				return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
 			}
-			Log.ProtocolFailure(
+		}
+		catch (Exception ex)
+		{
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
-				protocol: "ChatCompletions",
-				failureType: statusCode >= 500 ? "ServerError" : "Transient",
-				httpStatusCode: statusCode,
-				errorMessage: responseBody,
-				responseBody: responseBody);
-			return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
+				protocol: DetectedProtocol.ChatCompletions.ToString(),
+				failureType: "Exception",
+				httpStatusCode: null,
+				errorMessage: ex.Message,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 	}
 
@@ -559,7 +574,7 @@ cancellationToken);
 		}
 		catch (HttpRequestException ex)
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -573,7 +588,7 @@ cancellationToken);
 		}
 		catch (Exception ex)
 		{
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -593,7 +608,7 @@ cancellationToken);
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -607,7 +622,7 @@ cancellationToken);
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -621,7 +636,7 @@ cancellationToken);
 
 			if (statusCode == 401 || statusCode == 403)
 			{
-				Log.ProtocolFailure(
+				AgentLog.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -632,7 +647,7 @@ cancellationToken);
 					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
 			}
-			Log.ProtocolFailure(
+			AgentLog.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
