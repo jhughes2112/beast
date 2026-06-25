@@ -113,9 +113,9 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 		catch (OperationCanceledException) { }
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"[ws-server] RecvLoop error: {ex.Message}");
+			Console.Error.WriteLine($"[ws-server] RecvLoop error: {ex}");
 			try
-			{ Error("", $"WebSocket receive error: {ex.Message}"); }
+			{ Error("", $"WebSocket receive error: {ex}"); }
 			catch { }
 		}
 		_frames.Writer.TryComplete();
@@ -166,7 +166,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 		catch (OperationCanceledException) { }
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"[ws-server] WriteLoop error: {ex.Message}");
+			Console.Error.WriteLine($"[ws-server] WriteLoop error: {ex}");
 		}
 	}
 

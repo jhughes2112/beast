@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using Agent.Services;
 
 // OpenAI Responses API 
 // Wire protocol is stateful by default: passing previous_response_id continues
@@ -186,11 +187,30 @@ public class ProtocolResponses
 		}
 		catch (HttpRequestException ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: "NetworkError",
+				httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+				errorMessage: ex.Message,
+				responseBody: null,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 		catch (Exception ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: "Exception",
+				httpStatusCode: null,
+				errorMessage: ex.Message,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 
 		if (httpResponse.IsSuccessStatusCode)
@@ -204,6 +224,15 @@ public class ProtocolResponses
 
 		if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 		{
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: "RateLimited",
+				httpStatusCode: (int)httpResponse.StatusCode,
+				errorMessage: responseBody,
+				responseBody: responseBody);
 			return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
 		}
 
@@ -214,7 +243,27 @@ public class ProtocolResponses
 		// 5xx and the retryable 4xx stay transient.
 		bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
 		if (permanentClientError)
+		{
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+				httpStatusCode: statusCode,
+				errorMessage: responseBody,
+				responseBody: responseBody);
 			return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+		}
+		Log.ProtocolFailure(
+			modelId: model.ConfigId,
+			modelName: model.Config.Name,
+			endpoint: model.Endpoint,
+			protocol: "Responses",
+			failureType: statusCode >= 500 ? "ServerError" : "Transient",
+			httpStatusCode: statusCode,
+			errorMessage: responseBody,
+			responseBody: responseBody);
 		return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
 	}
 
@@ -342,9 +391,32 @@ public class ProtocolResponses
 				return timeout;
 			throw;
 		}
+		catch (HttpRequestException ex)
+		{
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: "NetworkError",
+				httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+				errorMessage: ex.Message,
+				responseBody: null,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
+		}
 		catch (Exception ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: "Exception",
+				httpStatusCode: null,
+				errorMessage: ex.Message,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 
 		if (!httpResponse.IsSuccessStatusCode)
@@ -355,16 +427,54 @@ public class ProtocolResponses
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+					httpStatusCode: statusCode,
+					errorMessage: errorBody,
+					responseBody: errorBody);
 				return null;
 			}
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: "RateLimited",
+					httpStatusCode: statusCode,
+					errorMessage: errorBody,
+					responseBody: errorBody);
 				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
 			}
 
 			if (statusCode == 401 || statusCode == 403)
+			{
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "Responses",
+					failureType: "AuthFailure",
+					httpStatusCode: statusCode,
+					errorMessage: errorBody,
+					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
+			}
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "Responses",
+				failureType: statusCode >= 500 ? "ServerError" : "Transient",
+				httpStatusCode: statusCode,
+				errorMessage: errorBody,
+				responseBody: errorBody);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 
@@ -462,7 +572,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 		finally
 		{

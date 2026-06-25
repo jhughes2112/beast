@@ -149,7 +149,7 @@ public class BeastApp : IAsyncDisposable
 			// live display to take over. If we failed before that happened, the display never restored the
 			// terminal — do it here so the error prints on the normal screen instead of a stranded alt buffer.
 			_display.RestoreTerminal();
-			_log.Error($"[beast] Error: {ex.Message}");
+			_log.Error($"[beast] Error: {ex}");
 			exitCode = 1;
 		}
 

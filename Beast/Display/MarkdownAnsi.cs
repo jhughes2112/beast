@@ -724,13 +724,17 @@ public static class MarkdownAnsi
 				while (i < line.Length)
 				{
 					if (line[i] == '\\')
-					{ i += 2; continue; }
+					{
+						i++;
+						if (i < line.Length) i++;
+						continue;
+					}
 					if (line[i] == quote)
 					{ i++; break; }
 					i++;
 				}
 				sb.Append(Codes.StringLit);
-				sb.Append(line.Substring(start, i - start));
+				sb.Append(line.Substring(start, Math.Min(i - start, line.Length - start)));
 				sb.Append(Codes.CodeText);
 				continue;
 			}

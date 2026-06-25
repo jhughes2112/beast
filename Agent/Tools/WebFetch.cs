@@ -106,11 +106,11 @@ public class WebFetch
 		}
 		catch (HttpRequestException ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Network error fetching URL " + url + ": " + ex.Message, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, "Error: Network error fetching URL " + url + ": " + ex, 1, 0);
 		}
 		catch (Exception ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + ex.Message, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + ex, 1, 0);
 		}
 	}
 

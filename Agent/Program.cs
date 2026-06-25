@@ -74,7 +74,7 @@ public class Program
 		}
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"Agent terminated with error: {ex.Message}");
+			Console.Error.WriteLine($"Agent terminated with error: {ex}");
 			return 1;
 		}
 

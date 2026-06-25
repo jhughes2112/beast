@@ -1825,7 +1825,7 @@ public class DisplayScreen : IDisplay
 		}
 		catch (Exception ex)
 		{
-			SetStatus($"[send error] {ex.Message}");
+			SetStatus($"[send error] {ex}");
 		}
 	}
 

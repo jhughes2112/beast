@@ -108,11 +108,11 @@ public class WebSearchOpenrouter
 		}
 		catch (HttpRequestException ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Network error during search: " + ex.Message, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, "Error: Network error during search: " + ex, 1, 0);
 		}
 		catch (Exception ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Search failed: " + ex.Message, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, "Error: Search failed: " + ex, 1, 0);
 		}
 		finally
 		{

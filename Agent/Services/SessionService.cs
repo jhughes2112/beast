@@ -33,7 +33,7 @@ public static class SessionService
 		}
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"[SessionService] Save failed for {data.Id}: {ex.Message}");
+			Console.Error.WriteLine($"[SessionService] Save failed for {data.Id}: {ex}");
 		}
 	}
 
@@ -59,7 +59,7 @@ public static class SessionService
 		}
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"[SessionService] Failed to load last session: {ex.Message}");
+			Console.Error.WriteLine($"[SessionService] Failed to load last session: {ex}");
 		}
 		return null;
 	}
@@ -76,7 +76,7 @@ public static class SessionService
 		}
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"[SessionService] Failed to load session {sessionId}: {ex.Message}");
+			Console.Error.WriteLine($"[SessionService] Failed to load session {sessionId}: {ex}");
 			return null;
 		}
 	}
@@ -113,7 +113,7 @@ public static class SessionService
 			}
 			catch (Exception ex)
 			{
-				Console.Error.WriteLine($"[SessionService] Failed to list session {file}: {ex.Message}");
+				Console.Error.WriteLine($"[SessionService] Failed to list session {file}: {ex}");
 			}
 		}
 
@@ -168,7 +168,7 @@ public static class SessionService
 				}
 				catch (Exception ex)
 				{
-					Console.Error.WriteLine($"[SessionService] Delete failed for {sessionId}: {ex.Message}");
+					Console.Error.WriteLine($"[SessionService] Delete failed for {sessionId}: {ex}");
 					deleted = false;
 				}
 			}

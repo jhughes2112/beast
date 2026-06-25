@@ -132,7 +132,41 @@ public static class HelperSession
 					return (true, "Cancelled by the user.", 1);
 				}
 				if (hasToolCalls)
-					session.CommitToolResults(result.Payload!);
+				{
+					// Check for multiple return_to_caller tool calls in this turn's results.
+					// The model may call its terminator multiple times; we merge all outputs.
+					ProtocolCallPayload payload = result.Payload!;
+					List<string> terminatorResults = new List<string>();
+					if (payload.ToolCalls != null && payload.ToolResults != null)
+					{
+						Dictionary<string, string> toolCallById = new Dictionary<string, string>();
+						foreach (SemanticToolCall tc in payload.ToolCalls)
+						{
+							toolCallById[tc.Id] = tc.Name;
+						}
+						foreach (ToolResult tr in payload.ToolResults)
+						{
+							if (toolCallById.TryGetValue(tr.Id, out string? toolName) && toolName == "return_to_caller")
+							{
+								if (!string.IsNullOrEmpty(tr.StdOut))
+									terminatorResults.Add(tr.StdOut);
+							}
+						}
+					}
+					session.CommitToolResults(payload);
+
+					if (terminatorResults.Count > 1)
+					{
+						// Multiple terminator calls: merge their outputs with a separator.
+						returned = string.Join("\n---\n", terminatorResults);
+					}
+					else if (terminatorResults.Count == 1)
+					{
+						// Single terminator call: the returned variable was already set by the handler,
+						// but ensure it's captured (it should be, but be safe).
+						returned = terminatorResults[0];
+					}
+				}
 
 				tokens = session.LastTokenUsage?.CompletionTokens ?? tokens;
 

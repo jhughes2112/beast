@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using Agent.Services;
 
 
 // Executes a session: LLM turns, tool dispatch, and role transitions. Subagent-wrapped tool
@@ -195,8 +196,36 @@ public class SessionRunner
 		}
 	}
 
-	// Routes inbound input to the session tree by ID.
-	public void Deliver(string targetId, string text) => _currentSession.Deliver(targetId, text);
+	// Routes inbound input to the session tree by ID. Global commands (/reload, /finish, /help,
+	// /delete-session, /quit) act on the whole runner rather than a single session, so they must run no
+	// matter which session the client addressed them to — route them to the active root's pending queue,
+	// which is drained only by this runner (DrainInputAsync). Everything else — plain steering text and
+	// per-session slash commands (/model, /compact, /test, /clear, /cancel, …) — is delivered to the
+	// addressed session so it processes in that session's normal turn-boundary flow. /cancel in particular
+	// stays per-session: Session.Deliver interrupts the addressed (sub)session immediately.
+	private static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+	{
+		"reload", "finish", "help", "delete-session", "quit"
+	};
+
+	private static bool IsGlobalCommand(string text)
+	{
+		// Caller guarantees text starts with '/'.
+		string trimmed = text.Substring(1).Trim();
+		int spaceIdx = trimmed.IndexOf(' ');
+		string verb = spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed;
+		return GlobalCommands.Contains(verb);
+	}
+
+	public void Deliver(string targetId, string text)
+	{
+		if (text.StartsWith("/", StringComparison.Ordinal) && IsGlobalCommand(text))
+		{
+			_currentSession.Deliver(_currentSession.Id, text);
+			return;
+		}
+		_currentSession.Deliver(targetId, text);
+	}
 
 	public string ActiveSessionId => _currentSession.Id;
 	public Session CurrentSession => _currentSession;
@@ -388,10 +417,17 @@ public class SessionRunner
 								LlmService? fallback = _registry.CreateFallbackService(_service, minCtx);
 								if (fallback != null)
 								{
+									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
+									Log.FallbackTransition(
+										fromModelId: _service.Model.ConfigId,
+										fromModelName: _service.Model.Config.Name,
+										toModelId: fallback.Model.ConfigId,
+										toModelName: fallback.Model.Config.Name,
+										reason: reason,
+										failedRetries: result.Outcome == ProtocolCallOutcome.TooManyRetries ? 10 : 5); // approximate
 									_service = fallback;
 									session.UpdateModel(fallback.Model);
 									session.SendStats();
-									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
 									_transport.Status(session.Id, $"{reason}; falling back to {fallback.Model.Config.Name}");
 									// completed stays false so the loop retries this turn on the fallback model.
 								}
@@ -400,6 +436,14 @@ public class SessionRunner
 									string detail = result.Outcome == ProtocolCallOutcome.TooManyRetries
 										? "Rate limited after too many retries, and no fallback model is available."
 										: (string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage);
+									Log.SessionFailure(
+										sessionId: session.Id,
+										modelId: _service.Model.ConfigId,
+										modelName: _service.Model.Config.Name,
+										endpoint: _service.Model.Endpoint,
+										protocol: _service.Model.ConfigId, // The protocol is available via _service._handler.GetDetectedProtocol()
+										finalError: detail,
+										totalModelsTried: _service.RoleModelIds.Count);
 									_transport.Error(session.Id, detail);
 									completed = true;
 								}
@@ -593,17 +637,17 @@ public class SessionRunner
 				verb = trimmed.ToLowerInvariant();
 			}
 
+			// Global commands act on the whole runner regardless of which session they were sent to
+			// (Deliver already routed them to the root queue). They touch shared configuration / process
+			// lifetime, not the turn of the targeted session.
 			switch (verb)
 			{
 				case "quit":
 					_cancellationTokenSource.Cancel();
-					break;
+					continue;
 				case "finish":
 					await FinishAsync(session, _cancellationTokenSource.Token);
-					break;
-				case "compact":
-					_wantsCompact = true;
-					break;
+					continue;
 				case "delete-session":
 					// Internal command from the F10 session tree (not a user-facing command): delete a session
 					// and its whole descendant subtree from disk. An empty target is refused so a blank id can
@@ -631,7 +675,7 @@ public class SessionRunner
 						SessionService.DeleteTree(args);
 						_transport.Status(session.Id, "Deleted session: " + args);
 					}
-					break;
+					continue;
 				case "reload":
 					try
 					{
@@ -647,8 +691,19 @@ public class SessionRunner
 					{
 						// Surface the file, line/column and parser message so the user can fix it without
 						// digging through the agent log. The previous config stays in effect.
-						_transport.Error(session.Id, $"Reload failed: {ex.Message}. Keeping the previous config.");
+						_transport.Error(session.Id, $"Reload failed: {ex}. Keeping the previous config.");
 					}
+					continue;
+				case "help":
+					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /finish, /test, /quit");
+					continue;
+			}
+
+			// Session-local commands apply to the targeted session's own turn / model / display.
+			switch (verb)
+			{
+				case "compact":
+					_wantsCompact = true;
 					break;
 				case "model":
 					if (args != null)
@@ -672,9 +727,6 @@ public class SessionRunner
 							session.SendStats();
 						}
 					}
-					break;
-				case "help":
-					_transport.Output(session.Id, "Commands: /compact, /clear, /reload, /model <id>, /finish, /test, /quit");
 					break;
 				case "test":
 					await RunTestsAsync(session.Id, args);

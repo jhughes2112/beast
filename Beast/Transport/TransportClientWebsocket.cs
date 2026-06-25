@@ -74,7 +74,7 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
 		}
 		catch (Exception ex)
 		{
-			_log.Verbose($"[ws-client] ReceiveAsync error: {ex.Message}");
+			_log.Verbose($"[ws-client] ReceiveAsync error: {ex}");
 			return null;
 		}
 	}

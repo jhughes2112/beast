@@ -23,6 +23,81 @@ public static class AnsiString
 		return len;
 	}
 
+	// Parses a string and returns the ANSI SGR reset sequence needed to close all open
+	// formatting codes (bold, italic, colors, etc.) at the end of the string.
+	// Returns "\x1b[0m" if any SGR codes were found that aren't explicitly reset,
+	// otherwise returns empty string.
+	public static string GetCloseSequences(string s)
+	{
+		bool inEsc = false;
+		StringBuilder escBuf = new StringBuilder();
+		bool foundNonResetSgr = false;
+
+		foreach (char c in s)
+		{
+			if (c == '\x1b')
+			{
+				inEsc = true;
+				escBuf.Clear();
+				escBuf.Append(c);
+				continue;
+			}
+
+			if (inEsc)
+			{
+				escBuf.Append(c);
+				if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+				{
+					inEsc = false;
+					string esc = escBuf.ToString();
+					// Check if this is an SGR sequence (ends with 'm')
+					if (esc.Length >= 2 && esc[esc.Length - 1] == 'm' && esc[1] == '[')
+					{
+						// Check if it's a reset sequence (0m or just m)
+						string paramsPart = esc.Substring(2, esc.Length - 3); // skip \x1b[ and m
+						if (paramsPart == "0" || paramsPart == "")
+						{
+							// Reset clears all prior state
+							foundNonResetSgr = false;
+						}
+						else
+						{
+							// Non-reset SGR - we have open formatting
+							foundNonResetSgr = true;
+						}
+					}
+				}
+				continue;
+			}
+		}
+
+		return foundNonResetSgr ? "\x1b[0m" : string.Empty;
+	}
+
+	// Truncates a string to maxVisible visible characters and appends ANSI reset
+	// if any formatting codes were left open at the truncation point.
+	public static string TruncateVisible(string s, int maxVisible)
+	{
+		StringBuilder sb = new StringBuilder();
+		int count = 0;
+		bool inEsc = false;
+		foreach (char c in s)
+		{
+			if (c == '\x1b')
+			{ inEsc = true; sb.Append(c); continue; }
+			if (inEsc)
+			{ sb.Append(c); if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) inEsc = false; continue; }
+			int cw = CharWidth(c);
+			if (count + cw > maxVisible)
+				break;
+			sb.Append(c);
+			count += cw;
+		}
+		// Append close sequences for any open ANSI codes
+		sb.Append(GetCloseSequences(sb.ToString()));
+		return sb.ToString();
+	}
+
 	// Returns the terminal column width of a single character: 2 for wide (CJK, emoji, etc.), 1 for everything else.
 	public static int CharWidth(char c)
 	{
@@ -299,25 +374,5 @@ public static class AnsiString
 		if (vl > visibleWidth)
 			return TruncateVisible(s, visibleWidth);
 		return s + new string(' ', visibleWidth - vl);
-	}
-
-	public static string TruncateVisible(string s, int maxVisible)
-	{
-		StringBuilder sb = new StringBuilder();
-		int count = 0;
-		bool inEsc = false;
-		foreach (char c in s)
-		{
-			if (c == '\x1b')
-			{ inEsc = true; sb.Append(c); continue; }
-			if (inEsc)
-			{ sb.Append(c); if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) inEsc = false; continue; }
-			int cw = CharWidth(c);
-			if (count + cw > maxVisible)
-				break;
-			sb.Append(c);
-			count += cw;
-		}
-		return sb.ToString();
 	}
 }

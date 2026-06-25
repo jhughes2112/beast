@@ -45,7 +45,7 @@ public static class WebToolsTests
 		}
 		catch (Exception ex)
 		{
-			ctx.Log($"    ERROR: {ex.Message}");
+			ctx.Log($"    ERROR: {ex}");
 		}
 	}
 

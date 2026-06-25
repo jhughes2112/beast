@@ -155,7 +155,7 @@ public static class FileTools
 			}
 			catch (Exception ex)
 			{
-				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to read file: {ex.Message}", 1, 0);
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to read file: {ex}", 1, 0);
 			}
 		}
 
@@ -350,7 +350,7 @@ public static class FileTools
 			}
 			catch (Exception ex)
 			{
-				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to edit file: {ex.Message}", 1, 0);
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to edit file: {ex}", 1, 0);
 			}
 		}
 
@@ -485,7 +485,7 @@ public static class FileTools
 			}
 			catch (Exception ex)
 			{
-				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to write file: {ex.Message}", 1, 0);
+				result = new ToolResult(toolCallId, string.Empty, $"Error: Failed to write file: {ex}", 1, 0);
 			}
 		}
 

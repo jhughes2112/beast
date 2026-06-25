@@ -250,10 +250,16 @@ public class Session
 
 	public void AddChild(Session child) => _children.TryAdd(child.Id, child);
 
-	// Routes incoming text to the correct session. Commands targeting this session are parsed
-	// here: /cancel interrupts, other /commands and plain text both go to the pending queue in
-	// arrival order. Routing to children only forwards /cancel and plain text — non-cancel
-	// commands are never forwarded because child command queues are never drained externally.
+	// Routes incoming text to the correct session by ID.
+// - If targetId matches this session (targetId == _data.Id):
+//     /cancel is special: it interrupts the session immediately instead of being queued.
+//     Everything else (plain text and slash commands alike) goes to the pending queue
+//     in arrival order, to be drained at the next turn boundary or mid-turn checkpoint.
+// - If targetId is a descendant (targetId.StartsWith(_data.Id + "_", ...)):
+//     ALL inputs are forwarded through unchanged to the child subtree. The only special
+//     casing for /cancel happens at the target session itself — when the recursion lands
+//     on the session whose Id == targetId, the targetId == _data.Id branch above handles
+//     /cancel by calling Interrupt() on that (sub)session. No filtering is applied here.
 	public void Deliver(string targetId, string text)
 	{
 		if (targetId == _data.Id)
@@ -274,8 +280,6 @@ public class Session
 			return;
 		}
 		if (!targetId.StartsWith(_data.Id + "_", StringComparison.Ordinal))
-			return;
-		if (text.StartsWith("/") && !text.Equals("/cancel", StringComparison.OrdinalIgnoreCase))
 			return;
 		foreach (Session child in _children.Values)
 			child.Deliver(targetId, text);

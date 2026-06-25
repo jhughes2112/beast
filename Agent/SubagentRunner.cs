@@ -213,6 +213,7 @@ public class SubagentRunner
 					if (resumed == null)
 						break;
 					scope = resumed;
+					service = DrainSubSessionInput(subSession, service);
 					continue;
 				}
 				if (result.Outcome != ProtocolCallOutcome.Success)
@@ -257,10 +258,47 @@ public class SubagentRunner
 					if (resumed == null)
 						break;
 					scope = resumed;
+					service = DrainSubSessionInput(subSession, service);
 					continue;
 				}
 				if (hasToolCalls)
-					subSession.CommitToolResults(result.Payload!);
+				{
+					// Check for multiple terminator tool calls in this turn's results.
+					// The model may call its terminator multiple times; we merge all outputs.
+					ProtocolCallPayload payload = result.Payload!;
+					List<string> terminatorResults = new List<string>();
+					if (payload.ToolCalls != null && payload.ToolResults != null)
+					{
+						Dictionary<string, string> toolCallById = new Dictionary<string, string>();
+						foreach (SemanticToolCall tc in payload.ToolCalls)
+						{
+							toolCallById[tc.Id] = tc.Name;
+						}
+						foreach (ToolResult tr in payload.ToolResults)
+						{
+							if (toolCallById.TryGetValue(tr.Id, out string? toolName) && toolName == terminatorName)
+							{
+								if (!string.IsNullOrEmpty(tr.StdOut))
+									terminatorResults.Add(tr.StdOut);
+							}
+						}
+					}
+					subSession.CommitToolResults(payload);
+
+					if (terminatorResults.Count > 1)
+					{
+						// Multiple terminator calls: merge their outputs with a separator.
+						sink.Value = string.Join("\n---\n", terminatorResults);
+						sink.Returned = true;
+					}
+					else if (terminatorResults.Count == 1)
+					{
+						// Single terminator call: the sink was already set by the handler,
+						// but ensure Returned is true (it should be, but be safe).
+						sink.Value = terminatorResults[0];
+						sink.Returned = true;
+					}
+				}
 
 				if (sink.Returned)
 				{
@@ -368,6 +406,82 @@ public class SubagentRunner
 		CancellationTokenSource fresh = CancellationTokenSource.CreateLinkedTokenSource(ct);
 		subSession.SetDispatchScope(fresh);
 		return fresh;
+	}
+
+	// Drains the sub-session's pending queue in arrival order: plain steering text is injected into the
+	// conversation (so the resumed turn reads it), and session-local slash commands are applied here.
+	// Global commands never reach a sub-session — SessionRunner.Deliver routes them to the root before
+	// dispatch, and /cancel is handled immediately by Session.Deliver, so neither is a case below.
+	private LlmService DrainSubSessionInput(Session subSession, LlmService service)
+	{
+		while (subSession.TryDequeuePending(out string? line))
+		{
+			if (!line!.StartsWith("/", StringComparison.Ordinal))
+			{
+				subSession.Bundle.OnUserMessage(line);
+				continue;
+			}
+
+			string trimmed = line.TrimStart('/').Trim();
+			string verb;
+			string? args = null;
+			int spaceIdx = trimmed.IndexOf(' ');
+			if (spaceIdx >= 0)
+			{
+				verb = trimmed.Substring(0, spaceIdx).ToLowerInvariant();
+				args = trimmed.Substring(spaceIdx + 1).Trim();
+			}
+			else
+			{
+				verb = trimmed.ToLowerInvariant();
+			}
+
+			switch (verb)
+			{
+				case "model":
+					if (args != null)
+					{
+						// Completions append a pricing annotation after the id; keep only the id token.
+						int modelArgSpace = args.IndexOf(' ');
+						string modelArg = modelArgSpace >= 0 ? args.Substring(0, modelArgSpace) : args;
+
+						Role? modelRole = _roleService.GetRole(subSession.Role);
+						LlmModel? targetModel = modelRole != null ? _registry.GetModelForRole(modelRole, modelArg, 0) : null;
+						if (targetModel == null)
+							_transport.Error(subSession.Id, $"Unknown model: {modelArg}");
+						else
+						{
+							subSession.UpdateModel(targetModel);
+							_registry.ResetAvailability(modelArg);
+							// Recreate the service with the new model, mirroring SessionRunner's model-switch
+							// behavior (which nulls _service to force recreation next turn). Here we recreate
+							// immediately because the local 'service' variable is about to be used for the next
+							// turn, so we must hand back the fresh instance.
+							LlmService? newService = _registry.CreateService(modelRole, modelArg, subSession.ContextLength);
+							if (newService == null)
+							{
+								_transport.Error(subSession.Id, $"Model '{modelArg}' is not available (context window too small or model down).");
+								// Keep the old service since the new one failed to create.
+							}
+							else
+							{
+								service = newService;
+								_transport.Status(subSession.Id, $"Model set to {modelArg}");
+								subSession.SendStats();
+							}
+						}
+					}
+					break;
+				case "help":
+					_transport.Output(subSession.Id, "Commands in this session: /model <id>, /cancel");
+					break;
+				default:
+					_transport.Error(subSession.Id, $"Unknown command: /{verb}");
+					break;
+			}
+		}
+
+		return service;
 	}
 
 	// Returns the most recent assistant text in the sub-session, used to salvage a partial result when the

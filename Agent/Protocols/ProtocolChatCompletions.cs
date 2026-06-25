@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using Agent.Services;
 
 // -- OpenAI Chat Completions API -----------------------------------------------
 // Wire protocol requires strict userâ†’assistant alternation; two consecutive
@@ -196,7 +197,7 @@ public class ProtocolChatCompletions
 		List<ToolDefinition> tools,
 		string? forcedToolName,
 		int? maxCompletionTokens,
-		Dictionary<string, string> extraHeaders,
+				Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
 		LiveUsageProgress onProgress,
 		ITransportServer transport,
@@ -224,7 +225,8 @@ public class ProtocolChatCompletions
 
 			if (_streamingSupported)
 			{
-				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, cancellationToken);
+				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, 
+cancellationToken);
 				if (streamResult != null)
 				{
 					if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
@@ -260,11 +262,30 @@ public class ProtocolChatCompletions
 			}
 			catch (HttpRequestException ex)
 			{
-				return ProtocolResult.Transient(ex.Message, null);
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: "NetworkError",
+					httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+					errorMessage: ex.Message,
+					responseBody: null,
+					exception: ex);
+				return ProtocolResult.Transient(ex.ToString(), null);
 			}
 			catch (Exception ex)
 			{
-				return ProtocolResult.Transient(ex.Message, null);
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: "Exception",
+					httpStatusCode: null,
+					errorMessage: ex.Message,
+					exception: ex);
+				return ProtocolResult.Transient(ex.ToString(), null);
 			}
 
 			if (httpResponse.IsSuccessStatusCode)
@@ -324,6 +345,15 @@ public class ProtocolChatCompletions
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 			{
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: "RateLimited",
+					httpStatusCode: (int)httpResponse.StatusCode,
+					errorMessage: responseBody,
+					responseBody: responseBody);
 				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
 			}
 
@@ -334,7 +364,27 @@ public class ProtocolChatCompletions
 			// 5xx and the retryable 4xx stay transient.
 			bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
 			if (permanentClientError)
+			{
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+					httpStatusCode: statusCode,
+					errorMessage: responseBody,
+					responseBody: responseBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+			}
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "ChatCompletions",
+				failureType: statusCode >= 500 ? "ServerError" : "Transient",
+				httpStatusCode: statusCode,
+				errorMessage: responseBody,
+				responseBody: responseBody);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
 		}
 	}
@@ -509,11 +559,30 @@ public class ProtocolChatCompletions
 		}
 		catch (HttpRequestException ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "ChatCompletions",
+				failureType: "NetworkError",
+				httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+				errorMessage: ex.Message,
+				responseBody: null,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 		catch (Exception ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "ChatCompletions",
+				failureType: "Exception",
+				httpStatusCode: null,
+				errorMessage: ex.Message,
+				exception: ex);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 
 		if (!httpResponse.IsSuccessStatusCode)
@@ -524,16 +593,54 @@ public class ProtocolChatCompletions
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+					httpStatusCode: statusCode,
+					errorMessage: errorBody,
+					responseBody: errorBody);
 				return null;
 			}
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: "RateLimited",
+					httpStatusCode: statusCode,
+					errorMessage: errorBody,
+					responseBody: errorBody);
 				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
 			}
 
 			if (statusCode == 401 || statusCode == 403)
+			{
+				Log.ProtocolFailure(
+					modelId: model.ConfigId,
+					modelName: model.Config.Name,
+					endpoint: model.Endpoint,
+					protocol: "ChatCompletions",
+					failureType: "AuthFailure",
+					httpStatusCode: statusCode,
+					errorMessage: errorBody,
+					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
+			}
+			Log.ProtocolFailure(
+				modelId: model.ConfigId,
+				modelName: model.Config.Name,
+				endpoint: model.Endpoint,
+				protocol: "ChatCompletions",
+				failureType: statusCode >= 500 ? "ServerError" : "Transient",
+				httpStatusCode: statusCode,
+				errorMessage: errorBody,
+				responseBody: errorBody);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 
@@ -670,7 +777,7 @@ public class ProtocolChatCompletions
 		}
 		catch (Exception ex)
 		{
-			return ProtocolResult.Transient(ex.Message, null);
+			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 		finally
 		{

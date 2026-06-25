@@ -38,7 +38,7 @@ public class QueryLogger
 		}
 		catch (Exception ex)
 		{
-			Console.Error.WriteLine($"[QueryLogger] Write failed: {ex.Message}");
+			Console.Error.WriteLine($"[QueryLogger] Write failed: {ex}");
 		}
 	}
 }

@@ -155,7 +155,7 @@ public class LaunchDocker : ILauncher
 		}
 		catch (Exception ex)
 		{
-			_log.Verbose($"[docker] Inspect failed: {ex.Message}");
+			_log.Verbose($"[docker] Inspect failed: {ex}");
 			return false;
 		}
 	}
@@ -183,7 +183,7 @@ public class LaunchDocker : ILauncher
 		}
 		catch (Exception ex)
 		{
-			return $"(failed to read container logs: {ex.Message})";
+			return $"(failed to read container logs: {ex})";
 		}
 	}
 
@@ -202,7 +202,7 @@ public class LaunchDocker : ILauncher
 		}
 		catch (Exception ex)
 		{
-			_log.Error($"[docker] Error stopping container: {ex.Message}");
+			_log.Error($"[docker] Error stopping container: {ex}");
 		}
 	}
 
@@ -236,7 +236,7 @@ public class LaunchDocker : ILauncher
 		}
 		catch (Exception ex)
 		{
-			_log.Error($"[docker] Failed to inspect container {name}: {ex.Message}");
+			_log.Error($"[docker] Failed to inspect container {name}: {ex}");
 		}
 
 		return true;

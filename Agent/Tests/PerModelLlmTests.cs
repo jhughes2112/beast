@@ -69,7 +69,7 @@ public static class PerModelLlmTests
 		}
 		catch (Exception ex)
 		{
-			ctx.Log($"        SKIP: pre-check error for '{modelId}': {ex.Message}");
+			ctx.Log($"        SKIP: pre-check error for '{modelId}': {ex}");
 			return;
 		}
 
@@ -115,7 +115,7 @@ public static class PerModelLlmTests
 		}
 		catch (Exception ex)
 		{
-			ctx.Log($"        ERROR [{role.Name}/{modelId}]: {ex.Message}");
+			ctx.Log($"        ERROR [{role.Name}/{modelId}]: {ex}");
 		}
 	}
 }

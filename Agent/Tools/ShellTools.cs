@@ -238,7 +238,7 @@ public static class ShellTools
 			}
 			catch (Exception ex)
 			{
-				finalResult = new ToolResult(toolcallid, string.Empty, $"Error: Failed to execute command. {ex.GetType().Name}: {ex.Message}", 1, 0);
+				finalResult = new ToolResult(toolcallid, string.Empty, $"Error: Failed to execute command. {ex.GetType().Name}: {ex}", 1, 0);
 			}
 		}
 		else
