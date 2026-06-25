@@ -40,7 +40,7 @@ public class Session
 
 	private readonly ConcurrentDictionary<string, Session> _children = new ConcurrentDictionary<string, Session>();
 
-	public QueryLogger QueryLog { get; }
+	public SessionLogger QueryLog { get; }
 
 	// Set when a turn is interrupted; cleared when new user text arrives via AddUserMessage.
 	// NeedsAttention() returns false while set, so the idle loop waits for real new input.
@@ -87,7 +87,7 @@ public class Session
 		_data = data;
 		_transport = transport;
 		_isSubagent = isSubagent;
-		QueryLog = new QueryLogger(data.Id);
+		QueryLog = new SessionLogger(data.Id);
 		_bundle = new ListenerBundle(
 			new CanonicalConversation(data.Messages),
 			new ListenerTransport(_transport, data.Id));

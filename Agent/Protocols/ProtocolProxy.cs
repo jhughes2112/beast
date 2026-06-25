@@ -157,7 +157,7 @@ public class ProtocolProxy
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, 
-LiveUsageProgress onProgress, ITransportServer transport, string sessionId, QueryLogger? queryLogger, CancellationToken cancellationToken)
+LiveUsageProgress onProgress, ITransportServer transport, string sessionId, SessionLogger? queryLogger, CancellationToken cancellationToken)
 	{
 		bundle.SetActiveProxy(this);
 
@@ -183,7 +183,7 @@ LiveUsageProgress onProgress, ITransportServer transport, string sessionId, Quer
 		if (_detected == DetectedProtocol.ChatCompletions)
 			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
-		AgentLog.ProtocolFailure(
+		SessionLogger.ProtocolFailure(
 			modelId: _model.ConfigId,
 			modelName: _model.Config.Name,
 			endpoint: _model.Endpoint,

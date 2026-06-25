@@ -140,7 +140,7 @@ public class ProtocolAnthropic
 		LiveUsageProgress onProgress,
 		ITransportServer transport,
 		string sessionId,
-		QueryLogger? queryLogger,
+		SessionLogger? queryLogger,
 		CancellationToken cancellationToken)
 	{
 		try
@@ -156,7 +156,7 @@ public class ProtocolAnthropic
 		}
 		catch (Exception ex)
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -177,7 +177,7 @@ public class ProtocolAnthropic
 		}
 		catch (Exception ex)
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -274,11 +274,11 @@ public class ProtocolAnthropic
 	// Intercepts the outgoing SDK request to log the exact wire payload before forwarding it.
 	private sealed class QueryLoggingHandler : DelegatingHandler
 	{
-		private readonly QueryLogger _logger;
+		private readonly SessionLogger _logger;
 		private readonly string _modelName;
 		private readonly string _endpoint;
 
-		public QueryLoggingHandler(QueryLogger logger, string modelName, string endpoint) : base(new HttpClientHandler())
+		public QueryLoggingHandler(SessionLogger logger, string modelName, string endpoint) : base(new HttpClientHandler())
 		{
 			_logger = logger;
 			_modelName = modelName;
@@ -299,7 +299,7 @@ public class ProtocolAnthropic
 
 	// The SDK reads its API key from APIAuthentication. The user-provided endpoint is honored
 	// exactly by routing the SDK's HttpClient at it; we never override user data.
-	private static AnthropicClient BuildClient(LlmModel model, Dictionary<string, string> extraHeaders, QueryLogger? queryLogger)
+	private static AnthropicClient BuildClient(LlmModel model, Dictionary<string, string> extraHeaders, SessionLogger? queryLogger)
 	{
 		HttpMessageHandler innerHandler = queryLogger != null
 			? new QueryLoggingHandler(queryLogger, model.Config.Name, model.Endpoint)
@@ -566,7 +566,7 @@ public class ProtocolAnthropic
 			int status = (int)http.StatusCode.Value;
 			if (status == 429)
 			{
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -579,7 +579,7 @@ public class ProtocolAnthropic
 			}
 			else if (status == 401 || status == 403)
 			{
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -592,7 +592,7 @@ public class ProtocolAnthropic
 			}
 			else if (status >= 400 && status < 500)
 			{
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -605,7 +605,7 @@ public class ProtocolAnthropic
 			}
 			else
 			{
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -619,7 +619,7 @@ public class ProtocolAnthropic
 		}
 		else if (ex is HttpRequestException)
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -632,7 +632,7 @@ public class ProtocolAnthropic
 		}
 		else
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

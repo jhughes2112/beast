@@ -201,7 +201,7 @@ public class ProtocolChatCompletions
 		LiveUsageProgress onProgress,
 		ITransportServer transport,
 		string sessionId,
-		QueryLogger? queryLogger,
+		SessionLogger? queryLogger,
 		CancellationToken cancellationToken)
 	{
 		try
@@ -263,7 +263,7 @@ public class ProtocolChatCompletions
 				}
 				catch (HttpRequestException ex)
 				{
-					AgentLog.ProtocolFailure(
+					SessionLogger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -277,7 +277,7 @@ public class ProtocolChatCompletions
 				}
 				catch (Exception ex)
 				{
-					AgentLog.ProtocolFailure(
+					SessionLogger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -346,7 +346,7 @@ public class ProtocolChatCompletions
 
 				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 				{
-					AgentLog.ProtocolFailure(
+					SessionLogger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -366,7 +366,7 @@ public class ProtocolChatCompletions
 				bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
 				if (permanentClientError)
 				{
-					AgentLog.ProtocolFailure(
+					SessionLogger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -377,7 +377,7 @@ public class ProtocolChatCompletions
 						responseBody: responseBody);
 					return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
 				}
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -391,7 +391,7 @@ public class ProtocolChatCompletions
 		}
 		catch (Exception ex)
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -574,7 +574,7 @@ public class ProtocolChatCompletions
 		}
 		catch (HttpRequestException ex)
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -588,7 +588,7 @@ public class ProtocolChatCompletions
 		}
 		catch (Exception ex)
 		{
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -608,7 +608,7 @@ public class ProtocolChatCompletions
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -622,7 +622,7 @@ public class ProtocolChatCompletions
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -636,7 +636,7 @@ public class ProtocolChatCompletions
 
 			if (statusCode == 401 || statusCode == 403)
 			{
-				AgentLog.ProtocolFailure(
+				SessionLogger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -647,7 +647,7 @@ public class ProtocolChatCompletions
 					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
 			}
-			AgentLog.ProtocolFailure(
+			SessionLogger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
