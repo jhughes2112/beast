@@ -15,9 +15,69 @@ public static class FixJsonTests
 		TestNonStandardSyntax(ctx);
 		TestFuzzyToolName(ctx);
 		TestTypeCoercions(ctx);
+		TestArgNameReconciliation(ctx);
+		TestLooseBooleans(ctx);
 		TestExtraArgsStripped(ctx);
 		TestMissingRequiredArgs(ctx);
 		TestFullPipeline(ctx);
+	}
+
+	// ─── Argument-name reconciliation ────────────────────────────────────────
+
+	private static void TestArgNameReconciliation(TestContext ctx)
+	{
+		FunctionDefinition schema = Def("edit_file",
+			Props(("file_path", "string"), ("old_text", "string"), ("new_text", "string")),
+			"file_path", "old_text", "new_text");
+
+		// Wrong casing on a required arg is mapped to the canonical name, not stripped then failed.
+		(JsonObject? r1, string? e1) = FixJson.TryParseWithSchema(
+			"{\"File_Path\": \"/f\", \"OLD_TEXT\": \"a\", \"new_text\": \"b\"}", schema, null);
+		ctx.AssertNotNull(r1, "Arg: case-insensitive names parse");
+		ctx.AssertNull(e1, "Arg: case-insensitive names no error");
+		ctx.AssertEqual("/f", r1?["file_path"]?.GetValue<string>(), "Arg: File_Path → file_path");
+		ctx.AssertEqual("a", r1?["old_text"]?.GetValue<string>(), "Arg: OLD_TEXT → old_text");
+
+		// A near-miss (camelCase / dropped underscore) is fuzzy-mapped to the canonical name.
+		(JsonObject? r2, string? e2) = FixJson.TryParseWithSchema(
+			"{\"file_path\": \"/f\", \"oldText\": \"a\", \"newtext\": \"b\"}", schema, null);
+		ctx.AssertNotNull(r2, "Arg: fuzzy names parse");
+		ctx.AssertNull(e2, "Arg: fuzzy names no error");
+		ctx.AssertEqual("a", r2?["old_text"]?.GetValue<string>(), "Arg: oldText → old_text");
+		ctx.AssertEqual("b", r2?["new_text"]?.GetValue<string>(), "Arg: newtext → new_text");
+
+		// A genuinely unrelated key is NOT mapped — it stays extra (and is stripped), not mis-assigned.
+		FunctionDefinition single = Def("t", Props(("file_path", "string")), "file_path");
+		(JsonObject? r3, string? e3) = FixJson.TryParseWithSchema(
+			"{\"file_path\": \"/f\", \"thoughts\": \"...\"}", single, null);
+		ctx.AssertNotNull(r3, "Arg: unrelated key parses");
+		ctx.AssertNull(e3, "Arg: unrelated key no error");
+		ctx.Assert(r3 != null && !r3.ContainsKey("thoughts"), "Arg: unrelated key not mapped, stripped");
+
+		// An exact canonical key already present is never clobbered by a near-miss sibling.
+		(JsonObject? r4, string? e4) = FixJson.TryParseWithSchema(
+			"{\"file_path\": \"/f\", \"old_text\": \"keep\", \"oldText\": \"drop\", \"new_text\": \"b\"}", schema, null);
+		ctx.AssertNotNull(r4, "Arg: canonical-present parses");
+		ctx.AssertEqual("keep", r4?["old_text"]?.GetValue<string>(), "Arg: existing canonical value preserved");
+	}
+
+	// ─── Loose boolean coercion ──────────────────────────────────────────────
+
+	private static void TestLooseBooleans(TestContext ctx)
+	{
+		FunctionDefinition schema = Def("finish_review", Props(("approved", "boolean")), "approved");
+
+		(JsonObject? r1, string? _) = FixJson.TryParseWithSchema("{\"approved\": \"yes\"}", schema, null);
+		ctx.AssertEqual(true, r1?["approved"]?.GetValue<bool>(), "Bool: 'yes' → true");
+
+		(JsonObject? r2, string? _) = FixJson.TryParseWithSchema("{\"approved\": \"no\"}", schema, null);
+		ctx.AssertEqual(false, r2?["approved"]?.GetValue<bool>(), "Bool: 'no' → false");
+
+		(JsonObject? r3, string? _) = FixJson.TryParseWithSchema("{\"approved\": 1}", schema, null);
+		ctx.AssertEqual(true, r3?["approved"]?.GetValue<bool>(), "Bool: 1 → true");
+
+		(JsonObject? r4, string? _) = FixJson.TryParseWithSchema("{\"approved\": \"true\"}", schema, null);
+		ctx.AssertEqual(true, r4?["approved"]?.GetValue<bool>(), "Bool: 'true' → true");
 	}
 
 	// ─── Stage 1: Markdown / prose stripping ─────────────────────────────────

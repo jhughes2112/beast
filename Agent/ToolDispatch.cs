@@ -113,19 +113,18 @@ public static class ToolDispatch
 		return true;
 	}
 
-	// Resolves a single tool call to its handler (exact match, then fuzzy name correction), repairs
-	// the arguments against the schema, and runs the handler. Never throws except on a genuine cancel
-	// (ct cancelled), which propagates so the dispatch loop's cancellation guard can handle it. Every
-	// other failure — name match, argument repair, or the handler itself blowing up — becomes an error
-	// ToolResult so the model can see and correct it, and the reason is logged rather than lost: a
-	// dropped exception here is what silently unwound the whole subtree as a fake cancel.
+	// Runs a single tool call. By the time dispatch runs, FixToolCalls has already corrected the name and
+	// repaired the arguments before commit, so this does a plain exact lookup and parses the vetted
+	// arguments directly — no fuzzy matching, no argument repair. Never throws except on a genuine cancel
+	// (ct cancelled), which propagates so the dispatch loop's cancellation guard can handle it. Every other
+	// failure — an unknown tool, or the handler itself blowing up — becomes an error ToolResult so the model
+	// can see it, and the reason is logged rather than lost: a dropped exception here is what silently
+	// unwound the whole subtree as a fake cancel.
 	public static async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, string sessionId, int maxOutputTokens, ITransportServer transport, CancellationToken ct)
 	{
 		ToolResult result;
 		try
 		{
-			Action<string> fixLog = msg => transport.Status(sessionId, msg);
-
 			Tool? matchedTool = null;
 			foreach (Tool t in tools)
 			{
@@ -136,38 +135,16 @@ public static class ToolDispatch
 				}
 			}
 
-			// Stage 3: fuzzy name correction when exact match fails
-			if (matchedTool == null)
-			{
-				string[] knownNames = new string[tools.Length];
-				for (int i = 0; i < tools.Length; i++)
-					knownNames[i] = tools[i].Definition.Function.Name;
-
-				string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, fixLog);
-				if (correctedName != null)
-				{
-					foreach (Tool t in tools)
-					{
-						if (t.Definition.Function.Name == correctedName)
-						{
-							matchedTool = t;
-							break;
-						}
-					}
-				}
-			}
-
 			if (matchedTool == null)
 			{
 				result = Error(toolCall.Id, $"Error: Tool '{toolCall.Name}' not found in available tools.");
 			}
 			else
 			{
-				(JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, fixLog);
-
-				if (argsObj == null || argError != null)
+				JsonObject? argsObj = JsonNode.Parse(toolCall.ArgumentsJson) as JsonObject;
+				if (argsObj == null)
 				{
-					result = Error(toolCall.Id, argError ?? $"Error: Tool '{toolCall.Name}' received malformed arguments: {toolCall.ArgumentsJson}");
+					result = Error(toolCall.Id, $"Error: Tool '{toolCall.Name}' has unusable arguments: {toolCall.ArgumentsJson}");
 				}
 				else
 				{
@@ -203,6 +180,70 @@ public static class ToolDispatch
 			result = Error(toolCall.Id, $"Tool '{toolCall.Name}' threw exception:\n{ex}");
 		}
 		return result;
+	}
+
+	// Repairs an assistant turn's tool calls IN PLACE before the turn is committed: corrects a near-miss
+	// tool name to the real one, and normalizes/repairs each call's arguments against the tool's schema,
+	// writing both back into the payload so the committed turn (canonical and protocol-native) carries clean
+	// calls instead of the raw model output. Returns null when every call is now dispatchable; otherwise a
+	// reason naming the calls whose arguments cannot satisfy the schema, so the caller can treat the turn as
+	// a transient failure and re-request. A call whose name does not resolve at all is left untouched here —
+	// dispatch reports it as not-found so the model gets that feedback rather than a silent re-roll.
+	public static string? FixToolCalls(ProtocolCallPayload payload, Tool[] tools)
+	{
+		string broken = string.Empty;
+		foreach (SemanticToolCall toolCall in payload.ToolCalls)
+		{
+			// Resolve the tool by exact name, then by a fuzzy correction for a near-miss. This is the only
+			// place name correction happens; dispatch later trusts the pinned name with a plain lookup.
+			Tool? matchedTool = null;
+			foreach (Tool t in tools)
+			{
+				if (t.Definition.Function.Name == toolCall.Name)
+				{
+					matchedTool = t;
+					break;
+				}
+			}
+			if (matchedTool == null)
+			{
+				string[] knownNames = new string[tools.Length];
+				for (int i = 0; i < tools.Length; i++)
+					knownNames[i] = tools[i].Definition.Function.Name;
+
+				string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, null);
+				if (correctedName != null)
+				{
+					foreach (Tool t in tools)
+					{
+						if (t.Definition.Function.Name == correctedName)
+						{
+							matchedTool = t;
+							break;
+						}
+					}
+				}
+			}
+
+			if (matchedTool == null)
+				continue;  // genuinely unknown tool: left for dispatch to report as not-found
+
+			// Pin the (possibly corrected) name so it is persisted, not re-derived on every dispatch.
+			toolCall.Name = matchedTool.Definition.Function.Name;
+
+			(JsonObject? argsObj, string? argError) = FixJson.TryParseWithSchema(toolCall.ArgumentsJson, matchedTool.Definition.Function, null);
+			if (argsObj == null || argError != null)
+			{
+				string reason = $"'{toolCall.Name}': {argError ?? "arguments could not be repaired to match the schema"}";
+				broken = broken.Length == 0 ? reason : broken + "; " + reason;
+				continue;
+			}
+
+			// Persist the repaired arguments so the committed turn — and the next request — is clean.
+			toolCall.ArgumentsJson = argsObj.ToJsonString();
+		}
+
+		return broken.Length == 0 ? null : "Tool call(s) could not be repaired: " + broken;
 	}
 
 	// Builds an error tool result (content in StdErr, non-zero exit) with an estimated token count so

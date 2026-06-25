@@ -22,12 +22,13 @@ public static class FixJson
 	private static int _markdownStrips;
 	private static int _structuralRepairs;
 	private static int _toolNameCorrections;
+	private static int _argNameCorrections;
 	private static int _typeCoercions;
 	private static int _extraArgsStripped;
 
-	// Returns a slash-separated snapshot of all counters: mark/struct/name/type/extra
+	// Returns a slash-separated snapshot of all counters: mark/struct/name/arg/type/extra
 	public static string GetCounters()
-		=> $"{_markdownStrips}/{_structuralRepairs}/{_toolNameCorrections}/{_typeCoercions}/{_extraArgsStripped}";
+		=> $"{_markdownStrips}/{_structuralRepairs}/{_toolNameCorrections}/{_argNameCorrections}/{_typeCoercions}/{_extraArgsStripped}";
 
 	// Simple parse: strips markdown and repairs structural truncation. No schema awareness.
 	public static JsonObject? TryParseObject(string json)
@@ -87,8 +88,11 @@ public static class FixJson
 			return (null, $"Error: JSON arguments are {kind} and could not be repaired: {json}");
 		}
 
-		// Stages 4, 6: schema-based fixups (type coercions and extra arg stripping)
+		// Schema-based fixups: reconcile misnamed arguments to their canonical names FIRST (so a casing or
+		// underscore slip is kept and counts toward the required-args check rather than being stripped),
+		// then coerce types and strip genuinely-extra args.
 		JsonObject? parameters = schema.Parameters;
+		ReconcileArgNames(obj, parameters, log);
 		ApplyTypeCoercions(obj, parameters, log);
 		StripExtraArgs(obj, parameters, log);
 
@@ -476,11 +480,14 @@ public static class FixJson
 					break;
 
 				case "boolean":
-					if (value is JsonValue boolJv && boolJv.TryGetValue(out string? boolStr) &&
-						bool.TryParse(boolStr, out bool boolVal))
+					if (value is JsonValue boolJv)
 					{
-						obj[key] = JsonValue.Create(boolVal);
-						coerced = true;
+						bool? looseBool = ParseLooseBool(boolJv.ToString());
+						if (looseBool != null)
+						{
+							obj[key] = JsonValue.Create(looseBool.Value);
+							coerced = true;
+						}
 					}
 					break;
 
@@ -499,6 +506,116 @@ public static class FixJson
 				log?.Invoke($"json-heal [type] '{key}' → {schemaType}: {GetCounters()}");
 			}
 		}
+	}
+
+	// Maps the common loose boolean spellings a model emits onto a real bool; null when it is not a
+	// recognizable boolean (so the caller surfaces it rather than guessing). Handles JSON strings ("yes"),
+	// the JSON literals true/false, and 1/0 whether sent as a number or a string.
+	private static bool? ParseLooseBool(string raw)
+	{
+		string t = raw.Trim().ToLowerInvariant();
+		if (t == "true" || t == "yes" || t == "y" || t == "1" || t == "on")
+			return true;
+		if (t == "false" || t == "no" || t == "n" || t == "0" || t == "off")
+			return false;
+		return null;
+	}
+
+	// Reconciles a misnamed argument key onto the schema property it most likely meant: a unique
+	// case-insensitive match first, then a unique near-miss within a small edit distance. The key is renamed
+	// to the canonical name so a casing/underscore slip (oldText, File_Path) is kept and satisfies the
+	// required-args check instead of being stripped as extra. Only an unambiguous, not-already-present target
+	// is taken — when the choice is uncertain the key is left alone (and later stripped) rather than mapped
+	// wrong. This is the per-argument analogue of the tool-name fuzzy correction.
+	private static void ReconcileArgNames(JsonObject obj, JsonObject? parameters, Action<string>? log)
+	{
+		JsonObject? props = parameters?["properties"]?.AsObject();
+		if (props == null)
+			return;
+
+		List<string> schemaNames = new List<string>();
+		foreach ((string name, JsonNode? _) in props)
+			schemaNames.Add(name);
+
+		// Canonical names already present (exact) are off-limits as rename targets.
+		HashSet<string> taken = new HashSet<string>(StringComparer.Ordinal);
+		foreach ((string key, JsonNode? _) in obj)
+		{
+			if (props.ContainsKey(key))
+				taken.Add(key);
+		}
+
+		// Collect renames first; the obj cannot be mutated while it is being enumerated.
+		List<(string from, string to)> renames = new List<(string from, string to)>();
+		foreach ((string key, JsonNode? _) in obj)
+		{
+			if (props.ContainsKey(key))
+				continue;
+
+			string? canonical = BestArgNameMatch(key, schemaNames, taken);
+			if (canonical != null)
+			{
+				renames.Add((key, canonical));
+				taken.Add(canonical);
+			}
+		}
+
+		foreach ((string from, string to) in renames)
+		{
+			JsonNode? value = obj[from];
+			obj.Remove(from);
+			if (value != null)
+				obj[to] = value.DeepClone();
+			Interlocked.Increment(ref _argNameCorrections);
+			log?.Invoke($"json-heal [arg] '{from}' → '{to}': {GetCounters()}");
+		}
+	}
+
+	// Best schema property for a misnamed key: a unique case-insensitive match, else a unique fuzzy match
+	// within a small edit distance (scaled to the name's length, capped at 3). Skips already-taken targets.
+	// Returns null when there is no confident, unambiguous choice.
+	private static string? BestArgNameMatch(string key, List<string> schemaNames, HashSet<string> taken)
+	{
+		string? caseMatch = null;
+		int caseCount = 0;
+		foreach (string name in schemaNames)
+		{
+			if (taken.Contains(name))
+				continue;
+			if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
+			{
+				caseMatch = name;
+				caseCount++;
+			}
+		}
+		if (caseCount == 1)
+			return caseMatch;
+
+		string lowerKey = key.ToLowerInvariant();
+		string? best = null;
+		int bestDist = int.MaxValue;
+		int ties = 0;
+		foreach (string name in schemaNames)
+		{
+			if (taken.Contains(name))
+				continue;
+			int threshold = Math.Max(1, Math.Min(3, name.Length / 3));
+			int dist = LevenshteinDistance(lowerKey, name.ToLowerInvariant());
+			if (dist > threshold)
+				continue;
+			if (dist < bestDist)
+			{
+				bestDist = dist;
+				best = name;
+				ties = 1;
+			}
+			else if (dist == bestDist)
+			{
+				ties++;
+			}
+		}
+
+		return ties == 1 ? best : null;
 	}
 
 	// Stage 6: remove any keys not declared in the schema's properties.

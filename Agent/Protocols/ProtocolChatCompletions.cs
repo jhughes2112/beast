@@ -328,7 +328,12 @@ public class ProtocolChatCompletions
 			}
 
 			int statusCode = (int)httpResponse.StatusCode;
-			if (statusCode == 401 || statusCode == 403)
+			// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
+			// client error: the request itself is bad, so retrying just burns the transient budget and then
+			// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
+			// 5xx and the retryable 4xx stay transient.
+			bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
+			if (permanentClientError)
 				return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
 			return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
 		}

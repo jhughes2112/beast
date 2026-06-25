@@ -155,9 +155,24 @@ public class LlmService
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{
 						conversation.RecordCost(result.Payload!.Cost);
-						break;
+
+						// Repair the response's tool calls in place (fuzzy name correction, argument fixups),
+						// writing them back into the payload so the committed turn carries clean calls. A call
+						// that cannot be repaired makes the turn unusable — and would 400 some providers on
+						// re-send — so the broken turn is dropped (never committed) and re-requested as a
+						// transient. No special tracking: an unrepairable tool call is just another transient.
+						string? unrepairable = ToolDispatch.FixToolCalls(result.Payload!, tools);
+						if (unrepairable == null)
+							break;
+
+						// Tell the model what was wrong before the retry, so it corrects the call instead of
+						// blindly re-rolling the same mistake. It goes in as a user message: the broken assistant
+						// turn was never committed, so there is no tool call to answer with a tool result.
+						conversation.Bundle.OnUserMessage($"A tool call in your previous response was invalid and was discarded — it never ran. {unrepairable}. Call the tool again with every required argument supplied correctly.");
+						result = ProtocolResult.Transient(unrepairable, null);
 					}
-					else if (result.Outcome == ProtocolCallOutcome.RateLimited)
+
+					if (result.Outcome == ProtocolCallOutcome.RateLimited)
 					{
 						rateLimitRetries++;
 						if (rateLimitRetries > kMaxRateLimitRetries)
@@ -176,12 +191,18 @@ public class LlmService
 					{
 						// A recoverable error (5xx/overload/network/timeout). Back off and retry on the SAME model
 						// a few times so a momentary blip does not abandon an in-progress turn. Only once the
-						// retries are spent do we escalate to TooManyRetries — the caller then falls back to the
-						// next model in the role's list instead of the model being killed outright.
+						// retries are spent do we give up — the caller then falls back to the next model in the
+						// role's list instead of the model being killed outright.
 						transientRetries++;
 						if (transientRetries > kMaxTransientRetries)
 						{
-							result = ProtocolResult.TooManyRetries();
+							// Surface the actual last error (e.g. "HTTP 500: ...") as a failure rather than
+							// collapsing it into TooManyRetries, which the caller would otherwise report as
+							// rate-limiting and bury the real cause. Rate-limit exhaustion (above) keeps
+							// TooManyRetries; this transient path carries its reason.
+							result = ProtocolResult.Failed(string.IsNullOrEmpty(result.ErrorMessage)
+								? "Transient errors persisted after repeated retries."
+								: $"Transient errors persisted after {kMaxTransientRetries} retries: {result.ErrorMessage}");
 							break;
 						}
 						// Prefer the server-stated retry time when the response carried one (the helper already
