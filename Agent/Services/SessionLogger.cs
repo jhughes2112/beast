@@ -50,7 +50,7 @@ public class SessionLogger
 
 	// Logs a model failure with full diagnostic context.
 	// Call this whenever an LLM call fails (rate limit, transient, auth, timeout, etc.)
-	public static void ModelFailure(
+	public void ModelFailure(
 		string modelId,
 		string modelName,
 		string endpoint,
@@ -105,7 +105,7 @@ public class SessionLogger
 	}
 
 	// Logs a protocol-level failure (detection, invalid response, etc.)
-	public static void ProtocolFailure(
+	public void ProtocolFailure(
 		string modelId,
 		string modelName,
 		string endpoint,
@@ -148,7 +148,7 @@ public class SessionLogger
 	}
 
 	// Logs a fallback transition
-	public static void FallbackTransition(
+	public void FallbackTransition(
 		string fromModelId,
 		string fromModelName,
 		string toModelId,
@@ -173,7 +173,7 @@ public class SessionLogger
 	}
 
 	// Logs a session-level failure (no fallbacks left)
-	public static void SessionFailure(
+	public void SessionFailure(
 		string sessionId,
 		string modelId,
 		string modelName,

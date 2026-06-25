@@ -188,7 +188,7 @@ public class ProtocolResponses
 			}
 			catch (HttpRequestException ex)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -202,7 +202,7 @@ public class ProtocolResponses
 			}
 			catch (Exception ex)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -225,7 +225,7 @@ public class ProtocolResponses
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -245,7 +245,7 @@ public class ProtocolResponses
 			bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
 			if (permanentClientError)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -256,7 +256,7 @@ public class ProtocolResponses
 					responseBody: responseBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
 			}
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -269,7 +269,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -408,7 +408,7 @@ public class ProtocolResponses
 		}
 		catch (HttpRequestException ex)
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -422,7 +422,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -442,7 +442,7 @@ public class ProtocolResponses
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -456,7 +456,7 @@ public class ProtocolResponses
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -470,7 +470,7 @@ public class ProtocolResponses
 
 			if (statusCode == 401 || statusCode == 403)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -481,7 +481,7 @@ public class ProtocolResponses
 					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
 			}
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

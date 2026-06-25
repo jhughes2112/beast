@@ -414,7 +414,7 @@ public class SessionRunner
 								if (fallback != null)
 								{
 									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
-									SessionLogger.FallbackTransition(
+									session.QueryLog.FallbackTransition(
 										fromModelId: _service.Model.ConfigId,
 										fromModelName: _service.Model.Config.Name,
 										toModelId: fallback.Model.ConfigId,
@@ -432,7 +432,7 @@ public class SessionRunner
 									string detail = result.Outcome == ProtocolCallOutcome.TooManyRetries
 										? "Rate limited after too many retries, and no fallback model is available."
 										: (string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage);
-									SessionLogger.SessionFailure(
+									session.QueryLog.SessionFailure(
 										sessionId: session.Id,
 										modelId: _service.Model.ConfigId,
 										modelName: _service.Model.Config.Name,

@@ -145,7 +145,7 @@ public class ProtocolAnthropic
 	{
 		try
 		{
-			return await ExecuteWithLogging(model, async () =>
+			return await ExecuteWithLogging(model, queryLogger, async () =>
 			{
 				AnthropicClient client = BuildClient(model, extraHeaders, queryLogger);
 				MessageParameters parameters = BuildParameters(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
@@ -156,7 +156,7 @@ public class ProtocolAnthropic
 		}
 		catch (Exception ex)
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -169,7 +169,7 @@ public class ProtocolAnthropic
 		}
 	}
 
-	private async Task<ProtocolResult> ExecuteWithLogging(LlmModel model, Func<Task<ProtocolResult>> execute)
+	private async Task<ProtocolResult> ExecuteWithLogging(LlmModel model, SessionLogger? queryLogger, Func<Task<ProtocolResult>> execute)
 	{
 		try
 		{
@@ -177,7 +177,7 @@ public class ProtocolAnthropic
 		}
 		catch (Exception ex)
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -405,7 +405,7 @@ public class ProtocolAnthropic
 		}
 		catch (Exception ex)
 		{
-			return ClassifyException(ex, model);
+			return ClassifyException(ex, model, queryLogger);
 		}
 		finally
 		{
@@ -558,7 +558,7 @@ public class ProtocolAnthropic
 		return parsed ?? new JsonObject();
 	}
 
-	private static ProtocolResult ClassifyException(Exception ex, LlmModel model)
+	private static ProtocolResult ClassifyException(Exception ex, LlmModel model, SessionLogger? queryLogger)
 	{
 		ProtocolResult result;
 		if (ex is HttpRequestException http && http.StatusCode.HasValue)
@@ -566,7 +566,7 @@ public class ProtocolAnthropic
 			int status = (int)http.StatusCode.Value;
 			if (status == 429)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -579,7 +579,7 @@ public class ProtocolAnthropic
 			}
 			else if (status == 401 || status == 403)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -592,7 +592,7 @@ public class ProtocolAnthropic
 			}
 			else if (status >= 400 && status < 500)
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -605,7 +605,7 @@ public class ProtocolAnthropic
 			}
 			else
 			{
-				SessionLogger.ProtocolFailure(
+				queryLogger!.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -619,7 +619,7 @@ public class ProtocolAnthropic
 		}
 		else if (ex is HttpRequestException)
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -632,7 +632,7 @@ public class ProtocolAnthropic
 		}
 		else
 		{
-			SessionLogger.ProtocolFailure(
+			queryLogger!.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

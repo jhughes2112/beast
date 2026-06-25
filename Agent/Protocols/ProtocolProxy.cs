@@ -183,14 +183,17 @@ LiveUsageProgress onProgress, ITransportServer transport, string sessionId, Sess
 		if (_detected == DetectedProtocol.ChatCompletions)
 			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
 
-		SessionLogger.ProtocolFailure(
-			modelId: _model.ConfigId,
-			modelName: _model.Config.Name,
-			endpoint: _model.Endpoint,
-			protocol: _detected.ToString(),
-			failureType: "UnknownProtocol",
-			httpStatusCode: null,
-			errorMessage: $"Endpoint speaks no recognized protocol: {endpoint}");
+		if (queryLogger != null)
+		{
+			queryLogger.ProtocolFailure(
+				modelId: _model.ConfigId,
+				modelName: _model.Config.Name,
+				endpoint: _model.Endpoint,
+				protocol: _detected.ToString(),
+				failureType: "UnknownProtocol",
+				httpStatusCode: null,
+				errorMessage: $"Endpoint speaks no recognized protocol: {endpoint}");
+		}
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 
