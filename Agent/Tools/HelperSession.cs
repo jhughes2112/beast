@@ -107,10 +107,13 @@ public static class HelperSession
 				if (result.Outcome != ProtocolCallOutcome.Success)
 				{
 					// A /cancel hand back a "cancelled by the user" answer so the caller is unblocked and keeps
-					// going, rather than hanging on this helper. Anything else is a genuine failure.
+					// going, rather than hanging on this helper. Anything else is a genuine failure — return the
+					// outcome (and any error text) as the reason so the caller surfaces it instead of a blank fail.
 					if (scope.IsCancellationRequested)
 						return (true, "Cancelled by the user.", 1);
-					return (false, string.Empty, 0);
+					string failure = string.IsNullOrEmpty(result.ErrorMessage) ? result.Outcome.ToString() : $"{result.Outcome}: {result.ErrorMessage}";
+					Console.Error.WriteLine($"[HelperSession] {role.Name} sub-session {session.Id} failed on turn {turn}: {failure}");
+					return (false, failure, 0);
 				}
 
 				session.CommitAssistantTurn(result.Payload!);
@@ -148,7 +151,8 @@ public static class HelperSession
 			if (!string.IsNullOrWhiteSpace(lastAssistantText))
 				return (true, $"This model had a problem calling tools, but here's what it output: {lastAssistantText}", Math.Max(1, tokens));
 
-			return (false, string.Empty, 0);
+			Console.Error.WriteLine($"[HelperSession] {role.Name} sub-session {session.Id} exhausted all {maxTurns} turns without producing a result.");
+			return (false, $"the {role.Name} role used all {maxTurns} turns without producing a result", 0);
 		}
 		finally
 		{

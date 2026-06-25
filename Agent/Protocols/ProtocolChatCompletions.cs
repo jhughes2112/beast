@@ -253,6 +253,9 @@ public class ProtocolChatCompletions
 			}
 			catch (OperationCanceledException)
 			{
+				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+				if (timeout != null)
+					return timeout;
 				throw;
 			}
 			catch (HttpRequestException ex)
@@ -494,6 +497,9 @@ public class ProtocolChatCompletions
 		}
 		catch (OperationCanceledException)
 		{
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			if (timeout != null)
+				return timeout;
 			throw;
 		}
 		catch (HttpRequestException ex)

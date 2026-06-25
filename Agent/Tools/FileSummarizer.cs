@@ -104,7 +104,10 @@ public class FileSummarizer
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
 		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, service, registry, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(explorerRole.Tools), transport, cancellationToken);
 		if (!ok)
-			return new ToolResult(toolCallId, string.Empty, "Error: the Explorer role failed to interpret " + filePath, 1, 0);
+		{
+			string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;
+			return new ToolResult(toolCallId, string.Empty, $"Error: the Explorer role failed to interpret {filePath}: {detail}", 1, 0);
+		}
 
 		return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
 	}

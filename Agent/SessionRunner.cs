@@ -412,7 +412,9 @@ public class SessionRunner
 					{
 						// A /cancel landed while a tool was running between LLM calls — there was no active LLM
 						// call to turn it into an Interrupted result, so mark the wait state here. The dangling
-						// tool calls left by the aborted round are repaired on the next BeginTurn.
+						// tool calls left by the aborted round are repaired on the next BeginTurn. Logged so a
+						// turn that ends here is visible server-side rather than vanishing silently.
+						Console.Error.WriteLine($"[SessionRunner] Session {session.Id} turn interrupted between tool calls (turn scope cancelled).");
 						session.MarkInterrupted();
 					}
 					finally
@@ -459,6 +461,11 @@ public class SessionRunner
 		}
 		catch (OperationCanceledException)
 		{
+			// A cancel that escaped the per-turn handling unwinds the whole run loop. When the root token
+			// is down this is a normal shutdown; otherwise it is unexpected (the loop will be restarted on
+			// the same session by the orchestrator), so log it server-side rather than exiting silently.
+			if (!_cancellationTokenSource.IsCancellationRequested)
+				Console.Error.WriteLine($"[SessionRunner] Run loop for session {_currentSession.Id} exited on an OperationCanceledException without a root cancel; restarting on the same session.");
 		}
 		finally
 		{

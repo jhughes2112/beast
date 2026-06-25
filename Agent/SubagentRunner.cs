@@ -250,6 +250,7 @@ public class SubagentRunner
 				{
 					// Same as above, but the cancel landed while a tool was running (dispatch throws rather than
 					// returning Interrupted). The aborted round's dangling tool calls are repaired on the next turn.
+					Console.Error.WriteLine($"[SubagentRunner] {role.Name} sub-session {subSession.Id} dispatch cancelled (scope cancelled; ancestor cancel: {ct.IsCancellationRequested}).");
 					if (ct.IsCancellationRequested)
 						break;
 					CancellationTokenSource? resumed = await WaitForSteeringAsync(subSession, scope, ct);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Threading;
 
 
 // Shared utilities used by all protocol implementations.
@@ -18,6 +19,21 @@ static class ProtocolHelpers
 	public static HttpClient GetClient()
 	{
 		return SharedClient;
+	}
+
+	// Classifies an OperationCanceledException raised by an HTTP call. When the caller's own token is NOT
+	// the one that tripped, the cancel came from the HttpClient timeout elapsing — the model was too slow
+	// to start responding, or it was queued behind other requests on a busy local endpoint. Returns a
+	// Transient result that says so explicitly (and names the timeout) so the loop retries instead of the
+	// turn dying with an opaque "cancelled" message. Returns null when the caller genuinely cancelled, in
+	// which case the protocol must rethrow so the cancel propagates as a real interrupt.
+	public static ProtocolResult? TimeoutOrRethrow(CancellationToken cancellationToken, string modelName)
+	{
+		if (cancellationToken.IsCancellationRequested)
+			return null;
+
+		int seconds = (int)Math.Round(SharedClient.Timeout.TotalSeconds);
+		return ProtocolResult.Transient($"Request to {modelName} timed out: the HTTP client timeout of {seconds}s elapsed before the model responded (too slow, or queued behind other requests). Retrying.", null);
 	}
 
 	public static bool IsRateLimited(HttpResponseMessage response, string responseBody)

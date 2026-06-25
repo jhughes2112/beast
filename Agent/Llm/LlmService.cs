@@ -216,9 +216,16 @@ public class LlmService
 						? ProtocolResult.Interrupted("Interrupted by user", result.Payload)
 						: ProtocolResult.Interrupted("Interrupted by user", null);
 				}
-				else // The LLM cancelled on its own
+				else
 				{
-					result = ProtocolResult.Failed($"LLM call cancelled: {ex.Message}");
+					// Neither of our tokens tripped, so this OCE came from the transport itself — almost always
+					// the HttpClient timeout elapsing while a slow or queued model never started responding.
+					// Surface it explicitly as a timeout (Transient, so the caller retries/falls back) instead
+					// of an opaque "cancelled". A TimeoutException inner confirms the HttpClient.Timeout case.
+					bool timedOut = ex is TaskCanceledException && ex.InnerException is TimeoutException;
+					result = timedOut
+						? ProtocolResult.Transient($"LLM request timed out: the model did not respond before the HTTP client timeout elapsed (too slow, or queued behind other requests).", null)
+						: ProtocolResult.Transient($"LLM request was cancelled by the transport (not by the user): {ex.Message}", null);
 				}
 			}
 			catch (Exception ex)

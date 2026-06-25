@@ -68,6 +68,9 @@ public class Program
 		}
 		catch (OperationCanceledException)
 		{
+			// Normal shutdown path (Ctrl+C or /quit cancels the root token). Logged so an unexpected
+			// top-level unwind is distinguishable from a clean exit in the container logs.
+			Console.Error.WriteLine($"[Program] Orchestrator stopped (root cancellation requested: {cts.IsCancellationRequested}).");
 		}
 		catch (Exception ex)
 		{

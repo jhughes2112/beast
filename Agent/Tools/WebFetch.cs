@@ -93,7 +93,10 @@ public class WebFetch
 
 			(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, registry, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(webRole.Tools), transport, cancellationToken);
 			if (!ok)
-				return new ToolResult(toolCallId, string.Empty, "Error: the WebFetch role failed to interpret " + url, 1, 0);
+			{
+				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;
+				return new ToolResult(toolCallId, string.Empty, $"Error: the WebFetch role failed to interpret {url}: {detail}", 1, 0);
+			}
 
 			return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
 		}
