@@ -531,35 +531,35 @@ public class ProtocolAnthropic
 	}
 
 	private static ProtocolResult ClassifyException(Exception ex, LlmModel model, SessionLogger logger)
-{
-	ProtocolResult result;
-	if (ex is HttpRequestException http && http.StatusCode.HasValue)
 	{
-		int status = (int)http.StatusCode.Value;
-		if (status == 429)
+		ProtocolResult result;
+		if (ex is HttpRequestException http && http.StatusCode.HasValue)
 		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "Anthropic",
-				failureType: "RateLimited",
-				httpStatusCode: status,
-				errorMessage: ex.Message,
-				exception: ex);
-			result = ProtocolResult.RateLimited(null);
-		}
-		else if (status == 401 || status == 403)
-		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
+			int status = (int)http.StatusCode.Value;
+			if (status == 429)
+			{
+				logger.ProtocolFailure(
+					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
 					protocol: "Anthropic",
-					failureType: "AuthFailure",
+					failureType: "RateLimited",
 					httpStatusCode: status,
 					errorMessage: ex.Message,
 					exception: ex);
+				result = ProtocolResult.RateLimited(null);
+			}
+			else if (status == 401 || status == 403)
+			{
+				logger.ProtocolFailure(
+					modelId: model.ConfigId,
+						modelName: model.Config.Name,
+						endpoint: model.Endpoint,
+						protocol: "Anthropic",
+						failureType: "AuthFailure",
+						httpStatusCode: status,
+						errorMessage: ex.Message,
+						exception: ex);
 				result = ProtocolResult.Failed($"HTTP {status}: {ex}");
 			}
 			else if (status >= 400 && status < 500)

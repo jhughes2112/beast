@@ -83,7 +83,7 @@ public class SessionLogger
 		if (retryAfter.HasValue)
 			sb.AppendLine($"retry_after: {retryAfter.Value:u} (in {(retryAfter.Value - DateTimeOffset.UtcNow).TotalSeconds:F1}s)");
 		sb.AppendLine($"fallback:   {(willFallback ? "YES" : "NO")}" + (fallbackModelId != null ? $" -> {fallbackModelId}" : ""));
-		
+
 		if (exception != null)
 		{
 			sb.AppendLine($"exception:  {exception.GetType().Name}: {exception.Message}");

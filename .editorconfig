@@ -49,28 +49,29 @@ dotnet_style_parentheses_in_other_operators = never_if_unnecessary
 dotnet_style_parentheses_in_relational_binary_operators = always_for_clarity
 
 # Modifier preferences
-dotnet_style_require_accessibility_modifiers = for_non_interface_members
+dotnet_style_require_accessibility_modifiers = never
 
 # Expression-level preferences
 dotnet_prefer_system_hash_code = true
 dotnet_style_coalesce_expression = true:silent
 dotnet_style_collection_initializer = false:silent
-dotnet_style_explicit_tuple_names = true:silent
-dotnet_style_namespace_match_folder = true
+dotnet_style_explicit_tuple_names = false:silent
+dotnet_style_namespace_match_folder = false
 dotnet_style_null_propagation = true:silent
 dotnet_style_object_initializer = false:silent
 dotnet_style_operator_placement_when_wrapping = beginning_of_line
-dotnet_style_prefer_auto_properties = true
-dotnet_style_prefer_collection_expression = when_types_loosely_match
+dotnet_style_prefer_auto_properties = false
+dotnet_style_prefer_collection_expression = never
 dotnet_style_prefer_compound_assignment = true:silent
-dotnet_style_prefer_conditional_expression_over_assignment = true
-dotnet_style_prefer_conditional_expression_over_return = true
+dotnet_style_prefer_conditional_expression_over_assignment = false
+dotnet_style_prefer_conditional_expression_over_return = false
 dotnet_style_prefer_foreach_explicit_cast_in_source = when_strongly_typed
 dotnet_style_prefer_inferred_anonymous_type_member_names = false:silent
 dotnet_style_prefer_inferred_tuple_names = true:silent
 dotnet_style_prefer_is_null_check_over_reference_equality_method = false:silent
 dotnet_style_prefer_non_hidden_explicit_cast_in_source = true
-dotnet_style_prefer_simplified_boolean_expressions = true:silent
+dotnet_style_prefer_simple_boolean_expressions = true:silent
+dotnet_style_prefer_simple_enumeration_over_indexer = false
 dotnet_style_prefer_simplified_interpolation = true
 
 # Field preferences
@@ -88,27 +89,27 @@ dotnet_style_allow_statement_immediately_after_block_experimental = false
 
 #### C# Coding Conventions ####
 
-# var preferences
-csharp_style_var_elsewhere = false
-csharp_style_var_for_built_in_types = false
-csharp_style_var_when_type_is_apparent = false
+# var preferences — always explicit types
+csharp_style_var_elsewhere = never
+csharp_style_var_for_built_in_types = never
+csharp_style_var_when_type_is_apparent = never
 
 # Expression-bodied members
 csharp_style_expression_bodied_accessors = false
 csharp_style_expression_bodied_constructors = false
-csharp_style_expression_bodied_indexers = true
+csharp_style_expression_bodied_indexers = false
 csharp_style_expression_bodied_lambdas = false
 csharp_style_expression_bodied_local_functions = false
 csharp_style_expression_bodied_methods = false
 csharp_style_expression_bodied_operators = false
-csharp_style_expression_bodied_properties = true
+csharp_style_expression_bodied_properties = false
 
 # Pattern matching preferences
 csharp_style_pattern_matching_over_as_with_null_check = false:silent
 csharp_style_pattern_matching_over_is_with_cast_check = true:silent
-csharp_style_prefer_extended_property_pattern = true
+csharp_style_prefer_extended_property_pattern = false
 csharp_style_prefer_not_pattern = false:silent
-csharp_style_prefer_pattern_matching = true
+csharp_style_prefer_pattern_matching = false
 csharp_style_prefer_switch_expression = false:silent
 
 # Null-checking preferences
@@ -127,23 +128,23 @@ csharp_prefer_simple_using_statement = false
 csharp_prefer_system_threading_lock = true
 csharp_style_namespace_declarations = block_scoped
 csharp_style_prefer_method_group_conversion = false
-csharp_style_prefer_primary_constructors = true
-csharp_style_prefer_simple_property_accessors = true
+csharp_style_prefer_primary_constructors = false
+csharp_style_prefer_simple_property_accessors = false
 csharp_style_prefer_top_level_statements = false
 
 # Expression-level preferences
 csharp_prefer_simple_default_expression = false:silent
 csharp_style_deconstructed_variable_declaration = true:silent
 csharp_style_implicit_object_creation_when_type_is_apparent = false:silent
-csharp_style_inlined_variable_declaration = true:silent
-csharp_style_prefer_implicitly_typed_lambda_expression = true
-csharp_style_prefer_index_operator = false:silent
+csharp_style_inlined_variable_declaration = false
+csharp_style_prefer_implicitly_typed_lambda_expression = false
+csharp_style_prefer_index_operator = true:silent
 csharp_style_prefer_local_over_anonymous_function = true:silent
 csharp_style_prefer_null_check_over_type_check = true:silent
 csharp_style_prefer_range_operator = false:silent
-csharp_style_prefer_tuple_swap = false:silent
+csharp_style_prefer_tuple_swap = true:silent
 csharp_style_prefer_unbound_generic_type_in_nameof = true
-csharp_style_prefer_utf8_string_literals = true
+csharp_style_prefer_utf8_string_literals = false
 csharp_style_throw_expression = false:silent
 csharp_style_unused_value_assignment_preference = discard_variable:silent
 csharp_style_unused_value_expression_statement_preference = discard_variable
@@ -221,28 +222,54 @@ dotnet_naming_rule.non_field_members_should_be_pascal_case.severity = suggestion
 dotnet_naming_rule.non_field_members_should_be_pascal_case.symbols = non_field_members
 dotnet_naming_rule.non_field_members_should_be_pascal_case.style = pascal_case
 
+dotnet_naming_rule.private_fields_should_be_camel_case.severity = suggestion
+dotnet_naming_rule.private_fields_should_be_camel_case.symbols = private_fields
+dotnet_naming_rule.private_fields_should_be_camel_case.style = underscore_style
+
+dotnet_naming_rule.private_static_fields_should_be_underscore_pascal.severity = suggestion
+dotnet_naming_rule.private_static_fields_should_be_underscore_pascal.symbols = private_static_fields
+dotnet_naming_rule.private_static_fields_should_be_underscore_pascal.style = underscore_pascal_style
+
 # Symbol specifications
 
 dotnet_naming_symbols.interface.applicable_kinds = interface
 dotnet_naming_symbols.interface.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
-dotnet_naming_symbols.interface.required_modifiers = 
+dotnet_naming_symbols.interface.required_modifiers =
 
 dotnet_naming_symbols.types.applicable_kinds = class, struct, interface, enum
 dotnet_naming_symbols.types.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
-dotnet_naming_symbols.types.required_modifiers = 
+dotnet_naming_symbols.types.required_modifiers =
 
 dotnet_naming_symbols.non_field_members.applicable_kinds = property, event, method
 dotnet_naming_symbols.non_field_members.applicable_accessibilities = public, internal, private, protected, protected_internal, private_protected
-dotnet_naming_symbols.non_field_members.required_modifiers = 
+dotnet_naming_symbols.non_field_members.required_modifiers =
+
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_fields.required_modifiers =
+
+dotnet_naming_symbols.private_static_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_fields.required_modifiers = static
 
 # Naming styles
 
-dotnet_naming_style.pascal_case.required_prefix = 
-dotnet_naming_style.pascal_case.required_suffix = 
-dotnet_naming_style.pascal_case.word_separator = 
+dotnet_naming_style.pascal_case.required_prefix =
+dotnet_naming_style.pascal_case.required_suffix =
+dotnet_naming_style.pascal_case.word_separator =
 dotnet_naming_style.pascal_case.capitalization = pascal_case
 
 dotnet_naming_style.begins_with_i.required_prefix = I
-dotnet_naming_style.begins_with_i.required_suffix = 
-dotnet_naming_style.begins_with_i.word_separator = 
+dotnet_naming_style.begins_with_i.required_suffix =
+dotnet_naming_style.begins_with_i.word_separator =
 dotnet_naming_style.begins_with_i.capitalization = pascal_case
+
+dotnet_naming_style.underscore_style.required_prefix = _
+dotnet_naming_style.underscore_style.required_suffix =
+dotnet_naming_style.underscore_style.word_separator =
+dotnet_naming_style.underscore_style.capitalization = camel_case
+
+dotnet_naming_style.underscore_pascal_style.required_prefix = _
+dotnet_naming_style.underscore_pascal_style.required_suffix =
+dotnet_naming_style.underscore_pascal_style.word_separator =
+dotnet_naming_style.underscore_pascal_style.capitalization = pascal_case

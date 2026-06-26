@@ -398,7 +398,7 @@ public static class MarkdownAnsi
 
 	private static string InlineToPlain(Inline inline)
 	{
-			if (inline is LiteralInline lit)
+		if (inline is LiteralInline lit)
 			return lit.Content.ToString();
 		if (inline is CodeInline code)
 			return code.Content.ToString();
@@ -728,7 +728,8 @@ public static class MarkdownAnsi
 					if (line[i] == '\\')
 					{
 						i++;
-						if (i < line.Length) i++;
+						if (i < line.Length)
+							i++;
 						continue;
 					}
 					if (line[i] == quote)

@@ -97,39 +97,39 @@ public class LlmService
 				const int kMaxTransientRetries = 5;
 
 				// Central context accounting for this turn. Seeded with the model's window and limits, the
-			// compaction reserve, and the sub-session output cap. It owns all "how much room is left"
-			// math: the context-full gate, completion sizing, and per-tool response reservations.
-			ContextBudget budget = conversation.Budget;
-			budget.Configure(_model.Config.ContextWindow, _model.Config.MaxOutputTokens, reserveTokens, maxOutputCap, conversation.ContextLength);
+				// compaction reserve, and the sub-session output cap. It owns all "how much room is left"
+				// math: the context-full gate, completion sizing, and per-tool response reservations.
+				ContextBudget budget = conversation.Budget;
+				budget.Configure(_model.Config.ContextWindow, _model.Config.MaxOutputTokens, reserveTokens, maxOutputCap, conversation.ContextLength);
 
-			for (; ; )
-			{
-				// Honor any backoff a prior attempt (or a prior turn) recorded — a rate-limit RetryAfter or
-				// a transient-error backoff — before making the next call. Both retry budgets are bounded, so
-				// an exhausted budget escalates to TooManyRetries below rather than parking here forever.
-				TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
-				if (delay > TimeSpan.Zero)
-					await Task.Delay(delay, linked.Token);
-
-				if (budget.IsExhausted())
+				for (; ; )
 				{
-					// Context-full is a caller-side constraint, not a model failure.
-					// Detection happens in CommitTurn when ADDING content to the session.
-					result = ProtocolResult.ContextFull("Context budget exhausted");
-					conversation.QueryLog.ModelFailure(
-						modelId: _model.ConfigId,
-						modelName: _model.Config.Name,
-						endpoint: _model.Endpoint,
-						protocol: _handler.GetDetectedProtocol().ToString(),
-						failureType: "ContextFull",
-						httpStatusCode: null,
-						errorMessage: "Context budget exhausted",
-						retryCount: 0,
-						maxRetries: 0,
-						retryAfter: null,
-						willFallback: false);
-					break;
-				}
+					// Honor any backoff a prior attempt (or a prior turn) recorded — a rate-limit RetryAfter or
+					// a transient-error backoff — before making the next call. Both retry budgets are bounded, so
+					// an exhausted budget escalates to TooManyRetries below rather than parking here forever.
+					TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
+					if (delay > TimeSpan.Zero)
+						await Task.Delay(delay, linked.Token);
+
+					if (budget.IsExhausted())
+					{
+						// Context-full is a caller-side constraint, not a model failure.
+						// Detection happens in CommitTurn when ADDING content to the session.
+						result = ProtocolResult.ContextFull("Context budget exhausted");
+						conversation.QueryLog.ModelFailure(
+							modelId: _model.ConfigId,
+							modelName: _model.Config.Name,
+							endpoint: _model.Endpoint,
+							protocol: _handler.GetDetectedProtocol().ToString(),
+							failureType: "ContextFull",
+							httpStatusCode: null,
+							errorMessage: "Context budget exhausted",
+							retryCount: 0,
+							maxRetries: 0,
+							retryAfter: null,
+							willFallback: false);
+						break;
+					}
 
 					// Size the response against the exact context plus any not-yet-reported tool outputs,
 					// so input + output stays within the window even right after a tool round.

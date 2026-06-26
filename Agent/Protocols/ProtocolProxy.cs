@@ -156,7 +156,7 @@ public class ProtocolProxy
 		_protocolAnthropic?.OnToolResult(result);
 	}
 
-	public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, 
+	public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens,
 LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		bundle.SetActiveProxy(this);

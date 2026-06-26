@@ -501,38 +501,38 @@ public class ProtocolChatCompletions
 	}
 
 	private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, CancellationToken cancellationToken)
-{
-	string url = model.Endpoint;
-
-	JsonObject obj = (JsonObject)body.DeepClone();
-	foreach ((string name, JsonNode? value) in extraPayload)
 	{
-		obj[name] = value?.DeepClone();
+		string url = model.Endpoint;
+
+		JsonObject obj = (JsonObject)body.DeepClone();
+		foreach ((string name, JsonNode? value) in extraPayload)
+		{
+			obj[name] = value?.DeepClone();
+		}
+
+		string requestJson = obj.ToJsonString();
+
+		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
+		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+
+		foreach ((string name, string value) in extraHeaders)
+		{
+			req.Headers.TryAddWithoutValidation(name, value);
+		}
+
+		return await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
 	}
 
-	string requestJson = obj.ToJsonString();
-
-	HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
-	req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-	req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
-
-	foreach ((string name, string value) in extraHeaders)
-	{
-		req.Headers.TryAddWithoutValidation(name, value);
-	}
-
-	return await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
-}
-
-private async Task<ProtocolResult?> ExecuteStreamingAsync(
-	LlmModel model,
-	JsonObject body,
-	Dictionary<string, string> extraHeaders,
-	Dictionary<string, JsonNode?> extraPayload,
-	ListenerBundle bundle,
-	LiveUsageProgress onProgress,
-	SessionLogger logger,
-	CancellationToken cancellationToken)
+	private async Task<ProtocolResult?> ExecuteStreamingAsync(
+		LlmModel model,
+		JsonObject body,
+		Dictionary<string, string> extraHeaders,
+		Dictionary<string, JsonNode?> extraPayload,
+		ListenerBundle bundle,
+		LiveUsageProgress onProgress,
+		SessionLogger logger,
+		CancellationToken cancellationToken)
 	{
 		string url = model.Endpoint;
 
