@@ -87,15 +87,15 @@ public class SubagentRunner
 			promptHead = promptHead.Substring(0, 60);
 		string displayName = promptHead.Length > 0 ? $"{role.Name} {promptHead}" : role.Name;
 
-		// Allocate the child id and immediately persist the parent so its bumped ChildCounter reaches disk.
-		// The counter lives only in memory until a save; without this, a reload restores the parent's old
+		// Allocate the child id and immediately persist the parent so its bumped counter reaches disk.
+		// The counter lives only in Session state; without this, a reload restores the parent's old
 		// counter and the next subagent reissues this very id, overwriting this session's file on disk. A root
 		// parent updates lastSession.json (harmless — it is already the last session); a subagent parent does not.
 		string childId = parent.AllocateChildId();
 		if (!parent.Ephemeral)
 			SessionService.Save(parent.Data, !parent.IsSubagent);
 
-		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
 
 		// The constructor no longer displays the system prompt; this sub-session has no other replay path,

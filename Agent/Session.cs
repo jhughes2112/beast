@@ -98,13 +98,17 @@ public class Session
 			_bundle.Canonical.OnSystemMessage(systemPrompt);
 	}
 
+	// Monotonically increasing counter for child session IDs, rooted at this session's ID.
+	// Session.AllocateChildId() increments this and returns "{Id}_{n}".
+	private int _childCounter;
+
 	// ---- Child ID allocation ----
 
 	// Allocates a unique child session ID rooted at this session's ID.
 	// IDs form a path: "parentId_N" where N increments from 1.
 	public string AllocateChildId()
 	{
-		int n = Interlocked.Increment(ref _data.ChildCounter);
+		int n = Interlocked.Increment(ref _childCounter);
 		return $"{_data.Id}_{n}";
 	}
 
@@ -499,8 +503,7 @@ public class Session
 			_data.CumulativeInputTokens,
 			_data.CumulativeOutputTokens,
 			_data.CurrentContextSize,
-			true,
-			0);
+			true);
 		Session fork = new Session(forked, string.Empty, _transport, _isSubagent);
 		return fork;
 	}

@@ -91,7 +91,7 @@ public class AgentOrchestrator
 		string systemPrompt = role?.SystemPrompt ?? string.Empty;
 		LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
 		string modelId = model?.ConfigId ?? string.Empty;
-		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _ephemeral, 0);
+		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
 	}
 

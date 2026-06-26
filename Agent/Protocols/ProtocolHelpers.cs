@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
+using static SessionLoggerExtensions;
 
 
 // Shared utilities used by all protocol implementations.
@@ -148,5 +149,47 @@ static class ProtocolHelpers
 		if (id.StartsWith("fc_", StringComparison.Ordinal))
 			return id;
 		return $"fc_{id}";
+	}
+
+	// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
+	// client error: the request itself is bad, so retrying just burns the transient budget and then
+	// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
+	// 5xx and the retryable 4xx stay transient.
+	public static bool IsPermanentClientError(int statusCode)
+	{
+		return statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
+	}
+
+	// Returns true for 5xx responses — these are server-side failures that may succeed on retry.
+	// The caller uses this to pick the failureType ("ServerError" vs "Transient") when logging.
+	public static bool IsTransientServerError(int statusCode)
+	{
+		return statusCode >= 500;
+	}
+
+	// Builds the standard failure result used for permanent client errors: logs via the supplied
+	// logger with failureType "AuthFailure" (for 401/403) or "ClientError" (all other 4xx), then
+	// returns a Failed result carrying the status code and body so the real cause is visible.
+	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string 
+modelId)
+	{
+		logger.ProtocolFailure(
+			statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+			statusCode, responseBody, responseBody, null,
+			modelId, modelName, endpoint, protocol);
+		return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+	}
+
+	// Builds the standard transient result used when a non-rate-limit, non-permanent error occurs:
+	// logs with failureType "ServerError" for 5xx or "Transient" for retryable 4xx (408/425), then
+	// returns a Transient result carrying the body and any server-stated retry time.
+	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, 
+string modelId, HttpResponseMessage response)
+	{
+		logger.ProtocolFailure(
+			statusCode >= 500 ? "ServerError" : "Transient",
+			statusCode, responseBody, responseBody, null,
+			modelId, modelName, endpoint, protocol);
+		return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", TryGetRetryAfter(response, responseBody));
 	}
 }

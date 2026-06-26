@@ -10,6 +10,7 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using AnthropicSystemMessage = Anthropic.SDK.Messaging.SystemMessage;
+using static SessionLoggerExtensions;
 
 // -- Anthropic Messages API (native SDK) ---------------------------------------
 // This protocol talks to Claude exclusively through Anthropic.SDK. The SDK's own
@@ -149,18 +150,12 @@ public class ProtocolAnthropic
 			parameters.Stream = true;
 			return await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, logger, cancellationToken);
 		}
-		catch (Exception ex)
+			catch (Exception ex)
 		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: DetectedProtocol.Anthropic.ToString(),
-				failureType: "Exception",
-				httpStatusCode: null,
-				errorMessage: ex.Message,
-				exception: ex);
-			return ProtocolResult.Transient(ex.ToString(), null);
+			return logger.ProtocolFailure(
+				ProtocolResult.Transient(ex.ToString(), null),
+				"Exception", null, ex.Message, null, ex,
+				model, DetectedProtocol.Anthropic);
 		}
 	}
 
@@ -534,87 +529,51 @@ public class ProtocolAnthropic
 	{
 		ProtocolResult result;
 		if (ex is HttpRequestException http && http.StatusCode.HasValue)
-		{
-			int status = (int)http.StatusCode.Value;
-			if (status == 429)
 			{
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "Anthropic",
-					failureType: "RateLimited",
-					httpStatusCode: status,
-					errorMessage: ex.Message,
-					exception: ex);
-				result = ProtocolResult.RateLimited(null);
+				int status = (int)http.StatusCode.Value;
+				if (status == 429)
+				{
+					result = logger.ProtocolFailure(
+						ProtocolResult.RateLimited(null),
+						"RateLimited", status, ex.Message, null, ex,
+						model, DetectedProtocol.Anthropic);
+				}
+				else if (status == 401 || status == 403)
+				{
+					result = logger.ProtocolFailure(
+						ProtocolResult.Failed($"HTTP {status}: {ex}"),
+						"AuthFailure", status, ex.Message, null, ex,
+						model, DetectedProtocol.Anthropic);
+				}
+				else if (status >= 400 && status < 500)
+				{
+					result = logger.ProtocolFailure(
+						ProtocolResult.Transient($"HTTP {status}: {ex}", null),
+						"ClientError", status, ex.Message, null, ex,
+						model, DetectedProtocol.Anthropic);
+				}
+				else
+				{
+					result = logger.ProtocolFailure(
+						ProtocolResult.Transient($"HTTP {status}: {ex}", null),
+						"ServerError", status, ex.Message, null, ex,
+						model, DetectedProtocol.Anthropic);
+				}
 			}
-			else if (status == 401 || status == 403)
+			else if (ex is HttpRequestException)
 			{
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-						modelName: model.Config.Name,
-						endpoint: model.Endpoint,
-						protocol: "Anthropic",
-						failureType: "AuthFailure",
-						httpStatusCode: status,
-						errorMessage: ex.Message,
-						exception: ex);
-				result = ProtocolResult.Failed($"HTTP {status}: {ex}");
-			}
-			else if (status >= 400 && status < 500)
-			{
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "Anthropic",
-					failureType: "ClientError",
-					httpStatusCode: status,
-					errorMessage: ex.Message,
-					exception: ex);
-				result = ProtocolResult.Transient($"HTTP {status}: {ex}", null);
+				result = logger.ProtocolFailure(
+					ProtocolResult.Transient(ex.ToString(), null),
+					"NetworkError", null, ex.Message, null, ex,
+					model, DetectedProtocol.Anthropic);
 			}
 			else
 			{
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "Anthropic",
-					failureType: "ServerError",
-					httpStatusCode: status,
-					errorMessage: ex.Message,
-					exception: ex);
-				result = ProtocolResult.Transient($"HTTP {status}: {ex}", null);
+				result = logger.ProtocolFailure(
+					ProtocolResult.Transient(ex.ToString(), null),
+					"Exception", null, ex.Message, null, ex,
+					model, DetectedProtocol.Anthropic);
 			}
-		}
-		else if (ex is HttpRequestException)
-		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "Anthropic",
-				failureType: "NetworkError",
-				httpStatusCode: null,
-				errorMessage: ex.Message,
-				exception: ex);
-			result = ProtocolResult.Transient(ex.ToString(), null);
-		}
-		else
-		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "Anthropic",
-				failureType: "Exception",
-				httpStatusCode: null,
-				errorMessage: ex.Message,
-				exception: ex);
-			result = ProtocolResult.Transient(ex.ToString(), null);
-		}
 
 		return result;
 	}

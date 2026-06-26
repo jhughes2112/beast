@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using static SessionLoggerExtensions;
 
 
 // The wire protocol spoken by an endpoint — detected once per endpoint and cached in LlmRegistry.

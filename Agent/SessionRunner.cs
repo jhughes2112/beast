@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using static SessionLoggerExtensions;
 
 // Executes a session: LLM turns, tool dispatch, and role transitions. Subagent-wrapped tool
 // calls are delegated to SubagentRunner; single-turn execution lives in TurnRunner.
@@ -93,6 +94,34 @@ public class SessionRunner
 		_summarizeFileTool = ToolFactory.CreateSummarizeFileTool(new FileSummarizer(), _registry, _roleService, () => this.CurrentSession);
 	}
 
+	// Bash script to check whether the worktree's feature branch is fully integrated into the base branch
+	// and has no uncommitted changes. Reports PENDING with details or OK with both branch names.
+	private const string FinishCheckScript =
+		"feat=$(git -C /workspace rev-parse --abbrev-ref HEAD)\n" +
+		"base=$(git -C /git rev-parse --abbrev-ref HEAD)\n" +
+		"dirty=$(git -C /workspace status --porcelain)\n" +
+		"if [ -n \"$dirty\" ]; then echo PENDING; echo \"Uncommitted changes in the worktree:\"; echo \"$dirty\"; exit 0; fi\n" +
+		"if ! git -C /git merge-base --is-ancestor \"$feat\" \"$base\"; then\n" +
+		"  n=$(git -C /git rev-list --count \"$base\"..\"$feat\" 2>/dev/null)\n" +
+		"  echo PENDING; echo \"$n commit(s) on '$feat' are not yet integrated into '$base'.\"; exit 0\n" +
+		"fi\n" +
+		"echo OK; echo \"$feat\"; echo \"$base\"\n";
+
+	// Bash script to detach the worktree, prune its registration, and delete its merged branch. feat is
+	// re-derived in-script (never interpolated). cd /git runs first so removing /workspace does not pull
+	// the shell's CWD out from under it. Success is judged by the registration being gone, NOT by exit
+	// code: /workspace is a bind mount, so `git worktree remove` deletes the checkout but cannot rmdir the
+	// mount point — it exits non-zero while still detaching the worktree. Beast removes the leftover
+	// (empty) host folder afterward.
+	private const string FinishRemoveScript =
+		"cd /git\n" +
+		"feat=$(git -C /workspace rev-parse --abbrev-ref HEAD)\n" +
+		"git worktree remove --force /workspace >/dev/null 2>&1 || true\n" +
+		"git worktree prune >/dev/null 2>&1 || true\n" +
+		"if git worktree list --porcelain | grep -qx 'worktree /workspace'; then echo 'ERROR: worktree still registered at /workspace.'; exit 1; fi\n" +
+		"git branch -d \"$feat\" >/dev/null 2>&1 || true\n" +
+		"echo REMOVED\n";
+
 	// /finish: if the worktree's work is fully folded into the base branch and the tree is clean, detach the
 	// worktree, delete its (merged) branch, and signal Beast to tear down and remove the host folder. Beast
 	// drives the actual shutdown via its graceful /quit path, so the finish signal is delivered before the
@@ -107,18 +136,7 @@ public class SessionRunner
 		}
 
 		// Pending if the worktree has uncommitted changes, or feature commits not yet contained in base.
-		string checkScript =
-			"feat=$(git -C /workspace rev-parse --abbrev-ref HEAD)\n" +
-			"base=$(git -C /git rev-parse --abbrev-ref HEAD)\n" +
-			"dirty=$(git -C /workspace status --porcelain)\n" +
-			"if [ -n \"$dirty\" ]; then echo PENDING; echo \"Uncommitted changes in the worktree:\"; echo \"$dirty\"; exit 0; fi\n" +
-			"if ! git -C /git merge-base --is-ancestor \"$feat\" \"$base\"; then\n" +
-			"  n=$(git -C /git rev-list --count \"$base\"..\"$feat\" 2>/dev/null)\n" +
-			"  echo PENDING; echo \"$n commit(s) on '$feat' are not yet integrated into '$base'.\"; exit 0\n" +
-			"fi\n" +
-			"echo OK; echo \"$feat\"; echo \"$base\"\n";
-
-		ToolResult check = await ShellTools.BashAsync("finish_check", checkScript, null, ct);
+		ToolResult check = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
 		string[] lines = check.StdOut.Trim().Length == 0 ? Array.Empty<string>() : check.StdOut.Trim().Split('\n');
 		string verdict = lines.Length > 0 ? lines[0].Trim() : string.Empty;
 
@@ -138,21 +156,7 @@ public class SessionRunner
 		// would otherwise be orphaned when the worktree folder goes away.
 		SessionService.DeleteTree(session.Id);
 
-		// Detach the worktree and delete its merged branch. feat is re-derived in-script (never interpolated)
-		// and cd /git runs first so removing /workspace does not pull the shell's CWD out from under it.
-		// Success is judged by the registration being gone, NOT by exit code: /workspace is a bind mount, so
-		// `git worktree remove` deletes the checkout but cannot rmdir the mount point — it exits non-zero
-		// while still detaching the worktree. Beast removes the leftover (empty) host folder afterward.
-		string removeScript =
-			"cd /git\n" +
-			"feat=$(git -C /workspace rev-parse --abbrev-ref HEAD)\n" +
-			"git worktree remove --force /workspace >/dev/null 2>&1 || true\n" +
-			"git worktree prune >/dev/null 2>&1 || true\n" +
-			"if git worktree list --porcelain | grep -qx 'worktree /workspace'; then echo 'ERROR: worktree still registered at /workspace.'; exit 1; fi\n" +
-			"git branch -d \"$feat\" >/dev/null 2>&1 || true\n" +
-			"echo REMOVED\n";
-
-		ToolResult remove = await ShellTools.BashAsync("finish_remove", removeScript, null, ct);
+		ToolResult remove = await ShellTools.BashAsync("finish_remove", FinishRemoveScript, null, ct);
 		if (!remove.StdOut.Contains("REMOVED"))
 		{
 			string detail = remove.StdErr;
@@ -414,13 +418,7 @@ public class SessionRunner
 								if (fallback != null)
 								{
 									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
-									session.QueryLog.FallbackTransition(
-										fromModelId: _service.Model.ConfigId,
-										fromModelName: _service.Model.Config.Name,
-										toModelId: fallback.Model.ConfigId,
-										toModelName: fallback.Model.Config.Name,
-										reason: reason,
-										failedRetries: result.Outcome == ProtocolCallOutcome.TooManyRetries ? 10 : 5); // approximate
+									session.QueryLog.FallbackTransition(_service, fallback, reason, result.Outcome == ProtocolCallOutcome.TooManyRetries ? 10 : 5); // approximate
 									_service = fallback;
 									session.UpdateModel(fallback.Model);
 									session.SendStats();
@@ -432,14 +430,7 @@ public class SessionRunner
 									string detail = result.Outcome == ProtocolCallOutcome.TooManyRetries
 										? "Rate limited after too many retries, and no fallback model is available."
 										: (string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage);
-									session.QueryLog.SessionFailure(
-										sessionId: session.Id,
-										modelId: _service.Model.ConfigId,
-										modelName: _service.Model.Config.Name,
-										endpoint: _service.Model.Endpoint,
-										protocol: _service.Model.ConfigId, // The protocol is available via _service._handler.GetDetectedProtocol()
-										finalError: detail,
-										totalModelsTried: _service.RoleModelIds.Count);
+									session.QueryLog.SessionFailure(session, _service, detail, _service.RoleModelIds.Count);
 									_transport.Error(session.Id, detail);
 									completed = true;
 								}
@@ -539,14 +530,14 @@ public class SessionRunner
 		}
 
 		string newDisplayName = Session.IncrementDisplayName(_currentSession.DisplayName);
-		// Allocate the child ID before saving so the updated ChildCounter is persisted.
+		// Allocate the child ID before saving so the bumped counter is persisted (it lives in Session state only).
 		string newSessionId = _currentSession.AllocateChildId();
 
 		SaveRoot(_currentSession);
 
 		// Compaction starts a clean-slate session (no history) seeded with the summary plus the last
 		// couple of exchanges — not a copy of the prior conversation.
-		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral, 0);
+		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral);
 
 		Session newSession = new Session(freshData, role.SystemPrompt, _transport, false);
 
@@ -599,7 +590,7 @@ public class SessionRunner
 		string systemPrompt = role?.SystemPrompt ?? string.Empty;
 		LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
 		string modelId = model?.ConfigId ?? string.Empty;
-		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral, 0);
+		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
 	}
 
@@ -683,10 +674,9 @@ public class SessionRunner
 						_service = null;
 						_transport.Status(session.Id, "Config files reloaded.");
 					}
-					catch (ConfigException ex)
+					catch (Exception ex)
 					{
-						// Surface the file, line/column and parser message so the user can fix it without
-						// digging through the agent log. The previous config stays in effect.
+						// Surface the error so the user knows reload failed. The previous config stays in effect.
 						_transport.Error(session.Id, $"Reload failed: {ex}. Keeping the previous config.");
 					}
 					continue;

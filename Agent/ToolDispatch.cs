@@ -61,6 +61,12 @@ public static class ToolDispatch
 		if (payload.ToolCalls.Count == 0)
 			return false;
 
+		// Build the lookup once and reuse across both FixToolCalls and ExecuteToolAsync so each call
+		// resolves in O(1) instead of rescanning the tool array.
+		Dictionary<string, Tool> toolLookup = new Dictionary<string, Tool>(tools.Length);
+		foreach (Tool t in tools)
+			toolLookup[t.Definition.Function.Name] = t;
+
 		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
 
 		// Allocate this round's tool-response budget from the window; the budget splits it evenly
@@ -72,7 +78,7 @@ public static class ToolDispatch
 		Task<ToolResult>[] tasks = new Task<ToolResult>[toolCalls.Count];
 		for (int i = 0; i < toolCalls.Count; i++)
 		{
-			tasks[i] = ExecuteToolAsync(toolCalls[i], tools, session.Id, perToolBudget, transport, ct);
+			tasks[i] = ExecuteToolAsync(toolCalls[i], toolLookup, session.Id, perToolBudget, transport, ct);
 		}
 
 		// Drain each call independently rather than letting Task.WhenAll make the whole round hostage to
@@ -120,20 +126,13 @@ public static class ToolDispatch
 	// failure — an unknown tool, or the handler itself blowing up — becomes an error ToolResult so the model
 	// can see it, and the reason is logged rather than lost: a dropped exception here is what silently
 	// unwound the whole subtree as a fake cancel.
-	public static async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Tool[] tools, string sessionId, int maxOutputTokens, ITransportServer transport, CancellationToken ct)
+	public static async Task<ToolResult> ExecuteToolAsync(SemanticToolCall toolCall, Dictionary<string, Tool> toolLookup, string sessionId, int maxOutputTokens, ITransportServer transport, CancellationToken ct)
 	{
 		ToolResult result;
 		try
 		{
 			Tool? matchedTool = null;
-			foreach (Tool t in tools)
-			{
-				if (t.Definition.Function.Name == toolCall.Name)
-				{
-					matchedTool = t;
-					break;
-				}
-			}
+			toolLookup.TryGetValue(toolCall.Name, out matchedTool);
 
 			if (matchedTool == null)
 			{
@@ -189,7 +188,7 @@ public static class ToolDispatch
 	// reason naming the calls whose arguments cannot satisfy the schema, so the caller can treat the turn as
 	// a transient failure and re-request. A call whose name does not resolve at all is left untouched here —
 	// dispatch reports it as not-found so the model gets that feedback rather than a silent re-roll.
-	public static string? FixToolCalls(ProtocolCallPayload payload, Tool[] tools)
+	public static string? FixToolCalls(ProtocolCallPayload payload, Dictionary<string, Tool> toolLookup)
 	{
 		string broken = string.Empty;
 		foreach (SemanticToolCall toolCall in payload.ToolCalls)
@@ -197,31 +196,16 @@ public static class ToolDispatch
 			// Resolve the tool by exact name, then by a fuzzy correction for a near-miss. This is the only
 			// place name correction happens; dispatch later trusts the pinned name with a plain lookup.
 			Tool? matchedTool = null;
-			foreach (Tool t in tools)
-			{
-				if (t.Definition.Function.Name == toolCall.Name)
-				{
-					matchedTool = t;
-					break;
-				}
-			}
+			toolLookup.TryGetValue(toolCall.Name, out matchedTool);
 			if (matchedTool == null)
 			{
-				string[] knownNames = new string[tools.Length];
-				for (int i = 0; i < tools.Length; i++)
-					knownNames[i] = tools[i].Definition.Function.Name;
+				string[] knownNames = new string[toolLookup.Count];
+				toolLookup.Keys.CopyTo(knownNames, 0);
 
 				string? correctedName = FixJson.FuzzyMatchToolName(toolCall.Name, knownNames, 3, null);
 				if (correctedName != null)
 				{
-					foreach (Tool t in tools)
-					{
-						if (t.Definition.Function.Name == correctedName)
-						{
-							matchedTool = t;
-							break;
-						}
-					}
+					toolLookup.TryGetValue(correctedName, out matchedTool);
 				}
 			}
 

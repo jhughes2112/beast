@@ -52,7 +52,7 @@ public class WebSearchOpenrouter
 		// A single-model list: there is only the configured search model, so the service never falls back.
 		LlmService service = new LlmService(_model, DetectedProtocol.Unknown, _availability, new List<string> { _model.ConfigId });
 
-		// Allocate the child id and immediately persist the parent so its bumped ChildCounter reaches disk
+		// Allocate the child id and immediately persist the parent so its bumped counter reaches disk
 		// before this (non-ephemeral) search writes its own file. Without it a reload restores the old counter
 		// and the next child reissues this id, overwriting the file. Root parent updates lastSession; a
 		// subagent parent does not. Skipped for an ephemeral parent, whose children are never saved anyway.
@@ -60,7 +60,7 @@ public class WebSearchOpenrouter
 		if (!parent.Ephemeral)
 			SessionService.Save(parent.Data, !parent.IsSubagent);
 
-		BeastSession data = new BeastSession(childId, $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral, 0);
+		BeastSession data = new BeastSession(childId, $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session session = new Session(data, searchRole.SystemPrompt, transport, true);
 
 		// The constructor no longer displays the system prompt; a helper session has no other replay path, so

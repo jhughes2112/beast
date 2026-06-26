@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using static SessionLoggerExtensions;
 
 // -- OpenAI Chat Completions API -----------------------------------------------
 // Wire protocol requires strict userâ†’assistant alternation; two consecutive
@@ -258,32 +259,21 @@ public class ProtocolChatCompletions
 						return timeout;
 					throw;
 				}
-				catch (HttpRequestException ex)
+					catch (HttpRequestException ex)
 				{
-					logger.ProtocolFailure(
-						modelId: model.ConfigId,
-						modelName: model.Config.Name,
-						endpoint: model.Endpoint,
-						protocol: "ChatCompletions",
-						failureType: "NetworkError",
-						httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-						errorMessage: ex.Message,
-						responseBody: null,
-						exception: ex);
-					return ProtocolResult.Transient(ex.ToString(), null);
+					return logger.ProtocolFailure(
+						ProtocolResult.Transient(ex.ToString(), null),
+						"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+						ex.Message, null, ex,
+						model, DetectedProtocol.ChatCompletions);
 				}
 				catch (Exception ex)
 				{
-					logger.ProtocolFailure(
-						modelId: model.ConfigId,
-						modelName: model.Config.Name,
-						endpoint: model.Endpoint,
-						protocol: "ChatCompletions",
-						failureType: "Exception",
-						httpStatusCode: null,
-						errorMessage: ex.Message,
-						exception: ex);
-					return ProtocolResult.Transient(ex.ToString(), null);
+					return logger.ProtocolFailure(
+						ProtocolResult.Transient(ex.ToString(), null),
+						"Exception", null,
+						ex.Message, null, ex,
+						model, DetectedProtocol.ChatCompletions);
 				}
 
 				if (httpResponse.IsSuccessStatusCode)
@@ -343,16 +333,11 @@ public class ProtocolChatCompletions
 
 				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 				{
-					logger.ProtocolFailure(
-						modelId: model.ConfigId,
-						modelName: model.Config.Name,
-						endpoint: model.Endpoint,
-						protocol: "ChatCompletions",
-						failureType: "RateLimited",
-						httpStatusCode: (int)httpResponse.StatusCode,
-						errorMessage: responseBody,
-						responseBody: responseBody);
-					return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
+					return logger.ProtocolFailure(
+						ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody)),
+						"RateLimited", (int)httpResponse.StatusCode,
+						responseBody, responseBody, null,
+						model, DetectedProtocol.ChatCompletions);
 				}
 
 				int statusCode = (int)httpResponse.StatusCode;
@@ -360,44 +345,21 @@ public class ProtocolChatCompletions
 				// client error: the request itself is bad, so retrying just burns the transient budget and then
 				// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
 				// 5xx and the retryable 4xx stay transient.
-				bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
-				if (permanentClientError)
+				if (ProtocolHelpers.IsPermanentClientError(statusCode))
 				{
-					logger.ProtocolFailure(
-						modelId: model.ConfigId,
-						modelName: model.Config.Name,
-						endpoint: model.Endpoint,
-						protocol: "ChatCompletions",
-						failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
-						httpStatusCode: statusCode,
-						errorMessage: responseBody,
-						responseBody: responseBody);
-					return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+					return ProtocolHelpers.Failure("ChatCompletions", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
 				}
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: statusCode >= 500 ? "ServerError" : "Transient",
-					httpStatusCode: statusCode,
-					errorMessage: responseBody,
-					responseBody: responseBody);
-				return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, responseBody));
+				return ProtocolHelpers.TransientFailure("ChatCompletions", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, 
+httpResponse);
 			}
 		}
 		catch (Exception ex)
 		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: DetectedProtocol.ChatCompletions.ToString(),
-				failureType: "Exception",
-				httpStatusCode: null,
-				errorMessage: ex.Message,
-				exception: ex);
-			return ProtocolResult.Transient(ex.ToString(), null);
+			return logger.ProtocolFailure(
+				ProtocolResult.Transient(ex.ToString(), null),
+				"Exception", null,
+				ex.Message, null, ex,
+				model, DetectedProtocol.ChatCompletions);
 		}
 	}
 
@@ -570,30 +532,19 @@ public class ProtocolChatCompletions
 		}
 		catch (HttpRequestException ex)
 		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "ChatCompletions",
-				failureType: "NetworkError",
-				httpStatusCode: ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-				errorMessage: ex.Message,
-				responseBody: null,
-				exception: ex);
-			return ProtocolResult.Transient(ex.ToString(), null);
+			return logger.ProtocolFailure(
+				ProtocolResult.Transient(ex.ToString(), null),
+				"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
+				ex.Message, null, ex,
+				model, DetectedProtocol.ChatCompletions);
 		}
 		catch (Exception ex)
 		{
-			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "ChatCompletions",
-				failureType: "Exception",
-				httpStatusCode: null,
-				errorMessage: ex.Message,
-				exception: ex);
-			return ProtocolResult.Transient(ex.ToString(), null);
+			return logger.ProtocolFailure(
+				ProtocolResult.Transient(ex.ToString(), null),
+				"Exception", null,
+				ex.Message, null, ex,
+				model, DetectedProtocol.ChatCompletions);
 		}
 
 		if (!httpResponse.IsSuccessStatusCode)
@@ -601,57 +552,33 @@ public class ProtocolChatCompletions
 			string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 			int statusCode = (int)httpResponse.StatusCode;
 
+			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
+			// the provider rejects streaming for this model, so we disable it and fall through to
+			// non-streaming. Note: unlike the non-streaming path (which excludes 408/425 as retryable),
+			// any non-429 4xx here means streaming is not supported — the caller retries non-streaming.
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
 				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
-					httpStatusCode: statusCode,
-					errorMessage: errorBody,
-					responseBody: errorBody);
+					statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
+					statusCode, errorBody, errorBody, null,
+					model, DetectedProtocol.ChatCompletions);
 				return null;
 			}
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: "RateLimited",
-					httpStatusCode: statusCode,
-					errorMessage: errorBody,
-					responseBody: errorBody);
-				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
+				return logger.ProtocolFailure(
+					ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody)),
+					"RateLimited", statusCode,
+					errorBody, errorBody, null,
+					model, DetectedProtocol.ChatCompletions);
 			}
 
-			if (statusCode == 401 || statusCode == 403)
-			{
-				logger.ProtocolFailure(
-					modelId: model.ConfigId,
-					modelName: model.Config.Name,
-					endpoint: model.Endpoint,
-					protocol: "ChatCompletions",
-					failureType: "AuthFailure",
-					httpStatusCode: statusCode,
-					errorMessage: errorBody,
-					responseBody: errorBody);
-				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
-			}
 			logger.ProtocolFailure(
-				modelId: model.ConfigId,
-				modelName: model.Config.Name,
-				endpoint: model.Endpoint,
-				protocol: "ChatCompletions",
-				failureType: statusCode >= 500 ? "ServerError" : "Transient",
-				httpStatusCode: statusCode,
-				errorMessage: errorBody,
-				responseBody: errorBody);
+				statusCode >= 500 ? "ServerError" : "Transient",
+				statusCode, errorBody, errorBody, null,
+				model, DetectedProtocol.ChatCompletions);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 

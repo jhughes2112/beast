@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 // Beast CLI -- launches the Agent docker container and communicates with it over stdio.
@@ -109,11 +110,19 @@ public class Program
 		{
 			string cwd = Directory.GetCurrentDirectory();
 
-			// Parse settings.json and roles.json here on the host, before the worktree menu takes over the
-			// screen, so a bad config file shows a located error on the normal terminal instead of dying
-			// silently inside the Docker container (whose stderr is lost when the container is reaped).
-			if (!PreflightConfig(cwd))
-				return 1;
+			try
+			{
+				// Preflight: construct SettingsService and RoleService here on the host, before the worktree
+				// menu takes over the screen. The services handle config errors forgivingly (log warning
+				// and use defaults), and create defaults if files don't exist. Any warnings about
+				// malformed config files appear on the host terminal before the Docker container starts.
+				_ = new SettingsService(cwd);
+				_ = new RoleService(cwd);
+			}
+			catch (ConfigException)
+			{
+					return 1;
+			}
 
 			Worktrees.Selection? sel = await ResolveWorktree(cwd, worktreeArg, nonInteractive);
 			if (sel == null)
@@ -174,28 +183,6 @@ public class Program
 			return Worktrees.Selection.ForCurrentFolder(cwd);
 
 		return Worktrees.Ensure(cwd, result.Value);
-	}
-
-	// Loads settings.json and roles.json from the same locations the agent uses (project .beast first,
-	// then ~/.beast for settings), letting their loaders validate the JSON. Both loaders print a friendly,
-	// line-located message to stderr and throw ConfigException on a parse/load failure; we catch it and
-	// return false so the launch aborts visibly rather than the container crash-looping out of sight.
-	private static bool PreflightConfig(string cwd)
-	{
-		bool ok;
-		try
-		{
-			SettingsService settings = new SettingsService(cwd);
-			RoleService roles = new RoleService(cwd);
-			ok = settings != null && roles != null;
-		}
-		catch (ConfigException)
-		{
-			Console.Error.WriteLine();
-			Console.Error.WriteLine("Aborting: the agent was not launched because the configuration above is invalid.");
-			ok = false;
-		}
-		return ok;
 	}
 
 	private static void PrintHelp()

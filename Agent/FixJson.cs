@@ -26,6 +26,18 @@ public static class FixJson
 	private static int _typeCoercions;
 	private static int _extraArgsStripped;
 
+	// Resets all counters to zero. Call at the start of each test run so per-run diagnostics don't
+	// accumulate across runs in the same process.
+	public static void ResetCounters()
+	{
+		_markdownStrips = 0;
+		_structuralRepairs = 0;
+		_toolNameCorrections = 0;
+		_argNameCorrections = 0;
+		_typeCoercions = 0;
+		_extraArgsStripped = 0;
+	}
+
 	// Returns a slash-separated snapshot of all counters: mark/struct/name/arg/type/extra
 	public static string GetCounters()
 		=> $"{_markdownStrips}/{_structuralRepairs}/{_toolNameCorrections}/{_argNameCorrections}/{_typeCoercions}/{_extraArgsStripped}";

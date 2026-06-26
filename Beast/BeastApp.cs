@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 public class BeastApp : IAsyncDisposable
 {
 	// Per-session conversation model and streaming state, keyed by session ID.
-	private class SessionState
+	internal class SessionState
 	{
 		public ConversationModel Model { get; } = new ConversationModel();
 		public int NextIndex;
@@ -79,21 +79,31 @@ public class BeastApp : IAsyncDisposable
 	// Falls back to hard cancel after a timeout.
 	private void RequestGracefulExit()
 	{
-		async Task GracefulExitAsync()
+		_ = SendQuitAsync();
+	}
+
+	// Sends /quit to the agent so it saves the session, then waits for it to disconnect.
+	// Falls back to hard cancel after a timeout.
+	private async Task SendQuitAsync()
+	{
+		try
 		{
-			try
-			{
-				if (_wsClient != null)
-					await _wsClient.SendAsync(_activeSessionId + "|/quit", _cts!.Token);
-			}
-			catch { }
-
-			if (_readTask != null)
-				await Task.WhenAny(_readTask, Task.Delay(3000));
-
-			_cts?.Cancel();
+			if (_wsClient != null)
+				await _wsClient.SendAsync(_activeSessionId + "|/quit", _cts!.Token);
 		}
-		_ = GracefulExitAsync();
+		catch { }
+
+		if (_readTask != null)
+			await Task.WhenAny(_readTask, Task.Delay(3000));
+
+		_cts?.Cancel();
+	}
+
+	// Sends the queued steering messages to the agent's ready session.
+	private async Task SendInitialMessagesAsync(string sessionId)
+	{
+		foreach (string msg in _messages)
+			await _wsClient!.SendAsync(sessionId + "|" + msg, _cts!.Token);
 	}
 
 	public async Task<int> Run()
@@ -193,20 +203,15 @@ public class BeastApp : IAsyncDisposable
 	// Wire format: N|sessionId|content (sessionId may be empty for orchestrator-level frames).
 	private static (FrameType Type, string SessionId, string Content) ParseFrame(string message)
 	{
-		int pipe1 = message.IndexOf('|');
-		if (pipe1 < 0 || !byte.TryParse(message.Substring(0, pipe1), out byte typeByte))
+		string[] parts = message.Split('|', 3);
+		if (parts.Length == 1 || !byte.TryParse(parts[0], out byte typeByte))
 			return (FrameType.Output, string.Empty, message);
 
-		int pipe2 = message.IndexOf('|', pipe1 + 1);
-		if (pipe2 < 0)
-		{
-			// Old single-pipe format (no session ID) — backward compatibility.
-			return ((FrameType)typeByte, string.Empty, message.Substring(pipe1 + 1));
-		}
+		// Old single-pipe format (no session ID) — backward compatibility.
+		if (parts.Length == 2)
+			return ((FrameType)typeByte, string.Empty, parts[1]);
 
-		string sessionId = message.Substring(pipe1 + 1, pipe2 - pipe1 - 1);
-		string content = message.Substring(pipe2 + 1);
-		return ((FrameType)typeByte, sessionId, content);
+		return ((FrameType)typeByte, parts[1], parts[2]);
 	}
 
 	// Returns the SessionState for the given ID, creating it if new.
@@ -258,20 +263,13 @@ public class BeastApp : IAsyncDisposable
 		if (!_sessions.ContainsKey(sessionId))
 			return;
 
-		// Refuse while anything in the subtree is still running.
-		string subtreePrefix = sessionId + "_";
-		foreach (string busyId in _busySessions)
-		{
-			if (string.Equals(busyId, sessionId, StringComparison.Ordinal) || busyId.StartsWith(subtreePrefix, StringComparison.Ordinal))
-				return;
-		}
+		if (!SessionTree.IsSubtreeIdle(sessionId, _busySessions))
+			return;
 
-		// The session files live in the agent's folder, so the agent performs the disk delete recursively.
-		// The command is routed through the root session — only its command queue is drained externally.
-		string rootId = GetRootSessionId();
+		string rootId = SessionTree.GetRootSessionId(_sessions);
 		if (string.IsNullOrEmpty(rootId) || _wsClient == null)
 			return;
-		_ = _wsClient.SendAsync(rootId + "|/delete-session " + sessionId, _cts!.Token);
+		SendDeleteCommandAsync(rootId, sessionId);
 
 		if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
 		{
@@ -280,125 +278,31 @@ public class BeastApp : IAsyncDisposable
 			return;
 		}
 
-		// Non-root: drop this session and every descendant from client memory now.
-		bool wasActiveInSubtree = false;
-		List<string> toRemove = new List<string>();
-		foreach (string id in _sessions.Keys)
-		{
-			if (string.Equals(id, sessionId, StringComparison.Ordinal) || id.StartsWith(subtreePrefix, StringComparison.Ordinal))
-				toRemove.Add(id);
-		}
-		foreach (string id in toRemove)
-		{
-			if (string.Equals(_activeSessionId, id, StringComparison.Ordinal))
-				wasActiveInSubtree = true;
-			_sessions.Remove(id);
-			_busySessions.Remove(id);
-			_sessionDisplayNames.Remove(id);
-		}
+		(bool wasActiveInSubtree, string subtreePrefix) = SessionTree.CollectSubtreeIds(sessionId, _sessions.Keys, _activeSessionId);
+		SessionTree.RemoveSessionFromLists(subtreePrefix, sessionId, _sessions, _busySessions, _sessionDisplayNames);
+		UpdateDisplayAfterDelete(wasActiveInSubtree, rootId);
+	}
 
+	// The session files live in the agent's folder, so the agent performs the disk delete recursively.
+	// The command is routed through the root session — only its command queue is drained externally.
+	private void SendDeleteCommandAsync(string rootId, string sessionId)
+	{
+		_ = _wsClient!.SendAsync(rootId + "|/delete-session " + sessionId, _cts!.Token);
+	}
+
+	// After removing a non-root session subtree, switch the active view if needed and refresh the list.
+	private void UpdateDisplayAfterDelete(bool wasActiveInSubtree, string rootId)
+	{
 		if (wasActiveInSubtree)
 			SwitchActiveSession(rootId);
 		else
 			NotifySessionList();
 	}
 
-	// Returns the ID of the root session: the one whose parent is not itself a known session.
-	private string GetRootSessionId()
-	{
-		foreach (string id in _sessions.Keys)
-		{
-			if (string.IsNullOrEmpty(id))
-				continue;
-			string? parentId = GetParentId(id);
-			if (parentId == null || !_sessions.ContainsKey(parentId))
-				return id;
-		}
-		return "";
-	}
-
-	// Returns the parent session ID for a given session ID, or null if it is a root.
-	// Parent-child relationship is encoded as "parentId_N" where N is a positive integer.
-	private static string? GetParentId(string id)
-	{
-		int last = id.LastIndexOf('_');
-		if (last < 0)
-			return null;
-		string suffix = id.Substring(last + 1);
-		if (!int.TryParse(suffix, out _))
-			return null;
-		return id.Substring(0, last);
-	}
-
-	// Appends this node and its children to result in DFS pre-order. Children are sorted by numeric
-	// suffix descending so the most recently spawned agent lands directly under its parent — newest
-	// activity stays at the top of the list instead of scrolling off the bottom.
-	private static void DfsAdd(
-		string id,
-		int depth,
-		Dictionary<string, List<string>> childrenMap,
-		List<(string Id, int Depth)> result)
-	{
-		result.Add((id, depth));
-		if (!childrenMap.TryGetValue(id, out List<string>? children))
-			return;
-		children.Sort((a, b) =>
-		{
-			int lastA = a.LastIndexOf('_');
-			int lastB = b.LastIndexOf('_');
-			int numA = lastA >= 0 && int.TryParse(a.Substring(lastA + 1), out int nA) ? nA : 0;
-			int numB = lastB >= 0 && int.TryParse(b.Substring(lastB + 1), out int nB) ? nB : 0;
-			return numB.CompareTo(numA);
-		});
-		foreach (string child in children)
-			DfsAdd(child, depth + 1, childrenMap, result);
-	}
-
 	// Pushes the current session list and counts to the display.
 	private void NotifySessionList()
 	{
-		// Build parent→children map from IDs.
-		Dictionary<string, List<string>> childrenMap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-		HashSet<string> hasParent = new HashSet<string>(StringComparer.Ordinal);
-		foreach (string id in _sessions.Keys)
-		{
-			if (string.IsNullOrEmpty(id))
-				continue;
-			string? parentId = GetParentId(id);
-			if (parentId != null && _sessions.ContainsKey(parentId))
-			{
-				if (!childrenMap.TryGetValue(parentId, out List<string>? kids))
-				{
-					kids = new List<string>();
-					childrenMap[parentId] = kids;
-				}
-				kids.Add(id);
-				hasParent.Add(id);
-			}
-		}
-
-		// DFS from roots (sorted by key for deterministic order).
-		List<string> roots = new List<string>();
-		foreach (string id in _sessions.Keys)
-		{
-			if (!string.IsNullOrEmpty(id) && !hasParent.Contains(id))
-				roots.Add(id);
-		}
-		roots.Sort(StringComparer.Ordinal);
-
-		List<(string Id, int Depth)> ordered = new List<(string, int)>();
-		foreach (string root in roots)
-			DfsAdd(root, 0, childrenMap, ordered);
-
-		List<SessionDisplayInfo> list = new List<SessionDisplayInfo>();
-		foreach ((string id, int depth) in ordered)
-		{
-			string name = _sessionDisplayNames.TryGetValue(id, out string? announced) ? announced : id;
-			list.Add(new SessionDisplayInfo(id, name, _busySessions.Contains(id), depth));
-		}
-
-		_display.SetSessionList(list, _activeSessionId);
-		_display.SetSessionCounts(_busySessions.Count, _sessions.Count);
+		SessionTree.NotifySessionList(_sessions, _busySessions, _sessionDisplayNames, _activeSessionId, _display);
 	}
 
 	// Frames that represent live activity worth following to. Busy/Idle are plumbing, and StreamEnd
@@ -423,12 +327,7 @@ public class BeastApp : IAsyncDisposable
 				if (content == "ready")
 				{
 					string readySessionId = sessionId;
-					async Task SendMessagesAsync()
-					{
-						foreach (string msg in _messages)
-							await _wsClient!.SendAsync(readySessionId + "|" + msg, _cts!.Token);
-					}
-					_ = SendMessagesAsync();
+					_ = SendInitialMessagesAsync(readySessionId);
 				}
 				else if (content == "worktree-finished")
 				{
@@ -626,7 +525,7 @@ public class BeastApp : IAsyncDisposable
 				// while the parent is still busy, so the busy check skips them correctly.
 				if (!string.IsNullOrEmpty(effectiveId) && !string.IsNullOrEmpty(_activeSessionId))
 				{
-					bool isDirectChild = string.Equals(GetParentId(effectiveId), _activeSessionId, StringComparison.Ordinal);
+					bool isDirectChild = string.Equals(SessionTree.GetParentId(effectiveId), _activeSessionId, StringComparison.Ordinal);
 					if (isDirectChild && !_busySessions.Contains(_activeSessionId))
 						SwitchActiveSession(effectiveId);
 				}

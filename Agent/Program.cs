@@ -19,6 +19,7 @@ public class Program
 		{
 			ITransportServer consoleTransport = new TransportConsoleDebug();
 			TestContext ctx = new TestContext(consoleTransport);
+			FixJson.ResetCounters();
 			LlmServiceTests.Test(ctx);
 			ContextBudgetTests.Test(ctx);
 			FixJsonTests.Test(ctx);
@@ -43,18 +44,8 @@ public class Program
 			return 1;
 		}
 
-		SettingsService settingsService;
-		RoleService roleService;
-		try
-		{
-			settingsService = new SettingsService(Environment.CurrentDirectory);
-			roleService = new RoleService(Environment.CurrentDirectory);
-		}
-		catch (ConfigException)
-		{
-			// The service already printed a friendly parse/load error; exit without a call stack.
-			return 1;
-		}
+		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
+		RoleService roleService = new RoleService(Environment.CurrentDirectory);
 
 		LlmRegistry registry = new LlmRegistry();
 		await using TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
