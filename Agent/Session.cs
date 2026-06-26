@@ -52,6 +52,11 @@ public class Session
 	// or switched-in session starts out of the loop, and compaction carries it forward explicitly.
 	private bool _workInProgress = false;
 
+	// Tracks the model the user explicitly selected via /model. Null means "use whatever the
+	// system picks" (fresh session, resume, or after /clear). While set, system paths (fallback,
+	// refresh) must not overwrite it — only a new /model command or session rehydration can change it.
+	private string? _userSelectedModel;
+
 	// Expose raw data only for persistence (SessionService.Save). All other access goes through
 	// the typed properties and methods below.
 	public BeastSession Data => _data;
@@ -169,6 +174,22 @@ public class Session
 	// Sets the active model name. Call InvalidateProtocol() separately if the model switch
 	// requires discarding the in-progress protocol (e.g. via the /model command).
 	public void UpdateModel(LlmModel model) { _data.Model = model.ConfigId; _data.ContextWindow = model.Config.ContextWindow; _modelDisplaySuffix = ReasoningEffort.DisplaySuffix(model.Config.ReasoningEffort); }
+
+	// Tracks the model the user explicitly selected via /model. Null means "use whatever the
+	// system picks" (fresh session, resume, or after /clear). While set, system paths (fallback,
+	// refresh) must not overwrite it — only a new /model command or session rehydration can change it.
+	public string? UserSelectedModel => _userSelectedModel;
+
+	// Marks the model as user-selected via /model command. System paths (fallback, refresh) respect
+	// this and will not overwrite session.Model while it is set. Cleared on /clear, session reset,
+	// or when a new /model is issued.
+	public void MarkModelUserSelected(string modelId) => _userSelectedModel = modelId;
+
+	// Clears the user-selected model marker. Called on /clear, session reset, or when loading from disk.
+	public void ClearUserSelectedModel() => _userSelectedModel = null;
+
+	// Resets all mutable session state. Called when a session is cleared or rehydrated.
+	public void Reset() => _userSelectedModel = null;
 
 	// Signals the bundle that the active protocol should be discarded on next turn.
 	public void InvalidateProtocol() => _bundle.InvalidateProtocol();

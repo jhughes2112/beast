@@ -283,14 +283,8 @@ public class SessionRunner
 				Role? role = _roleService.GetRole(session.Role);
 				_service = RefreshService(role, session);
 
-				if (_service != null)
+							if (_service != null)
 				{
-					if (_service.Model.ConfigId != session.Model)  // if the model changed, update the session with it
-					{
-						session.UpdateModel(_service.Model);
-						session.SendStats();
-					}
-
 					string currentCandidates = JsonSerializer.Serialize(BuildCompletionCandidates(session));
 					if (currentCandidates != lastCompletionCandidates)
 					{
@@ -420,7 +414,8 @@ public class SessionRunner
 									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
 									session.QueryLog.FallbackTransition(_service, fallback, reason, result.Outcome == ProtocolCallOutcome.TooManyRetries ? 10 : 5); // approximate
 									_service = fallback;
-									session.UpdateModel(fallback.Model);
+																// Don't change session.Model — that's the user's choice. The fallback is tracked
+									// only via _service, so session.Model stays as the user selected it.
 									session.SendStats();
 									_transport.Status(session.Id, $"{reason}; falling back to {fallback.Model.Config.Name}");
 									// completed stays false so the loop retries this turn on the fallback model.
@@ -704,7 +699,8 @@ public class SessionRunner
 							_transport.Error(session.Id, $"Unknown model: {modelArg}");
 						else
 						{
-							session.UpdateModel(targetModel);
+												session.UpdateModel(targetModel);
+							session.MarkModelUserSelected(modelArg);
 							_registry.ResetAvailability(modelArg);
 							_service = null;  // force fresh service with new model next turn
 							_transport.Status(session.Id, $"Model set to {modelArg}");

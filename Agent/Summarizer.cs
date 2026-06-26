@@ -34,13 +34,12 @@ public static class Summarizer
 
 				// Sustained-rate-limited: fall back to the next usable model in the role's list (like /model)
 				// and retry. Any other failure, or an exhausted list, leaves the summary null.
-				if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
+							if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
 				{
 					LlmService? fallback = registry.CreateFallbackService(service, 0);
 					if (fallback != null)
 					{
 						service = fallback;
-						session.UpdateModel(service.Model);
 						transport.Status(session.Id, $"Rate limited; falling back to {service.Model.Config.Name}");
 						continue;
 					}
