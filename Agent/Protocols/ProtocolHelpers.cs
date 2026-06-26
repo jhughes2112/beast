@@ -170,7 +170,7 @@ static class ProtocolHelpers
 	// Builds the standard failure result used for permanent client errors: logs via the supplied
 	// logger with failureType "AuthFailure" (for 401/403) or "ClientError" (all other 4xx), then
 	// returns a Failed result carrying the status code and body so the real cause is visible.
-	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string 
+	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string
 modelId)
 	{
 		logger.ProtocolFailure(
@@ -183,7 +183,7 @@ modelId)
 	// Builds the standard transient result used when a non-rate-limit, non-permanent error occurs:
 	// logs with failureType "ServerError" for 5xx or "Transient" for retryable 4xx (408/425), then
 	// returns a Transient result carrying the body and any server-stated retry time.
-	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, 
+	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint,
 string modelId, HttpResponseMessage response)
 	{
 		logger.ProtocolFailure(

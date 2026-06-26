@@ -25,19 +25,20 @@ public static class SessionLoggerExtensions
 		LlmModel model, ProtocolProxy handler, Exception? exception = null, string? stackTrace = null)
 	{
 		logger.ModelFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: handler.GetDetectedProtocol().ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			retryCount: retryCount,
-			maxRetries: maxRetries,
-			retryAfter: retryAfter,
-			willFallback: willFallback,
-			exception: exception,
-			stackTrace: stackTrace);
+		model.ConfigId,
+		model.Config.Name,
+		model.Endpoint,
+		handler.GetDetectedProtocol().ToString(),
+		failureType,
+		httpStatusCode,
+		errorMessage,
+		retryCount,
+		maxRetries,
+		retryAfter,
+		willFallback,
+		null,
+		exception,
+		stackTrace);
 		return result;
 	}
 
@@ -48,19 +49,20 @@ public static class SessionLoggerExtensions
 		LlmModel model, ProtocolProxy handler, Exception? exception = null, string? stackTrace = null)
 	{
 		logger.ModelFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: handler.GetDetectedProtocol().ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			retryCount: retryCount,
-			maxRetries: maxRetries,
-			retryAfter: retryAfter,
-			willFallback: willFallback,
-			exception: exception,
-			stackTrace: stackTrace);
+			model.ConfigId,
+			model.Config.Name,
+			model.Endpoint,
+			handler.GetDetectedProtocol().ToString(),
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			retryCount,
+			maxRetries,
+			retryAfter,
+			willFallback,
+			null,
+			exception,
+			stackTrace);
 	}
 
 	/// <summary>Logs a model failure and returns the supplied ProtocolResult. Overload that takes
@@ -72,19 +74,20 @@ public static class SessionLoggerExtensions
 		LlmModel model, DetectedProtocol protocol, Exception? exception = null, string? stackTrace = null)
 	{
 		logger.ModelFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: protocol.ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			retryCount: retryCount,
-			maxRetries: maxRetries,
-			retryAfter: retryAfter,
-			willFallback: willFallback,
-			exception: exception,
-			stackTrace: stackTrace);
+			model.ConfigId,
+			model.Config.Name,
+			model.Endpoint,
+			protocol.ToString(),
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			retryCount,
+			maxRetries,
+			retryAfter,
+			willFallback,
+			null,
+			exception,
+			stackTrace);
 		return result;
 	}
 
@@ -99,15 +102,15 @@ public static class SessionLoggerExtensions
 		string? responseBody, Exception? exception, LlmModel model, ProtocolProxy handler)
 	{
 		logger.ProtocolFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: handler.GetDetectedProtocol().ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			responseBody: responseBody,
-			exception: exception);
+			model.ConfigId,
+			model.Config.Name,
+			model.Endpoint,
+			handler.GetDetectedProtocol().ToString(),
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			responseBody,
+			exception);
 		return result;
 	}
 
@@ -117,15 +120,15 @@ public static class SessionLoggerExtensions
 		string? responseBody, Exception? exception, LlmModel model, DetectedProtocol protocol)
 	{
 		logger.ProtocolFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: protocol.ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			responseBody: responseBody,
-			exception: exception);
+			model.ConfigId,
+			model.Config.Name,
+			model.Endpoint,
+			protocol.ToString(),
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			responseBody,
+			exception);
 		return result;
 	}
 
@@ -135,15 +138,15 @@ public static class SessionLoggerExtensions
 		string? responseBody, Exception? exception, LlmModel model, ProtocolProxy handler)
 	{
 		logger.ProtocolFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: handler.GetDetectedProtocol().ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			responseBody: responseBody,
-			exception: exception);
+			model.ConfigId,
+			model.Config.Name,
+			model.Endpoint,
+			handler.GetDetectedProtocol().ToString(),
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			responseBody,
+			exception);
 	}
 
 	/// <summary>Logs a protocol failure (no result to return) using a model + protocol directly.</summary>
@@ -152,15 +155,15 @@ public static class SessionLoggerExtensions
 		string? responseBody, Exception? exception, LlmModel model, DetectedProtocol protocol)
 	{
 		logger.ProtocolFailure(
-			modelId: model.ConfigId,
-			modelName: model.Config.Name,
-			endpoint: model.Endpoint,
-			protocol: protocol.ToString(),
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			responseBody: responseBody,
-			exception: exception);
+			model.ConfigId,
+			model.Config.Name,
+			model.Endpoint,
+			protocol.ToString(),
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			responseBody,
+			exception);
 	}
 
 	/// <summary>Logs a protocol failure using bare string identity fields. Used by ProtocolHelpers
@@ -171,15 +174,15 @@ public static class SessionLoggerExtensions
 		string modelId, string modelName, string endpoint, string protocol)
 	{
 		logger.ProtocolFailure(
-			modelId: modelId,
-			modelName: modelName,
-			endpoint: endpoint,
-			protocol: protocol,
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			responseBody: responseBody,
-			exception: exception);
+			modelId,
+			modelName,
+			endpoint,
+			protocol,
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			responseBody,
+			exception);
 	}
 
 	/// <summary>Logs a protocol failure and returns a result, using bare string identity fields.
@@ -190,15 +193,15 @@ public static class SessionLoggerExtensions
 		string modelId, string modelName, string endpoint, string protocol)
 	{
 		logger.ProtocolFailure(
-			modelId: modelId,
-			modelName: modelName,
-			endpoint: endpoint,
-			protocol: protocol,
-			failureType: failureType,
-			httpStatusCode: httpStatusCode,
-			errorMessage: errorMessage,
-			responseBody: responseBody,
-			exception: exception);
+			modelId,
+			modelName,
+			endpoint,
+			protocol,
+			failureType,
+			httpStatusCode,
+			errorMessage,
+			responseBody,
+			exception);
 		return result;
 	}
 
@@ -210,12 +213,12 @@ public static class SessionLoggerExtensions
 		LlmService from, LlmService to, string reason, int failedRetries)
 	{
 		logger.FallbackTransition(
-			fromModelId: from.Model.ConfigId,
-			fromModelName: from.Model.Config.Name,
-			toModelId: to.Model.ConfigId,
-			toModelName: to.Model.Config.Name,
-			reason: reason,
-			failedRetries: failedRetries);
+			from.Model.ConfigId,
+			from.Model.Config.Name,
+			to.Model.ConfigId,
+			to.Model.Config.Name,
+			reason,
+			failedRetries);
 	}
 
 	/// <summary>Logs a session failure. Takes the service so the caller doesn't have to pluck
@@ -224,12 +227,12 @@ public static class SessionLoggerExtensions
 		Session session, LlmService service, string finalError, int totalModelsTried)
 	{
 		logger.SessionFailure(
-			sessionId: session.Id,
-			modelId: service.Model.ConfigId,
-			modelName: service.Model.Config.Name,
-			endpoint: service.Model.Endpoint,
-			protocol: service.Model.ConfigId, // kept verbatim from the original call site
-			finalError: finalError,
-			totalModelsTried: totalModelsTried);
+			session.Id,
+			service.Model.ConfigId,
+			service.Model.Config.Name,
+			service.Model.Endpoint,
+			service.Model.ConfigId,
+			finalError,
+			totalModelsTried);
 	}
 }

@@ -121,7 +121,7 @@ public class Program
 			}
 			catch (ConfigException)
 			{
-					return 1;
+				return 1;
 			}
 
 			Worktrees.Selection? sel = await ResolveWorktree(cwd, worktreeArg, nonInteractive);

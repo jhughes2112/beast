@@ -142,12 +142,12 @@ public class OpenrouterSearchConfig
 	public LlmModel BuildModel()
 	{
 		return new LlmModel(
-			configId: "websearch",
-			endpoint: Endpoint,
-			apiKey: ApiKey,
-			extras: Extras,
-			headers: Headers,
-			config: new ModelConfig { Id = Model, Name = Model, ContextWindow = ContextWindow, MaxOutputTokens = MaxOutputTokens });
+		"websearch",
+		Endpoint,
+		ApiKey,
+		Extras,
+		Headers,
+		new ModelConfig { Id = Model, Name = Model, ContextWindow = ContextWindow, MaxOutputTokens = MaxOutputTokens });
 	}
 }
 

@@ -94,7 +94,7 @@ public static class HelperSession
 					// Sustained-rate-limited on this model. Swap in the next usable model from the role's list
 					// (like /model) and retry the same turn; don't spend a turn on the swap. Give up only when
 					// the list is exhausted, which falls through to the genuine-failure return below.
-								LlmService? fallback = registry.CreateFallbackService(service, 0);
+					LlmService? fallback = registry.CreateFallbackService(service, 0);
 					if (fallback != null)
 					{
 						service = fallback;

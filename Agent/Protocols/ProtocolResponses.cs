@@ -185,7 +185,7 @@ public class ProtocolResponses
 					return timeout;
 				throw;
 			}
-					catch (HttpRequestException ex)
+			catch (HttpRequestException ex)
 			{
 				logger.ProtocolFailure(
 					"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,

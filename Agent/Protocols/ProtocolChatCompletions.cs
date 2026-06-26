@@ -259,7 +259,7 @@ public class ProtocolChatCompletions
 						return timeout;
 					throw;
 				}
-					catch (HttpRequestException ex)
+				catch (HttpRequestException ex)
 				{
 					return logger.ProtocolFailure(
 						ProtocolResult.Transient(ex.ToString(), null),
@@ -349,7 +349,7 @@ public class ProtocolChatCompletions
 				{
 					return ProtocolHelpers.Failure("ChatCompletions", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
 				}
-				return ProtocolHelpers.TransientFailure("ChatCompletions", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, 
+				return ProtocolHelpers.TransientFailure("ChatCompletions", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId,
 httpResponse);
 			}
 		}

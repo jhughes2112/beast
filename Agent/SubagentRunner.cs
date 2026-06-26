@@ -227,7 +227,7 @@ public class SubagentRunner
 					LlmService? fallback = _registry.CreateFallbackService(service, subSession.ContextLength);
 					if (fallback != null)
 					{
-										service = fallback;
+						service = fallback;
 						string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
 						_transport.Status(subSession.Id, $"{reason}; falling back to {service.Model.Config.Name}");
 						continue;
@@ -444,7 +444,7 @@ public class SubagentRunner
 							_transport.Error(subSession.Id, $"Unknown model: {modelArg}");
 						else
 						{
-												_registry.ResetAvailability(modelArg);
+							_registry.ResetAvailability(modelArg);
 							// Recreate the service with the new model, mirroring SessionRunner's model-switch
 							// behavior (which nulls _service to force recreation next turn). Here we recreate
 							// immediately because the local 'service' variable is about to be used for the next

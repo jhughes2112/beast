@@ -425,16 +425,16 @@ public class DisplayScreen : IDisplay
 		_baseStatusText = Path.GetFullPath(Directory.GetCurrentDirectory());
 		_statusText = _baseStatusText;
 
-		Console.OutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-		Console.InputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+		Console.OutputEncoding = new UTF8Encoding(false);
+		Console.InputEncoding = new UTF8Encoding(false);
 		WindowsConsole.EnableVirtualTerminal();
 		WindowsConsole.ReapplyModes();
 
 		_bufferedOut = new StreamWriter(
-			Console.OpenStandardOutput(bufferSize: 131072),
-			encoding: new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-			bufferSize: 131072,
-			leaveOpen: false);
+		Console.OpenStandardOutput(131072),
+		new UTF8Encoding(false),
+		131072,
+		false);
 		_bufferedOut.AutoFlush = false;
 		Console.SetOut(_bufferedOut);
 
@@ -458,7 +458,7 @@ public class DisplayScreen : IDisplay
 		{
 			StreamWriter restore = new StreamWriter(
 				Console.OpenStandardOutput(),
-				encoding: new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+				new UTF8Encoding(false));
 			restore.AutoFlush = true;
 			Console.SetOut(restore);
 			_bufferedOut.Dispose();

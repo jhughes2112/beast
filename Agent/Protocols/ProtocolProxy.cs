@@ -185,13 +185,13 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
 
 		logger.ProtocolFailure(
-			modelId: _model.ConfigId,
-			modelName: _model.Config.Name,
-			endpoint: _model.Endpoint,
-			protocol: _detected.ToString(),
-			failureType: "UnknownProtocol",
-			httpStatusCode: null,
-			errorMessage: $"Endpoint speaks no recognized protocol: {endpoint}");
+			_model.ConfigId,
+			_model.Config.Name,
+			_model.Endpoint,
+			_detected.ToString(),
+			"UnknownProtocol",
+			null,
+			$"Endpoint speaks no recognized protocol: {endpoint}");
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 
