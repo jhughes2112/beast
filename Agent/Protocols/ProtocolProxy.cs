@@ -175,16 +175,13 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
 		if (_detected == DetectedProtocol.Anthropic)
-			return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, 
-transport, logger, cancellationToken);
+			return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
 
 		if (_detected == DetectedProtocol.Responses)
-			return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, 
-transport, logger, cancellationToken);
+			return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
 
 		if (_detected == DetectedProtocol.ChatCompletions)
-			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, 
-transport, logger, cancellationToken);
+			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
 
 		logger.ProtocolFailure(
 			modelId: _model.ConfigId,

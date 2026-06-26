@@ -138,7 +138,6 @@ public class ProtocolAnthropic
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
 		LiveUsageProgress onProgress,
-		ITransportServer transport,
 		SessionLogger logger,
 		CancellationToken cancellationToken)
 	{
@@ -148,7 +147,7 @@ public class ProtocolAnthropic
 			MessageParameters parameters = BuildParameters(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
 
 			parameters.Stream = true;
-			return await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, transport, logger, cancellationToken);
+			return await ExecuteStreamingAsync(client, parameters, model, bundle, onProgress, logger, cancellationToken);
 		}
 		catch (Exception ex)
 		{
@@ -291,8 +290,7 @@ public class ProtocolAnthropic
 		return new AnthropicClient(new APIAuthentication(model.ApiKey), httpClient);
 	}
 
-	private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, 
-LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
+	private async Task<ProtocolResult> ExecuteStreamingAsync(AnthropicClient client, MessageParameters parameters, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		List<MessageResponse> outputs = new List<MessageResponse>();
 		string? openStreamTag = null;

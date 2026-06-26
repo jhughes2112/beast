@@ -199,7 +199,6 @@ public class ProtocolChatCompletions
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
 		LiveUsageProgress onProgress,
-		ITransportServer transport,
 		SessionLogger logger,
 		CancellationToken cancellationToken)
 	{
@@ -225,19 +224,19 @@ public class ProtocolChatCompletions
 
 				if (_streamingSupported)
 				{
-					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, logger, cancellationToken);
+					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, logger, cancellationToken);
 					if (streamResult != null)
 					{
 						if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
 						{
 							_toolChoiceMode = 1;
-							transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
+							bundle.Transport?.Status("Forced tool call not honored; retrying with tool_choice=required");
 							continue;
 						}
 						if (IsEmptyTurn(streamResult) && emptyRetries < kMaxEmptyRetries)
 						{
 							emptyRetries++;
-							transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+							bundle.Transport?.Status($"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
 							continue;
 						}
 						return streamResult;
@@ -249,7 +248,7 @@ public class ProtocolChatCompletions
 				string responseBody;
 				try
 				{
-					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, logger, cancellationToken);
+					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, cancellationToken);
 					responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 				}
 				catch (OperationCanceledException)
@@ -324,13 +323,13 @@ public class ProtocolChatCompletions
 					if (ShouldAdaptToolChoice(success, forcedToolName, tools))
 					{
 						_toolChoiceMode = 1;
-						transport.Status("Forced tool call not honored; retrying with tool_choice=required");
+						bundle.Transport?.Status("Forced tool call not honored; retrying with tool_choice=required");
 						continue;
 					}
 					if (IsEmptyTurn(success) && emptyRetries < kMaxEmptyRetries)
 					{
 						emptyRetries++;
-						transport.Status($"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+						bundle.Transport?.Status($"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
 						continue;
 					}
 					return success;
@@ -501,8 +500,7 @@ public class ProtocolChatCompletions
 		return body;
 	}
 
-	private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> 
-extraPayload, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
+	private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, CancellationToken cancellationToken)
 {
 	string url = model.Endpoint;
 
@@ -533,7 +531,6 @@ private async Task<ProtocolResult?> ExecuteStreamingAsync(
 	Dictionary<string, JsonNode?> extraPayload,
 	ListenerBundle bundle,
 	LiveUsageProgress onProgress,
-	ITransportServer transport,
 	SessionLogger logger,
 	CancellationToken cancellationToken)
 	{

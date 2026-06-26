@@ -145,7 +145,6 @@ public class ProtocolResponses
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
 		LiveUsageProgress onProgress,
-		ITransportServer transport,
 		SessionLogger logger,
 		CancellationToken cancellationToken)
 	{
@@ -156,7 +155,7 @@ public class ProtocolResponses
 
 			if (_streamingSupported)
 			{
-				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, transport, logger, cancellationToken);
+				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, logger, cancellationToken);
 				if (streamResult != null)
 					return streamResult;
 			}
@@ -377,8 +376,7 @@ public class ProtocolResponses
 		return item;
 	}
 
-	private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, 
-LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
+	private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		JsonObject streamBody = (JsonObject)body.DeepClone();
 		streamBody["stream"] = true;
