@@ -398,8 +398,10 @@ public static class MarkdownAnsi
 
 	private static string InlineToPlain(Inline inline)
 	{
-		if (inline is LiteralInline lit)
+			if (inline is LiteralInline lit)
 			return lit.Content.ToString();
+		if (inline is CodeInline code)
+			return code.Content.ToString();
 		if (inline is LineBreakInline)
 			return " ";
 		if (inline is ContainerInline ci)
