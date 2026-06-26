@@ -285,17 +285,11 @@ public class SubagentRunner
 					}
 					subSession.CommitToolResults(payload);
 
-					if (terminatorResults.Count > 1)
+					if (terminatorResults.Count > 0)
 					{
-						// Multiple terminator calls: merge their outputs with a separator.
-						sink.Value = string.Join("\n---\n", terminatorResults);
-						sink.Returned = true;
-					}
-					else if (terminatorResults.Count == 1)
-					{
-						// Single terminator call: the sink was already set by the handler,
-						// but ensure Returned is true (it should be, but be safe).
-						sink.Value = terminatorResults[0];
+						// Terminator was called: the sink was already set by the handler(s) with the proper output(s).
+						// For multiple calls, the last handler's value remains (callbacks ran sequentially).
+						// Just ensure Returned is true.
 						sink.Returned = true;
 					}
 				}
