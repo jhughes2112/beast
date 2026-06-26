@@ -473,7 +473,7 @@ public static class ToolFactory
 				Function = new FunctionDefinition
 				{
 					Name = "commit_and_rebase",
-					Description = "Commit all changes in your worktree, then integrate them: fast-forward the base branch from its remote, rebase your branch onto it (linear history, no merge commit), and fast-forward the base onto your branch. Call this after an approved review. On a conflict the rebase stops with the conflicted files listed — resolve them, run 'git rebase --continue' with bash, then call this again to finish.",
+					Description = "Commit all changes in your worktree, then integrate them: rebase your branch onto the base branch (linear history, no merge commit), and fast-forward the base onto your branch. Call this after an approved review. On a conflict the rebase stops with the conflicted files listed — resolve them, run 'git rebase --continue' with bash, then call this again to finish.",
 					Parameters = Params(
 						Req("message", "string", "The commit message describing the work."))
 				}
@@ -496,12 +496,11 @@ public static class ToolFactory
 
 	// Commits the current worktree and integrates it with a strictly linear, rebase-based flow — never a merge
 	// commit. It commits everything onto the feature branch B, finds the base branch A (the branch checked out in
-	// the primary worktree, reached with git -C since B's worktree cannot check A out). If A has an upstream, A is
-	// first updated with a rebasing pull so it carries any commits other agents landed. Then B is rebased onto A,
-	// putting A's commits underneath B's recent ones, and A is fast-forwarded onto B. If A has an upstream, A is
-	// pushed. B's worktree is never moved, so there is no switch back. The base is derived from the primary
+	// the primary worktree, reached with git -C since B's worktree cannot check A out). B
+	// is rebased onto A (local only, no remote operations), putting A's commits underneath B's recent ones,
+	// and A is fast-forwarded onto B. B's worktree is never moved, so there is no switch back. The base is derived from the primary
 	// worktree (git --git-common-dir), not guessed as "main" or read from origin/HEAD, so it is correct for any
-	// base branch and with or without a remote. The commit message is passed base64-encoded so arbitrary text
+	// base branch. The commit message is passed base64-encoded so arbitrary text
 	// cannot break out of the script. A rebase conflict is left in place (not aborted) with the conflicted files
 	// listed, so the Developer can resolve it directly and call again. Returns (ok, transcript): ok is false on
 	// any git failure, with the transcript explaining why.
@@ -510,7 +509,7 @@ public static class ToolFactory
 	// wired for the full flow still succeeds: (1) the folder is not a git repository at all (a /worktree none /
 	// ephemeral run with no git), in which case nothing is done; (2) it is a git repo but there is no distinct
 	// base branch (running directly on the base, not in a per-launch worktree), in which case the work is simply
-	// committed in place. Only when a distinct base branch exists does the integration (pull/rebase/ff/push) run.
+	// committed in place. Only when a distinct base branch exists does the integration (rebase/ff) run.
 	private static async Task<(bool ok, string transcript)> CommitAndRebaseAsync(string message, CancellationToken ct)
 	{
 		string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(message));
@@ -525,12 +524,7 @@ public static class ToolFactory
 			"git add -A\n" +
 			"git commit -F /tmp/beast_commit_msg || echo '(nothing to commit)'\n" +
 			"if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Not running in a per-launch worktree (no distinct base branch); committed in place.\"; exit 0; fi\n" +
-			"if git -C \"$main_wt\" rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then\n" +
-			"  echo \"Updating base '$base' from its remote (rebasing pull)...\"\n" +
-			"  git -C \"$main_wt\" pull --rebase || { echo \"Could not update '$base' from its remote.\"; exit 1; }\n" +
-			"else\n" +
-			"  echo \"Base '$base' has no remote; integrating against local '$base'.\"\n" +
-			"fi\n" +
+			"echo \"Integrating '$branch' onto local '$base'...\"\n" +
 			"echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +
 			"if ! git rebase \"$base\"; then\n" +
 			"  echo \"Rebase of '$branch' onto '$base' hit conflicts. Conflicted files:\"\n" +
@@ -539,11 +533,7 @@ public static class ToolFactory
 			"  exit 1\n" +
 			"fi\n" +
 			"echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
-			"git -C \"$main_wt\" merge --ff-only \"$branch\" || { echo \"Could not fast-forward '$base' (its worktree may have uncommitted changes).\"; exit 1; }\n" +
-			"if git -C \"$main_wt\" rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then\n" +
-			"  echo \"Pushing base '$base' to its remote...\"\n" +
-			"  git -C \"$main_wt\" push || { echo \"Integrated locally but could not push '$base'.\"; exit 1; }\n" +
-			"fi\n";
+			"git -C \"$main_wt\" merge --ff-only \"$branch\" || { echo \"Could not fast-forward '$base' (its worktree may have uncommitted changes).\"; exit 1; }\n";
 
 		ToolResult result = await ShellTools.BashAsync("commit_and_rebase", script, null, ct);
 
