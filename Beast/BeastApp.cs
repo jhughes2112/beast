@@ -35,6 +35,7 @@ public class BeastApp : IAsyncDisposable
 		public decimal StatsTotalCost;
 		public int StatsMaxContext;
 		public int StatsContextTokens;
+		public int StatsCachedTokens;
 	}
 
 	private readonly ILauncher _agentContext;
@@ -245,7 +246,8 @@ public class BeastApp : IAsyncDisposable
 		_activeSessionId = sessionId;
 		_display.OnStreamEnd();
 		_display.SetAgentBusy(_busySessions.Contains(sessionId), state.BusyStartTick);
-		_display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext, state.StatsContextTokens);
+		_display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext,
+state.StatsContextTokens, state.StatsCachedTokens);
 		_display.Attach(state.Model);
 		NotifySessionList();
 	}
@@ -360,6 +362,7 @@ public class BeastApp : IAsyncDisposable
 					decimal cost = root.TryGetProperty("totalCost", out System.Text.Json.JsonElement tc) ? tc.GetDecimal() : 0m;
 					int maxContext = root.TryGetProperty("maxContext", out System.Text.Json.JsonElement mc) ? mc.GetInt32() : 0;
 					int contextTokens = root.TryGetProperty("contextTokens", out System.Text.Json.JsonElement ct) ? ct.GetInt32() : 0;
+					int cachedTokens = root.TryGetProperty("cachedTokens", out System.Text.Json.JsonElement ct2) ? ct2.GetInt32() : 0;
 
 					// Stats are session-scoped: store them on the session they belong to so switching
 					// sessions in the F10 overlay shows that session's own model/role/token counts.
@@ -372,9 +375,10 @@ public class BeastApp : IAsyncDisposable
 					statsSession.StatsTotalCost = cost;
 					statsSession.StatsMaxContext = maxContext;
 					statsSession.StatsContextTokens = contextTokens;
+					statsSession.StatsCachedTokens = cachedTokens;
 
 					if (string.Equals(statsId, _activeSessionId, StringComparison.Ordinal))
-						_display.SetStatsInfo(model, role, prompt, completion, cost, maxContext, contextTokens);
+						_display.SetStatsInfo(model, role, prompt, completion, cost, maxContext, contextTokens, cachedTokens);
 				}
 				catch { }
 				return;
@@ -401,7 +405,7 @@ public class BeastApp : IAsyncDisposable
 				_display.OnStreamEnd();
 				_display.SetAgentBusy(false, 0);
 				SessionState reset = EnsureSession(sessionId);
-				_display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0);
+				_display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0, 0);
 				return;
 
 			case FrameType.SessionAnnounce:

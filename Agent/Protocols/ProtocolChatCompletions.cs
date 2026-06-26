@@ -590,6 +590,7 @@ httpResponse);
 		string? openStreamTag = null;
 		int streamedCharCount = 0;
 		int livePromptTokens = 0;
+		int liveCachedTokens = 0;
 
 		try
 		{
@@ -620,6 +621,11 @@ httpResponse);
 						if (promptTokens.HasValue && promptTokens.Value > 0)
 						{
 							livePromptTokens = promptTokens.Value;
+						}
+						int? cached = usageNode["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int?>();
+						if (cached.HasValue && cached.Value > 0)
+						{
+							liveCachedTokens = cached.Value;
 						}
 					}
 
@@ -652,7 +658,7 @@ httpResponse);
 						reasoningBuilder.Append(reasoningDelta);
 						bundle.Transport?.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
 						streamedCharCount += reasoningDelta.Length;
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
+						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens);
 					}
 
 					string? contentDelta = delta["content"]?.GetValue<string>();
@@ -661,7 +667,7 @@ httpResponse);
 						// Always accumulate the committed text and progress; only gate what reaches the client.
 						contentBuilder.Append(contentDelta);
 						streamedCharCount += contentDelta.Length;
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress);
+						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens);
 
 						// Don't open the assistant output block on leading whitespace: a thinking+tool-call
 						// turn that emits a stray newline would otherwise leave an empty block. Wait for the
@@ -757,12 +763,12 @@ httpResponse);
 	// the usage object (when stream_options.include_usage is set), typically in the final
 	// chunk. Until then, livePromptTokens is 0. Output tokens are estimated from streamed
 	// character count (chars/4). The committed usage will correct both at end-of-turn.
-	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress)
+	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress, int liveCachedTokens = 0)
 	{
 		int estimatedOutputTokens = streamedCharCount / 4;
 		decimal estimatedCost = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
 							  + (estimatedOutputTokens / 1_000_000m) * model.Config.Cost.Output;
-		onProgress(livePromptTokens, estimatedOutputTokens, estimatedCost);
+		onProgress(livePromptTokens, estimatedOutputTokens, estimatedCost, liveCachedTokens);
 	}
 
 	// A successful turn that produced no tool call and no assistant text — only thinking, or nothing.
@@ -852,10 +858,10 @@ httpResponse);
 		usage.CompletionTokens = usageNode["completion_tokens"]?.GetValue<int>() ?? 0;
 
 		int cachedTokens = usageNode["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
-		int freshPromptTokens = totalPromptTokens - cachedTokens;
 
-		// Store only fresh prompt tokens for session accumulation
-		usage.PromptTokens = freshPromptTokens;
+		// prompt_tokens already INCLUDES cached tokens — this is the full context the provider processed
+		usage.PromptTokens = totalPromptTokens;
+		usage.CachedTokens = cachedTokens;
 
 		decimal? reported = null;
 		JsonNode? costNode = usageNode["cost"];
@@ -870,6 +876,7 @@ httpResponse);
 		}
 		else
 		{
+			int freshPromptTokens = totalPromptTokens - cachedTokens;
 			cost += (freshPromptTokens / 1_000_000m) * model.Config.Cost.Input;
 			cost += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
 			cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;

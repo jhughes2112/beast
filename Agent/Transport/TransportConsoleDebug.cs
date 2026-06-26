@@ -14,8 +14,8 @@ public class TransportConsoleDebug : ITransportServer
 	public void System(string sessionId, string text) => Console.WriteLine($"{sessionId} [system] {text}");
 	public void User(string sessionId, string text) => Console.WriteLine($"{sessionId} [user] {text}");
 	public void Debug(string sessionId, string text) => Console.WriteLine($"{sessionId} [debug] {text}");
-	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
-		=> Console.WriteLine($"{sessionId} [stats] model={model}, role={role}, prompt={promptTokens}, completion={completionTokens}, cost={totalCost}, maxCtx={maxContext}, ctx={contextTokens}");
+	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
+		=> Console.WriteLine($"{sessionId} [stats] model={model}, role={role}, prompt={promptTokens}, completion={completionTokens}, cost={totalCost}, maxCtx={maxContext}, ctx={contextTokens}, cached={cachedTokens}");
 	public void Completions(string sessionId, string json) => Console.WriteLine($"{sessionId} [completions] {json}");
 	public void Idle(string sessionId, bool subagent) => Console.WriteLine($"{sessionId} [idle]{(subagent ? " (subagent)" : "")}");
 	public void Busy(string sessionId) => Console.WriteLine($"{sessionId} [busy]");

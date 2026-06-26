@@ -23,8 +23,8 @@ public class TestCaptureTransport : ITransportServer
 	public void System(string sessionId, string text) => Send(FrameType.System, sessionId, text);
 	public void User(string sessionId, string text) => Send(FrameType.User, sessionId, text);
 	public void Debug(string sessionId, string text) => Send(FrameType.Debug, sessionId, text);
-	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
-		=> Send(FrameType.Stats, sessionId, $"model={model},role={role},{promptTokens},{completionTokens},{totalCost},{maxContext},{contextTokens}");
+	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
+		=> Send(FrameType.Stats, sessionId, $"model={model},role={role},{promptTokens},{completionTokens},{totalCost},{maxContext},{contextTokens},{cachedTokens}");
 	public void Completions(string sessionId, string json) => Send(FrameType.Completions, sessionId, json);
 	public void Idle(string sessionId, bool subagent) => Send(FrameType.Idle, sessionId, subagent ? "subagent" : string.Empty);
 	public void Busy(string sessionId) => Send(FrameType.Busy, sessionId, string.Empty);

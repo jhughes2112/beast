@@ -254,13 +254,13 @@ public class DisplayScreen : IDisplay
 		}
 	}
 
-	public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens)
+	public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
 	{
 		string contextInfo = maxContext > 0 && contextTokens > 0
 			? $"  {(int)((double)contextTokens / maxContext * 100)}%/{maxContext}"
 			: "";
 		string metrics = promptTokens > 0 || completionTokens > 0
-			? $"in:{promptTokens} out:{completionTokens} ${totalCost:F4}{contextInfo}"
+			? $"c:{cachedTokens} i:{promptTokens} o:{completionTokens} ${totalCost:F4}{contextInfo}"
 			: "";
 		lock (_consoleLock)
 		{

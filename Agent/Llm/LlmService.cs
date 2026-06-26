@@ -11,7 +11,7 @@ public enum LlmExitReason
 
 // Reports running token counts and protocol-computed cost for the current in-flight assistant
 // turn while a response streams. Provisional; superseded at commit by the authoritative payload.
-public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost);
+public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost, int cachedTokens);
 
 // Result returned by LlmService after running a conversation to completion.
 public class LlmResult
@@ -151,13 +151,13 @@ ITransportServer transport, CancellationToken cancellationToken)
 					string modelId = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
 					string role = conversation.Role;
 					int contextWindow = _model.Config.ContextWindow;
-					LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost) =>
+					LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost, cachedTokens) =>
 						{
 							transport.Stats(conversation.Id, modelId, role,
 								inputBaseline + inputTokens,
 								outputBaseline + outputTokens,
 								costBaseline + turnCost,
-								contextWindow, contextBaseline);
+								contextWindow, contextBaseline, cachedTokens);
 						};
 
 					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog,

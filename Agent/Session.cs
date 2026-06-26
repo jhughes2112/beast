@@ -82,9 +82,10 @@ public class Session
 	// Sends current session stats to the client using explicit values.
 	public void SendStats()
 	{
+		int cachedTokens = _data.LastTokenUsage?.CachedTokens ?? 0;
 		_transport.Stats(_data.Id, _data.Model + _modelDisplaySuffix, _data.Role,
 			_data.CumulativeInputTokens, _data.CumulativeOutputTokens,
-			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize);
+			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens);
 	}
 
 	public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
@@ -231,7 +232,10 @@ public class Session
 	// Commits one turn's usage and cost into the monotonic session totals.
 	internal void RecordTurnUsage(TokenUsageInfo usage)
 	{
-		_data.CumulativeInputTokens += usage.PromptTokens;
+		// Cumulative input tracks only fresh (non-cached) tokens — cached reads are already "paid for"
+		// and don't represent additional spend across turns. PromptTokens is the TOTAL the provider
+		// processed (including cached), so subtract CachedTokens to get the fresh portion.
+		_data.CumulativeInputTokens += usage.PromptTokens - usage.CachedTokens;
 		_data.CumulativeOutputTokens += usage.CompletionTokens;
 		_data.LastTokenUsage = usage;
 		// The context size is exactly the tokens the provider processed this turn: the whole prompt it

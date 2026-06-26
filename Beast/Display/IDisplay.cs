@@ -10,7 +10,7 @@ public interface IDisplay
 {
 	void Attach(ConversationModel model);
 	void SetStatus(string text);
-	void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens);
+	void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens);
 	void SetCompletions(IReadOnlyList<string> completions);
 	void OnStreamStart(int streamIndex, FrameType type);
 	void OnStreamChunk(string chunk);

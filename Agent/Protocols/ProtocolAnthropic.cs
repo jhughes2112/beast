@@ -291,6 +291,7 @@ public class ProtocolAnthropic
 		string? openStreamTag = null;
 		int liveInputTokens = 0;
 		int liveOutputTokens = 0;
+		int liveCachedTokens = 0;
 		int streamedChars = 0;
 
 		try
@@ -302,6 +303,7 @@ public class ProtocolAnthropic
 				if (res.StreamStartMessage?.Usage != null)
 				{
 					liveInputTokens = res.StreamStartMessage.Usage.InputTokens;
+					liveCachedTokens = res.StreamStartMessage.Usage.CacheReadInputTokens + res.StreamStartMessage.Usage.CacheCreationInputTokens;
 				}
 
 				string? assistantDelta = res.Delta?.Text;
@@ -363,7 +365,7 @@ public class ProtocolAnthropic
 				// the single intentional correction at end-of-turn.
 				decimal liveCost = (liveInputTokens / 1_000_000m) * model.Config.Cost.Input
 								 + (liveOutputTokens / 1_000_000m) * model.Config.Cost.Output;
-				onProgress(liveInputTokens, liveOutputTokens, liveCost);
+				onProgress(liveInputTokens, liveOutputTokens, liveCost, liveCachedTokens);
 			}
 		}
 		catch (OperationCanceledException)
@@ -425,14 +427,14 @@ public class ProtocolAnthropic
 			}
 		}
 
-		// Anthropic's input_tokens already EXCLUDES cache reads/writes; the full context is the sum.
+		// Anthropic's input_tokens excludes cache reads/writes; the full context is the sum of all input components plus output.
 		int totalInputTokens = freshInputTokens + cacheCreationTokens + cacheReadTokens;
 
 		TokenUsageInfo usage = new TokenUsageInfo
 		{
-			PromptTokens = freshInputTokens,
+			PromptTokens = totalInputTokens,
 			CompletionTokens = outputTokens,
-			CachedTokens = cacheReadTokens
+			CachedTokens = cacheReadTokens + cacheCreationTokens
 		};
 
 		decimal cost = ResolveCost(freshInputTokens, cacheCreationTokens, cacheReadTokens, outputTokens, model, outputs.Count > 0 ? outputs[outputs.Count - 1] : null);

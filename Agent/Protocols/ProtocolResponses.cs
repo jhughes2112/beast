@@ -420,6 +420,7 @@ public class ProtocolResponses
 		JsonNode? finalResponseNode = null;
 		string? openStreamTag = null;
 		int liveInputTokens = 0;
+		int liveCachedTokens = 0;
 
 		try
 		{
@@ -452,6 +453,11 @@ public class ProtocolResponses
 					{
 						liveInputTokens = eventInputTokens.Value;
 					}
+					int? eventCachedTokens = eventNode["response"]?["usage"]?["input_tokens_details"]?["cached_tokens"]?.GetValue<int?>();
+					if (eventCachedTokens.HasValue && eventCachedTokens.Value > 0)
+					{
+						liveCachedTokens = eventCachedTokens.Value;
+					}
 
 					if (eventType == "response.output_text.delta")
 					{
@@ -476,7 +482,7 @@ public class ProtocolResponses
 								}
 								bundle.Transport?.OnStreamChunk(StreamTag.Assistant, delta);
 							}
-							EmitProgress(model, liveInputTokens, onProgress);
+							EmitProgress(model, liveInputTokens, onProgress, liveCachedTokens);
 						}
 					}
 					else if (eventType == "response.reasoning_summary_text.delta")
@@ -494,7 +500,7 @@ public class ProtocolResponses
 								openStreamTag = StreamTag.Thinking;
 							}
 							bundle.Transport?.OnStreamChunk(StreamTag.Thinking, delta);
-							EmitProgress(model, liveInputTokens, onProgress);
+							EmitProgress(model, liveInputTokens, onProgress, liveCachedTokens);
 						}
 					}
 					else if (eventType == "response.completed" || eventType == "response.done")
@@ -537,10 +543,10 @@ public class ProtocolResponses
 	// which reads as a double count on the client. Instead the live frame advances only the
 	// authoritative input (and its cost), holding output at the session baseline until the
 	// committed usage arrives at end-of-turn.
-	private void EmitProgress(LlmModel model, int liveInputTokens, LiveUsageProgress onProgress)
+	private void EmitProgress(LlmModel model, int liveInputTokens, LiveUsageProgress onProgress, int liveCachedTokens = 0)
 	{
 		decimal liveCost = (liveInputTokens / 1_000_000m) * model.Config.Cost.Input;
-		onProgress(liveInputTokens, 0, liveCost);
+		onProgress(liveInputTokens, 0, liveCost, liveCachedTokens);
 	}
 
 	// Raises a single semantic assistant turn through the bundle so the canonical store records
@@ -641,10 +647,9 @@ public class ProtocolResponses
 		usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
 
 		int cachedTokens = usageNode["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
-		int freshInputTokens = totalInputTokens - cachedTokens;
 
-		// Store only fresh input tokens for session accumulation
-		usage.PromptTokens = freshInputTokens;
+		// input_tokens already INCLUDES cached tokens — this is the full context the provider processed
+		usage.PromptTokens = totalInputTokens;
 		usage.CachedTokens = cachedTokens;
 
 		// Prefer a server-reported cost when present; otherwise calculate from fresh token counts.
@@ -661,6 +666,7 @@ public class ProtocolResponses
 		}
 		else
 		{
+			int freshInputTokens = totalInputTokens - cachedTokens;
 			cost += (freshInputTokens / 1_000_000m) * model.Config.Cost.Input;
 			cost += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
 			cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
