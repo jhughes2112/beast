@@ -146,18 +146,17 @@ public class ProtocolResponses
 		Dictionary<string, JsonNode?> extraPayload,
 		LiveUsageProgress onProgress,
 		ITransportServer transport,
-		string sessionId,
-		SessionLogger? queryLogger,
+		SessionLogger logger,
 		CancellationToken cancellationToken)
 	{
 		try
 		{
 			JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
-			queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+			logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 			if (_streamingSupported)
 			{
-				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, transport, sessionId, cancellationToken);
+				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, transport, logger, cancellationToken);
 				if (streamResult != null)
 					return streamResult;
 			}
@@ -188,7 +187,7 @@ public class ProtocolResponses
 			}
 			catch (HttpRequestException ex)
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -202,7 +201,7 @@ public class ProtocolResponses
 			}
 			catch (Exception ex)
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -225,7 +224,7 @@ public class ProtocolResponses
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -245,7 +244,7 @@ public class ProtocolResponses
 			bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
 			if (permanentClientError)
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -256,7 +255,7 @@ public class ProtocolResponses
 					responseBody: responseBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
 			}
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -269,7 +268,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -378,7 +377,8 @@ public class ProtocolResponses
 		return item;
 	}
 
-	private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
+	private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, 
+LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		JsonObject streamBody = (JsonObject)body.DeepClone();
 		streamBody["stream"] = true;
@@ -408,7 +408,7 @@ public class ProtocolResponses
 		}
 		catch (HttpRequestException ex)
 		{
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -422,7 +422,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -442,7 +442,7 @@ public class ProtocolResponses
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -456,7 +456,7 @@ public class ProtocolResponses
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -470,7 +470,7 @@ public class ProtocolResponses
 
 			if (statusCode == 401 || statusCode == 403)
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -481,7 +481,7 @@ public class ProtocolResponses
 					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
 			}
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

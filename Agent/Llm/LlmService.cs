@@ -159,7 +159,7 @@ public class LlmService
 								contextWindow, contextBaseline);
 						};
 
-					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.Id, conversation.QueryLog, linked.Token);
+					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
 
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{

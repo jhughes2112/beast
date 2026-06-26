@@ -196,12 +196,11 @@ public class ProtocolChatCompletions
 		List<ToolDefinition> tools,
 		string? forcedToolName,
 		int? maxCompletionTokens,
-				Dictionary<string, string> extraHeaders,
+		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
 		LiveUsageProgress onProgress,
 		ITransportServer transport,
-		string sessionId,
-		SessionLogger? queryLogger,
+		SessionLogger logger,
 		CancellationToken cancellationToken)
 	{
 		try
@@ -222,12 +221,11 @@ public class ProtocolChatCompletions
 			{
 				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
 				if (!logged)
-				{ logged = true; queryLogger?.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
+				{ logged = true; logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
 
 				if (_streamingSupported)
 				{
-					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, sessionId, 
-	cancellationToken);
+					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, transport, logger, cancellationToken);
 					if (streamResult != null)
 					{
 						if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
@@ -251,7 +249,7 @@ public class ProtocolChatCompletions
 				string responseBody;
 				try
 				{
-					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, sessionId, cancellationToken);
+					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, transport, logger, cancellationToken);
 					responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 				}
 				catch (OperationCanceledException)
@@ -263,7 +261,7 @@ public class ProtocolChatCompletions
 				}
 				catch (HttpRequestException ex)
 				{
-					queryLogger!.ProtocolFailure(
+					logger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -277,7 +275,7 @@ public class ProtocolChatCompletions
 				}
 				catch (Exception ex)
 				{
-					queryLogger!.ProtocolFailure(
+					logger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -326,13 +324,13 @@ public class ProtocolChatCompletions
 					if (ShouldAdaptToolChoice(success, forcedToolName, tools))
 					{
 						_toolChoiceMode = 1;
-						transport.Status(sessionId, "Forced tool call not honored; retrying with tool_choice=required");
+						transport.Status("Forced tool call not honored; retrying with tool_choice=required");
 						continue;
 					}
 					if (IsEmptyTurn(success) && emptyRetries < kMaxEmptyRetries)
 					{
 						emptyRetries++;
-						transport.Status(sessionId, $"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+						transport.Status($"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
 						continue;
 					}
 					return success;
@@ -346,7 +344,7 @@ public class ProtocolChatCompletions
 
 				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 				{
-					queryLogger!.ProtocolFailure(
+					logger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -366,7 +364,7 @@ public class ProtocolChatCompletions
 				bool permanentClientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 425;
 				if (permanentClientError)
 				{
-					queryLogger!.ProtocolFailure(
+					logger.ProtocolFailure(
 						modelId: model.ConfigId,
 						modelName: model.Config.Name,
 						endpoint: model.Endpoint,
@@ -377,7 +375,7 @@ public class ProtocolChatCompletions
 						responseBody: responseBody);
 					return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
 				}
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -391,7 +389,7 @@ public class ProtocolChatCompletions
 		}
 		catch (Exception ex)
 		{
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -503,40 +501,41 @@ public class ProtocolChatCompletions
 		return body;
 	}
 
-	private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, ITransportServer transport, string sessionId, CancellationToken cancellationToken)
+	private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> 
+extraPayload, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
+{
+	string url = model.Endpoint;
+
+	JsonObject obj = (JsonObject)body.DeepClone();
+	foreach ((string name, JsonNode? value) in extraPayload)
 	{
-		string url = model.Endpoint;
-
-		JsonObject obj = (JsonObject)body.DeepClone();
-		foreach ((string name, JsonNode? value) in extraPayload)
-		{
-			obj[name] = value?.DeepClone();
-		}
-
-		string requestJson = obj.ToJsonString();
-
-		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
-		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
-
-		foreach ((string name, string value) in extraHeaders)
-		{
-			req.Headers.TryAddWithoutValidation(name, value);
-		}
-
-		return await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
+		obj[name] = value?.DeepClone();
 	}
 
-	private async Task<ProtocolResult?> ExecuteStreamingAsync(
-		LlmModel model,
-		JsonObject body,
-		Dictionary<string, string> extraHeaders,
-		Dictionary<string, JsonNode?> extraPayload,
-		ListenerBundle bundle,
-		LiveUsageProgress onProgress,
-		ITransportServer transport,
-		string sessionId,
-		CancellationToken cancellationToken)
+	string requestJson = obj.ToJsonString();
+
+	HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
+	req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+	req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+
+	foreach ((string name, string value) in extraHeaders)
+	{
+		req.Headers.TryAddWithoutValidation(name, value);
+	}
+
+	return await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
+}
+
+private async Task<ProtocolResult?> ExecuteStreamingAsync(
+	LlmModel model,
+	JsonObject body,
+	Dictionary<string, string> extraHeaders,
+	Dictionary<string, JsonNode?> extraPayload,
+	ListenerBundle bundle,
+	LiveUsageProgress onProgress,
+	ITransportServer transport,
+	SessionLogger logger,
+	CancellationToken cancellationToken)
 	{
 		string url = model.Endpoint;
 
@@ -574,7 +573,7 @@ public class ProtocolChatCompletions
 		}
 		catch (HttpRequestException ex)
 		{
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -588,7 +587,7 @@ public class ProtocolChatCompletions
 		}
 		catch (Exception ex)
 		{
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,
@@ -608,7 +607,7 @@ public class ProtocolChatCompletions
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
 				_streamingSupported = false;
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -622,7 +621,7 @@ public class ProtocolChatCompletions
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -636,7 +635,7 @@ public class ProtocolChatCompletions
 
 			if (statusCode == 401 || statusCode == 403)
 			{
-				queryLogger!.ProtocolFailure(
+				logger.ProtocolFailure(
 					modelId: model.ConfigId,
 					modelName: model.Config.Name,
 					endpoint: model.Endpoint,
@@ -647,7 +646,7 @@ public class ProtocolChatCompletions
 					responseBody: errorBody);
 				return ProtocolResult.Failed($"HTTP {statusCode}: {errorBody}");
 			}
-			queryLogger!.ProtocolFailure(
+			logger.ProtocolFailure(
 				modelId: model.ConfigId,
 				modelName: model.Config.Name,
 				endpoint: model.Endpoint,

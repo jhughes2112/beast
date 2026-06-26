@@ -157,7 +157,7 @@ public class ProtocolProxy
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, 
-LiveUsageProgress onProgress, ITransportServer transport, string sessionId, SessionLogger? queryLogger, CancellationToken cancellationToken)
+LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		bundle.SetActiveProxy(this);
 
@@ -175,25 +175,25 @@ LiveUsageProgress onProgress, ITransportServer transport, string sessionId, Sess
 		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
 		if (_detected == DetectedProtocol.Anthropic)
-			return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+			return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, 
+transport, logger, cancellationToken);
 
 		if (_detected == DetectedProtocol.Responses)
-			return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+			return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, 
+transport, logger, cancellationToken);
 
 		if (_detected == DetectedProtocol.ChatCompletions)
-			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, transport, sessionId, queryLogger, cancellationToken);
+			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, 
+transport, logger, cancellationToken);
 
-		if (queryLogger != null)
-		{
-			queryLogger.ProtocolFailure(
-				modelId: _model.ConfigId,
-				modelName: _model.Config.Name,
-				endpoint: _model.Endpoint,
-				protocol: _detected.ToString(),
-				failureType: "UnknownProtocol",
-				httpStatusCode: null,
-				errorMessage: $"Endpoint speaks no recognized protocol: {endpoint}");
-		}
+		logger.ProtocolFailure(
+			modelId: _model.ConfigId,
+			modelName: _model.Config.Name,
+			endpoint: _model.Endpoint,
+			protocol: _detected.ToString(),
+			failureType: "UnknownProtocol",
+			httpStatusCode: null,
+			errorMessage: $"Endpoint speaks no recognized protocol: {endpoint}");
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 
