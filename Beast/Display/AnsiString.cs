@@ -98,7 +98,7 @@ public static class AnsiString
 		return sb.ToString();
 	}
 
-	// Returns the terminal column width of a single character: 2 for wide (CJK, emoji, etc.), 1 for everything else.
+	// Returns the terminal column width of a single character: 2 for wide (CJK, emoji, specific wide symbols), 1 for everything else.
 	public static int CharWidth(char c)
 	{
 		int cp = c;
@@ -117,9 +117,17 @@ public static class AnsiString
 			return 2;
 		if (cp >= 0xFFE0 && cp <= 0xFFE6)
 			return 2;
-		// Enclosed alphanumerics, box drawing, block elements — these are 1-wide.
-		// Misc symbols and dingbats (includes checkmarks ✅ U+2705, stars, arrows, etc.).
-		if (cp >= 0x2600 && cp <= 0x27BF)
+		// Specific wide symbols: media controls, clocks, angle brackets, large geometric shapes.
+		// NOTE: U+2600–U+26FF (misc symbols: ☑ ☀ ⚠ …) and U+2700–U+27BF (dingbats: ✓ ✔ ✖ …) are
+		// intentionally NOT included — they render single-width in Western terminals. Marking them as
+		// wide inflates row widths and breaks wrapping of markdown bullet points and checkmarks.
+		if (cp == 0x2329 || cp == 0x232A)      // 〈 〉 angle brackets
+			return 2;
+		if (cp >= 0x231A && cp <= 0x231B)      // ⌚ ⌛
+			return 2;
+		if (cp >= 0x23E9 && cp <= 0x23FA)      // ⏩ ⏪ ⏫ ⏬ ⏰ ⏳ …
+			return 2;
+		if (cp >= 0x25FD && cp <= 0x25FE)      // ◽ ◾
 			return 2;
 		// Supplemental symbols and emoji: U+1F000 and up. Since char is UTF-16, these are
 		// surrogate pairs and won't appear as a single char — handled as 1 each (surrogate half).
