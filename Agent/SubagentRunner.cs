@@ -142,7 +142,7 @@ public class SubagentRunner
 		// helpers an explicitly-invoked subagent spawns nest under the subagent that actually made the call. A
 		// sub-session is fixed for its lifetime (no compaction/role switch), so capturing it directly is safe,
 		// unlike the root whose active session is read at call time.
-		List<Tool> withTerminator = new List<Tool>(role.BuiltTools);
+		List<Tool> withTerminator = new List<Tool>(ToolFactory.BuildForRole(role));
 		if (role.Tools.Contains("read_file"))
 			withTerminator.Add(ToolFactory.CreateReadFileTool());
 		if (role.Tools.Contains("find_relevant_file_sections"))

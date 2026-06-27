@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using static SessionLoggerExtensions;
 
 public enum LlmExitReason
 {
@@ -74,8 +73,7 @@ public class LlmService
 	// guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
 	// Handles retry logic, rate limiting, and budget exhaustion. Returns ProtocolResult on each
 	// successful call. Context-full detection happens in CommitTurn when adding content.
-	public async Task<ProtocolResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap,
-ITransportServer transport, CancellationToken cancellationToken)
+	public async Task<ProtocolResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
 	{
 		ProtocolResult result = ProtocolResult.Failed($"LLM {_model.Config.Name} is permanently down");
 
@@ -117,18 +115,7 @@ ITransportServer transport, CancellationToken cancellationToken)
 						// Context-full is a caller-side constraint, not a model failure.
 						// Detection happens in CommitTurn when ADDING content to the session.
 						result = ProtocolResult.ContextFull("Context budget exhausted");
-						conversation.QueryLog.ModelFailure(
-							_model.ConfigId,
-							_model.Config.Name,
-							_model.Endpoint,
-							_handler.GetDetectedProtocol().ToString(),
-							"ContextFull",
-							null,
-							"Context budget exhausted",
-							0,
-							0,
-							null,
-							false);
+						conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "ContextFull", null, "Context budget exhausted", 0, 0, null, false);
 						break;
 					}
 
@@ -153,15 +140,10 @@ ITransportServer transport, CancellationToken cancellationToken)
 					int contextWindow = _model.Config.ContextWindow;
 					LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost, cachedTokens) =>
 						{
-							transport.Stats(conversation.Id, modelId, role,
-								inputBaseline + inputTokens,
-								outputBaseline + outputTokens,
-								costBaseline + turnCost,
-								contextWindow, contextBaseline, cachedTokens);
+							transport.Stats(conversation.Id, modelId, role, inputBaseline + inputTokens, outputBaseline + outputTokens, costBaseline + turnCost, contextWindow, contextBaseline, cachedTokens);
 						};
 
-					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog,
-linked.Token);
+					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
 
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{
@@ -193,36 +175,14 @@ linked.Token);
 						{
 							// Sustained rate limiting is a caller-side budget issue, not a model failure. The
 							// caller falls back to the next model in the role's list (RoleModelIds) on this outcome.
-							conversation.QueryLog.ModelFailure(
-		_model.ConfigId,
-		_model.Config.Name,
-		_model.Endpoint,
-		_handler.GetDetectedProtocol().ToString(),
-		"TooManyRetries",
-		429,
-		"Rate limited after maximum retries",
-		rateLimitRetries,
-		kMaxRateLimitRetries,
-		result.RetryAfter,
-		true);
+							conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "TooManyRetries", 429, "Rate limited after maximum retries", rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, true);
 							result = ProtocolResult.TooManyRetries();
 							break;
 						}
 						_availability.AvailableAt = result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
 						int waitSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, $"Rate limited {waitSeconds}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
-						conversation.QueryLog.ModelFailure(
-							_model.ConfigId,
-							_model.Config.Name,
-							_model.Endpoint,
-							_handler.GetDetectedProtocol().ToString(),
-							"RateLimited",
-							429,
-							result.ErrorMessage ?? "Rate limited by provider",
-							rateLimitRetries,
-							kMaxRateLimitRetries,
-							result.RetryAfter,
-							false);
+						conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "RateLimited", 429, result.ErrorMessage ?? "Rate limited by provider", rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}
 					else if (result.Outcome == ProtocolCallOutcome.Transient)
@@ -238,23 +198,11 @@ linked.Token);
 							// collapsing it into TooManyRetries, which the caller would otherwise report as
 							// rate-limiting and bury the real cause. Rate-limit exhaustion (above) keeps
 							// TooManyRetries; this transient path carries its reason.
-							conversation.QueryLog.ModelFailure(
-		_model.ConfigId,
-		_model.Config.Name,
-		_model.Endpoint,
-		_handler.GetDetectedProtocol().ToString(),
-		"Failed",
-		null,
-		string.IsNullOrEmpty(result.ErrorMessage)
-			? "Transient errors persisted after repeated retries."
-			: $"Transient errors persisted after {kMaxTransientRetries} retries: {result.ErrorMessage}",
-		transientRetries,
-		kMaxTransientRetries,
-		result.RetryAfter,
-		true);
-							result = ProtocolResult.Failed(string.IsNullOrEmpty(result.ErrorMessage)
-								? "Transient errors persisted after repeated retries."
-								: $"Transient errors persisted after {kMaxTransientRetries} retries: {result.ErrorMessage}");
+							string message = string.IsNullOrEmpty(result.ErrorMessage) ? 
+								"Transient errors persisted after repeated retries." : 
+								$"Transient errors persisted after {kMaxTransientRetries} retries: {result.ErrorMessage}";
+							conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "Failed", null, message, transientRetries, kMaxTransientRetries, result.RetryAfter, true);
+							result = ProtocolResult.Failed(message);
 							break;
 						}
 						// Prefer the server-stated retry time when the response carried one (the helper already
@@ -265,35 +213,13 @@ linked.Token);
 							_availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1)));
 						int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{kMaxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
-						conversation.QueryLog.ModelFailure(
-							_model.ConfigId,
-							_model.Config.Name,
-							_model.Endpoint,
-							_handler.GetDetectedProtocol().ToString(),
-							"Transient",
-							null,
-							result.ErrorMessage ?? "Transient error",
-							transientRetries,
-							kMaxTransientRetries,
-							result.RetryAfter,
-							false);
+						conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, kMaxTransientRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}
 					else
 					{
 						// Unrecoverable (auth failure, unknown protocol): mark the model down so it is not retried.
-						conversation.QueryLog.ModelFailure(
-							_model.ConfigId,
-							_model.Config.Name,
-							_model.Endpoint,
-							_handler.GetDetectedProtocol().ToString(),
-							"Failed",
-							null,
-							result.ErrorMessage ?? "Permanent failure",
-							0,
-							0,
-							null,
-							true);
+						conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "Failed", null, result.ErrorMessage ?? "Permanent failure", 0, 0, null, true);
 						_availability.AvailableAt = DateTimeOffset.MaxValue;
 						break;
 					}
@@ -309,18 +235,7 @@ linked.Token);
 				if (turnToken.IsCancellationRequested || cancellationToken.IsCancellationRequested)
 				{
 					interrupted = turnToken.IsCancellationRequested;
-					conversation.QueryLog.ModelFailure(
-						_model.ConfigId,
-						_model.Config.Name,
-						_model.Endpoint,
-						_handler.GetDetectedProtocol().ToString(),
-						"Interrupted",
-						null,
-						"Interrupted by user",
-						0,
-						0,
-						null,
-						false);
+					conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "Interrupted", null, "Interrupted by user", 0, 0, null, false);
 					result = result.Outcome == ProtocolCallOutcome.Success
 						? ProtocolResult.Interrupted("Interrupted by user", result.Payload)
 						: ProtocolResult.Interrupted("Interrupted by user", null);
@@ -332,23 +247,11 @@ linked.Token);
 					// Surface it explicitly as a timeout (Transient, so the caller retries/falls back) instead
 					// of an opaque "cancelled". A TimeoutException inner confirms the HttpClient.Timeout case.
 					bool timedOut = ex is TaskCanceledException && ex.InnerException is TimeoutException;
-					conversation.QueryLog.ModelFailure(
-		_model.ConfigId,
-		_model.Config.Name,
-		_model.Endpoint,
-		_handler.GetDetectedProtocol().ToString(),
-		timedOut ? "Timeout" : "TransportCancelled",
-		null,
-		timedOut
-			? "LLM request timed out: the model did not respond before the HTTP client timeout elapsed (too slow, or queued behind other requests)."
-			: $"LLM request was cancelled by the transport (not by the user): {ex}",
-		0,
-		0,
-		null,
-		true);
-					result = timedOut
-						? ProtocolResult.Transient("LLM request timed out: the model did not respond before the HTTP client timeout elapsed (too slow, or queued behind other requests).", null)
-						: ProtocolResult.Transient($"LLM request was cancelled by the transport (not by the user): {ex}", null);
+					string message = timedOut ? 
+						"LLM request timed out: the model did not respond before the HTTP client timeout elapsed (too slow, or queued behind other requests)." :
+						$"LLM request was cancelled by the transport (not by the user): {ex}";
+					conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), timedOut ? "Timeout" : "TransportCancelled", null, message, 0, 0, null, true);
+					result = ProtocolResult.Transient(message, null);
 				}
 			}
 			catch (Exception ex)
@@ -356,21 +259,7 @@ linked.Token);
 				// Cancellation without our token = client-side timeout (e.g. HttpClient). Surface it
 				// as a failure so the user sees it instead of a silent retry loop.
 				string reason = ex.InnerException != null ? ex.InnerException.Message : ex.ToString();
-				conversation.QueryLog.ModelFailure(
-		_model.ConfigId,
-		_model.Config.Name,
-		_model.Endpoint,
-		_handler.GetDetectedProtocol().ToString(),
-		"Exception",
-		null,
-		reason,
-		0,
-		0,
-		null,
-		true,
-		null,
-		null,
-		ex.StackTrace);
+				conversation.QueryLog.ModelFailure(_model.ConfigId, _model.Config.Name, _model.Endpoint, _handler.GetDetectedProtocol().ToString(), "Exception", null, reason, 0, 0, null, true, null, null, ex.StackTrace);
 				result = ProtocolResult.Failed($"LLM call cancelled unexpectedly (client-side timeout): {reason}");
 			}
 			finally

@@ -787,16 +787,16 @@ public class SessionRunner
 
 	// ---- Helpers ----
 
-	// Returns the tools for this turn. role.BuiltTools holds the role's regular tools; the in-code special
-	// tools are injected here for the root: read_file, find_relevant_file_sections, assign_work, fetch_url, and search_web when
-	// the role declares them by name. Child agents (isSubagent) get only their regular tools — SubagentRunner adds
-	// the terminator and the Developer's review_work / commit_and_rebase — so they cannot spawn arbitrary subagents.
+	// Returns the tools for this turn. The basic tool set comes from ToolFactory.BuildForRole; the in-code
+	// special tools are injected here for the root: read_file, find_relevant_file_sections, assign_work,
+	// fetch_url, and search_web when the role declares them by name. Child agents (isSubagent) get only the
+	// basic tools — SubagentRunner adds the terminator and the Developer's review_work / commit_and_rebase.
 	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, bool workInProgress, CancellationToken ct)
 	{
 		if (isSubagent)
-			return Task.FromResult(role.BuiltTools);
+			return Task.FromResult(ToolFactory.BuildForRole(role));
 
-		List<Tool> tools = new List<Tool>(role.BuiltTools);
+		List<Tool> tools = new List<Tool>(ToolFactory.BuildForRole(role));
 		if (role.Tools.Contains("read_file"))
 			tools.Add(_readFileTool);
 		if (role.Tools.Contains("find_relevant_file_sections"))

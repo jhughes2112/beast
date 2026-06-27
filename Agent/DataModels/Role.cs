@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
@@ -46,13 +45,6 @@ public class Role
 	[JsonPropertyName("end_of_turn_prompt")]
 	public string EndOfTurnPrompt { get; }
 
-	// The role's Tools names resolved to Tool instances, bound once at load time (see BindTools) so the
-	// set is not rebuilt every turn. Not serialized.
-	private Tool[] _builtTools = Array.Empty<Tool>();
-
-	[JsonIgnore]
-	public Tool[] BuiltTools => _builtTools;
-
 	[JsonConstructor]
 	public Role(
 		string name,
@@ -74,9 +66,4 @@ public class Role
 		EndOfTurnPrompt = endOfTurnPrompt ?? string.Empty;
 	}
 
-	// Resolves and stores the role's tool instances. Called after roles and models are loaded.
-	public void BindTools(Tool[] tools)
-	{
-		_builtTools = tools;
-	}
 }

@@ -13,7 +13,7 @@ public static class ToolFactory
 	// they are created by their Create* factories and added to a session's tool list in code (the root gets
 	// assign_work; SubagentRunner gives the Developer review_work / commit_and_rebase and each child its
 	// terminator).
-	public static Dictionary<string, Tool> Build()
+	private static Dictionary<string, Tool> Build()
 	{
 		Dictionary<string, Tool> tools = new(StringComparer.OrdinalIgnoreCase);
 
@@ -78,6 +78,21 @@ public static class ToolFactory
 			});
 
 		return tools;
+	}
+
+	// Returns the Tool instances from the basic tool set (Build()) that the given role declares by name.
+	// Special tools (read_file, find_relevant_file_sections, fetch_url, search_web, assign_work, etc.)
+	// are constructed separately by callers; only the tools registered in Build() are resolved here.
+	public static Tool[] BuildForRole(Role role)
+	{
+		Dictionary<string, Tool> allTools = Build();
+		List<Tool> result = new List<Tool>();
+		foreach (string toolName in role.Tools)
+		{
+			if (allTools.TryGetValue(toolName, out Tool? tool))
+				result.Add(tool);
+		}
+		return result.ToArray();
 	}
 
 	// A raw read_file window cap for the main agents: large enough to read a file in a few reads, bounded so a

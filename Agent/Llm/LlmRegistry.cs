@@ -67,18 +67,6 @@ public class LlmRegistry
 			}
 		}
 
-		// Resolve each role's tool names to instances once, here, so they are not rebuilt every turn.
-		Dictionary<string, Tool> allTools = ToolFactory.Build();
-		foreach (Role role in roles.Roles.Values)
-		{
-			List<Tool> bound = new List<Tool>();
-			foreach (string toolName in role.Tools)
-			{
-				if (allTools.TryGetValue(toolName, out Tool? tool))
-					bound.Add(tool);
-			}
-			role.BindTools(bound.ToArray());
-		}
 	}
 
 	// Probes any endpoint not yet in _probeCache to detect its protocol.
