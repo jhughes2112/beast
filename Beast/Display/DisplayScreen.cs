@@ -1188,6 +1188,7 @@ public class DisplayScreen : IDisplay
 			{
 				lock (_consoleLock)
 				{
+					_followReadyTick = 0;
 					_mouseRow = inputEv.Row;
 					_mouseCol = inputEv.Col;
 					// Over the session-tree panel there is no history block to highlight.
@@ -1283,6 +1284,7 @@ public class DisplayScreen : IDisplay
 							_model?.ToggleCollapsed(slot.Value);
 							// Keep hover indicator after the click — mouse is still over the block.
 							_hoverSlot = slot.Value;
+							_followReadyTick = 0;
 						}
 					}
 				}
@@ -1293,6 +1295,7 @@ public class DisplayScreen : IDisplay
 			{
 				lock (_consoleLock)
 				{
+					_followReadyTick = 0;
 					inCompletion = false;
 					string insert = InputLayer.BuildPasteInsert(inputEv.Text, pasteBuffers, ref pasteSeq);
 					inputBuffer.Insert(cursorPos, insert);
@@ -1317,6 +1320,7 @@ public class DisplayScreen : IDisplay
 				bool treeHandled = false;
 				lock (_consoleLock)
 				{
+					_followReadyTick = 0;
 					if (key.Key == ConsoleKey.UpArrow && !ctrl && !alt && !shift)
 					{
 						if (_sessionTreeSelected > 0)
@@ -1377,6 +1381,7 @@ public class DisplayScreen : IDisplay
 				string? accept = null;
 				lock (_consoleLock)
 				{
+					_followReadyTick = 0;
 					popupActive = _completionActive && _completionMatches.Count > 0;
 					if (popupActive)
 						accept = _completionMatches[_completionIndex];
@@ -1432,6 +1437,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if ((key.Key == ConsoleKey.Enter && (shift || alt)) || (key.Key == ConsoleKey.J && ctrl))
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				inCompletion = false;
 				inputBuffer.Insert(cursorPos, '\n');
 				cursorPos++;
@@ -1444,6 +1451,7 @@ public class DisplayScreen : IDisplay
 				string? accept = null;
 				lock (_consoleLock)
 				{
+					_followReadyTick = 0;
 					popupActive = _completionActive && _completionMatches.Count > 0;
 					if (popupActive)
 						accept = _completionMatches[_completionIndex];
@@ -1478,6 +1486,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.Backspace && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				inCompletion = false;
 				int newPos = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
 				inputBuffer.Remove(newPos, cursorPos - newPos);
@@ -1486,6 +1496,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.Backspace)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				inCompletion = false;
 				if (cursorPos > 0)
 				{
@@ -1496,6 +1508,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.Delete && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				inCompletion = false;
 				int newPos = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
 				inputBuffer.Remove(cursorPos, newPos - cursorPos);
@@ -1503,6 +1517,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.Delete)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				inCompletion = false;
 				if (cursorPos < inputBuffer.Length)
 				{
@@ -1517,7 +1533,10 @@ public class DisplayScreen : IDisplay
 				// rather than caret motion, so it never disturbs the input line.
 				int dir = key.Key == ConsoleKey.RightArrow ? HScrollKeyStep : -HScrollKeyStep;
 				lock (_consoleLock)
+				{
+					_followReadyTick = 0;
 					ScrollHoveredBlockHorizontally(dir);
+				}
 			}
 			else if ((key.Key == ConsoleKey.UpArrow || key.Key == ConsoleKey.DownArrow) && alt)
 			{
@@ -1535,31 +1554,43 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.LeftArrow && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				cursorPos = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.LeftArrow)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				if (cursorPos > 0)
 				{ cursorPos--; SetInput(inputBuffer.ToString(), cursorPos); }
 			}
 			else if (key.Key == ConsoleKey.RightArrow && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				cursorPos = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.RightArrow)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				if (cursorPos < inputBuffer.Length)
 				{ cursorPos++; SetInput(inputBuffer.ToString(), cursorPos); }
 			}
 			else if (key.Key == ConsoleKey.Home)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				cursorPos = 0;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.End)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				cursorPos = inputBuffer.Length;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
@@ -1567,7 +1598,10 @@ public class DisplayScreen : IDisplay
 			{
 				bool popupActive;
 				lock (_consoleLock)
+				{
+					_followReadyTick = 0;
 					popupActive = _completionActive && _completionMatches.Count > 0;
+				}
 				if (popupActive)
 				{
 					lock (_consoleLock)
@@ -1579,13 +1613,12 @@ public class DisplayScreen : IDisplay
 					}
 					continue;
 				}
-				int upW = Console.WindowWidth;
-				if (upW < 1)
-					upW = 80;
-				(int upLine, int upCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
-
-				if (upLine > 0)
+				if (inputBuffer.Length > 0)
 				{
+					int upW = Console.WindowWidth;
+					if (upW < 1)
+						upW = 80;
+					(int upLine, int upCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
 					cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
 					SetInput(inputBuffer.ToString(), cursorPos);
 				}
@@ -1606,7 +1639,10 @@ public class DisplayScreen : IDisplay
 			{
 				bool popupActive;
 				lock (_consoleLock)
+				{
+					_followReadyTick = 0;
 					popupActive = _completionActive && _completionMatches.Count > 0;
+				}
 				if (popupActive)
 				{
 					lock (_consoleLock)
@@ -1618,16 +1654,18 @@ public class DisplayScreen : IDisplay
 					}
 					continue;
 				}
-				int downW = Console.WindowWidth;
-				if (downW < 1)
-					downW = 80;
-				(int downLine, int downCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
-				int totalLines = InputLayer.WrapInput(inputBuffer.ToString(), downW).Count;
-
-				if (downLine < totalLines - 1)
+				if (inputBuffer.Length > 0)
 				{
-					cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), downLine + 1, downCol, downW);
-					SetInput(inputBuffer.ToString(), cursorPos);
+					int downW = Console.WindowWidth;
+					if (downW < 1)
+						downW = 80;
+					(int downLine, int downCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
+					int totalLines = InputLayer.WrapInput(inputBuffer.ToString(), downW).Count;
+					if (downLine < totalLines - 1)
+					{
+						cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), downLine + 1, downCol, downW);
+						SetInput(inputBuffer.ToString(), cursorPos);
+					}
 				}
 				else if (historyIndex >= 0)
 				{
@@ -1667,6 +1705,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.Escape)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				if (inputBuffer.Length > 0)
 				{
 					inputBuffer.Clear();
@@ -1687,6 +1727,7 @@ public class DisplayScreen : IDisplay
 			{
 				lock (_consoleLock)
 				{
+					_followReadyTick = 0;
 					if (_sessionList.Count > 0)
 					{
 						_sessionTreeOpen = !_sessionTreeOpen;
@@ -1714,16 +1755,22 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.A && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				cursorPos = 0;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.E && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				cursorPos = inputBuffer.Length;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.V && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				string? clip = ClipboardService.GetText();
 				if (!string.IsNullOrEmpty(clip))
 				{
@@ -1736,6 +1783,8 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.X && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				if (inputBuffer.Length > 0)
 				{
 					ClipboardService.SetText(inputBuffer.ToString());
@@ -1747,18 +1796,26 @@ public class DisplayScreen : IDisplay
 			}
 			else if (key.Key == ConsoleKey.C && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				_requestExit?.Invoke();
 			}
 			else if (key.Key == ConsoleKey.D && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				_requestExit?.Invoke();
 			}
 			else if (key.Key == ConsoleKey.O && ctrl)
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				CycleCollapseMode();
 			}
 			else if (!char.IsControl(key.KeyChar))
 			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
 				inCompletion = false;
 				inputBuffer.Insert(cursorPos, key.KeyChar);
 				cursorPos++;
