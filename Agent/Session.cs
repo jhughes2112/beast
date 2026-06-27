@@ -106,6 +106,8 @@ public class Session
 
 	// Monotonically increasing counter for child session IDs, rooted at this session's ID.
 	// Session.AllocateChildId() increments this and returns "{Id}_{n}".
+	// Backed by BeastSession.ChildCounter so the counter survives reload — a re-entered worktree
+	// must not reuse a child ID that was already issued to another session.
 	private int _childCounter;
 
 	// ---- Child ID allocation ----
@@ -114,7 +116,12 @@ public class Session
 	// IDs form a path: "parentId_N" where N increments from 1.
 	public string AllocateChildId()
 	{
+		// Seed from the persisted counter so a reloaded session continues past any IDs already issued.
+		int persisted = _data.ChildCounter;
+		if (persisted > _childCounter)
+			_childCounter = persisted;
 		int n = Interlocked.Increment(ref _childCounter);
+		_data.ChildCounter = n;
 		return $"{_data.Id}_{n}";
 	}
 

@@ -56,6 +56,11 @@ public class BeastSession
 	[JsonIgnore]
 	public bool Ephemeral { get; }
 
+	// Tracks the highest child ID suffix allocated by this session, persisted so that reloaded sessions
+	// do not reuse an already-taken child ID (which would append to an unrelated session file).
+	[JsonPropertyName("childCounter")]
+	public int ChildCounter { get; internal set; }
+
 	[JsonConstructor]
 	public BeastSession(
 		string id,
@@ -81,5 +86,6 @@ public class BeastSession
 		CumulativeOutputTokens = cumulativeOutputTokens;
 		CurrentContextSize = currentContextSize;
 		Ephemeral = ephemeral;
+		ChildCounter = 0;
 	}
 }
