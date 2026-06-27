@@ -414,8 +414,7 @@ public class SessionRunner
 									string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
 									session.QueryLog.FallbackTransition(_service, fallback, reason, result.Outcome == ProtocolCallOutcome.TooManyRetries ? 10 : 5); // approximate
 									_service = fallback;
-									// Don't change session.Model — that's the user's choice. The fallback is tracked
-									// only via _service, so session.Model stays as the user selected it.
+									session.UpdateModel(fallback.Model);
 									session.SendStats();
 									_transport.Status(session.Id, $"{reason}; falling back to {fallback.Model.Config.Name}");
 									// completed stays false so the loop retries this turn on the fallback model.
