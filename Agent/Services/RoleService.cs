@@ -176,8 +176,24 @@ public class RoleService
 			""";
 
 		const string summaryPrompt = """
-            Output only a summary of the preceding conversation retaining the theme, critical concepts, current status, discovered context, most recent transaction in this discussion, and any other exact details that would help maintain continuity in a new conversation.  Be concise.
-            """;
+			Create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing seamlessly without losing context.
+			Organize your thoughts and ensure you've covered all necessary points. Process: 
+			1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify: 
+				- The user's explicit requests and intents 
+				- Your approach to addressing the user's requests 
+				- Key decisions, technical concepts and code patterns 
+				- Specific relevant details like file names, function signatures, file edits, etc 
+			2. Double-check for technical accuracy and completeness, addressing each required element thoroughly. Your summary should include the following sections: 
+				1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail, retaining key phrases and replacing low entropy with "..."
+				2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed. 
+				3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important. 
+				4. Problem Solving: Document problems solved and any ongoing troubleshooting efforts. 
+				5. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on. 
+				6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable. 
+				7. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request.
+				8. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
+			Do this now, following the structure described, ensuring precision and thoroughness in your response.
+			""";
 		const string endOfTurnPrompt = """
             Is all the delegated work complete? If everything the user asked for is done, call stop_work with a brief summary of what was accomplished. If work remains, call assign_work to hand the Developer the next unit of work.
             """;
@@ -194,16 +210,23 @@ public class RoleService
 	{
 		const string description = "Implements changes with full read/write/shell access, and gets them reviewed";
 		const string summaryPrompt = """
-			Output a concise summary of the preceding conversation preserving:
-			- Goal & scope: what is being built, fixed, or investigated
-			- Tech stack & environment: languages, frameworks, tools, versions, and any relevant config
-			- Current status: what's working, what's broken, and where execution left off
-			- Code context: key files, functions, classes, or logic discussed; include critical snippets verbatim if small enough
-			- Errors & resolutions: any bugs encountered, root causes identified, and fixes applied or attempted
-			- Decisions made: architectural choices, tradeoffs accepted, or approaches ruled out
-			- Last action: the most recent code written, command run, or change made
-			- Next steps: open tasks, unresolved issues, or what was about to be tried
-			Be concise. Prioritize technical precision over narrative.
+			Create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing seamlessly without losing context.
+			Organize your thoughts and ensure you've covered all necessary points. Process: 
+			1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify: 
+				- The user's explicit requests and intents 
+				- Your approach to addressing the user's requests 
+				- Key decisions, technical concepts and code patterns 
+				- Specific relevant details like file names, function signatures, file edits, etc 
+			2. Double-check for technical accuracy and completeness, addressing each required element thoroughly. Your summary should include the following sections: 
+				1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail, retaining key phrases and replacing low entropy with "..."
+				2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed. 
+				3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important. 
+				4. Problem Solving: Document problems solved and any ongoing troubleshooting efforts. 
+				5. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on. 
+				6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable. 
+				7. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request.
+				8. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
+			Do this now, following the structure described, ensuring precision and thoroughness in your response.
 			""";
 		const string systemPrompt =
 			"""
@@ -226,20 +249,10 @@ public class RoleService
 	// but cannot modify them — only the Developer has write access. It finishes by calling finish_review with
 	// an approval flag and comments; on approval SubagentRunner commits and rebases the worktree branch onto
 	// its base branch (linear, no merge commit) and appends the git transcript to the review the Developer
-	// receives. This should be a smart model, but different from the Developer.
+	// receives. This should be a smart model, but different from the Developer. There is no reason it should run so long that it needs to compact.
 	private static Role ReviewerRole()
 	{
 		const string description = "Reviews changes read-only; approves or rejects with comments";
-		const string summaryPrompt = """
-			Output a concise summary of the preceding conversation preserving:
-			- Scope covered: files, modules, or sections already reviewed vs. still pending
-			- Issues found: bugs, logic errors, security concerns, performance problems, or anti-patterns flagged; include severity and file/line references where noted
-			- Positives noted: good patterns, clean abstractions, or well-handled edge cases worth acknowledging
-			- Standards & conventions: compare to defined standards and mention style deviations, architectural patterns broken, or team norms violated during review
-			- Unresolved questions: things to verify, clarify with the author, or cross-reference elsewhere in the codebase
-			- Current verdict: approve, reject with requested changes and why
-			Be concise. Preserve file names, function names, and issue descriptions exactly.
-			""";
 		const string systemPrompt =
 			"""
             You are a reviewer agent with read-only access to the worktree. Inspect the indicated changes against the goal you were given: check correctness, scope, code quality and that nothing obviously broke.
@@ -251,7 +264,7 @@ public class RoleService
 		// finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
 		// entry, so it is listed here only as the marker that selects this role's terminator.
 		List<string> tools = new List<string> { "read_file", "ls", "finish_review", "readonly_bash" };
-		return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
+		return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
 	}
 
 	// Used internally by the find_relevant_file_sections tool (FileSummarizer.ExploreAsync). It is seeded with the caller's
