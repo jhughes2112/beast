@@ -696,7 +696,7 @@ public class DisplayScreen : IDisplay
 		// panel. Drawn after the glow (and after the panel) so it stays crisp. Clicking it copies that block
 		// (Shift+click appends) — handled in the MouseClick branch.
 		if (_mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && _mouseCol < historyW && SlotAtTerminalRow(_mouseRow).HasValue)
-			frame.WriteText(historyW - 6, _mouseRow, "⊞", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
+			frame.WriteText(historyW - 6, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
 
 		// 6. Emit.
 		_drawBuf.Clear();
@@ -1246,7 +1246,7 @@ public class DisplayScreen : IDisplay
 					// there copies that block to the clipboard; Shift+click appends instead of replacing. The
 					// panel-area guard above already excluded clicks over the F10 panel, so this works whether
 					// the panel is open or closed.
-					if (inputEv.Col == _historyWidth - 6 && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
+					if ((inputEv.Col == _historyWidth - 6 || inputEv.Col == _historyWidth - 5) && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
 						continue;
 
 					if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
