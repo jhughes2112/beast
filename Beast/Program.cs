@@ -78,9 +78,9 @@ public class Program
 			Console.WriteLine("=== Running Beast Tests ===");
 			TestContext ctx = new TestContext(new TransportClientConsole());
 			TransportTests.Test(ctx);
+			CharWidthTests.Test(ctx);
 			Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
-			if (ctx.Failed > 0)
-				return 1;
+			return ctx.Failed > 0 ? 1 : 0;
 		}
 
 		// Build the ordered message list: switches, then prompt, then /quit if non-interactive.

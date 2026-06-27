@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
+using CharWidthRef = global::CharWidth;
+
 
 // Utilities for working with strings that contain ANSI escape codes.
 // "Visible length" means the count of printable characters, ignoring escape sequences.
@@ -99,45 +101,18 @@ public static class AnsiString
 	}
 
 	// Returns the terminal column width of a single character: 2 for wide (CJK, emoji, specific wide symbols), 1 for everything else.
+	// Delegates to CharWidth.Of for the core logic so the two implementations stay in sync.
+	// Adds surrogate handling on top: AnsiString iterates UTF-16 char-by-char, so high surrogates
+	// (start of emoji pairs) count as 2 and low surrogates count as 0.
 	public static int CharWidth(char c)
 	{
 		int cp = c;
-		// CJK unified ideographs and common extensions.
-		if (cp >= 0x4E00 && cp <= 0x9FFF)
-			return 2;
-		if (cp >= 0x3400 && cp <= 0x4DBF)
-			return 2;
-		if (cp >= 0xF900 && cp <= 0xFAFF)
-			return 2;
-		// Hangul syllables.
-		if (cp >= 0xAC00 && cp <= 0xD7AF)
-			return 2;
-		// Fullwidth and halfwidth forms (fullwidth half = 2, but halfwidth katakana = 1; we cover the fullwidth block).
-		if (cp >= 0xFF01 && cp <= 0xFF60)
-			return 2;
-		if (cp >= 0xFFE0 && cp <= 0xFFE6)
-			return 2;
-		// Specific wide symbols: media controls, clocks, angle brackets, large geometric shapes.
-		// NOTE: U+2600–U+26FF (misc symbols: ☑ ☀ ⚠ …) and U+2700–U+27BF (dingbats: ✓ ✔ ✖ …) are
-		// intentionally NOT included — they render single-width in Western terminals. Marking them as
-		// wide inflates row widths and breaks wrapping of markdown bullet points and checkmarks.
-		if (cp == 0x2329 || cp == 0x232A)      // 〈 〉 angle brackets
-			return 2;
-		if (cp >= 0x231A && cp <= 0x231B)      // ⌚ ⌛
-			return 2;
-		if (cp >= 0x23E9 && cp <= 0x23FA)      // ⏩ ⏪ ⏫ ⏬ ⏰ ⏳ …
-			return 2;
-		if (cp >= 0x25FD && cp <= 0x25FE)      // ◽ ◾
-			return 2;
-		// Supplemental symbols and emoji: U+1F000 and up. Since char is UTF-16, these are
-		// surrogate pairs and won't appear as a single char — handled as 1 each (surrogate half).
-		// The high surrogate range D800-DBFF contributes 2 for the pair when the low follows,
-		// but since we iterate char-by-char we count the high surrogate as 2 and low as 0.
+		// Surrogate handling: AnsiString operates on raw UTF-16 char sequences.
 		if (cp >= 0xD800 && cp <= 0xDBFF)
 			return 2;  // high surrogate: start of wide emoji pair
 		if (cp >= 0xDC00 && cp <= 0xDFFF)
 			return 0;  // low surrogate: already counted by high
-		return 1;
+		return CharWidthRef.Of(c);
 	}
 
 	// Wraps a string with ANSI codes into multiple strings each with at most maxWidth visible chars.
