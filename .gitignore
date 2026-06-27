@@ -1,5 +1,6 @@
 # KanBeast
 .github
+.beast
 package-lock.json
 
 # Build results
