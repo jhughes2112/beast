@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using static SessionLoggerExtensions;
 
 // Executes a session: LLM turns, tool dispatch, and role transitions. Subagent-wrapped tool
 // calls are delegated to SubagentRunner; single-turn execution lives in TurnRunner.
@@ -32,40 +32,15 @@ public class SessionRunner
 	// Runs child sub-sessions on behalf of the root's delegation tool.
 	private readonly SubagentRunner _subagent;
 
-	// The Default agent's delegation tool: hands a unit of work to the Developer subagent. Appended to the
-	// root's bound tools each turn; child agents never receive it, so nesting stops at one level. It targets
-	// one fixed role, so unlike the old generic subagent tool it needs no rebuild on /reload. Calling it puts
-	// the session in the work loop (BeginWork).
-	private readonly Tool _assignWorkTool;
-
-	// The counterpart to assign_work: exposed only while the session is in the work loop, it calls EndWork to
-	// leave it. Stateless like the others, built once.
-	private readonly Tool _stopWorkTool;
-
-	// fetch_url: fetches a page and filters it through the WebFetch role. Injected for roles that declare it.
-	private readonly Tool _fetchUrlTool;
-
-	// search_web: searches the web with the OpenRouter search model and returns its answer verbatim. Null when
-	// web search is not configured/enabled. Injected for roles that declare it.
-	private readonly Tool? _searchWebTool;
-
-	// read_file: a plain, raw file reader. Stateless, so a single instance is reused for every turn.
-	private readonly Tool _readFileTool;
-
-	// find_relevant_file_sections: digests a file through the Explorer role, returning a goal-focused concept map. The root
-	// owns its own summarizer; each subagent run makes its own, so an agent's exploration never depends on
-	// another's reads.
-	private readonly Tool _summarizeFileTool;
-
 	private bool _wantsCompact = false;
 
 	// Set when the active root is deleted: the outgoing session's files are gone, so the session-switch in
 	// RunAsync must NOT re-save (resurrect) it. Consumed and cleared by that switch.
 	private bool _currentSessionDeleted = false;
 
-	// True for the runner that resumes a saved root at startup: it restores that root's saved child sessions
+	// True for the runner that resumes a saved root at startup: it restores ALL saved sessions in the worktree
 	// into the client's session list on first run. Consumed once, then cleared, so a compaction-failure
-	// restart on the same runner (or a fresh runner with it false) never replays the children twice.
+	// restart on the same runner (or a fresh runner with it false) never replays the sessions twice.
 	private bool _restoreChildren;
 
 
@@ -86,12 +61,6 @@ public class SessionRunner
 		_cancellationTokenSource = cancellationTokenSource;
 		_currentSession = session;
 		_subagent = new SubagentRunner(registry, roleService, transport, () => this.CurrentSession, settings.Settings.WebSearch);
-		_assignWorkTool = ToolFactory.CreateAssignWorkTool((prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt), () => CurrentSession.BeginWork());
-		_stopWorkTool = ToolFactory.CreateStopWorkTool(() => CurrentSession.EndWork());
-		_fetchUrlTool = ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => this.CurrentSession);
-		_searchWebTool = ToolFactory.CreateSearchWebTool(_settings.Settings.WebSearch, _roleService, () => this.CurrentSession);
-		_readFileTool = ToolFactory.CreateReadFileTool();
-		_summarizeFileTool = ToolFactory.CreateSummarizeFileTool(new FileSummarizer(), _registry, _roleService, () => this.CurrentSession);
 	}
 
 	// Bash script to check whether the worktree's feature branch is fully integrated into the base branch
@@ -176,16 +145,122 @@ public class SessionRunner
 		_transport.Status(session.Id, "worktree-finished");
 	}
 
+	// Loads ALL saved sessions from the worktree and replays each to the client so the F10 menu shows the complete tree.
+	// Roots are sorted by CreationOrder descending (newest first = highest CreationOrder first). 
+	// Children are sorted under their parent by CreationOrder descending (newest first = highest child number first).
+	// The root session (the one being resumed) is replayed LAST so it becomes the active view (the client follows the most recently replayed content).
+	// Called only on the first run of the runner that resumes a saved root (_restoreChildren == true).
+	private void RestoreAllSessions(Session root)
+	{
+		List<SessionService.SessionFileInfo> allSessions = SessionService.LoadAll();
+		if (allSessions.Count == 0)
+			return;
+
+		// Build parent -> children map
+		Dictionary<string, List<SessionService.SessionFileInfo>> childrenMap = new Dictionary<string, List<SessionService.SessionFileInfo>>(StringComparer.Ordinal);
+		HashSet<string> hasParent = new HashSet<string>(StringComparer.Ordinal);
+
+		foreach (var info in allSessions)
+		{
+			string? parentId = GetParentId(info.Session.Id);
+			if (parentId != null && allSessions.Any(s => s.Session.Id == parentId))
+			{
+				if (!childrenMap.TryGetValue(parentId, out var kids))
+				{
+					kids = new List<SessionService.SessionFileInfo>();
+					childrenMap[parentId] = kids;
+				}
+				kids.Add(info);
+				hasParent.Add(info.Session.Id);
+			}
+		}
+
+		// Sort children by CreationOrder descending (newest first = highest CreationOrder first)
+		foreach (var kvp in childrenMap)
+		{
+			kvp.Value.Sort((a, b) => b.CreationOrder.CompareTo(a.CreationOrder));
+		}
+
+		// Roots: sessions with no parent (or parent not in the loaded set)
+		List<SessionService.SessionFileInfo> roots = allSessions.Where(s => !hasParent.Contains(s.Session.Id)).ToList();
+		
+		// Sort roots by CreationOrder descending (newest first = highest CreationOrder first)
+		roots.Sort((a, b) => b.CreationOrder.CompareTo(a.CreationOrder));
+
+		// Find the root being resumed (the one matching our current session's ID)
+		SessionService.SessionFileInfo? resumedRoot = roots.FirstOrDefault(r => r.Session.Id == root.Id);
+		
+		// Remove it from roots list so we can replay it LAST
+		if (resumedRoot != null)
+			roots.Remove(resumedRoot);
+
+		// DFS replay: roots first (sorted by CreationOrder desc), children sorted by CreationOrder desc
+		// The resumed root is replayed LAST so it becomes the active view
+		List<SessionService.SessionFileInfo> ordered = new List<SessionService.SessionFileInfo>();
+		foreach (var rootInfo in roots)
+			DfsAddToOrdered(rootInfo, childrenMap, ordered);
+		
+		if (resumedRoot != null)
+			DfsAddToOrdered(resumedRoot, childrenMap, ordered);
+
+		foreach (var info in ordered)
+		{
+			Session session = new Session(info.Session, string.Empty, _transport, true);
+			session.AnnounceToClient();
+			session.SendStats();
+			session.ReplayToTransport();
+		}
+	}
+
+	// DFS helper to add sessions to ordered list (pre-order: parent before children)
+	private void DfsAddToOrdered(SessionService.SessionFileInfo root, Dictionary<string, List<SessionService.SessionFileInfo>> childrenMap, List<SessionService.SessionFileInfo> ordered)
+	{
+		ordered.Add(root);
+		if (childrenMap.TryGetValue(root.Session.Id, out var children))
+		{
+			foreach (var child in children)
+				DfsAddToOrdered(child, childrenMap, ordered);
+		}
+	}
+
+	// Returns the parent session ID for a given session ID, or null if it is a root.
+	// Parent-child relationship is encoded as "parentId_N" where N is a positive integer.
+	private static string? GetParentId(string id)
+	{
+		int last = id.LastIndexOf('_');
+		if (last < 0)
+			return null;
+		string suffix = id.Substring(last + 1);
+		if (!int.TryParse(suffix, out _))
+			return null;
+		return id.Substring(0, last);
+	}
+
+	// Extract child number from session ID (e.g., "parentId_5" -> 5)
+	private static int ExtractChildNumber(string sessionId)
+	{
+		int lastUnderscore = sessionId.LastIndexOf('_');
+		if (lastUnderscore < 0 || lastUnderscore == sessionId.Length - 1)
+			return 0;
+		if (int.TryParse(sessionId.Substring(lastUnderscore + 1), out int num))
+			return num;
+		return 0;
+	}
+
 	// Loads a resumed root's saved child sessions (subagent tool sessions, compaction/role successors) from
 	// disk and replays each to the client so the F10 tree lists them and they can be viewed. These sessions
 	// are not re-run — they are inert history — so the constructed Session objects are used only to announce
 	// and replay, then discarded. Called before the root's own replay so the root, replayed last, lands as
 	// the active view (the client follows the most recently replayed content).
+	// KEPT for session switching during runtime (when user switches to a different root via F10).
 	private void RestoreChildSessions(Session root)
 	{
-		foreach (string childId in SessionService.ListDescendants(root.Id))
+		foreach (var (id, displayName, messageCount, parentId) in SessionService.ListAll(root.Id))
 		{
-			BeastSession? data = SessionService.Load(childId);
+			if (string.Equals(id, root.Id, StringComparison.Ordinal))
+				continue; // skip the root itself
+
+			BeastSession? data = SessionService.Load(id);
 			if (data == null)
 				continue;
 
@@ -236,14 +311,13 @@ public class SessionRunner
 	{
 		Session session = _currentSession;
 
-		// On resume, surface this root's saved child sessions (subagent tool sessions, compaction/role
-		// successors) FIRST so the F10 tree shows them, then replay the root below. The client follows the
-		// most recently replayed content, so the root — replayed last — lands as the active view rather than
-		// a child. (Replaying the root first instead leaves the view stuck on the last child restored.)
+		// On resume (first run with _restoreChildren == true), load and replay ALL sessions in the worktree.
+		// Roots first (sorted by mod time, newest first), then children under parents (sorted by numeric suffix, newest first).
+		// The root being resumed is replayed LAST so it becomes the active view (client follows most recently replayed).
 		if (_restoreChildren)
 		{
 			_restoreChildren = false;
-			RestoreChildSessions(session);
+			RestoreAllSessions(session);
 		}
 
 		session.ReplayToTransport();
@@ -321,7 +395,7 @@ public class SessionRunner
 					try
 					{
 						bool workToolsActive = session.WorkInProgress;
-						Tool[] tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, turnScope.Token);
+						Tool[] tools = ToolsForTurn(role, workToolsActive);
 
 						// Tool dispatch loop: keep calling LLM until it returns without tool calls or fails.
 						bool completed = false;
@@ -385,7 +459,7 @@ public class SessionRunner
 								if (!completed && session.WorkInProgress != workToolsActive)
 								{
 									workToolsActive = session.WorkInProgress;
-									tools = await ToolsForTurnAsync(role, session.IsSubagent, workToolsActive, turnScope.Token);
+									tools = ToolsForTurn(role, workToolsActive);
 								}
 							}
 							else if (result.Outcome == ProtocolCallOutcome.ContextFull)
@@ -556,18 +630,16 @@ public class SessionRunner
 
 	// ---- Session management ----
 
-	// Persists a top-level session (the root the user drives, and its compaction/role successors) and
-	// records it as the session to resume. Inferring the display name first matters: the root is
-	// created nameless, and SessionService.Save skips nameless sessions — so without this the root
-	// would never reach disk while named subagents would. Always marks the save as root so
-	// lastSession.json tracks the top-level conversation, never a subagent tool session.
+	// Persists a top-level session (the root the user drives, and its compaction/role successors).
+	// Inferring the display name first matters: the root is created nameless, and SessionService.Save
+	// skips nameless sessions — so without this the root would never reach disk while named subagents would.
 	private static void SaveRoot(Session session)
 	{
 		// The root is created nameless; the first user message gives it a name here. Announce the
 		// instant it is assigned so the client switches from showing the raw ID to the display name.
 		if (session.InferDisplayName())
 			session.AnnounceToClient();
-		SessionService.Save(session.Data, true);
+		SessionService.Save(session.Data);
 	}
 
 	private Session CreateFreshSession(string roleName, bool ephemeral)
@@ -787,33 +859,24 @@ public class SessionRunner
 
 	// ---- Helpers ----
 
-	// Returns the tools for this turn. The basic tool set comes from ToolFactory.BuildForRole; the in-code
-	// special tools are injected here for the root: read_file, find_relevant_file_sections, assign_work,
-	// fetch_url, and search_web when the role declares them by name. Child agents (isSubagent) get only the
-	// basic tools — SubagentRunner adds the terminator and the Developer's review_work / commit_and_rebase.
-	private Task<Tool[]> ToolsForTurnAsync(Role role, bool isSubagent, bool workInProgress, CancellationToken ct)
+	// Returns the tools for this turn. All tool construction is handled by BuildForRole; the live callbacks
+	// are closures over this runner so they capture the current session at call time (not construction time).
+	private Tool[] ToolsForTurn(Role role, bool workInProgress)
 	{
-		if (isSubagent)
-			return Task.FromResult(ToolFactory.BuildForRole(role));
-
-		List<Tool> tools = new List<Tool>(ToolFactory.BuildForRole(role));
-		if (role.Tools.Contains("read_file"))
-			tools.Add(_readFileTool);
-		if (role.Tools.Contains("find_relevant_file_sections"))
-			tools.Add(_summarizeFileTool);
-		if (role.Tools.Contains("assign_work"))
-			tools.Add(_assignWorkTool);
-		if (role.Tools.Contains("fetch_url"))
-			tools.Add(_fetchUrlTool);
-		if (role.Tools.Contains("search_web") && _searchWebTool != null)
-			tools.Add(_searchWebTool);
-
-		// stop_work exists only inside the delegation loop: assign_work sets the flag, this exposes the way
-		// out. Paired with assign_work, so a role that cannot delegate never sees it.
-		if (workInProgress)
-			tools.Add(_stopWorkTool);
-
-		return Task.FromResult(tools.ToArray());
+		return ToolFactory.BuildForRole(
+			role,
+			_registry,
+			_roleService,
+			this.CurrentSession,
+			_settings.Settings.WebSearch,
+			workInProgress,
+			(prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt),
+			() => CurrentSession.BeginWork(),
+			() => CurrentSession.EndWork(),
+			null,   // no review_work at the root
+			null,   // no task_complete at the root
+			null,   // no finish_review at the root
+			null);  // no return_to_caller at the root
 	}
 
 	// Replaces _service when the model or role has changed, or when the service has permanently

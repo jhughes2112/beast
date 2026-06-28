@@ -24,7 +24,17 @@ public enum FrameType : byte
 	Idle = 16,             // agent is waiting for user input (not processing anything)
 	Busy = 17,             // agent is actively processing
 	SessionAnnounce = 18,  // agent announces a session; content is JSON {id, name}
-	SessionReset = 19      // agent reset its session set (e.g. active root deleted from F10); client forgets all sessions and adopts the named one
+	SessionReset = 19,     // agent reset its session set (e.g. active root deleted from F10); client forgets all sessions and adopts the named one
+	SessionStatus = 20     // agent reports a session's termination status; content is a SessionStatus enum name
+}
+
+// Session termination status reported via SessionStatus frames.
+public enum SessionStatus
+{
+	Ongoing,      // Session is currently busy or has not yet finished.
+	Success,      // Session finished with a successful result (ok=true).
+	Failure,      // Session finished with a failure (ok=false).
+	Incomplete    // Session ended without any tool call being made.
 }
 
 // Single-character tags that identify the type of a streaming block.
@@ -64,6 +74,8 @@ public interface ITransportServer
 	// Tells the client to forget every session it knows and adopt the named one as the sole active session.
 	// Sent when the agent stands up a fresh root (e.g. the active root was deleted from F10) so the F10 list resets.
 	void SessionReset(string sessionId);
+	// Reports a session's termination status (Success / Failure / Incomplete) so the F10 overlay can color it.
+	void SessionStatus(string sessionId, string status);
 	// Streaming: bracket a sequence of incremental chunks with start/end frames.
 	// Use StreamTag constants for the tag argument.
 	void StreamStart(string sessionId, string tag);

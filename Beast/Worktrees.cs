@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 
 
 // Host-side bookkeeping for per-launch git worktrees. Each Beast launch binds one worktree folder to
@@ -189,17 +190,64 @@ public static class Worktrees
 	}
 
 	// Removes a worktree's host folder after the agent has detached it via `git worktree remove`. Best
-	// effort: a folder still in use or already gone is not fatal.
-	public static void RemoveFolder(string cwd, string name)
+// effort: a folder still in use or already gone is not fatal.
+public static void RemoveFolder(string cwd, string name)
+{
+	string hostPath = Path.Combine(RepoDir(cwd), SanitizeName(name));
+	try
 	{
-		string hostPath = Path.Combine(RepoDir(cwd), SanitizeName(name));
+		if (Directory.Exists(hostPath))
+			Directory.Delete(hostPath, true);
+	}
+	catch
+	{
+	}
+}
+
+	// The path to the lastSession.json file in the repo root .beast folder.
+	private static string LastSessionPath(string cwd)
+	{
+		return Path.Combine(cwd, ".beast", "lastSession.json");
+	}
+
+	// Loads the last selected worktree name from .beast/lastSession.json.
+	// Returns the worktree name (folder name) or null if not found / invalid.
+	public static string? LoadLastWorktree(string cwd)
+	{
+		string path = LastSessionPath(cwd);
+		if (!File.Exists(path))
+			return null;
+
 		try
 		{
-			if (Directory.Exists(hostPath))
-				Directory.Delete(hostPath, true);
+			string json = File.ReadAllText(path);
+			using var doc = JsonDocument.Parse(json);
+			if (doc.RootElement.TryGetProperty("worktreeName", out var element))
+				return element.GetString();
 		}
 		catch
 		{
+		}
+		return null;
+	}
+
+	// Saves the last selected worktree name to .beast/lastSession.json.
+	// Does nothing for ephemeral runs (worktreeName == null).
+	public static void SaveLastWorktree(string cwd, string? worktreeName)
+	{
+		if (string.IsNullOrEmpty(worktreeName))
+			return;
+
+		string path = LastSessionPath(cwd);
+		try
+		{
+			Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+			string json = $"{{\"worktreeName\":\"{worktreeName}\"}}";
+			File.WriteAllText(path, json);
+		}
+		catch
+		{
+			// Best effort: never block a launch if we can't save the session.
 		}
 	}
 }

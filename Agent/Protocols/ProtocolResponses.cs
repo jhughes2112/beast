@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using static SessionLoggerExtensions;
 
 // OpenAI Responses API  
 // Wire protocol is stateful by default: passing previous_response_id continues
@@ -188,17 +187,13 @@ public class ProtocolResponses
 			catch (HttpRequestException ex)
 			{
 				logger.ProtocolFailure(
-					"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-					ex.Message, null, ex,
-					model, DetectedProtocol.Responses);
+					model, DetectedProtocol.Responses, "NetworkError",
+					ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null, ex.Message, null, ex);
 				return ProtocolResult.Transient(ex.ToString(), null);
 			}
 			catch (Exception ex)
 			{
-				logger.ProtocolFailure(
-					"Exception", null,
-					ex.Message, null, ex,
-					model, DetectedProtocol.Responses);
+				logger.ProtocolFailure(model, DetectedProtocol.Responses, "Exception", null, ex.Message, null, ex);
 				return ProtocolResult.Transient(ex.ToString(), null);
 			}
 
@@ -214,9 +209,8 @@ public class ProtocolResponses
 			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 			{
 				logger.ProtocolFailure(
-					"RateLimited", (int)httpResponse.StatusCode,
-					responseBody, responseBody, null,
-					model, DetectedProtocol.Responses);
+					model, DetectedProtocol.Responses, "RateLimited",
+					(int)httpResponse.StatusCode, responseBody, responseBody, null);
 				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
 			}
 
@@ -233,10 +227,7 @@ public class ProtocolResponses
 		}
 		catch (Exception ex)
 		{
-			logger.ProtocolFailure(
-				"Exception", null,
-				ex.Message, null, ex,
-				model, DetectedProtocol.Responses);
+			logger.ProtocolFailure(model, DetectedProtocol.Responses, "Exception", null, ex.Message, null, ex);
 			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 	}
@@ -368,17 +359,13 @@ public class ProtocolResponses
 		catch (HttpRequestException ex)
 		{
 			logger.ProtocolFailure(
-				"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-				ex.Message, null, ex,
-				model, DetectedProtocol.Responses);
+				model, DetectedProtocol.Responses, "NetworkError",
+				ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null, ex.Message, null, ex);
 			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 		catch (Exception ex)
 		{
-			logger.ProtocolFailure(
-				"Exception", null,
-				ex.Message, null, ex,
-				model, DetectedProtocol.Responses);
+			logger.ProtocolFailure(model, DetectedProtocol.Responses, "Exception", null, ex.Message, null, ex);
 			return ProtocolResult.Transient(ex.ToString(), null);
 		}
 
@@ -395,25 +382,24 @@ public class ProtocolResponses
 			{
 				_streamingSupported = false;
 				logger.ProtocolFailure(
+					model, DetectedProtocol.Responses,
 					statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
-					statusCode, errorBody, errorBody, null,
-					model, DetectedProtocol.Responses);
+					statusCode, errorBody, errorBody, null);
 				return null;
 			}
 
 			if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
 			{
 				logger.ProtocolFailure(
-					"RateLimited", statusCode,
-					errorBody, errorBody, null,
-					model, DetectedProtocol.Responses);
+					model, DetectedProtocol.Responses, "RateLimited",
+					statusCode, errorBody, errorBody, null);
 				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody));
 			}
 
 			logger.ProtocolFailure(
+				model, DetectedProtocol.Responses,
 				statusCode >= 500 ? "ServerError" : "Transient",
-				statusCode, errorBody, errorBody, null,
-				model, DetectedProtocol.Responses);
+				statusCode, errorBody, errorBody, null);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 

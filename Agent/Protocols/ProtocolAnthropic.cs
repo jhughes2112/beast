@@ -9,7 +9,6 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using static SessionLoggerExtensions;
 using AnthropicSystemMessage = Anthropic.SDK.Messaging.SystemMessage;
 
 // -- Anthropic Messages API (native SDK) ---------------------------------------
@@ -154,8 +153,7 @@ public class ProtocolAnthropic
 		{
 			return logger.ProtocolFailure(
 				ProtocolResult.Transient(ex.ToString(), null),
-				"Exception", null, ex.Message, null, ex,
-				model, DetectedProtocol.Anthropic);
+				model, DetectedProtocol.Anthropic, "Exception", null, ex.Message, null, ex);
 		}
 	}
 
@@ -537,44 +535,38 @@ public class ProtocolAnthropic
 			{
 				result = logger.ProtocolFailure(
 					ProtocolResult.RateLimited(null),
-					"RateLimited", status, ex.Message, null, ex,
-					model, DetectedProtocol.Anthropic);
+					model, DetectedProtocol.Anthropic, "RateLimited", status, ex.Message, null, ex);
 			}
 			else if (status == 401 || status == 403)
 			{
 				result = logger.ProtocolFailure(
 					ProtocolResult.Failed($"HTTP {status}: {ex}"),
-					"AuthFailure", status, ex.Message, null, ex,
-					model, DetectedProtocol.Anthropic);
+					model, DetectedProtocol.Anthropic, "AuthFailure", status, ex.Message, null, ex);
 			}
 			else if (status >= 400 && status < 500)
 			{
 				result = logger.ProtocolFailure(
 					ProtocolResult.Transient($"HTTP {status}: {ex}", null),
-					"ClientError", status, ex.Message, null, ex,
-					model, DetectedProtocol.Anthropic);
+					model, DetectedProtocol.Anthropic, "ClientError", status, ex.Message, null, ex);
 			}
 			else
 			{
 				result = logger.ProtocolFailure(
 					ProtocolResult.Transient($"HTTP {status}: {ex}", null),
-					"ServerError", status, ex.Message, null, ex,
-					model, DetectedProtocol.Anthropic);
+					model, DetectedProtocol.Anthropic, "ServerError", status, ex.Message, null, ex);
 			}
 		}
 		else if (ex is HttpRequestException)
 		{
 			result = logger.ProtocolFailure(
 				ProtocolResult.Transient(ex.ToString(), null),
-				"NetworkError", null, ex.Message, null, ex,
-				model, DetectedProtocol.Anthropic);
+				model, DetectedProtocol.Anthropic, "NetworkError", null, ex.Message, null, ex);
 		}
 		else
 		{
 			result = logger.ProtocolFailure(
 				ProtocolResult.Transient(ex.ToString(), null),
-				"Exception", null, ex.Message, null, ex,
-				model, DetectedProtocol.Anthropic);
+				model, DetectedProtocol.Anthropic, "Exception", null, ex.Message, null, ex);
 		}
 
 		return result;

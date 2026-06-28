@@ -4,8 +4,6 @@ using System.Net.Http;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using static SessionLoggerExtensions;
-
 
 // The wire protocol spoken by an endpoint — detected once per endpoint and cached in LlmRegistry.
 public enum DetectedProtocol
@@ -184,14 +182,7 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 		if (_detected == DetectedProtocol.ChatCompletions)
 			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
 
-		logger.ProtocolFailure(
-			_model.ConfigId,
-			_model.Config.Name,
-			_model.Endpoint,
-			_detected.ToString(),
-			"UnknownProtocol",
-			null,
-			$"Endpoint speaks no recognized protocol: {endpoint}");
+		logger.ProtocolFailure(_model, _detected, "UnknownProtocol", null, $"Endpoint speaks no recognized protocol: {endpoint}", null, null);
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 

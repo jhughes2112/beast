@@ -25,11 +25,12 @@ public class WebSearchOpenrouter
 		_availability = new ModelAvailability();
 	}
 
+	// searchRole is pre-resolved by BuildForRole.
 	public async Task<ToolResult> SearchWebAsync(
 		string toolCallId,
 		string query,
 		string goal,
-		RoleService roleService,
+		Role searchRole,
 		ITransportServer transport,
 		Session parent,
 		int maxOutputTokens,
@@ -39,10 +40,6 @@ public class WebSearchOpenrouter
 			return new ToolResult(toolCallId, string.Empty, "Error: Search query cannot be empty.", 1, 0);
 		if (string.IsNullOrWhiteSpace(goal))
 			return new ToolResult(toolCallId, string.Empty, "Error: Search goal cannot be empty.", 1, 0);
-
-		Role? searchRole = roleService.GetRole("WebSearch");
-		if (searchRole == null)
-			return new ToolResult(toolCallId, string.Empty, "Error: WebSearch role is not defined.", 1, 0);
 
 		// A fresh LlmService per call, so each search gets its own ProtocolProxy and starts from a clean
 		// protocol message list. The proxy caches its protocol instance for the life of the service and only
@@ -54,11 +51,10 @@ public class WebSearchOpenrouter
 
 		// Allocate the child id and immediately persist the parent so its bumped counter reaches disk
 		// before this (non-ephemeral) search writes its own file. Without it a reload restores the old counter
-		// and the next child reissues this id, overwriting the file. Root parent updates lastSession; a
-		// subagent parent does not. Skipped for an ephemeral parent, whose children are never saved anyway.
+		// and the next child reissues this id, overwriting the file.
 		string childId = parent.AllocateChildId();
 		if (!parent.Ephemeral)
-			SessionService.Save(parent.Data, !parent.IsSubagent);
+			SessionService.Save(parent.Data);
 
 		BeastSession data = new BeastSession(childId, $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session session = new Session(data, searchRole.SystemPrompt, transport, true);
@@ -124,7 +120,7 @@ public class WebSearchOpenrouter
 			// Persist the search session unless it inherited an ephemeral parent (a no-worktree root), so a
 			// non-ephemeral search survives a reload and stays in the session tree like any other child session.
 			if (!session.Ephemeral)
-				SessionService.Save(session.Data, false);
+				SessionService.Save(session.Data);
 
 			session.SendIdle();
 		}

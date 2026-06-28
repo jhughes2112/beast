@@ -15,13 +15,16 @@ internal static class SessionTreeLayer
 		int h,
 		string activeId)
 	{
-		Rgb panelBg  = new Rgb(28, 28, 28);
-		Rgb borderFg = new Rgb(65, 65, 65);
-		Rgb headerFg = new Rgb(138, 138, 138);
-		Rgb busyFg   = new Rgb(110, 168, 210);
-		Rgb idleFg   = new Rgb(100, 100, 100);
-		Rgb selBg    = new Rgb(55, 55, 55);
-		Rgb activeFg = new Rgb(220, 220, 220);
+		Rgb panelBg      = new Rgb(28, 28, 28);
+		Rgb borderFg     = new Rgb(65, 65, 65);
+		Rgb headerFg     = new Rgb(138, 138, 138);
+		Rgb busyFg       = new Rgb(110, 168, 210);
+		Rgb idleFg       = new Rgb(100, 100, 100);
+		Rgb selBg        = new Rgb(55, 55, 55);
+		Rgb activeFg     = new Rgb(220, 220, 220);
+		Rgb successFg    = new Rgb(130, 170, 210);   // soft blue
+		Rgb failureFg    = new Rgb(210, 140, 140);   // muted red
+		Rgb incompleteFg = new Rgb(140, 140, 140);   // gray
 
 		Screen s = new Screen(panelW, h, new Cell(' ', headerFg, panelBg, CellStyle.None));
 
@@ -42,9 +45,25 @@ internal static class SessionTreeLayer
 			SessionDisplayInfo info = sessions[idx];
 			bool isSel    = idx == selected;
 			bool isActive = string.Equals(info.Id, activeId, StringComparison.Ordinal);
-			Rgb bg        = isSel ? selBg : panelBg;
-			Rgb dotFg     = info.IsBusy ? busyFg : idleFg;
-			Rgb nameFg    = isActive ? activeFg : (isSel ? new Rgb(200, 200, 200) : new Rgb(160, 160, 160));
+			Rgb bg    = isSel ? selBg : panelBg;
+			Rgb dotFg = info.IsBusy ? busyFg : idleFg;
+
+			// Name color: active always bright; selected gets a bump; otherwise use termination status.
+			Rgb nameFg;
+			if (isActive)
+				nameFg = activeFg;
+			else if (isSel)
+				nameFg = new Rgb(200, 200, 200);
+			else
+			{
+				nameFg = info.Status switch
+				{
+					SessionStatus.Success    => successFg,
+					SessionStatus.Failure    => failureFg,
+					SessionStatus.Incomplete => incompleteFg,
+					_                        => new Rgb(160, 160, 160)
+				};
+			}
 
 			// Fill row background starting after the border column.
 			s.Fill(new Rect(1, r + 1, panelW - 1, 1), new Cell(' ', nameFg, bg, CellStyle.None));

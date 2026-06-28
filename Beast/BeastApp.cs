@@ -36,6 +36,9 @@ public class BeastApp : IAsyncDisposable
 		public int StatsMaxContext;
 		public int StatsContextTokens;
 		public int StatsCachedTokens;
+
+		// Termination status reported by the agent via SessionStatus frames. Defaults to Ongoing.
+		public SessionStatus Status = SessionStatus.Ongoing;
 	}
 
 	private readonly ILauncher _agentContext;
@@ -405,7 +408,19 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				_display.OnStreamEnd();
 				_display.SetAgentBusy(false, 0);
 				SessionState reset = EnsureSession(sessionId);
+				reset.Status = SessionStatus.Ongoing;
 				_display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0, 0);
+				return;
+
+			case FrameType.SessionStatus:
+				// Update the session's termination status and rebuild the F10 list so the color takes effect.
+				if (!string.IsNullOrEmpty(sessionId))
+				{
+					SessionState st = EnsureSession(sessionId);
+					if (Enum.TryParse<SessionStatus>(content, out SessionStatus parsed))
+						st.Status = parsed;
+				}
+				NotifySessionList();
 				return;
 
 			case FrameType.SessionAnnounce:
@@ -450,6 +465,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				if (!_busySessions.Contains(effectiveId))
 					session.BusyStartTick = Environment.TickCount64;
 				_busySessions.Add(effectiveId);
+				session.Status = SessionStatus.Ongoing;
 				// The separator busy animation reflects the viewed session only; the F10 overlay
 				// dots show every session's busy state independently via NotifySessionList.
 				if (isActive)

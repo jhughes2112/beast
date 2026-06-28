@@ -32,7 +32,9 @@ public static class WebToolsTests
 
 			using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-			ToolResult result = await searcher.SearchWebAsync("testSearchId", "What is the capital of France?", "State the capital city of France in one short sentence.", roleService, transport, parent, 0, cts.Token);
+			Role? searchRole = roleService.GetRole("WebSearch");
+			if (searchRole == null) { ctx.Log("    SKIP: WebSearch role not configured"); return; }
+			ToolResult result = await searcher.SearchWebAsync("testSearchId", "What is the capital of France?", "State the capital city of France in one short sentence.", searchRole, transport, parent, 0, cts.Token);
 
 			string response = result.ExitCode == 0 ? result.StdOut : result.StdErr;
 			ctx.Log($"    response: {response}");

@@ -26,6 +26,11 @@ public class Session
 	// drain and the mid-turn checkpoint pull from this one queue, so commands and steering text are
 	// picked up with identical timing.
 	private readonly ConcurrentQueue<string> _pending = new ConcurrentQueue<string>();
+
+	// Last known termination status. Ongoing while busy; updated by SetTerminationStatus.
+	// Initialized from BeastSession.TerminalStatus so reloaded sessions reflect their prior state.
+	private SessionStatus _status = SessionStatus.Ongoing;
+
 	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0, 1);
 	private CancellationTokenSource? _turnCts;
 	// The whole-turn cancellation scope owned by the runner. Unlike _turnCts (alive only for the duration of a
@@ -79,13 +84,14 @@ public class Session
 	// queries it for completion sizing and tool-response reservations.
 	public ContextBudget Budget => _budget;
 
-	// Sends current session stats to the client using explicit values.
+	// Sends current session stats and termination status to the client.
 	public void SendStats()
 	{
 		int cachedTokens = _data.LastTokenUsage?.CachedTokens ?? 0;
 		_transport.Stats(_data.Id, _data.Model + _modelDisplaySuffix, _data.Role,
 			_data.CumulativeInputTokens, _data.CumulativeOutputTokens,
 			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens);
+		_transport.SessionStatus(_data.Id, _status.ToString());
 	}
 
 	public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
@@ -102,6 +108,8 @@ public class Session
 		// show the prompt twice on a fresh conversation. The active protocol rehydrates it from canonical.
 		if (!string.IsNullOrEmpty(systemPrompt))
 			_bundle.Canonical.OnSystemMessage(systemPrompt);
+		if (Enum.TryParse(data.TerminalStatus, out SessionStatus persisted))
+			_status = persisted;
 	}
 
 	// Monotonically increasing counter for child session IDs, rooted at this session's ID.
@@ -151,6 +159,17 @@ public class Session
 		string json = JsonSerializer.Serialize(new { id = _data.Id, name = _data.DisplayName });
 		_transport.SessionAnnounce(_data.Id, json);
 	}
+
+	// Reports the session's termination status to the client and persists it so reloaded sessions
+	// reflect how they finished. Called only from terminal tool handlers.
+	public void SetTerminationStatus(SessionStatus status)
+	{
+		_status = status;
+		_data.TerminalStatus = status.ToString();
+		_transport.SessionStatus(_data.Id, status.ToString());
+	}
+
+	public SessionStatus Status => _status;
 
 	// Names a still-nameless root from its first user message and announces it immediately, so the
 	// client shows the name from the first turn rather than the raw session ID for its whole duration

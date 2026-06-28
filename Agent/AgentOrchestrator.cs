@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -42,8 +44,11 @@ public class AgentOrchestrator
 		_registry.LoadFromConfigs(_settings, _roleService);
 		await _registry.ProbeEndpointsAsync(ct);
 
-		// The first runner resumes the saved root, so it restores that root's child sessions into the
-		// client's list; later runners (compaction-failure restarts) reuse the live session and must not.
+		// The first runner resumes the saved root, so it restores ALL sessions in the worktree
+		// (all roots and their children) into the client's list; later runners (compaction-failure
+		// restarts) reuse the live session and must not. Roots are sorted by mod time (newest first),
+		// children by numeric suffix descending. The resumed root is replayed LAST so it becomes
+		// the active view.
 		SessionRunner runner = new SessionRunner(LoadOrCreateSession(), _registry, _roleService, _settings, _transport, _cancellationTokenSource, true);
 
 		while (!ct.IsCancellationRequested)
@@ -66,14 +71,13 @@ public class AgentOrchestrator
 		}
 	}
 
-	private Session LoadOrCreateSession()
+		private Session LoadOrCreateSession()
 	{
-		// A worktree launch resumes the session saved in that worktree; an ephemeral launch always starts fresh
-		// and never persists, so it skips the resume entirely.
+		// A worktree launch resumes the most recent root session saved in that worktree;
+		// an ephemeral launch always starts fresh and never persists.
 		if (!_ephemeral)
 		{
-			string? lastSessionId = SessionService.LoadLastSession();
-			BeastSession? lastData = SessionService.LoadBySessionId(lastSessionId);
+			BeastSession? lastData = FindLastRootSession();
 			if (lastData != null)
 			{
 				_transport.Status(lastData.Id, "Resumed session: " + lastData.DisplayName);
@@ -91,8 +95,63 @@ public class AgentOrchestrator
 		string systemPrompt = role?.SystemPrompt ?? string.Empty;
 		LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
 		string modelId = model?.ConfigId ?? string.Empty;
-		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _ephemeral);
+		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, 
+_ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
+	}
+
+	// Find the most recently modified root session file (one whose session ID contains no underscore).
+	// Returns null if no root session exists.
+	private static BeastSession? FindLastRootSession()
+	{
+		string sessionsDir = Path.Combine("/workspace", ".beast", "sessions");
+		if (!Directory.Exists(sessionsDir))
+			return null;
+
+		string? newestFile = null;
+		DateTime newestTime = DateTime.MinValue;
+
+		foreach (string file in Directory.GetFiles(sessionsDir, "*.json"))
+		{
+			string fileName = Path.GetFileNameWithoutExtension(file);
+			if (fileName == ".manifest")
+				continue;
+
+			try
+			{
+				string json = File.ReadAllText(file);
+				BeastSession? data = JsonSerializer.Deserialize<BeastSession>(json);
+				if (data == null)
+					continue;
+				// Only consider root sessions (no underscore in ID)
+				if (data.Id.Contains('_'))
+					continue;
+
+				DateTime fileTime = File.GetLastWriteTimeUtc(file);
+				if (fileTime > newestTime)
+				{
+					newestTime = fileTime;
+					newestFile = file;
+				}
+			}
+			catch
+			{
+				continue;
+			}
+		}
+
+		if (newestFile == null)
+			return null;
+
+		try
+		{
+			string json = File.ReadAllText(newestFile);
+			return JsonSerializer.Deserialize<BeastSession>(json);
+		}
+		catch
+		{
+			return null;
+		}
 	}
 
 	private async Task ReadInputAsync(SessionRunner runner, CancellationToken token)

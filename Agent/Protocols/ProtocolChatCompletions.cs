@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using static SessionLoggerExtensions;
 
 // -- OpenAI Chat Completions API -----------------------------------------------
 // Wire protocol requires strict userâ†’assistant alternation; two consecutive
@@ -263,17 +262,14 @@ public class ProtocolChatCompletions
 				{
 					return logger.ProtocolFailure(
 						ProtocolResult.Transient(ex.ToString(), null),
-						"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-						ex.Message, null, ex,
-						model, DetectedProtocol.ChatCompletions);
+						model, DetectedProtocol.ChatCompletions, "NetworkError",
+						ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null, ex.Message, null, ex);
 				}
 				catch (Exception ex)
 				{
 					return logger.ProtocolFailure(
 						ProtocolResult.Transient(ex.ToString(), null),
-						"Exception", null,
-						ex.Message, null, ex,
-						model, DetectedProtocol.ChatCompletions);
+						model, DetectedProtocol.ChatCompletions, "Exception", null, ex.Message, null, ex);
 				}
 
 				if (httpResponse.IsSuccessStatusCode)
@@ -335,9 +331,8 @@ public class ProtocolChatCompletions
 				{
 					return logger.ProtocolFailure(
 						ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody)),
-						"RateLimited", (int)httpResponse.StatusCode,
-						responseBody, responseBody, null,
-						model, DetectedProtocol.ChatCompletions);
+						model, DetectedProtocol.ChatCompletions, "RateLimited",
+						(int)httpResponse.StatusCode, responseBody, responseBody, null);
 				}
 
 				int statusCode = (int)httpResponse.StatusCode;
@@ -357,9 +352,7 @@ httpResponse);
 		{
 			return logger.ProtocolFailure(
 				ProtocolResult.Transient(ex.ToString(), null),
-				"Exception", null,
-				ex.Message, null, ex,
-				model, DetectedProtocol.ChatCompletions);
+				model, DetectedProtocol.ChatCompletions, "Exception", null, ex.Message, null, ex);
 		}
 	}
 
@@ -534,17 +527,14 @@ httpResponse);
 		{
 			return logger.ProtocolFailure(
 				ProtocolResult.Transient(ex.ToString(), null),
-				"NetworkError", ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null,
-				ex.Message, null, ex,
-				model, DetectedProtocol.ChatCompletions);
+				model, DetectedProtocol.ChatCompletions, "NetworkError",
+				ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null, ex.Message, null, ex);
 		}
 		catch (Exception ex)
 		{
 			return logger.ProtocolFailure(
 				ProtocolResult.Transient(ex.ToString(), null),
-				"Exception", null,
-				ex.Message, null, ex,
-				model, DetectedProtocol.ChatCompletions);
+				model, DetectedProtocol.ChatCompletions, "Exception", null, ex.Message, null, ex);
 		}
 
 		if (!httpResponse.IsSuccessStatusCode)
@@ -560,9 +550,9 @@ httpResponse);
 			{
 				_streamingSupported = false;
 				logger.ProtocolFailure(
+					model, DetectedProtocol.ChatCompletions,
 					statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
-					statusCode, errorBody, errorBody, null,
-					model, DetectedProtocol.ChatCompletions);
+					statusCode, errorBody, errorBody, null);
 				return null;
 			}
 
@@ -570,15 +560,14 @@ httpResponse);
 			{
 				return logger.ProtocolFailure(
 					ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody)),
-					"RateLimited", statusCode,
-					errorBody, errorBody, null,
-					model, DetectedProtocol.ChatCompletions);
+					model, DetectedProtocol.ChatCompletions, "RateLimited",
+					statusCode, errorBody, errorBody, null);
 			}
 
 			logger.ProtocolFailure(
+				model, DetectedProtocol.ChatCompletions,
 				statusCode >= 500 ? "ServerError" : "Transient",
-				statusCode, errorBody, errorBody, null,
-				model, DetectedProtocol.ChatCompletions);
+				statusCode, errorBody, errorBody, null);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 

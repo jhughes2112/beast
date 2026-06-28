@@ -8,8 +8,9 @@
 // Note: U+2600–U+26FF (misc symbols: ☑ ☀ ⚠ …) and U+2700–U+27BF (dingbats: ✓ ✔ ✖ …) are marked wide
 // because they render two columns wide in most modern terminals. The star (⭐ U+2B50) and box (☑ U+2611)
 // glyphs are among those that occupy two cells. This matches the behaviour of modern terminal emulators
-// (iTerm2, Windows Terminal, alacritty) and prevents the copy-to-clipboard alignment bug where the right
-// half of a 2-cell glyph is missed by click-position calculations.
+// (iTerm2, Windows Terminal, alacritty).
+// U+29C9 (⧉) is NOT in this list: despite visually overflowing into two columns in some fonts, Windows
+// Terminal advances the cursor only one column for it. The copy button uses "⧉ " (glyph + space) instead.
 public static class CharWidth
 {
 	// 0 = zero-width (combining mark / zero-width space), 2 = wide, 1 = everything else.
@@ -44,7 +45,6 @@ public static class CharWidth
 			|| (c >= 0x2600 && c <= 0x26FF)   // misc symbols (☑ ☀ ⚠ …)
 			|| (c >= 0x2700 && c <= 0x27BF)   // dingbats (✓ ✔ ✖ …)
 			|| c == 0x2B50                    // star ⭐
-			|| c == 0x29C9                    // copy/clipboard glyph ⧉
 			|| (c >= 0x2E80 && c <= 0x303E)   // CJK radicals … Kangxi
 			|| (c >= 0x3041 && c <= 0x33FF)   // Hiragana … CJK compatibility
 			|| (c >= 0x3400 && c <= 0x4DBF)   // CJK extension A

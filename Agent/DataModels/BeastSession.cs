@@ -61,6 +61,17 @@ public class BeastSession
 	[JsonPropertyName("childCounter")]
 	public int ChildCounter { get; internal set; }
 
+	// Persisted termination status: Ongoing, Success, Failure, or Incomplete. Set by the terminal
+	// tool handler (return_to_caller, task_complete, finish_review) so reloaded sessions remember
+	// how they finished without re-deriving it from code paths.
+	[JsonPropertyName("terminalStatus")]
+	public string TerminalStatus { get; internal set; }
+
+	// Creation order for sorting: for root sessions, a global counter assigned at creation.
+	// For child sessions, the child number (N in parentId_N).
+	[JsonPropertyName("creationOrder")]
+	public long CreationOrder { get; internal set; }
+
 	[JsonConstructor]
 	public BeastSession(
 		string id,
@@ -87,5 +98,7 @@ public class BeastSession
 		CurrentContextSize = currentContextSize;
 		Ephemeral = ephemeral;
 		ChildCounter = 0;
+		TerminalStatus = "Ongoing";
+		CreationOrder = 0;
 	}
 }

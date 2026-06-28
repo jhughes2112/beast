@@ -296,9 +296,9 @@ public class RoleService
 
 	// Used internally by the fetch_url tool (WebFetch.FetchRawAsync). It is seeded with a URL, a goal,
 	// and the paths of the files a fetch saved to /tmp/ (raw bytes, plus stripped-text and tag-skeleton views
-	// for HTML), and is given read_file and bash (injected by HelperSession, see ToolFactory.CreateWebHelperTools)
-	// to inspect, parse, or download them. It replies with only what the goal asks for via return_to_caller
-	// (forced on the last turn). This should be a capable-enough model to pick the right file and parse it.
+	// for HTML), and uses read_file and bash to inspect, parse, or download them. It replies with only what
+	// the goal asks for via return_to_caller. This should be a capable-enough model to pick the right file
+	// and parse it.
 	private static Role WebFetchRole()
 	{
 		const string description = "To reduce context by returning the useful parts of a web page";
@@ -311,8 +311,7 @@ public class RoleService
 			To complete the conversation, use the return_to_caller tool and report your results.
 			""";
 		const string endOfTurnPrompt = "To complete the conversation, use the return_to_caller tool and report your results.";
-		// Resolved against the helper tool set (ToolFactory.BuildHelperTools), not the main registry: read_file
-		// is the raw line-numbered reader (no Explorer round-trip) and bash is plain bash.
+		// read_file is the raw line-numbered reader (no Explorer round-trip); bash is plain bash.
 		List<string> tools = new List<string> { "read_file", "bash" };
 		return new Role("WebFetch", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
 	}

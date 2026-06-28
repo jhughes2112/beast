@@ -28,13 +28,14 @@ public class FileSummarizer
 
 	// Entry point for the find_relevant_file_sections tool. Reads a line-numbered window from the caller's offset and lets
 	// the Explorer cite the parts relevant to the goal. A small file (or a failed read) is returned raw.
+	// explorerRole and explorerService are pre-resolved by BuildForRole; registry is still passed for runtime fallback.
 	public async Task<ToolResult> SummarizeAsync(
 		string toolCallId,
 		string filePath,
 		string offset,
 		string goal,
+		Role explorerRole,
 		LlmRegistry registry,
-		RoleService roleService,
 		ITransportServer transport,
 		Session parent,
 		int maxOutputTokens,
@@ -60,7 +61,7 @@ public class FileSummarizer
 		if (fileBytes < SmallFileMaxBytes || CountLines(raw.StdOut) < SmallFileMaxLines)
 			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 
-		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, registry, roleService, transport, parent, maxOutputTokens, cancellationToken);
+		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, explorerRole, registry, transport, parent, maxOutputTokens, cancellationToken);
 	}
 
 	// Counts physical lines in already-read content; used only for the small-file threshold.
@@ -85,24 +86,16 @@ public class FileSummarizer
 		string filePath,
 		string content,
 		string goal,
+		Role explorerRole,
 		LlmRegistry registry,
-		RoleService roleService,
 		ITransportServer transport,
 		Session parent,
 		int maxOutputTokens,
 		CancellationToken cancellationToken)
 	{
-		Role? explorerRole = roleService.GetRole("Explorer");
-		if (explorerRole == null)
-			return new ToolResult(toolCallId, string.Empty, "Error: Explorer role is not defined.", 1, 0);
-
-		LlmService? service = registry.CreateService(explorerRole, string.Empty, 0);
-		if (service == null)
-			return new ToolResult(toolCallId, string.Empty, "Error: no model available for the Explorer role.", 1, 0);
-
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, service, registry, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(explorerRole.Tools), transport, cancellationToken);
+		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, registry, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
 		if (!ok)
 		{
 			string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

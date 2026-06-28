@@ -814,13 +814,13 @@ internal static class BlockRenderer
 
 		string label = name.Replace('_', ' ');
 		int respLineCount = CountLines(pairedResponse);
-		int writeLineCount = (name == "write_file" || name == "edit_file_replace" || name == "edit_file_insert")
+		int writeLineCount = (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert")
 			? CountLines(Get("content") + Get("new_text"))
 			: 0;
 		string summary = name switch
 		{
-			"read_file"                                                => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
-			"write_file" or "edit_file_replace" or "edit_file_insert"  => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
+			"read_file"                                                          => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
+			"write_file" or "edit_file" or "edit_file_replace" or "edit_file_insert" => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
 			"bash" or "readonly_bash"                                  => BuildRunCommandSummary(label, Get("command")),
 			"search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
 			"fetch_url"                                               => BuildPathSummary(label, Get("url"), respLineCount),

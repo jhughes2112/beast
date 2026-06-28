@@ -28,12 +28,13 @@ public class WebFetch
 	// Fetches the resource and interprets it with the WebFetch role: a throwaway sub-session is seeded with the URL,
 	// the objective, and the paths of the saved files, then returns only what the objective asked for via
 	// return_to_caller. Cost rolls up into the calling session. Everything is contained here.
+	// webFetchRole and webFetchService are pre-resolved by BuildForRole; registry is still passed for runtime fallback.
 	public async Task<ToolResult> FetchRawAsync(
 		string toolCallId,
 		string url,
 		string objective,
+		Role webFetchRole,
 		LlmRegistry registry,
-		RoleService roleService,
 		ITransportServer transport,
 		Session parent,
 		int maxOutputTokens,
@@ -47,14 +48,6 @@ public class WebFetch
 
 		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
 			return new ToolResult(toolCallId, string.Empty, "Error: Invalid URL format: " + url, 1, 0);
-
-		Role? webRole = roleService.GetRole("WebFetch");
-		if (webRole == null)
-			return new ToolResult(toolCallId, string.Empty, "Error: WebFetch role is not defined.", 1, 0);
-
-		LlmService? service = registry.CreateService(webRole, string.Empty, 0);
-		if (service == null)
-			return new ToolResult(toolCallId, string.Empty, "Error: no model available for the WebFetch role.", 1, 0);
 
 		try
 		{
@@ -91,7 +84,7 @@ public class WebFetch
 				}
 			}
 
-			(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webRole, service, registry, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, ToolFactory.BuildHelperTools(webRole.Tools), transport, cancellationToken);
+			(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webFetchRole, registry, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
 			if (!ok)
 			{
 				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

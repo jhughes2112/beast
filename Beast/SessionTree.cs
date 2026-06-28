@@ -155,7 +155,9 @@ internal static class SessionTree
 		foreach ((string id, int depth) in ordered)
 		{
 			string name = sessionDisplayNames.TryGetValue(id, out string? announced) ? announced : id;
-			list.Add(new SessionDisplayInfo(id, name, busySessions.Contains(id), depth));
+			bool isBusy = busySessions.Contains(id);
+			SessionStatus status = isBusy ? SessionStatus.Ongoing : (sessions.TryGetValue(id, out BeastApp.SessionState? st) ? st.Status : SessionStatus.Ongoing);
+			list.Add(new SessionDisplayInfo(id, name, isBusy, depth, status));
 		}
 
 		display.SetSessionList(list, activeSessionId);

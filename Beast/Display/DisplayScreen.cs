@@ -689,14 +689,15 @@ public class DisplayScreen : IDisplay
 			new CursorGlowEffect(_mouseCol, _mouseRow, CursorGlowRadius, CursorGlowStrength).Apply(frame, glowRect);
 		}
 
-		// Copy affordance: a one-cell "copy block" glyph on the mouse's row, four columns left of the
-		// scrollbar (so clicking it never lands on the scrollbar and scrolls). Shown whenever the mouse is
+		// Copy affordance: a two-cell "copy block" glyph on the mouse's row, six columns left of the
+		// scrollbar (so clicking it never lands on the scrollbar and scrolls). ⧉ is narrow in terminals
+		// (cursor advance of 1), so a trailing space is appended to make both cells share CopyIconBg. Shown whenever the mouse is
 		// over a copyable block in the history area — including while the F10 panel is open, where it tracks
 		// the narrowed history width and sits just left of the moved scrollbar rather than hiding under the
 		// panel. Drawn after the glow (and after the panel) so it stays crisp. Clicking it copies that block
 		// (Shift+click appends) — handled in the MouseClick branch.
 		if (_mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && _mouseCol < historyW && SlotAtTerminalRow(_mouseRow).HasValue)
-			frame.WriteText(historyW - 6, _mouseRow, "⧉", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
+			frame.WriteText(historyW - 6, _mouseRow, "⧉ ", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
 
 		// 6. Emit.
 		_drawBuf.Clear();
@@ -1311,17 +1312,18 @@ public class DisplayScreen : IDisplay
 			bool shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
 
 			// The session-tree panel is non-modal: it stays open beside the input line without blocking
-			// typing. It borrows only the bare Up/Down arrows for tree navigation (so they don't also move
-			// the input caret) and Delete to drop a session while the input line is empty. Every other key —
-			// printable text, Enter to send, F10 to toggle the panel — falls through to normal handling below.
-			// Navigation previews live, so arrowing is itself the commit; there is no separate accept step.
+			// typing. It borrows only the bare Up/Down arrows for tree navigation when the input line is
+			// empty — when the buffer is non-empty, Up/Down fall through to autocomplete/history so the
+			// user can keep typing. Delete drops a session only when the input line is empty. Every other
+			// key falls through to normal handling below. Navigation previews live.
 			if (_sessionTreeOpen)
 			{
 				bool treeHandled = false;
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					if (key.Key == ConsoleKey.UpArrow && !ctrl && !alt && !shift)
+					// Up/Down only navigate the tree when the input line is empty.
+					if (inputBuffer.Length == 0 && key.Key == ConsoleKey.UpArrow && !ctrl && !alt && !shift)
 					{
 						if (_sessionTreeSelected > 0)
 						{
@@ -1334,7 +1336,7 @@ public class DisplayScreen : IDisplay
 						Redraw();
 						treeHandled = true;
 					}
-					else if (key.Key == ConsoleKey.DownArrow && !ctrl && !alt && !shift)
+					else if (inputBuffer.Length == 0 && key.Key == ConsoleKey.DownArrow && !ctrl && !alt && !shift)
 					{
 						if (_sessionTreeSelected < _sessionList.Count - 1)
 						{

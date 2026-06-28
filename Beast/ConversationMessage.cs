@@ -10,13 +10,16 @@ public class SessionDisplayInfo
 	public bool IsBusy { get; }
 	// Depth in the session hierarchy (0 = root, 1 = first-level child, etc.).
 	public int Depth { get; }
+	// Termination status for non-busy sessions; Ongoing while the session is busy.
+	public SessionStatus Status { get; }
 
-	public SessionDisplayInfo(string id, string name, bool isBusy, int depth)
+	public SessionDisplayInfo(string id, string name, bool isBusy, int depth, SessionStatus status)
 	{
 		Id = id;
 		Name = name;
 		IsBusy = isBusy;
 		Depth = depth;
+		Status = status;
 	}
 }
 

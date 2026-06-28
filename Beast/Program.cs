@@ -150,6 +150,9 @@ public class Program
 	// git worktree add. This is what lets a non-git project run safely as /worktree none with no git operations.
 	private static async Task<Worktrees.Selection?> ResolveWorktree(string cwd, string? nameArg, bool nonInteractive)
 	{
+		// Load the last selected worktree name for potential auto-selection in the menu.
+		string? lastWorktreeName = Worktrees.LoadLastWorktree(cwd);
+
 		if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase))
 			return Worktrees.Selection.ForCurrentFolder(cwd);
 
@@ -157,7 +160,11 @@ public class Program
 			return Worktrees.Selection.ForCurrentFolder(cwd);
 
 		if (!string.IsNullOrWhiteSpace(nameArg))
-			return Worktrees.Ensure(cwd, nameArg!);
+		{
+			var sel = Worktrees.Ensure(cwd, nameArg!);
+			Worktrees.SaveLastWorktree(cwd, sel.Name);
+			return sel;
+		}
 
 		if (nonInteractive)
 			return Worktrees.Selection.ForCurrentFolder(cwd);
@@ -173,16 +180,32 @@ public class Program
 			items.Add(new SelectMenu.Item(info.Name, info.Name, inUse ? "in use" : string.Empty, inUse));
 		}
 
-		// Pre-select the most recent worktree if any exist, otherwise the current-folder option.
+		// Determine the initial index: prefer the last used worktree if it exists and is not in use,
+		// otherwise fall back to the most recent worktree, otherwise the current-folder option.
 		int initialIndex = existing.Count > 0 ? 1 : 0;
+		if (!string.IsNullOrEmpty(lastWorktreeName))
+		{
+			for (int i = 0; i < existing.Count; i++)
+			{
+				if (string.Equals(existing[i].Name, lastWorktreeName, StringComparison.Ordinal) && !running.Contains(existing[i].Name))
+				{
+					initialIndex = i + 1; // +1 because index 0 is the ephemeral "current folder" option
+					break;
+				}
+			}
+		}
+
 		string suggestion = existing.Count == 0 ? "work" : string.Empty;
-		SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, initialIndex, LaunchNotes.Pick());
+		SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, initialIndex, 
+LaunchNotes.Pick());
 		if (result.Cancelled)
 			return null;
 		if (!result.IsNew && string.Equals(result.Value, EphemeralChoice, StringComparison.Ordinal))
 			return Worktrees.Selection.ForCurrentFolder(cwd);
 
-		return Worktrees.Ensure(cwd, result.Value);
+		var selection = Worktrees.Ensure(cwd, result.Value);
+		Worktrees.SaveLastWorktree(cwd, selection.Name);
+		return selection;
 	}
 
 	private static void PrintHelp()

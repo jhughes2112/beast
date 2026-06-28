@@ -89,11 +89,10 @@ public class SubagentRunner
 
 		// Allocate the child id and immediately persist the parent so its bumped counter reaches disk.
 		// The counter lives only in Session state; without this, a reload restores the parent's old
-		// counter and the next subagent reissues this very id, overwriting this session's file on disk. A root
-		// parent updates lastSession.json (harmless — it is already the last session); a subagent parent does not.
+		// counter and the next subagent reissues this very id, overwriting this session's file on disk.
 		string childId = parent.AllocateChildId();
 		if (!parent.Ephemeral)
-			SessionService.Save(parent.Data, !parent.IsSubagent);
+			SessionService.Save(parent.Data);
 
 		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
@@ -110,60 +109,43 @@ public class SubagentRunner
 		subSession.AnnounceToClient();
 		parent.AddChild(subSession);
 
-		// The child carries its role's bound tools plus injected-by-name tools, but never the subagent tool,
-		// so a child cannot fan out arbitrarily. The terminator is created in ToolFactory and selected by the
-		// role's declared marker: a Reviewer (finish_review) finishes with finish_review, which carries an
-		// approval flag; a Developer (task_complete) finishes with task_complete; every other subagent
-		// finishes with return_to_caller.
+		// The child carries its role's declared tools plus a mutually exclusive terminator determined by the
+		// role's marker: a Reviewer (finish_review) carries an approval flag; a Developer (task_complete)
+		// finishes with task_complete; every other subagent finishes with return_to_caller. Helper sessions
+		// (Explorer/WebFetch) spawned by find_relevant_file_sections or fetch_url are parented to this
+		// sub-session so their cost and history nest correctly. The sub-session is fixed for its lifetime
+		// (no compaction/role switch), so capturing it directly in the closures below is safe.
 		ReturnSink sink = new ReturnSink();
 		bool isReview = role.Tools.Contains("finish_review");
 		bool isDeveloper = role.Tools.Contains("task_complete");
-		string terminatorName;
-		Tool terminatorTool;
-		if (isReview)
-		{
-			terminatorName = "finish_review";
-			terminatorTool = ToolFactory.CreateFinishReviewTool((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; });
-		}
-		else if (isDeveloper)
-		{
-			terminatorName = "task_complete";
-			terminatorTool = ToolFactory.CreateTaskCompleteTool(output => { sink.Value = output; sink.Returned = true; });
-		}
-		else
-		{
-			terminatorName = "return_to_caller";
-			terminatorTool = ToolFactory.CreateReturnToCallerTool(output => { sink.Value = output; sink.Returned = true; });
-		}
+		string terminatorName = isReview ? "finish_review" : (isDeveloper ? "task_complete" : "return_to_caller");
 
-		// read_file is a plain raw reader; find_relevant_file_sections gets its own FileSummarizer so a subagent's digest of a
-		// file is self-contained and never depends on what another agent read. The summarize/fetch/search tools
-		// parent their helper sessions to this sub-session — not _currentSession (the root) — so the Explorer/Web
-		// helpers an explicitly-invoked subagent spawns nest under the subagent that actually made the call. A
-		// sub-session is fixed for its lifetime (no compaction/role switch), so capturing it directly is safe,
-		// unlike the root whose active session is read at call time.
-		List<Tool> withTerminator = new List<Tool>(ToolFactory.BuildForRole(role));
-		if (role.Tools.Contains("read_file"))
-			withTerminator.Add(ToolFactory.CreateReadFileTool());
-		if (role.Tools.Contains("find_relevant_file_sections"))
-			withTerminator.Add(ToolFactory.CreateSummarizeFileTool(new FileSummarizer(), _registry, _roleService, () => subSession));
-		if (role.Tools.Contains("fetch_url"))
-			withTerminator.Add(ToolFactory.CreateFetchUrlTool(_registry, _roleService, () => subSession));
-		if (role.Tools.Contains("search_web"))
+		Tool[] fullTools = ToolFactory.BuildForRole(
+			role,
+			_registry,
+			_roleService,
+			subSession,
+			_webSearchConfig,
+			false,  // subagents never enter a delegation loop
+			null,   // no assign_work for subagents
+			null,
+			null,
+			(reviewPrompt, budget, reviewCt) => RunForParentAsync(subSession, "Reviewer", reviewPrompt, budget, reviewCt),
+			isDeveloper ? (Action<string>)(output => { sink.Value = output; sink.Returned = true; }) : null,
+			isReview ? (Action<bool, string>)((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; }) : null,
+			(!isReview && !isDeveloper) ? (Action<string>)(output => { sink.Value = output; sink.Returned = true; }) : null);
+
+		// Extract the terminator from the built set so wind-down turns can restrict the tool choice to it alone.
+		Tool? terminatorTool = null;
+		foreach (Tool t in fullTools)
 		{
-			Tool? searchWebTool = ToolFactory.CreateSearchWebTool(_webSearchConfig, _roleService, () => subSession);
-			if (searchWebTool != null)
-				withTerminator.Add(searchWebTool);
+			if (t.Definition.Function.Name == terminatorName)
+			{
+				terminatorTool = t;
+				break;
+			}
 		}
-		// review_work spawns a Reviewer parented to this sub-session (the Developer); it returns the verdict
-		// only. The Developer integrates approved work itself with commit_and_rebase, so both are injected here.
-		if (role.Tools.Contains("review_work"))
-			withTerminator.Add(ToolFactory.CreateReviewWorkTool((reviewPrompt, budget, reviewCt) => RunForParentAsync(subSession, "Reviewer", reviewPrompt, budget, reviewCt)));
-		if (role.Tools.Contains("commit_and_rebase"))
-			withTerminator.Add(ToolFactory.CreateCommitAndRebaseTool());
-		withTerminator.Add(terminatorTool);
-		Tool[] fullTools = withTerminator.ToArray();
-		Tool[] terminatorOnlyTools = new Tool[] { terminatorTool };
+		Tool[] terminatorOnlyTools = terminatorTool != null ? new Tool[] { terminatorTool } : fullTools;
 
 		// This subagent's own cancellation scope, linked to the caller's token. A /cancel on an ancestor
 		// cascades down through the link and ends the whole subtree; a /cancel targeting this subagent alone
@@ -371,7 +353,7 @@ public class SubagentRunner
 			subSession.SetDispatchScope(null);
 			scope.Dispose();
 			if (!subSession.Ephemeral)
-				SessionService.Save(subSession.Data, false);
+				SessionService.Save(subSession.Data);
 			subSession.SendIdle();
 		}
 	}
