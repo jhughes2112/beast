@@ -401,7 +401,8 @@ public class SessionRunner
 						bool completed = false;
 						while (!completed)
 						{
-							ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, _settings.Settings.CompactionReserveTokens, 0, _transport, turnScope.Token);
+							ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, GetCompactionReserve(session), 0, _transport, 
+turnScope.Token);
 
 							if (result.Outcome == ProtocolCallOutcome.Success)
 							{
@@ -481,7 +482,7 @@ public class SessionRunner
 								// user typing /model <next>, and keeps the turn going. Tools are role-based, so the existing
 								// tool set still applies. Only when the list is exhausted do we surface the error and end
 								// the turn so the user can intervene.
-								int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
+								int minCtx = session.ContextLength + GetCompactionReserve(session);
 								LlmService? fallback = _registry.CreateFallbackService(_service, minCtx);
 								if (fallback != null)
 								{
@@ -804,7 +805,7 @@ public class SessionRunner
 
 		Role? activeRole = _roleService.GetRole(session.Role);
 		LlmModel? activeModel = activeRole != null
-			? _registry.GetModelForRole(activeRole, session.Model, session.ContextLength + _settings.Settings.CompactionReserveTokens)
+			? _registry.GetModelForRole(activeRole, session.Model, session.ContextLength + GetCompactionReserve(session))
 			: null;
 
 		if (activeRole != null)
@@ -886,9 +887,16 @@ public class SessionRunner
 		if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model && session == _currentSession)
 			return null;
 
-		int minCtx = session.ContextLength + _settings.Settings.CompactionReserveTokens;
+		int minCtx = session.ContextLength + GetCompactionReserve(session);
 		LlmService? newService = _registry.CreateService(role, session.Model, minCtx);
 		return newService;
+	}
+
+		// Returns the number of tokens to reserve for compaction: 10% of the current model's context
+	// window, capped at 7500. This ensures there is always enough room for a response regardless of model size.
+	private static int GetCompactionReserve(Session session)
+	{
+		return Math.Min((int)(session.ContextWindow * 0.1), 7500);
 	}
 
 	// Returns the last `count` user-exchange groups from the canonical message list, oldest-first.
