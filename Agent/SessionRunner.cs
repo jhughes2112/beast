@@ -587,8 +587,6 @@ turnScope.Token);
 			return null;
 		}
 
-		IReadOnlyList<CanonicalMessage> tailExchanges = ExtractTailExchanges(_currentSession.Data.Messages, 2);
-
 		_transport.Status(_currentSession.Id, "[Compaction] Started.");
 		string? summary = await Summarizer.SummarizeAsync(_currentSession, role.SummaryPrompt, Array.Empty<Tool>(), _registry, _roleService, _transport, ct);
 
@@ -617,7 +615,6 @@ turnScope.Token);
 
 		newSession.AddUserMessage(summary);
 		newSession.FlushPendingMessages();
-		newSession.ReplayExchanges(tailExchanges, true);
 
 		_currentSession.AddChild(newSession);
 		newSession.AnnounceToClient();
@@ -899,25 +896,4 @@ turnScope.Token);
 		return Math.Min((int)(session.ContextWindow * 0.1), 7500);
 	}
 
-	// Returns the last `count` user-exchange groups from the canonical message list, oldest-first.
-	private static IReadOnlyList<CanonicalMessage> ExtractTailExchanges(IReadOnlyList<CanonicalMessage> messages, int count)
-	{
-		List<int> userStarts = new List<int>();
-		for (int i = 0; i < messages.Count; i++)
-		{
-			if (messages[i] is UserMessage)
-				userStarts.Add(i);
-		}
-
-		if (userStarts.Count == 0)
-			return new List<CanonicalMessage>();
-
-		int startGroup = userStarts.Count > count ? userStarts.Count - count : 0;
-		int startIndex = userStarts[startGroup];
-
-		List<CanonicalMessage> result = new List<CanonicalMessage>();
-		for (int i = startIndex; i < messages.Count; i++)
-			result.Add(messages[i]);
-		return result;
 	}
-}
