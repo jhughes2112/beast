@@ -619,6 +619,10 @@ turnScope.Token);
 		_currentSession.AddChild(newSession);
 		newSession.AnnounceToClient();
 
+		// Send SessionReset so the client clears its session list and adopts the new compacted session
+		// as the sole active session, avoiding display confusion from merged session lists.
+		_transport.SessionReset(newSession.Id);
+
 		if (!newSession.Ephemeral)
 			SaveRoot(newSession);
 
