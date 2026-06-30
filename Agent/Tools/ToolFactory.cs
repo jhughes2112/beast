@@ -18,7 +18,6 @@ public static class ToolFactory
 	private const int ReadFileMaxLines = 500;
 
 	public static Tool[] BuildForRole(
-		BeastSettings settings,
 		Role role,
 		LlmRegistry? registry,
 		RoleService? roleService,
@@ -45,45 +44,51 @@ public static class ToolFactory
 		Role? webSearchRole = roleService?.GetRole("WebSearch");
 
 		if (role.Tools.Contains("bash"))
-		{
-			ToolConfig tc = settings.Tools["bash"];
-			Register(tools, "bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])), 
+			Register(tools, "bash",
+				"Standard bash command. CWD is at the root of the repo at /workspace/",
+				Params(
+					Req("command", "string", "Shell command to execute"),
+					Opt("timeout_seconds", "integer", "Timeout in seconds (default 120).")),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string command = Str(args, "command");
 					int? timeoutSeconds = IntOpt(args, "timeout_seconds");
 					return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
 				});
-		}
 
 		if (role.Tools.Contains("readonly_bash"))
-		{
-			ToolConfig tc = settings.Tools["readonly_bash"];
-			Register(tools, "readonly_bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])), 
+			Register(tools, "readonly_bash",
+				"Read-only bash for inspecting the repo without changing it. Runs in a restricted shell, so several things FAIL with errors — do not use them: no redirection of any stream (>, >>, and stderr redirects like 2>, 2>&1, 2>/dev/null are all rejected), no cd, no running a program by an explicit path, and PATH is read-only so you cannot extend it (export PATH=... fails). Only a curated read-only toolset (cat, ls, grep, git, head/tail, wc, sort, diff, jq, ...) is on PATH; a 'command not found' means it is not installed here, not that you should look harder. CWD is the repo root at /workspace/.",
+				Params(
+					Req("command", "string", "Read-only shell command to execute"),
+					Opt("timeout_seconds", "integer", "Timeout in seconds (default 120).")),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string command = Str(args, "command");
 					int? timeoutSeconds = IntOpt(args, "timeout_seconds");
 					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, ct);
 				});
-		}
 
 		if (role.Tools.Contains("write_file"))
-		{
-			ToolConfig tc = settings.Tools["write_file"];
-			Register(tools, "write_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("content", "string", tc.Parameters["content"])), 
+			Register(tools, "write_file",
+				"Create a new file or overwrite an existing one (if you used read_file already). CWD is /workspace/ but temporary files should go in /tmp/",
+				Params(
+					Req("file_path", "string", "File path"),
+					Req("content", "string", "Complete file contents")),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
 					string content = Str(args, "content");
 					return await FileTools.WriteFileAsync(toolCallId, filePath, content, ct);
 				});
-		}
 
 		if (role.Tools.Contains("edit_file"))
-		{
-			ToolConfig tc = settings.Tools["edit_file"];
-			Register(tools, "edit_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("old_text", "string", tc.Parameters["old_text"]), Req("new_text", "string", tc.Parameters["new_text"])), 
+			Register(tools, "edit_file",
+				"Replace old_text with new_text in a file. Tries exact match first; if not found, retries ignoring all whitespace. CWD is at the root of the repo at /workspace/",
+				Params(
+					Req("file_path", "string", "File path"),
+					Req("old_text", "string", "Text to find and replace"),
+					Req("new_text", "string", "Replacement text")),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
@@ -91,21 +96,19 @@ public static class ToolFactory
 					string newText = Str(args, "new_text");
 					return await FileTools.EditFileAsync(toolCallId, filePath, oldText, newText, ct);
 				});
-		}
+
 		if (role.Tools.Contains("ls"))
-		{
-			ToolConfig tc = settings.Tools["ls"];
-			Register(tools, "ls", tc.Description, Params(Req("folder", "string", tc.Parameters["folder"])), 
+			Register(tools, "ls",
+				"List a folder's contents. CWD is the repo root at /workspace/.",
+				Params(
+					Req("folder", "string", "Folder to list.")),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string folder = Str(args, "folder");
 					return await ShellTools.LsAsync(toolCallId, folder, ct);
 				});
-		}
 
 		if (role.Tools.Contains("read_file"))
-		{
-			ToolConfig tc = settings.Tools["read_file"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -114,11 +117,11 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "read_file",
-						Description = tc.Description,
+						Description = "Read a file's raw contents. Returns up to 500 lines starting at offset. CWD is the repo root at /workspace/.",
 						Parameters = Params(
-							Req("file_path", "string", tc.Parameters["file_path"]),
-							Opt("offset", "integer", tc.Parameters["offset"]),
-							Opt("lines", "integer", tc.Parameters["lines"])),
+							Req("file_path", "string", "File path"),
+							Opt("offset", "integer", "Starting line number (1 based). Omit for the beginning of the file."),
+							Opt("lines", "integer", "Number of lines to read. Omit to read to the end of the file (capped at 500)."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -130,11 +133,9 @@ public static class ToolFactory
 					return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 				}
 			});
-		}
 
 		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && session != null)
 		{
-			ToolConfig tc = settings.Tools["find_relevant_file_sections"];
 			FileSummarizer summarizer = new FileSummarizer();
 			tools.Add(new Tool
 			{
@@ -144,11 +145,11 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "find_relevant_file_sections",
-						Description = tc.Description,
+						Description = "Find the sections of a file relevant to a goal: returns a concept map — cited line ranges with the functions and symbols in each — so you can target follow-up read_file calls. Small files (under 50 lines or 2KB) are returned whole. CWD is the repo root at /workspace/.",
 						Parameters = Params(
-							Req("file_path", "string", tc.Parameters["file_path"]),
-							Req("goal", "string", tc.Parameters["goal"]),
-							Opt("offset", "integer", tc.Parameters["offset"]))
+							Req("file_path", "string", "File path"),
+							Req("goal", "string", "What you are trying to find or understand in this file. Used to focus the citations returned."),
+							Opt("offset", "integer", "Starting line number (1 based) for the window to digest. Omit for the beginning of the file."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -157,14 +158,13 @@ public static class ToolFactory
 					string goal = Str(args, "goal");
 					string offset = Str(args, "offset");
 					// registry! is safe: explorerService being non-null implies registry was non-null at build time.
-					return await summarizer.SummarizeAsync(settings, toolCallId, filePath, offset, goal, explorerRole!, registry!, transport, session, maxOutputTokens, ct);
+					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, explorerRole!, registry!, transport, session, maxOutputTokens, ct);
 				}
 			});
 		}
 
 		if (role.Tools.Contains("fetch_url") && webFetchReady && session != null)
 		{
-			ToolConfig tc = settings.Tools["fetch_url"];
 			WebFetch webFetch = new WebFetch();
 			tools.Add(new Tool
 			{
@@ -174,10 +174,10 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "fetch_url",
-						Description = tc.Description,
+						Description = "Fetch a web page and get back only the information you ask for. The page is read by the WebFetch role, which returns just what your goal describes.",
 						Parameters = Params(
-							Req("url", "string", tc.Parameters["url"]),
-							Req("goal", "string", tc.Parameters["goal"]))
+							Req("url", "string", "The fully-formed URL to fetch content from."),
+							Req("goal", "string", "Explain exactly what you are looking for and how that information will be used, so only that is returned."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -185,15 +185,14 @@ public static class ToolFactory
 					string url = Str(args, "url");
 					string goal = Str(args, "goal");
 					// registry! is safe: webFetchService being non-null implies registry was non-null at build time.
-					return await webFetch.FetchRawAsync(settings, toolCallId, url, goal, webFetchRole!, registry!, transport, session, maxOutputTokens, ct);
+					return await webFetch.FetchRawAsync(toolCallId, url, goal, webFetchRole!, registry!, transport, session, maxOutputTokens, ct);
 				}
 			});
 		}
 
-		if (role.Tools.Contains("internet_search") && settings.WebSearch?.Openrouter != null && settings.WebSearch.Openrouter.Enabled && webSearchRole != null && session != null)
+		if (role.Tools.Contains("search_web") && webSearchConfig?.Openrouter != null && webSearchConfig.Openrouter.Enabled && webSearchRole != null && session != null)
 		{
-			ToolConfig tc = settings.Tools["internet_search"];
-			WebSearchOpenrouter webSearch = new WebSearchOpenrouter(settings.WebSearch.Openrouter.BuildModel());
+			WebSearchOpenrouter webSearch = new WebSearchOpenrouter(webSearchConfig.Openrouter.BuildModel());
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -201,25 +200,23 @@ public static class ToolFactory
 					Type = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "internet_search",
-						Description = tc.Description,
+						Name = "search_web",
+						Description = "Search the web using a natural language query. A live web-search model retrieves and answers in one step; its answer is returned to you verbatim.",
 						Parameters = Params(
-							Req("query", "string", tc.Parameters["query"]),
-							Req("goal", "string", tc.Parameters["goal"]))
+							Req("query", "string", "Describe what should be retrieved from the web in enough detail that the top five hits will all be directly relevant to the task at hand."),
+							Req("goal", "string", "Provide a prompt to an agent so that it can return exactly and only what is necessary from the web pages. If you know exactly what you're looking for ask for it here."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
 					string query = Str(args, "query");
 					string goal = Str(args, "goal");
-					return await webSearch.InternetSearchAsync(toolCallId, query, goal, webSearchRole, transport, session, maxOutputTokens, ct);
+					return await webSearch.SearchWebAsync(toolCallId, query, goal, webSearchRole, transport, session, maxOutputTokens, ct);
 				}
 			});
 		}
 
 		if (role.Tools.Contains("assign_work") && runDeveloper != null && onWorkAssigned != null)
-		{
-			ToolConfig tc = settings.Tools["assign_work"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -228,9 +225,9 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "assign_work",
-						Description = tc.Description,
+						Description = "Hand a concrete unit of work to the Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and returns a report. After this, you stay in a work loop — you are re-prompted each turn to assign the next unit of work — until you call stop_work.",
 						Parameters = Params(
-							Req("prompt", "string", tc.Parameters["prompt"]))
+							Req("prompt", "string", "The task for the Developer, written in natural language as if you were the user instructing it."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -248,13 +245,10 @@ public static class ToolFactory
 					return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
 				}
 			});
-		}
 
 		// stop_work is exposed only while the delegation loop is active; paired with assign_work so a
 		// role that cannot delegate never sees it.
 		if (workInProgress && role.Tools.Contains("assign_work") && onStopWork != null)
-		{
-			ToolConfig tc = settings.Tools["stop_work"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -263,9 +257,9 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "stop_work",
-						Description = tc.Description,
+						Description = "End the work loop and hand control back to the user. Call this once all delegated work is complete (or should not continue). Until you call it, you are re-prompted after each turn to assign the next unit of work.",
 						Parameters = Params(
-							Req("summary", "string", tc.Parameters["summary"]))
+							Req("summary", "string", "A brief summary of what was accomplished across the delegated work, or why the work is stopping."))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -275,11 +269,8 @@ public static class ToolFactory
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
 			});
-		}
 
 		if (role.Tools.Contains("review_work") && runReview != null)
-		{
-			ToolConfig tc = settings.Tools["review_work"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -288,9 +279,9 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "review_work",
-						Description = tc.Description,
+						Description = "Ask the Reviewer to inspect your changes. Returns its verdict: approved, or rejected with comments to address. The review does not commit anything — once approved, integrate the work yourself with commit_and_rebase.",
 						Parameters = Params(
-							Req("prompt", "string", tc.Parameters["prompt"]))
+							Req("prompt", "string", "What you changed and what the reviewer should check, written in natural language as if you were instructing it."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -306,11 +297,8 @@ public static class ToolFactory
 					return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
 				}
 			});
-		}
 
 		if (role.Tools.Contains("commit_and_rebase"))
-		{
-			ToolConfig tc = settings.Tools["commit_and_rebase"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -319,9 +307,9 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "commit_and_rebase",
-						Description = tc.Description,
+						Description = "Commit all changes in your worktree, then integrate them: rebase your branch onto the base branch (linear history, no merge commit), and fast-forward the base onto your branch. Call this after an approved review. On a conflict the rebase stops with the conflicted files listed — resolve them, run 'git rebase --continue' with bash, then call this again to finish.",
 						Parameters = Params(
-							Req("message", "string", tc.Parameters["message"]))
+							Req("message", "string", "The commit message describing the work."))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -338,13 +326,10 @@ public static class ToolFactory
 					return new ToolResult(toolCallId, transcript, string.Empty, 0, tokens);
 				}
 			});
-		}
 
 		// Terminators are mutually exclusive; the role declares at most one. task_complete and finish_review are
 		// checked by name; return_to_caller is the fallback for any subagent that declares neither.
 		if (role.Tools.Contains("task_complete") && onTaskComplete != null)
-		{
-			ToolConfig tc = settings.Tools["task_complete"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -353,10 +338,10 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "task_complete",
-						Description = tc.Description,
+						Description = "Declare your work finished and return to the agent that delegated it. Before calling this, get your work reviewed with review_work and integrated with commit_and_rebase, then summarize the outcome below.",
 						Parameters = Params(
-							Req("results_of_review_work", "string", tc.Parameters["results_of_review_work"]),
-							Req("success", "boolean", tc.Parameters["success"]))
+							Req("results_of_review_work", "string", "The review outcome and the integration status from commit_and_rebase. This string is the entire response the caller receives."),
+							Req("success", "boolean", "True if the task was completed successfully; false if it failed or was blocked."))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -369,10 +354,7 @@ public static class ToolFactory
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
 			});
-		}
 		else if (role.Tools.Contains("finish_review") && onFinishReview != null)
-		{
-			ToolConfig tc = settings.Tools["finish_review"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -381,10 +363,10 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "finish_review",
-						Description = tc.Description,
+						Description = "Call this to finish the review. approved=true accepts the change; approved=false rejects it with comments. You only review — after approval the developer commits and integrates the work itself, so you never run git.",
 						Parameters = Params(
-							Req("approved", "boolean", tc.Parameters["approved"]),
-							Req("comments", "string", tc.Parameters["comments"]))
+							Req("approved", "boolean", "True to accept the change, false to reject it."),
+							Req("comments", "string", "Your review: what you checked and why you approved, or exactly what the developer must fix. This string is the entire response the caller receives."))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -400,10 +382,7 @@ public static class ToolFactory
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
 			});
-		}
 		else if (onReturnToCaller != null)
-		{
-			ToolConfig tc = settings.Tools["return_to_caller"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -412,10 +391,10 @@ public static class ToolFactory
 					Function = new FunctionDefinition
 					{
 						Name = "return_to_caller",
-						Description = tc.Description,
+						Description = "Call this to declare your task finished.",
 						Parameters = Params(
-							Req("output", "string", tc.Parameters["output"]),
-							Req("success", "boolean", tc.Parameters["success"]))
+							Req("output", "string", "This string is the entire response the caller receives. Include high-level details like what files were modified, changes to interfaces required,  tests passed, or any other changes to the project that the orchestrator agent should know about."),
+							Req("success", "boolean", "True if the task was completed successfully; false if it failed or was blocked."))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -428,7 +407,6 @@ public static class ToolFactory
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
 			});
-		}
 
 		return tools.ToArray();
 	}

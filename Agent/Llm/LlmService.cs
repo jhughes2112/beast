@@ -68,6 +68,23 @@ public class LlmService
 		_roleModelIds = roleModelIds;
 	}
 
+	// Tracer call: probe the provider with max_output_tokens=0 to get accurate input/cached token
+	// counts without generating a response. Returns TracerResult with token counts or error status.
+	// Used before the real call to decide whether compaction is needed.
+	public async Task<TracerResult> RunTracerAsync(Session conversation, Tool[] tools, string? forcedToolName, CancellationToken cancellationToken)
+	{
+		if (_availability.IsDown)
+			return TracerResult.Failed($"LLM {_model.Config.Name} is permanently down");
+
+		List<ToolDefinition> toolDefs = new List<ToolDefinition>();
+		for (int i = 0; i < tools.Length; i++)
+		{
+			toolDefs.Add(tools[i].Definition);
+		}
+
+		return await _handler.ExecuteTracerAsync(conversation.Bundle, toolDefs, forcedToolName, conversation.QueryLog, cancellationToken);
+	}
+
 	// forcedToolName (null = free choice) requires the model to call that exact tool this turn.
 	// maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
 	// guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
@@ -198,8 +215,8 @@ public class LlmService
 							// collapsing it into TooManyRetries, which the caller would otherwise report as
 							// rate-limiting and bury the real cause. Rate-limit exhaustion (above) keeps
 							// TooManyRetries; this transient path carries its reason.
-							string message = string.IsNullOrEmpty(result.ErrorMessage) ? 
-								"Transient errors persisted after repeated retries." : 
+							string message = string.IsNullOrEmpty(result.ErrorMessage) ?
+								"Transient errors persisted after repeated retries." :
 								$"Transient errors persisted after {kMaxTransientRetries} retries: {result.ErrorMessage}";
 							conversation.QueryLog.ModelFailure(_model, _handler, "Failed", null, message, transientRetries, kMaxTransientRetries, result.RetryAfter, true);
 							result = ProtocolResult.Failed(message);
@@ -247,7 +264,7 @@ public class LlmService
 					// Surface it explicitly as a timeout (Transient, so the caller retries/falls back) instead
 					// of an opaque "cancelled". A TimeoutException inner confirms the HttpClient.Timeout case.
 					bool timedOut = ex is TaskCanceledException && ex.InnerException is TimeoutException;
-					string message = timedOut ? 
+					string message = timedOut ?
 						"LLM request timed out: the model did not respond before the HTTP client timeout elapsed (too slow, or queued behind other requests)." :
 						$"LLM request was cancelled by the transport (not by the user): {ex}";
 					conversation.QueryLog.ModelFailure(_model, _handler, timedOut ? "Timeout" : "TransportCancelled", null, message, 0, 0, null, true);

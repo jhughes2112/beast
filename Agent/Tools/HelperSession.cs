@@ -34,7 +34,7 @@ public static class HelperSession
 			SessionService.Save(parent.Data);
 
 		LlmService? service = registry.CreateService(role, string.Empty, 0);
-		if (service==null)
+		if (service == null)
 		{
 			string errmsg = $"[HelperSession] {role.Name} failed to produce an LlmService on start";
 			Console.Error.WriteLine(errmsg);

@@ -186,6 +186,36 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 
+	// Tracer call: probe the provider with max_output_tokens=0 (or 1 for Anthropic) to get
+	// accurate input/cached token counts without generating a response. Used before the real
+	// call to decide whether compaction is needed.
+	public async Task<TracerResult> ExecuteTracerAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName,
+SessionLogger logger, CancellationToken cancellationToken)
+	{
+		(Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Headers);
+
+		if (_detected == DetectedProtocol.Unknown)
+		{
+			(DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(_model.Endpoint, cancellationToken);
+			_detected = probed;
+			if (effectiveEndpoint != _model.Endpoint)
+				_model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Headers, _model.Config);
+		}
+
+		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
+
+		if (_detected == DetectedProtocol.Anthropic)
+			return await EnsureProtocolAnthropic(canonical).ExecuteTracerAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+
+		if (_detected == DetectedProtocol.Responses)
+			return await EnsureProtocolResponses(canonical).ExecuteTracerAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+
+		if (_detected == DetectedProtocol.ChatCompletions)
+			return await EnsureProtocolChatCompletions(canonical).ExecuteTracerAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+
+		return TracerResult.Failed($"Endpoint speaks no recognized protocol");
+	}
+
 	internal ProtocolChatCompletions EnsureProtocolChatCompletions(IReadOnlyList<CanonicalMessage> canonical)
 	{
 		if (_protocolChatCompletions == null)

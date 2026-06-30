@@ -183,13 +183,13 @@ public class SessionRunner
 
 		// Roots: sessions with no parent (or parent not in the loaded set)
 		List<SessionService.SessionFileInfo> roots = allSessions.Where(s => !hasParent.Contains(s.Session.Id)).ToList();
-		
+
 		// Sort roots by CreationOrder descending (newest first = highest CreationOrder first)
 		roots.Sort((a, b) => b.CreationOrder.CompareTo(a.CreationOrder));
 
 		// Find the root being resumed (the one matching our current session's ID)
 		SessionService.SessionFileInfo? resumedRoot = roots.FirstOrDefault(r => r.Session.Id == root.Id);
-		
+
 		// Remove it from roots list so we can replay it LAST
 		if (resumedRoot != null)
 			roots.Remove(resumedRoot);
@@ -199,7 +199,7 @@ public class SessionRunner
 		List<SessionService.SessionFileInfo> ordered = new List<SessionService.SessionFileInfo>();
 		foreach (var rootInfo in roots)
 			DfsAddToOrdered(rootInfo, childrenMap, ordered);
-		
+
 		if (resumedRoot != null)
 			DfsAddToOrdered(resumedRoot, childrenMap, ordered);
 
@@ -306,7 +306,7 @@ public class SessionRunner
 	public Session CurrentSession => _currentSession;
 
 	// Runs until cancelled. Compaction is handled inline: when context fills the current session
-	// is summarized, a child session is created and announced, and the loop continues on the new session.
+	// is summarized, a new independent root session is created and announced, and the loop continues on it.
 	public async Task<Session> RunAsync(CancellationToken ct)
 	{
 		Session session = _currentSession;
@@ -401,7 +401,68 @@ public class SessionRunner
 						bool completed = false;
 						while (!completed)
 						{
-							ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, GetCompactionReserve(session), 0, _transport, 
+							// Tracer call: before the real request, probe the provider with max_output_tokens=0
+							// to get accurate token counts and detect context overflow early.
+							int compactionReserve = GetCompactionReserve(session);
+							int compactionThreshold = session.ContextWindow - compactionReserve;
+							int lastContextSize = session.ContextLength;
+
+							// Pessimistic estimate: last known context + rough estimate of new content growth.
+							// New content bytes are estimated from pending messages not yet reflected in context length.
+							// We use bytes / 3 as a conservative token estimate (UTF-8 avg ~3 bytes per token).
+							// Pending user messages are in session.Bundle.Canonical.Messages but not yet committed.
+							// Also include any pending tool response reservations from the ContextBudget.
+							int pendingBytes = 0;
+							foreach (var msg in session.Bundle.Canonical.Messages)
+							{
+								if (msg is UserMessage um)
+									pendingBytes += System.Text.Encoding.UTF8.GetByteCount(um.Text);
+							}
+							int pessimisticEstimate = lastContextSize + (pendingBytes / 3) + session.Budget.PendingReserve;
+
+							// Trigger tracer if pessimistic estimate is near or above the compaction threshold.
+							// This gives us an accurate measurement before the real call.
+							bool shouldTracer = pessimisticEstimate >= compactionThreshold;
+
+							if (shouldTracer)
+							{
+								TracerResult tracer = await _service.RunTracerAsync(session, tools, null, turnScope.Token);
+
+								if (tracer.Succeeded)
+								{
+									// Update the budget measurement with the accurate count from the tracer
+									session.Budget.RecordMeasurement(tracer.InputTokens);
+
+									// Send accurate token counts to client for status line update:
+									// status line should show {tokens}%/{model_context} using accurate counts
+									// from the tracer (or last real call).
+									int cachedTokens = tracer.CachedTokens;
+									_transport.Stats(session.Id, session.Model + ReasoningEffort.DisplaySuffix(_service.Model.Config.ReasoningEffort), session.Role,
+										session.CumulativeInputTokens, session.CumulativeOutputTokens,
+										session.TotalCost, session.ContextWindow, tracer.InputTokens, cachedTokens);
+
+									// Decide: if input_tokens + cached_tokens >= threshold → compact; else proceed
+									if (tracer.InputTokens + tracer.CachedTokens >= compactionThreshold)
+									{
+										_transport.Status(session.Id, $"Context full ({tracer.InputTokens + tracer.CachedTokens}/{session.ContextWindow}), compacting...");
+										contextFull = true;
+										completed = true;
+										continue;
+									}
+								}
+								else if (tracer.ContextBlown)
+								{
+									// 4xx error from tracer = context blown past limit, compaction mandatory
+									_transport.Status(session.Id, $"Context exceeds limit ({tracer.ErrorMessage}), compacting...");
+									contextFull = true;
+									completed = true;
+									continue;
+								}
+								// If tracer failed for other reasons (rate limit, network), proceed with real call
+								// and let the normal retry/fallback logic handle it
+							}
+
+							ProtocolResult result = await _service.RunToCompletionAsync(session, tools, null, compactionReserve, 0, _transport,
 turnScope.Token);
 
 							if (result.Outcome == ProtocolCallOutcome.Success)
@@ -575,7 +636,9 @@ turnScope.Token);
 		return _currentSession;
 	}
 
-	// Summarizes the current session and returns a new child session seeded with the compacted content.
+	// Summarizes the current session and returns a new ROOT session seeded with the compacted content.
+	// The new session is independent — not a child of the old one — so the client keeps all its existing
+	// sessions. The old session stays in history; the new one starts fresh with just the summary.
 	// Returns null if the service, role, or summary prompt is unavailable.
 	private async Task<Session?> CompactAsync(CancellationToken ct)
 	{
@@ -597,14 +660,16 @@ turnScope.Token);
 		}
 
 		string newDisplayName = Session.IncrementDisplayName(_currentSession.DisplayName);
-		// Allocate the child ID before saving so the bumped counter is persisted (it lives in Session state only).
-		string newSessionId = _currentSession.AllocateChildId();
+		// Generate a brand new root session ID (GUID) — not a child ID — so the compacted session
+		// is an independent root, not a child of the old one. The client keeps all its sessions.
+		string newSessionId = Guid.NewGuid().ToString();
 
 		SaveRoot(_currentSession);
 
 		// Compaction starts a clean-slate session (no history) seeded with the summary plus the last
 		// couple of exchanges — not a copy of the prior conversation.
-		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral);
+		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m,
+0, 0, 0, _currentSession.Ephemeral);
 
 		Session newSession = new Session(freshData, role.SystemPrompt, _transport, false);
 
@@ -616,12 +681,8 @@ turnScope.Token);
 		newSession.AddUserMessage(summary);
 		newSession.FlushPendingMessages();
 
-		_currentSession.AddChild(newSession);
+		// Announce the new root session to the client (adds it to the session list; does NOT wipe existing sessions).
 		newSession.AnnounceToClient();
-
-		// Send SessionReset so the client clears its session list and adopts the new compacted session
-		// as the sole active session, avoiding display confusion from merged session lists.
-		_transport.SessionReset(newSession.Id);
 
 		if (!newSession.Ephemeral)
 			SaveRoot(newSession);
@@ -865,8 +926,14 @@ turnScope.Token);
 	// are closures over this runner so they capture the current session at call time (not construction time).
 	private Tool[] ToolsForTurn(Role role, bool workInProgress)
 	{
-		return ToolFactory.BuildForRole(_settings.Settings, role, _registry, _roleService, CurrentSession, _settings.Settings.WebSearch, workInProgress,
-			(prompt, budget, workCt) => _subagent.RunSubagentAsync(_settings.Settings, "Developer", prompt, budget, workCt),
+		return ToolFactory.BuildForRole(
+			role,
+			_registry,
+			_roleService,
+			this.CurrentSession,
+			_settings.Settings.WebSearch,
+			workInProgress,
+			(prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt),
 			() => CurrentSession.BeginWork(),
 			() => CurrentSession.EndWork(),
 			null,   // no review_work at the root
@@ -887,10 +954,11 @@ turnScope.Token);
 		return newService;
 	}
 
-		// Returns the number of tokens to reserve for compaction: 10% of the current model's context
+	// Returns the number of tokens to reserve for compaction: 10% of the current model's context
 	// window, capped at 7500. This ensures there is always enough room for a response regardless of model size.
 	private static int GetCompactionReserve(Session session)
 	{
 		return Math.Min((int)(session.ContextWindow * 0.1), 7500);
 	}
+
 }

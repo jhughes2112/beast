@@ -432,7 +432,7 @@ httpResponse);
 		}
 
 		body["seed"] = Random.Shared.Next();
-		if (maxCompletionTokens > 0)
+		if (maxCompletionTokens.HasValue)
 			body["max_completion_tokens"] = maxCompletionTokens.Value;
 
 		// Advertise the friendly reasoningEffort word in whichever form the backend currently accepts.
@@ -906,5 +906,91 @@ httpResponse);
 		}
 
 		return false;
+	}
+
+	// Tracer call: sends the same request with max_completion_tokens=0 to get accurate token counts
+	// without generating a response. Returns token usage info from the provider, or error status.
+	public async Task<TracerResult> ExecuteTracerAsync(
+		LlmModel model,
+		List<ToolDefinition> tools,
+		string? forcedToolName,
+		Dictionary<string, string> extraHeaders,
+		Dictionary<string, JsonNode?> extraPayload,
+		SessionLogger logger,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			JsonObject body = BuildRequestBody(model, tools, forcedToolName, 0);
+
+			string requestJson = body.ToJsonString();
+
+			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
+			req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+
+			foreach ((string name, string value) in extraHeaders)
+			{
+				req.Headers.TryAddWithoutValidation(name, value);
+			}
+
+			HttpResponseMessage httpResponse;
+			string responseBody;
+			try
+			{
+				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			}
+			catch (OperationCanceledException)
+			{
+				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+				if (timeout != null)
+					return TracerResult.Failed(timeout.ErrorMessage);
+				throw;
+			}
+			catch (HttpRequestException ex)
+			{
+				return TracerResult.Failed(ex.ToString());
+			}
+			catch (Exception ex)
+			{
+				return TracerResult.Failed(ex.ToString());
+			}
+
+			int statusCode = (int)httpResponse.StatusCode;
+
+			if (httpResponse.IsSuccessStatusCode)
+			{
+				JsonNode? root = JsonNode.Parse(responseBody);
+				if (root == null)
+					return TracerResult.Failed("Empty response from API");
+
+				JsonNode? usageNode = root["usage"];
+				if (usageNode == null)
+					return TracerResult.Failed("No usage info in tracer response");
+
+				int promptTokens = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
+				int cachedTokens = usageNode["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
+
+				return TracerResult.Success(promptTokens, cachedTokens);
+			}
+
+			// 4xx (non-429, non-retryable) = context blown past limit
+			if (ProtocolHelpers.IsPermanentClientError(statusCode))
+			{
+				return TracerResult.ContextExceeded(statusCode);
+			}
+
+			if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
+			{
+				return TracerResult.Failed($"Rate limited: {responseBody}");
+			}
+
+			return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
+		}
+		catch (Exception ex)
+		{
+			return TracerResult.Failed(ex.ToString());
+		}
 	}
 }

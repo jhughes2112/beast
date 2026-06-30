@@ -11,6 +11,7 @@ public static class ContextBudgetTests
 		TestIsExhausted(ctx);
 		TestReserveHoldsFullReservation(ctx);
 		TestRecordMeasurement(ctx);
+		TestPendingReserve(ctx);
 	}
 
 	private static void TestMaxCompletionTokens(TestContext ctx)
@@ -99,6 +100,23 @@ public static class ContextBudgetTests
 
 		// A provider response reports the true size and clears all pending reservations.
 		budget.RecordMeasurement(2000);
-		ctx.AssertEqual<int?>(98000, budget.MaxCompletionTokens(), "RecordMeasurement: resets measured size and zeroes pending");
+		ctx.AssertEqual<int?>(98000, budget.MaxCompletionTokens(), "RecordMeasurement: resets measured size and zeroes and zeroes pending");
+	}
+
+	private static void TestPendingReserve(TestContext ctx)
+	{
+		ContextBudget budget = new ContextBudget();
+		budget.Configure(100000, 200000, 0, 0, 1000);
+
+		// Initially no pending reserve
+		ctx.AssertEqual(0, budget.PendingReserve, "PendingReserve: zero initially");
+
+		// After reserving tool responses, pending reserve is set
+		budget.ReserveToolResponses(1);
+		ctx.AssertEqual(94904, budget.PendingReserve, "PendingReserve: reflects tool response reservation");
+
+		// After recording measurement, pending reserve is cleared
+		budget.RecordMeasurement(2000);
+		ctx.AssertEqual(0, budget.PendingReserve, "PendingReserve: zero after RecordMeasurement");
 	}
 }

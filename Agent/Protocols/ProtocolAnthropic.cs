@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -572,4 +573,218 @@ public class ProtocolAnthropic
 		return result;
 	}
 
+	// Tracer call: sends the same request with max_tokens=1 (minimum positive value Anthropic accepts)
+	// to get accurate input token counts without generating a meaningful response.
+	public async Task<TracerResult> ExecuteTracerAsync(
+		LlmModel model,
+		List<ToolDefinition> tools,
+		string? forcedToolName,
+		Dictionary<string, string> extraHeaders,
+		Dictionary<string, JsonNode?> extraPayload,
+		SessionLogger logger,
+		CancellationToken cancellationToken)
+	{
+		try
+		{
+			JsonObject body = BuildTracerBody(model, tools, forcedToolName, extraPayload);
+			logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+			string requestJson = body.ToJsonString();
+
+			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
+			req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+			req.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
+			req.Headers.TryAddWithoutValidation("anthropic-dangerous-direct-browser-connect", "true");
+
+			foreach ((string name, string value) in extraHeaders)
+			{
+				req.Headers.TryAddWithoutValidation(name, value);
+			}
+
+			HttpResponseMessage httpResponse;
+			string responseBody;
+			try
+			{
+				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			}
+			catch (OperationCanceledException)
+			{
+				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+				if (timeout != null)
+					return TracerResult.Failed(timeout.ErrorMessage);
+				throw;
+			}
+			catch (HttpRequestException ex)
+			{
+				return TracerResult.Failed(ex.ToString());
+			}
+			catch (Exception ex)
+			{
+				return TracerResult.Failed(ex.ToString());
+			}
+
+			int statusCode = (int)httpResponse.StatusCode;
+
+			if (httpResponse.IsSuccessStatusCode)
+			{
+				JsonNode? root = JsonNode.Parse(responseBody);
+				if (root == null)
+					return TracerResult.Failed("Empty response from API");
+
+				JsonNode? usageNode = root["usage"];
+				if (usageNode == null)
+					return TracerResult.Failed("No usage info in tracer response");
+
+				int inputTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
+				int cacheReadTokens = usageNode["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
+				int cacheReadTokens2 = usageNode["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+				int cachedTokens = cacheReadTokens + cacheReadTokens2;
+
+				return TracerResult.Success(inputTokens, cachedTokens);
+			}
+
+			// 4xx (non-429, non-retryable) = context blown past limit
+			if (ProtocolHelpers.IsPermanentClientError(statusCode))
+			{
+				return TracerResult.ContextExceeded(statusCode);
+			}
+
+			if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
+			{
+				return TracerResult.Failed($"Rate limited: {responseBody}");
+			}
+
+			return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
+		}
+		catch (Exception ex)
+		{
+			return TracerResult.Failed(ex.ToString());
+		}
+	}
+
+	// Build a minimal request body for the tracer call. Mirrors what the SDK would send but with
+	// max_tokens=1 (minimum positive value Anthropic accepts) and no streaming.
+	private JsonObject BuildTracerBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, Dictionary<string, JsonNode?> extraPayload)
+	{
+		JsonObject body = new JsonObject();
+		body["model"] = model.Config.Id;
+		body["max_tokens"] = 1;
+
+		// Build messages array from native state
+		JsonArray messages = new JsonArray();
+		foreach (Message msg in _native)
+		{
+			foreach (ContentBase content in msg.Content)
+			{
+				JsonObject msgObj = new JsonObject();
+				if (msg.Role == RoleType.User)
+					msgObj["role"] = "user";
+				else
+					msgObj["role"] = "assistant";
+
+				JsonArray contentArr = new JsonArray();
+				if (content is TextContent tc)
+				{
+					JsonObject textObj = new JsonObject();
+					textObj["type"] = "text";
+					textObj["text"] = tc.Text;
+					contentArr.Add(textObj);
+				}
+				else if (content is ToolUseContent tuc)
+				{
+					JsonObject toolObj = new JsonObject();
+					toolObj["type"] = "tool_use";
+					toolObj["id"] = tuc.Id;
+					toolObj["name"] = tuc.Name;
+					if (tuc.Input != null)
+						toolObj["input"] = tuc.Input;
+					contentArr.Add(toolObj);
+				}
+				else if (content is ToolResultContent trc)
+				{
+					JsonObject toolResultObj = new JsonObject();
+					toolResultObj["type"] = "tool_result";
+					toolResultObj["tool_use_id"] = trc.ToolUseId;
+					JsonArray innerContent = new JsonArray();
+					foreach (ContentBase inner in trc.Content)
+					{
+						if (inner is TextContent itc)
+						{
+							JsonObject innerText = new JsonObject();
+							innerText["type"] = "text";
+							innerText["text"] = itc.Text;
+							innerContent.Add(innerText);
+						}
+					}
+					toolResultObj["content"] = innerContent;
+					contentArr.Add(toolResultObj);
+				}
+
+				msgObj["content"] = contentArr;
+
+				// Merge consecutive same-role content into single message
+				if (messages.Count > 0)
+				{
+					JsonNode? last = messages[messages.Count - 1];
+					string? lastRole = last?["role"]?.GetValue<string>();
+					string thisRole = msg.Role == RoleType.User ? "user" : "assistant";
+					if (lastRole == thisRole)
+					{
+						// Merge content arrays
+						JsonArray lastContent = last!["content"]!.AsArray()!;
+						foreach (JsonNode? cn in contentArr)
+							lastContent.Add(cn);
+						continue;
+					}
+				}
+				messages.Add(msgObj);
+			}
+		}
+		body["messages"] = messages;
+
+		if (!string.IsNullOrEmpty(_system))
+		{
+			body["system"] = _system;
+		}
+
+		if (tools.Count > 0)
+		{
+			JsonArray toolsArr = new JsonArray();
+			foreach (ToolDefinition td in tools)
+			{
+				JsonObject t = new JsonObject();
+				t["name"] = td.Function.Name;
+				if (!string.IsNullOrEmpty(td.Function.Description))
+					t["description"] = td.Function.Description;
+				if (td.Function.Parameters != null)
+					t["input_schema"] = td.Function.Parameters.DeepClone();
+				toolsArr.Add(t);
+			}
+			body["tools"] = toolsArr;
+
+			if (forcedToolName == ProtocolProxy.AnyTool)
+			{
+				JsonObject tc = new JsonObject();
+				tc["type"] = "any";
+				body["tool_choice"] = tc;
+			}
+			else if (!string.IsNullOrEmpty(forcedToolName))
+			{
+				JsonObject tc = new JsonObject();
+				tc["type"] = "tool";
+				tc["name"] = forcedToolName;
+				body["tool_choice"] = tc;
+			}
+		}
+
+		// Merge extra payload
+		foreach ((string name, JsonNode? value) in extraPayload)
+		{
+			body[name] = value?.DeepClone();
+		}
+
+		return body;
+	}
 }

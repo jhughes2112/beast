@@ -36,6 +36,9 @@ public class ContextBudget
 	{
 	}
 
+	// Returns the pending tool-response reservation (for pessimistic estimation before tracer call).
+	public int PendingReserve => _pendingReserve;
+
 	// Seeds the per-turn window and limits and the authoritative starting size. Clears any pending
 	// reservation: a fresh turn begins with no outstanding tool outputs.
 	public void Configure(int windowSize, int maxOutputTokens, int compactionReserve, int outputCap, int measuredContextSize)
