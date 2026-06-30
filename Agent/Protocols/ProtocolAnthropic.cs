@@ -645,10 +645,15 @@ public class ProtocolAnthropic
 				return TracerResult.Success(inputTokens, cachedTokens);
 			}
 
-			// 4xx (non-429, non-retryable) = context blown past limit
+			// 4xx (non-429, non-retryable) — distinguish actual context overflow from parameter errors
 			if (ProtocolHelpers.IsPermanentClientError(statusCode))
 			{
-				return TracerResult.ContextExceeded(statusCode);
+				string lowerBody = responseBody.ToLowerInvariant();
+				if (lowerBody.Contains("context_length_exceeded") || lowerBody.Contains("maximum context length") || lowerBody.Contains("max_tokens"))
+				{
+					return TracerResult.ContextExceeded(statusCode);
+				}
+				return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
 			}
 
 			if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))

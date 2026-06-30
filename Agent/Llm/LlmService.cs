@@ -68,7 +68,7 @@ public class LlmService
 		_roleModelIds = roleModelIds;
 	}
 
-	// Tracer call: probe the provider with max_output_tokens=0 to get accurate input/cached token
+	// Tracer call: probe the provider with max_output_tokens=1 to get accurate input/cached token
 	// counts without generating a response. Returns TracerResult with token counts or error status.
 	// Used before the real call to decide whether compaction is needed.
 	public async Task<TracerResult> RunTracerAsync(Session conversation, Tool[] tools, string? forcedToolName, CancellationToken cancellationToken)

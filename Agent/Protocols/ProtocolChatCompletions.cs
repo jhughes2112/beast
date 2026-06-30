@@ -908,8 +908,8 @@ httpResponse);
 		return false;
 	}
 
-	// Tracer call: sends the same request with max_completion_tokens=0 to get accurate token counts
-	// without generating a response. Returns token usage info from the provider, or error status.
+	// Tracer call: sends the same request with max_completion_tokens=1 to get accurate token counts
+	// without generating a meaningful response. Returns token usage info from the provider, or error status.
 	public async Task<TracerResult> ExecuteTracerAsync(
 		LlmModel model,
 		List<ToolDefinition> tools,
@@ -921,7 +921,7 @@ httpResponse);
 	{
 		try
 		{
-			JsonObject body = BuildRequestBody(model, tools, forcedToolName, 0);
+			JsonObject body = BuildRequestBody(model, tools, forcedToolName, 1);
 
 			string requestJson = body.ToJsonString();
 
@@ -975,10 +975,15 @@ httpResponse);
 				return TracerResult.Success(promptTokens, cachedTokens);
 			}
 
-			// 4xx (non-429, non-retryable) = context blown past limit
+			// 4xx (non-429, non-retryable) — distinguish actual context overflow from parameter errors
 			if (ProtocolHelpers.IsPermanentClientError(statusCode))
 			{
-				return TracerResult.ContextExceeded(statusCode);
+				string lowerBody = responseBody.ToLowerInvariant();
+				if (lowerBody.Contains("context_length_exceeded") || lowerBody.Contains("maximum context length") || lowerBody.Contains("max_tokens"))
+				{
+					return TracerResult.ContextExceeded(statusCode);
+				}
+				return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
 			}
 
 			if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))

@@ -401,7 +401,7 @@ public class SessionRunner
 						bool completed = false;
 						while (!completed)
 						{
-							// Tracer call: before the real request, probe the provider with max_output_tokens=0
+							// Tracer call: before the real request, probe the provider with max_output_tokens=1
 							// to get accurate token counts and detect context overflow early.
 							int compactionReserve = GetCompactionReserve(session);
 							int compactionThreshold = session.ContextWindow - compactionReserve;
@@ -678,11 +678,14 @@ turnScope.Token);
 		if (_currentSession.WorkInProgress)
 			newSession.BeginWork();
 
-		newSession.AddUserMessage(summary);
-		newSession.FlushPendingMessages();
-
 		// Announce the new root session to the client (adds it to the session list; does NOT wipe existing sessions).
 		newSession.AnnounceToClient();
+
+		// Send SessionReset so the client clears its session list and adopts the new compacted session
+		_transport.SessionReset(newSession.Id);
+
+		// Add summary to canonical directly, bypassing transport (the replay in RunAsync will send it)
+		newSession.Bundle.Canonical.OnUserMessage(summary);
 
 		if (!newSession.Ephemeral)
 			SaveRoot(newSession);

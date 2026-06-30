@@ -1,4 +1,4 @@
-// Result of a tracer call (max_output_tokens=0) used to probe context size before the real request.
+// Result of a tracer call (max_output_tokens=1) used to probe context size before the real request.
 public class TracerResult
 {
 	// True if the tracer call succeeded and returned accurate token counts.

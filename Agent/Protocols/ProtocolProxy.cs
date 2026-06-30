@@ -186,7 +186,7 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 
-	// Tracer call: probe the provider with max_output_tokens=0 (or 1 for Anthropic) to get
+	// Tracer call: probe the provider with max_output_tokens=1 to get
 	// accurate input/cached token counts without generating a response. Used before the real
 	// call to decide whether compaction is needed.
 	public async Task<TracerResult> ExecuteTracerAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName,
