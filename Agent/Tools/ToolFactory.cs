@@ -190,9 +190,9 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("search_web") && settings.WebSearch?.Openrouter != null && settings.WebSearch.Openrouter.Enabled && webSearchRole != null && session != null)
+		if (role.Tools.Contains("internet_search") && settings.WebSearch?.Openrouter != null && settings.WebSearch.Openrouter.Enabled && webSearchRole != null && session != null)
 		{
-			ToolConfig tc = settings.Tools["search_web"];
+			ToolConfig tc = settings.Tools["internet_search"];
 			WebSearchOpenrouter webSearch = new WebSearchOpenrouter(settings.WebSearch.Openrouter.BuildModel());
 			tools.Add(new Tool
 			{
@@ -201,7 +201,7 @@ public static class ToolFactory
 					Type = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "search_web",
+						Name = "internet_search",
 						Description = tc.Description,
 						Parameters = Params(
 							Req("query", "string", tc.Parameters["query"]),
@@ -212,7 +212,7 @@ public static class ToolFactory
 				{
 					string query = Str(args, "query");
 					string goal = Str(args, "goal");
-					return await webSearch.SearchWebAsync(toolCallId, query, goal, webSearchRole, transport, session, maxOutputTokens, ct);
+					return await webSearch.InternetSearchAsync(toolCallId, query, goal, webSearchRole, transport, session, maxOutputTokens, ct);
 				}
 			});
 		}

@@ -26,7 +26,7 @@ public class WebSearchOpenrouter
 	}
 
 	// searchRole is pre-resolved by BuildForRole.
-	public async Task<ToolResult> SearchWebAsync(
+	public async Task<ToolResult> InternetSearchAsync(
 		string toolCallId,
 		string query,
 		string goal,
@@ -56,7 +56,7 @@ public class WebSearchOpenrouter
 		if (!parent.Ephemeral)
 			SessionService.Save(parent.Data);
 
-		BeastSession data = new BeastSession(childId, $"search_web {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+		BeastSession data = new BeastSession(childId, $"internet_search {query}", _model.ConfigId, searchRole.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session session = new Session(data, searchRole.SystemPrompt, transport, true);
 
 		// The constructor no longer displays the system prompt; a helper session has no other replay path, so

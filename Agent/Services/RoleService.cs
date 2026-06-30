@@ -197,7 +197,7 @@ public class RoleService
 		const string endOfTurnPrompt = """
             Is all the delegated work complete? If everything the user asked for is done, call stop_work with a brief summary of what was accomplished. If work remains, call assign_work to hand the Developer the next unit of work.
             """;
-		List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "search_web", "readonly_bash" };
+		List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "internet_search", "readonly_bash" };
 		return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
@@ -241,7 +241,7 @@ public class RoleService
 		// review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
 		// injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
 		// work; task_complete is this role's terminator).
-		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "search_web", "review_work", "commit_and_rebase", "task_complete" };
+		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "review_work", "commit_and_rebase", "task_complete" };
 		return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
@@ -316,7 +316,7 @@ public class RoleService
 		return new Role("WebFetch", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
 	}
 
-	// Used internally by the search_web tool (WebSearchOpenrouter.SearchWebAsync). It runs on the dedicated
+	// Used internally by the internet_search tool (WebSearchOpenrouter.InternetSearchAsync). It runs on the dedicated
 	// OpenRouter web-search model configured under .beast settings (not a registry model), which retrieves
 	// live results through the OpenRouter web plugin and answers in the same turn. We make one bare call and
 	// return that answer verbatim — the model has already digested the pages, so there is no second pass. This

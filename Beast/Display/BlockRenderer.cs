@@ -765,7 +765,7 @@ internal static class BlockRenderer
 			case "ls":
 				set.Add("folder");
 				break;
-			case "search_web":
+			case "internet_search":
 				set.Add("query");
 				break;
 			case "fetch_url":
@@ -822,7 +822,7 @@ internal static class BlockRenderer
 			"read_file"                                                          => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
 			"write_file" or "edit_file" or "edit_file_replace" or "edit_file_insert" => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
 			"bash" or "readonly_bash"                                  => BuildRunCommandSummary(label, Get("command")),
-			"search_web"                                               => BuildPathSummary(label, Get("query"), respLineCount),
+			"internet_search"                                               => BuildPathSummary(label, Get("query"), respLineCount),
 			"fetch_url"                                               => BuildPathSummary(label, Get("url"), respLineCount),
 			"return_to_caller"                                         => BuildLineCountSummary(label, CountLines(Get("output"))),
 			"finish_review"                                            => BuildLineCountSummary(label, CountLines(Get("comments"))),
