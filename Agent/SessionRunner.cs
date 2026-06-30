@@ -927,13 +927,14 @@ turnScope.Token);
 	private Tool[] ToolsForTurn(Role role, bool workInProgress)
 	{
 		return ToolFactory.BuildForRole(
+			_settings.Settings,
 			role,
 			_registry,
 			_roleService,
 			this.CurrentSession,
 			_settings.Settings.WebSearch,
 			workInProgress,
-			(prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt),
+			(prompt, budget, workCt) => _subagent.RunSubagentAsync(_settings.Settings, "Developer", prompt, budget, workCt),
 			() => CurrentSession.BeginWork(),
 			() => CurrentSession.EndWork(),
 			null,   // no review_work at the root

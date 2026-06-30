@@ -173,7 +173,7 @@ public static class SessionService
 					friendlyName = GetRootFriendlyName();
 					// If the name is already taken by another session, add a suffix
 					if (manifest.Entries.ContainsKey(friendlyName) &&
-						manifest.Entries[friendlyName].SessionId != data.Id)
+					    manifest.Entries[friendlyName].SessionId != data.Id)
 					{
 						int suffix = 1;
 						while (manifest.Entries.ContainsKey($"{friendlyName}-{suffix}"))
@@ -572,7 +572,7 @@ public static class SessionService
 				continue;
 
 			bool isThisTree = string.Equals(fileSessionId, sessionId, StringComparison.Ordinal) ||
-							   fileSessionId.StartsWith(childPrefix, StringComparison.Ordinal);
+			                   fileSessionId.StartsWith(childPrefix, StringComparison.Ordinal);
 
 			if (isThisTree)
 			{
