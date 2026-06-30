@@ -51,17 +51,17 @@ public class SubagentRunner
 	// the caller's outputBudgetTokens. Returns ok=false with the error text as the result when the role is
 	// unknown/ineligible, no model is available, there is no budget, the role's enter/exit hook fails, or
 	// the subagent never returned a result; the calling handler surfaces that text to the caller.
-	public Task<(bool ok, string text, int responseTokens)> RunSubagentAsync(string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
+	public Task<(bool ok, string text, int responseTokens)> RunSubagentAsync(BeastSettings settings, string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
 	{
 		// A top-level subagent (spawned by the root's subagent tool) is parented to the currently-running
 		// root session, read at call time since the active session changes across compaction/role switches.
-		return RunForParentAsync(_currentSession(), roleName, prompt, outputBudgetTokens, ct);
+		return RunForParentAsync(settings, _currentSession(), roleName, prompt, outputBudgetTokens, ct);
 	}
 
 	// Runs a subagent under an explicit parent session. The public entry point parents to the root; the
 	// Developer's review_work tool parents the Reviewer to the Developer's own sub-session so the session
 	// tree nests correctly.
-	private async Task<(bool ok, string text, int responseTokens)> RunForParentAsync(Session parent, string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
+	private async Task<(bool ok, string text, int responseTokens)> RunForParentAsync(BeastSettings settings, Session parent, string roleName, string prompt, int outputBudgetTokens, CancellationToken ct)
 	{
 		if (outputBudgetTokens <= 0)
 			return (false, "No output budget remaining for a subagent.", 0);
@@ -120,17 +120,8 @@ public class SubagentRunner
 		bool isDeveloper = role.Tools.Contains("task_complete");
 		string terminatorName = isReview ? "finish_review" : (isDeveloper ? "task_complete" : "return_to_caller");
 
-		Tool[] fullTools = ToolFactory.BuildForRole(
-			role,
-			_registry,
-			_roleService,
-			subSession,
-			_webSearchConfig,
-			false,  // subagents never enter a delegation loop
-			null,   // no assign_work for subagents
-			null,
-			null,
-			(reviewPrompt, budget, reviewCt) => RunForParentAsync(subSession, "Reviewer", reviewPrompt, budget, reviewCt),
+		Tool[] fullTools = ToolFactory.BuildForRole(settings, role, _registry, _roleService, subSession, _webSearchConfig, false, null, null,null,
+			(reviewPrompt, budget, reviewCt) => RunForParentAsync(settings, subSession, "Reviewer", reviewPrompt, budget, reviewCt),
 			isDeveloper ? (Action<string>)(output => { sink.Value = output; sink.Returned = true; }) : null,
 			isReview ? (Action<bool, string>)((approved, comments) => { sink.Value = comments; sink.Approved = approved; sink.Returned = true; }) : null,
 			(!isReview && !isDeveloper) ? (Action<string>)(output => { sink.Value = output; sink.Returned = true; }) : null);

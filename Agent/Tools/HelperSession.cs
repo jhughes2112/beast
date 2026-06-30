@@ -14,6 +14,7 @@ using System.Threading.Tasks;
 public static class HelperSession
 {
 	public static async Task<(bool ok, string output, int responseTokens)> RunAsync(
+		BeastSettings settings,
 		Session parent,
 		Role role,
 		LlmRegistry registry,
@@ -55,7 +56,7 @@ public static class HelperSession
 		// A list rather than a single variable so parallel return_to_caller calls are all captured;
 		// if the model calls it more than once in one turn the outputs are merged at the check below.
 		List<string> returnedOutputs = new List<string>();
-		Tool[] tools = ToolFactory.BuildForRole(role, null, null, session, null, false, null, null, null, null, null, null, output => returnedOutputs.Add(output));
+		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, null, false, null, null, null, null, null, null, output => returnedOutputs.Add(output));
 
 		int tokens = 0;
 		string lastAssistantText = string.Empty;

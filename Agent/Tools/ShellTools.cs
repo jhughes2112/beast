@@ -70,14 +70,7 @@ public static class ShellTools
 		return new ToolResult(toolCallId, sb.ToString(), result.StdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
 
-	[Description("""
-		Standard bash command. CWD is /workspace/
-		""")]
-	public static Task<ToolResult> BashAsync(
-		string toolcallid,
-		[Description("Shell command to execute")] string command,
-		[Description("Timeout in seconds (default 120).")] int? timeoutSeconds,
-		CancellationToken cancellationToken)
+	public static Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
 		return RunBashAsync(toolcallid, command, timeoutSeconds, false, cancellationToken);
 	}
@@ -88,21 +81,12 @@ public static class ShellTools
 	// outside that directory is unreachable, so the command universe is exactly the allowlist. This is a
 	// guardrail for a cooperative (or worst case, prompt-poisoned) agent, not a hardened sandbox against a
 	// determined human attacker.
-	public static Task<ToolResult> ReadonlyBashAsync(
-		string toolcallid,
-		string command,
-		int? timeoutSeconds,
-		CancellationToken cancellationToken)
+	public static Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
 		return RunBashAsync(toolcallid, command, timeoutSeconds, true, cancellationToken);
 	}
 
-	private static async Task<ToolResult> RunBashAsync(
-		string toolcallid,
-		string command,
-		int? timeoutSeconds,
-		bool restricted,
-		CancellationToken cancellationToken)
+	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, CancellationToken cancellationToken)
 	{
 		ToolResult finalResult;
 
@@ -291,6 +275,6 @@ public static class ShellTools
 
 		names.Sort(StringComparer.Ordinal);
 		string list = names.Count > 0 ? string.Join(" ", names) : "(none found)";
-		return $"[readonly_bash: restricted, read-only shell. Output redirection (>, >>), cd, and running a program by path are disabled, and only these commands are on PATH — there are no others, so don't probe: {list}]";
+		return $"[readonly_bash: restricted, read-only shell. No redirection, cd, or running programs with full paths allowed. These are the only commands allowed: {list}]";
 	}
 }

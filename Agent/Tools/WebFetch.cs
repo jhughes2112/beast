@@ -30,6 +30,7 @@ public class WebFetch
 	// return_to_caller. Cost rolls up into the calling session. Everything is contained here.
 	// webFetchRole and webFetchService are pre-resolved by BuildForRole; registry is still passed for runtime fallback.
 	public async Task<ToolResult> FetchRawAsync(
+		BeastSettings settings,
 		string toolCallId,
 		string url,
 		string objective,
@@ -84,7 +85,7 @@ public class WebFetch
 				}
 			}
 
-			(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, webFetchRole, registry, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
+			(bool ok, string answer, int tokens) = await HelperSession.RunAsync(settings, parent, webFetchRole, registry, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
 			if (!ok)
 			{
 				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

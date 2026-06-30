@@ -83,7 +83,7 @@ public static class PerModelLlmTests
 
 			using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 			using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-			Tool[] tools = ToolFactory.BuildForRole(role, null, null, null, null, false, null, null, null, null, null, null, null);
+			Tool[] tools = ToolFactory.BuildForRole(settings.Settings, role, null, null, null, null, false, null, null, null, null, null, null, null);
 
 			session.UpdateModel(service.Model);
 			CancellationToken turnToken = session.BeginTurn();

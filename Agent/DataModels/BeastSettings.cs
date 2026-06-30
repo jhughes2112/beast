@@ -12,6 +12,9 @@ public class BeastSettings
 	[JsonPropertyName("providers")]
 	public List<ProviderConfig> Providers { get; set; } = new();
 
+	[JsonPropertyName("tools")]
+	public Dictionary<string, ToolConfig> Tools { get; set; } = new();
+
 	[JsonPropertyName("webSearch")]
 	public WebSearchConfig? WebSearch { get; set; }
 
@@ -36,6 +39,15 @@ public class ProviderConfig
 
 	[JsonPropertyName("models")]
 	public List<ModelConfig> Models { get; set; } = new();
+}
+
+public class ToolConfig
+{
+	[JsonPropertyName("description")]
+	public string Description { get; set; } = string.Empty;
+
+	[JsonPropertyName("parameters")]
+	public Dictionary<string, string> Parameters { get; set; } = new();
 }
 
 public class ModelConfig

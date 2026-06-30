@@ -30,6 +30,7 @@ public class FileSummarizer
 	// the Explorer cite the parts relevant to the goal. A small file (or a failed read) is returned raw.
 	// explorerRole and explorerService are pre-resolved by BuildForRole; registry is still passed for runtime fallback.
 	public async Task<ToolResult> SummarizeAsync(
+		BeastSettings settings,
 		string toolCallId,
 		string filePath,
 		string offset,
@@ -61,7 +62,7 @@ public class FileSummarizer
 		if (fileBytes < SmallFileMaxBytes || CountLines(raw.StdOut) < SmallFileMaxLines)
 			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 
-		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, explorerRole, registry, transport, parent, maxOutputTokens, cancellationToken);
+		return await ExploreAsync(settings, toolCallId, filePath, raw.StdOut, goal, explorerRole, registry, transport, parent, maxOutputTokens, cancellationToken);
 	}
 
 	// Counts physical lines in already-read content; used only for the small-file threshold.
@@ -82,6 +83,7 @@ public class FileSummarizer
 	// Interprets the line-numbered window with the Explorer role, which returns its citations (file, line,
 	// line count) via return_to_caller. Cost rolls up into the calling session.
 	private async Task<ToolResult> ExploreAsync(
+		BeastSettings settings,
 		string toolCallId,
 		string filePath,
 		string content,
@@ -95,7 +97,7 @@ public class FileSummarizer
 	{
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(parent, explorerRole, registry, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
+		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(settings, parent, explorerRole, registry, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
 		if (!ok)
 		{
 			string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

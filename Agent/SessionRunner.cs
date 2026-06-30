@@ -865,14 +865,8 @@ turnScope.Token);
 	// are closures over this runner so they capture the current session at call time (not construction time).
 	private Tool[] ToolsForTurn(Role role, bool workInProgress)
 	{
-		return ToolFactory.BuildForRole(
-			role,
-			_registry,
-			_roleService,
-			this.CurrentSession,
-			_settings.Settings.WebSearch,
-			workInProgress,
-			(prompt, budget, workCt) => _subagent.RunSubagentAsync("Developer", prompt, budget, workCt),
+		return ToolFactory.BuildForRole(_settings.Settings, role, _registry, _roleService, CurrentSession, _settings.Settings.WebSearch, workInProgress,
+			(prompt, budget, workCt) => _subagent.RunSubagentAsync(_settings.Settings, "Developer", prompt, budget, workCt),
 			() => CurrentSession.BeginWork(),
 			() => CurrentSession.EndWork(),
 			null,   // no review_work at the root
@@ -899,5 +893,4 @@ turnScope.Token);
 	{
 		return Math.Min((int)(session.ContextWindow * 0.1), 7500);
 	}
-
-	}
+}
