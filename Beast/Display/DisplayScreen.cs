@@ -540,7 +540,37 @@ public class DisplayScreen : IDisplay
 		RecomputeCompletions();
 		int popupRows = _completionActive ? Math.Min(CompletionPopupMaxRows, _completionMatches.Count) : 0;
 		int popupTop  = separatorRow - popupRows;
-		int historyH  = popupTop;
+
+		// Calculate how many rows the pending ghost needs, so we can reserve dedicated layout space.
+		int ghostRows = 0;
+		lock (_consoleLock)
+		{
+			if (_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued) && queued.Count > 0)
+			{
+				const string marker = "⧗ ";
+				int textWidth = Math.Max(1, historyW - marker.Length);
+				List<string> wrapped = new List<string>();
+				bool first = true;
+				foreach (string entry in queued)
+				{
+					foreach (string raw in entry.Split('\n'))
+					{
+						string remaining = raw;
+						do
+						{
+							string slice = remaining.Length > textWidth ? remaining.Substring(0, textWidth) : remaining;
+							wrapped.Add((first ? marker : "  ") + slice);
+							first = false;
+							remaining = remaining.Length > textWidth ? remaining.Substring(textWidth) : string.Empty;
+						}
+						while (remaining.Length > 0);
+					}
+				}
+				ghostRows = Math.Min(MaxGhostRows, wrapped.Count);
+			}
+		}
+
+		int historyH = Math.Max(0, popupTop - ghostRows);
 
 		// 1. Lay out one BlockLayer per visible message. Only placements (top/height) are computed here;
 		// no full-history Screen is built. SpacerRows=1 gives every block one row of breathing room beneath
@@ -654,9 +684,13 @@ public class DisplayScreen : IDisplay
 			frame.Blit(popupScreen, 0, popupTop, BlendMode.Normal, null);
 		}
 
-		// Pending-input ghost: a dim floating strip just above the separator (or above the popup when
-		// it is open) showing steering text already sent but not yet consumed by the agent.
-		RenderPendingGhost(frame, w, (popupRows > 0 ? popupTop : separatorRow) - 1);
+		// Pending-input ghost: a dim strip sitting at the bottom of the history area (between
+		// history and the popup/separator), showing steering text already sent but not yet
+		// consumed by the agent. Renders in the reserved ghostRows space.
+		if (ghostRows > 0)
+		{
+			RenderPendingGhost(frame, w, historyW, historyH, ghostRows);
+		}
 
 		// Status bar layer.
 		if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
@@ -956,14 +990,15 @@ public class DisplayScreen : IDisplay
 		return pick.Substring(_currentInputText.Length);
 	}
 
-	private const int MaxGhostRows = 6;
+	private const int MaxGhostRows = 5;
 
-	// Renders the pending-input ghost as a dim, full-width strip whose last row sits at bottomRow.
-	// Submissions are flattened and wrapped to width; when they exceed MaxGhostRows only the most
-	// recent rows are shown so the strip never crowds out the conversation.
-	private void RenderPendingGhost(Screen frame, int w, int bottomRow)
+	// Renders the pending-input ghost as a dim, full-width strip in the reserved ghostRows space.
+	// The ghost occupies rows [ghostTop, ghostTop + ghostRows - 1], where ghostTop is the first row
+	// below the history view. Submissions are flattened and wrapped to the history width; when they
+	// exceed MaxGhostRows only the most recent rows are shown.
+	private void RenderPendingGhost(Screen frame, int w, int historyW, int ghostTop, int ghostRows)
 	{
-		if (bottomRow < 0 || w <= 0)
+		if (ghostTop < 0 || w <= 0 || historyW <= 0 || ghostRows <= 0)
 			return;
 
 		List<string> entries;
@@ -976,7 +1011,8 @@ public class DisplayScreen : IDisplay
 
 		const string marker = "⧗ ";
 		const string indent = "  ";
-		int textWidth = Math.Max(1, w - marker.Length);
+		// Use historyW (the history area width) for wrapping so the reserved rows match.
+		int textWidth = Math.Max(1, historyW - marker.Length);
 
 		// Flatten every submission to raw lines, then hard-wrap each to the available width. The very
 		// first row carries the queued marker; all others are indented to align beneath it.
@@ -1001,22 +1037,13 @@ public class DisplayScreen : IDisplay
 		if (wrapped.Count == 0)
 			return;
 
-		// Keep the most recent rows when the queue is taller than the cap, and clamp to the top of screen.
-		int show = Math.Min(MaxGhostRows, wrapped.Count);
+		// Keep the most recent rows when the queue is taller than the cap.
+		int show = Math.Min(ghostRows, wrapped.Count);
 		int firstIndex = wrapped.Count - show;
-		int topRow = bottomRow - show + 1;
-		if (topRow < 0)
-		{
-			firstIndex += -topRow;
-			show += topRow;
-			topRow = 0;
-		}
-		if (show <= 0)
-			return;
 
 		for (int i = 0; i < show; i++)
 		{
-			int row = topRow + i;
+			int row = ghostTop + i;
 			string line = wrapped[firstIndex + i];
 			// Full-width strip so it reads as a floating object over the history beneath it.
 			frame.WriteText(0, row, line.PadRight(w), Palette.GhostFg, Palette.InputBg, CellStyle.None);
@@ -1414,20 +1441,16 @@ public class DisplayScreen : IDisplay
 				{
 					if (history.Count == 0 || history[history.Count - 1] != text)
 						history.Add(text);
-					// Ghost only plain steering text; slash commands apply quickly and surface via status,
-					// and never echo back as a User frame that would clear the ghost. Keyed by the session
-					// being viewed — which is exactly the session the text is sent to.
-					if (!text.StartsWith("/", StringComparison.Ordinal))
+					// Ghost all submitted text (including slash commands) so the user sees what was sent.
+					// Keyed by the session being viewed — which is exactly the session the text is sent to.
+					lock (_consoleLock)
 					{
-						lock (_consoleLock)
+						if (!_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued))
 						{
-							if (!_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued))
-							{
-								queued = new List<string>();
-								_pendingGhost[_sessionActiveId] = queued;
-							}
-							queued.Add(text);
+							queued = new List<string>();
+							_pendingGhost[_sessionActiveId] = queued;
 						}
+						queued.Add(text);
 					}
 					_ = SendAsync(text);
 				}

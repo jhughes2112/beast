@@ -668,8 +668,7 @@ turnScope.Token);
 
 		// Compaction starts a clean-slate session (no history) seeded with the summary plus the last
 		// couple of exchanges — not a copy of the prior conversation.
-		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m,
-0, 0, 0, _currentSession.Ephemeral);
+		BeastSession freshData = new BeastSession(newSessionId, newDisplayName, _currentSession.Model, _currentSession.Role, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _currentSession.Ephemeral);
 
 		Session newSession = new Session(freshData, role.SystemPrompt, _transport, false);
 

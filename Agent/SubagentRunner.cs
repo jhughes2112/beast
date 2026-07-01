@@ -115,8 +115,8 @@ parent.Ephemeral);
 		// role's marker: a Reviewer (finish_review) carries an approval flag; a Developer (task_complete)
 		// finishes with task_complete; every other subagent finishes with return_to_caller. Helper sessions
 		// (Explorer/WebFetch) spawned by find_relevant_file_sections or fetch_url are parented to this
-		// sub-session so their cost and history nest correctly. The sub-session is fixed for its lifetime
-		// (no compaction/role switch), so capturing it directly in the closures below is safe.
+		// sub-session so their cost and history nest correctly. The sub-session can compact as context grows,
+		// so the loop swaps in a fresh child session when needed while keeping the parent/child nesting intact.
 		ReturnSink sink = new ReturnSink();
 		bool isReview = role.Tools.Contains("finish_review");
 		bool isDeveloper = role.Tools.Contains("task_complete");
@@ -167,6 +167,8 @@ parent.Ephemeral);
 
 			for (int turn = 1; turn <= kMaxTurns; turn++)
 			{
+				service = DrainSubSessionInput(subSession, service);
+
 				// In the wind-down phase the terminator is the only tool and is requested, and the output
 				// is hard-capped to the budget since the work is over and only the final result is wanted.
 				bool windDown = turn > kMaxWorkTurns;
@@ -176,6 +178,18 @@ parent.Ephemeral);
 				int outputCap = windDown ? outputBudgetTokens : 0;
 
 				ProtocolResult result = await service.RunToCompletionAsync(subSession, turnTools, forcedToolName, 0, outputCap, _transport, scope.Token);
+
+				if (result.Outcome == ProtocolCallOutcome.ContextFull)
+				{
+					(bool compacted, LlmService? compactedService) = await CompactSubSessionAsync(parent, subSession, role, scope, ct);
+					if (!compacted)
+					{
+						lastFailure = "the context window filled and compaction failed";
+						break;
+					}
+					service = compactedService!;
+					continue;
+				}
 
 				// A /cancel that tripped this scope (Interrupted is how the LLM call reports it). If it cascaded
 				// from an ancestor (ct is down too) the whole subtree ends; otherwise it targeted this subagent
@@ -350,6 +364,52 @@ parent.Ephemeral);
 				SessionService.Save(subSession.Data);
 			subSession.SendIdle();
 		}
+	}
+
+	// Compacts the current sub-session into a fresh child session carrying the role's summary and a compacted
+	// view of the conversation. Returns true and the new service when compaction succeeds.
+	private async Task<(bool ok, LlmService? service)> CompactSubSessionAsync(Session parent, Session current, Role role, CancellationTokenSource scope, CancellationToken ct)
+	{
+		if (string.IsNullOrEmpty(role.SummaryPrompt))
+		{
+			_transport.Status(current.Id, "[Compaction] No summary prompt available.");
+			return (false, null);
+		}
+
+		_transport.Status(current.Id, "[Compaction] Started.");
+		string? summary = await Summarizer.SummarizeAsync(current, role.SummaryPrompt, Array.Empty<Tool>(), _registry, _roleService, _transport, ct);
+		if (string.IsNullOrWhiteSpace(summary))
+		{
+			_transport.Status(current.Id, "[Compaction] Failed.");
+			return (false, null);
+		}
+
+		current.SetDispatchScope(null);
+		current.SendIdle();
+
+		string childId = parent.AllocateChildId();
+		if (!parent.Ephemeral)
+			SessionService.Save(parent.Data);
+
+		LlmService? compactedService = _registry.CreateService(role, current.Model, 0);
+		if (compactedService == null)
+		{
+			_transport.Status(current.Id, "[Compaction] Failed to create a fresh model service.");
+			return (false, null);
+		}
+
+		string newDisplayName = Session.IncrementDisplayName(current.DisplayName);
+		BeastSession compactedData = new BeastSession(childId, newDisplayName, compactedService.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+		Session compacted = new Session(compactedData, role.SystemPrompt, _transport, true);
+		compacted.UpdateModel(compactedService.Model);
+		compacted.SetDispatchScope(scope);
+		compacted.SendBusy();
+		compacted.Bundle.Canonical.OnUserMessage(summary);
+		compacted.AnnounceToClient();
+		compacted.ReplayToTransport();
+		parent.AddChild(compacted);
+		_transport.Status(current.Id, "[Compaction] Complete.");
+		return (true, compactedService);
 	}
 
 	// Parks a directly-cancelled subagent until the user sends steering input, then disposes the old scope and
