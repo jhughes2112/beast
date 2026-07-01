@@ -186,10 +186,11 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
 	}
 
-	// Tracer call: probe the provider with max_output_tokens=1 to get
-	// accurate input/cached token counts without generating a response. Used before the real
-	// call to decide whether compaction is needed.
-	public async Task<TracerResult> ExecuteTracerAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName,
+	// Token counting call: uses the protocol's dedicated token-counting endpoint (Anthropic /count_tokens,
+// OpenAI Responses /responses/input_tokens/count). For Chat Completions, falls back to the legacy
+	// tracer (max_completion_tokens=1) since there is no dedicated endpoint.
+	// Returns TracerResult with token counts or error status.
+	public async Task<TracerResult> CountTokensAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName,
 SessionLogger logger, CancellationToken cancellationToken)
 	{
 		(Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) = BuildExtras(_model.Extras, _model.Headers);
@@ -205,15 +206,25 @@ SessionLogger logger, CancellationToken cancellationToken)
 		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
 		if (_detected == DetectedProtocol.Anthropic)
-			return await EnsureProtocolAnthropic(canonical).ExecuteTracerAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+			return await EnsureProtocolAnthropic(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
 
 		if (_detected == DetectedProtocol.Responses)
-			return await EnsureProtocolResponses(canonical).ExecuteTracerAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+			return await EnsureProtocolResponses(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
 
 		if (_detected == DetectedProtocol.ChatCompletions)
-			return await EnsureProtocolChatCompletions(canonical).ExecuteTracerAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+			return await EnsureProtocolChatCompletions(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
 
 		return TracerResult.Failed($"Endpoint speaks no recognized protocol");
+	}
+
+	// Tracer call: probe the provider with max_output_tokens=1 to get
+	// accurate input/cached token counts without generating a response. Used before the real
+	// call to decide whether compaction is needed.
+	// Kept for backward compatibility; CountTokensAsync is the preferred method.
+	public async Task<TracerResult> ExecuteTracerAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName,
+SessionLogger logger, CancellationToken cancellationToken)
+	{
+		return await CountTokensAsync(bundle, tools, forcedToolName, logger, cancellationToken);
 	}
 
 	internal ProtocolChatCompletions EnsureProtocolChatCompletions(IReadOnlyList<CanonicalMessage> canonical)

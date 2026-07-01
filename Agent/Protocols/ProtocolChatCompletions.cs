@@ -998,4 +998,18 @@ httpResponse);
 			return TracerResult.Failed(ex.ToString());
 		}
 	}
+
+	// No dedicated token-counting endpoint for Chat Completions.
+	// Delegates to the existing ExecuteTracerAsync logic (max_completion_tokens=1).
+	public async Task<TracerResult> CountTokensAsync(
+		LlmModel model,
+		List<ToolDefinition> tools,
+		string? forcedToolName,
+		Dictionary<string, string> extraHeaders,
+		Dictionary<string, JsonNode?> extraPayload,
+		SessionLogger logger,
+		CancellationToken cancellationToken)
+	{
+		return await ExecuteTracerAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
+	}
 }

@@ -68,9 +68,10 @@ public class LlmService
 		_roleModelIds = roleModelIds;
 	}
 
-	// Tracer call: probe the provider with max_output_tokens=1 to get accurate input/cached token
-	// counts without generating a response. Returns TracerResult with token counts or error status.
-	// Used before the real call to decide whether compaction is needed.
+	// Tracer call: probe the provider with the dedicated token-counting endpoint (Anthropic /count_tokens,
+// OpenAI Responses /responses/input_tokens/count) to get accurate input/cached token counts
+// without generating a response. Falls back to max_output_tokens=1 for Chat Completions.
+// Returns TracerResult with token counts or error status. Used before the real call to decide whether compaction is needed.
 	public async Task<TracerResult> RunTracerAsync(Session conversation, Tool[] tools, string? forcedToolName, CancellationToken cancellationToken)
 	{
 		if (_availability.IsDown)
@@ -82,7 +83,7 @@ public class LlmService
 			toolDefs.Add(tools[i].Definition);
 		}
 
-		return await _handler.ExecuteTracerAsync(conversation.Bundle, toolDefs, forcedToolName, conversation.QueryLog, cancellationToken);
+		return await _handler.CountTokensAsync(conversation.Bundle, toolDefs, forcedToolName, conversation.QueryLog, cancellationToken);
 	}
 
 	// forcedToolName (null = free choice) requires the model to call that exact tool this turn.

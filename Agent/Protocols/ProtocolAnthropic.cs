@@ -573,8 +573,222 @@ public class ProtocolAnthropic
 		return result;
 	}
 
+	// Token counting call: uses Anthropic's dedicated /count_tokens endpoint (side-effect-free).
+	// Falls back to the legacy tracer (max_tokens=1) if the count endpoint is unavailable (e.g. OpenRouter).
+	public async Task<TracerResult> CountTokensAsync(
+		LlmModel model,
+		List<ToolDefinition> tools,
+		string? forcedToolName,
+		Dictionary<string, string> extraHeaders,
+		Dictionary<string, JsonNode?> extraPayload,
+		SessionLogger logger,
+		CancellationToken cancellationToken)
+	{
+		// Build the count endpoint URL: model.Endpoint ends with /messages, count endpoint is /messages/count_tokens
+		string countEndpoint = model.Endpoint;
+		if (countEndpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
+		{
+			countEndpoint += "/count_tokens";
+		}
+		else
+		{
+			// Fallback if the endpoint doesn't follow the expected pattern
+			countEndpoint = model.Endpoint.TrimEnd('/') + "/count_tokens";
+		}
+
+		JsonObject body = BuildCountBody(model, tools, forcedToolName, extraPayload);
+		logger.Write(model.Config.Name, countEndpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+		string requestJson = body.ToJsonString();
+
+		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, countEndpoint);
+		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+		req.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
+		req.Headers.TryAddWithoutValidation("anthropic-dangerous-direct-browser-connect", "true");
+
+		foreach ((string name, string value) in extraHeaders)
+		{
+			req.Headers.TryAddWithoutValidation(name, value);
+		}
+
+		HttpResponseMessage httpResponse;
+		string responseBody;
+		try
+		{
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+			responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+		}
+		catch (OperationCanceledException)
+		{
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			if (timeout != null)
+				return TracerResult.Failed(timeout.ErrorMessage);
+			throw;
+		}
+		catch (HttpRequestException ex)
+		{
+			return TracerResult.Failed(ex.ToString());
+		}
+		catch (Exception ex)
+		{
+			return TracerResult.Failed(ex.ToString());
+		}
+
+		int statusCode = (int)httpResponse.StatusCode;
+
+		if (httpResponse.IsSuccessStatusCode)
+		{
+			JsonNode? root = JsonNode.Parse(responseBody);
+			if (root == null)
+				return TracerResult.Failed("Empty response from count_tokens API");
+
+			int inputTokens = root["input_tokens"]?.GetValue<int>() ?? 0;
+			return TracerResult.Success(inputTokens, 0);
+		}
+
+		// Count endpoint unavailable (404) or other 4xx — fall back to legacy tracer
+		if (statusCode >= 400 && statusCode < 500)
+		{
+			return await ExecuteTracerAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
+		}
+
+		if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
+		{
+			return TracerResult.Failed($"Rate limited: {responseBody}");
+		}
+
+		return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
+	}
+
+	// Builds the request body for the /count_tokens endpoint.
+	// Mirrors /messages body but WITHOUT max_tokens, stream, or thinking.
+	private JsonObject BuildCountBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, Dictionary<string, JsonNode?> extraPayload)
+	{
+		JsonObject body = new JsonObject();
+		body["model"] = model.Config.Id;
+
+		// Build messages array from native state
+		JsonArray messages = new JsonArray();
+		foreach (Message msg in _native)
+		{
+			foreach (ContentBase content in msg.Content)
+			{
+				JsonObject msgObj = new JsonObject();
+				if (msg.Role == RoleType.User)
+					msgObj["role"] = "user";
+				else
+					msgObj["role"] = "assistant";
+
+				JsonArray contentArr = new JsonArray();
+				if (content is TextContent tc)
+				{
+					JsonObject textObj = new JsonObject();
+					textObj["type"] = "text";
+					textObj["text"] = tc.Text;
+					contentArr.Add(textObj);
+				}
+				else if (content is ToolUseContent tuc)
+				{
+					JsonObject toolObj = new JsonObject();
+					toolObj["type"] = "tool_use";
+					toolObj["id"] = tuc.Id;
+					toolObj["name"] = tuc.Name;
+					if (tuc.Input != null)
+						toolObj["input"] = tuc.Input;
+					contentArr.Add(toolObj);
+				}
+				else if (content is ToolResultContent trc)
+				{
+					JsonObject toolResultObj = new JsonObject();
+					toolResultObj["type"] = "tool_result";
+					toolResultObj["tool_use_id"] = trc.ToolUseId;
+					JsonArray innerContent = new JsonArray();
+					foreach (ContentBase inner in trc.Content)
+					{
+						if (inner is TextContent itc)
+						{
+							JsonObject innerText = new JsonObject();
+							innerText["type"] = "text";
+							innerText["text"] = itc.Text;
+							innerContent.Add(innerText);
+						}
+					}
+					toolResultObj["content"] = innerContent;
+					contentArr.Add(toolResultObj);
+				}
+
+				msgObj["content"] = contentArr;
+
+				// Merge consecutive same-role content into single message
+				if (messages.Count > 0)
+				{
+					JsonNode? last = messages[messages.Count - 1];
+					string? lastRole = last?["role"]?.GetValue<string>();
+					string thisRole = msg.Role == RoleType.User ? "user" : "assistant";
+					if (lastRole == thisRole)
+					{
+						// Merge content arrays
+						JsonArray lastContent = last!["content"]!.AsArray()!;
+						foreach (JsonNode? cn in contentArr)
+							lastContent.Add(cn);
+						continue;
+					}
+				}
+				messages.Add(msgObj);
+			}
+		}
+		body["messages"] = messages;
+
+		if (!string.IsNullOrEmpty(_system))
+		{
+			body["system"] = _system;
+		}
+
+		if (tools.Count > 0)
+		{
+			JsonArray toolsArr = new JsonArray();
+			foreach (ToolDefinition td in tools)
+			{
+				JsonObject t = new JsonObject();
+				t["name"] = td.Function.Name;
+				if (!string.IsNullOrEmpty(td.Function.Description))
+					t["description"] = td.Function.Description;
+				if (td.Function.Parameters != null)
+					t["input_schema"] = td.Function.Parameters.DeepClone();
+				toolsArr.Add(t);
+			}
+			body["tools"] = toolsArr;
+
+			if (forcedToolName == ProtocolProxy.AnyTool)
+			{
+				JsonObject tc = new JsonObject();
+				tc["type"] = "any";
+				body["tool_choice"] = tc;
+			}
+			else if (!string.IsNullOrEmpty(forcedToolName))
+			{
+				JsonObject tc = new JsonObject();
+				tc["type"] = "tool";
+				tc["name"] = forcedToolName;
+				body["tool_choice"] = tc;
+			}
+		}
+
+		// Merge extra payload (but skip thinking/thinking, max_tokens, stream which are not for count_tokens)
+		foreach ((string name, JsonNode? value) in extraPayload)
+		{
+			if (name == "thinking" || name == "max_tokens" || name == "stream")
+				continue;
+			body[name] = value?.DeepClone();
+		}
+
+		return body;
+	}
+
 	// Tracer call: sends the same request with max_tokens=1 (minimum positive value Anthropic accepts)
 	// to get accurate input token counts without generating a meaningful response.
+	// Kept as fallback for providers that don't support /count_tokens (e.g., OpenRouter).
 	public async Task<TracerResult> ExecuteTracerAsync(
 		LlmModel model,
 		List<ToolDefinition> tools,

@@ -661,8 +661,161 @@ public class ProtocolResponses
 		return (usage, cost);
 	}
 
+	// Token counting call: uses OpenAI's dedicated /responses/input_tokens/count endpoint (side-effect-free).
+	// Falls back to the legacy tracer (max_output_tokens=1) if the count endpoint is unavailable.
+	public async Task<TracerResult> CountTokensAsync(
+		LlmModel model,
+		List<ToolDefinition> tools,
+		string? forcedToolName,
+		Dictionary<string, string> extraHeaders,
+		Dictionary<string, JsonNode?> extraPayload,
+		SessionLogger logger,
+		CancellationToken cancellationToken)
+	{
+		// Build the count endpoint URL: model.Endpoint ends with /responses, count endpoint is /responses/input_tokens/count
+		string countEndpoint = model.Endpoint;
+		if (countEndpoint.EndsWith("/responses", StringComparison.OrdinalIgnoreCase))
+		{
+			countEndpoint += "/input_tokens/count";
+		}
+		else
+		{
+			// Fallback if the endpoint doesn't follow the expected pattern
+			countEndpoint = model.Endpoint.TrimEnd('/') + "/input_tokens/count";
+		}
+
+		JsonObject body = BuildCountBody(model, tools, forcedToolName, extraPayload);
+		logger.Write(model.Config.Name, countEndpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+		string requestJson = body.ToJsonString();
+
+		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, countEndpoint);
+		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+		foreach ((string name, string value) in extraHeaders)
+		{
+			req.Headers.TryAddWithoutValidation(name, value);
+		}
+
+		HttpResponseMessage httpResponse;
+		string responseBody;
+		try
+		{
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
+			responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+		}
+		catch (OperationCanceledException)
+		{
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			if (timeout != null)
+				return TracerResult.Failed(timeout.ErrorMessage);
+			throw;
+		}
+		catch (HttpRequestException ex)
+		{
+			return TracerResult.Failed(ex.ToString());
+		}
+		catch (Exception ex)
+		{
+			return TracerResult.Failed(ex.ToString());
+		}
+
+		int statusCode = (int)httpResponse.StatusCode;
+
+		if (httpResponse.IsSuccessStatusCode)
+		{
+			JsonNode? root = JsonNode.Parse(responseBody);
+			if (root == null)
+				return TracerResult.Failed("Empty response from count endpoint");
+
+			int inputTokens = root["input_tokens"]?.GetValue<int>() ?? 0;
+			return TracerResult.Success(inputTokens, 0);
+		}
+
+		// Count endpoint unavailable (404) or other 4xx — fall back to legacy tracer
+		if (statusCode >= 400 && statusCode < 500)
+		{
+			return await ExecuteTracerAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
+		}
+
+		if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
+		{
+			return TracerResult.Failed($"Rate limited: {responseBody}");
+		}
+
+		return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
+	}
+
+	// Builds the request body for the /responses/input_tokens/count endpoint.
+	// Mirrors BuildBody but WITHOUT stream, max_output_tokens, tool_choice, or previous_response_id.
+	private JsonObject BuildCountBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, Dictionary<string, JsonNode?> extraPayload)
+	{
+		JsonObject body = new JsonObject();
+		body["model"] = model.Config.Id;
+
+		// Build input array from rehydrated or delta state (no previous_response_id chaining for count)
+		JsonArray input = new JsonArray();
+		if (_rehydratedInput != null)
+		{
+			foreach (JsonNode? item in _rehydratedInput)
+			{
+				input.Add(item!.DeepClone());
+			}
+		}
+		else
+		{
+			foreach (JsonNode? item in _deltaInput)
+			{
+				input.Add(item!.DeepClone());
+			}
+		}
+		body["input"] = input;
+
+		if (tools.Count > 0)
+		{
+			JsonArray toolsArr = new JsonArray();
+			JsonObject twebsearch = new JsonObject();
+			twebsearch["type"] = "web_search";
+			toolsArr.Add(twebsearch);
+
+			foreach (ToolDefinition td in tools)
+			{
+				JsonObject t = new JsonObject();
+				t["type"] = "function";
+				t["name"] = td.Function.Name;
+				if (!string.IsNullOrEmpty(td.Function.Description))
+					t["description"] = td.Function.Description;
+				if (td.Function.Parameters != null)
+					t["parameters"] = td.Function.Parameters.DeepClone();
+				toolsArr.Add(t);
+			}
+			body["tools"] = toolsArr;
+			// tool_choice is intentionally omitted for count endpoint
+		}
+
+		// Translate the friendly reasoningEffort word into the Responses-native reasoning.effort object.
+		string? effort = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort);
+		if (effort != null)
+		{
+			JsonObject reasoning = new JsonObject();
+			reasoning["effort"] = effort;
+			body["reasoning"] = reasoning;
+		}
+
+		// Merge extra payload (skip stream, max_output_tokens, tool_choice, previous_response_id)
+		foreach ((string name, JsonNode? value) in extraPayload)
+		{
+			if (name == "stream" || name == "max_output_tokens" || name == "tool_choice" || name == "previous_response_id")
+				continue;
+			body[name] = value?.DeepClone();
+		}
+
+		return body;
+	}
+
 	// Tracer call: sends the same request with max_output_tokens=1 to get accurate token counts
 	// without generating a meaningful response.
+	// Kept as fallback for providers that don't support /responses/input_tokens/count.
 	public async Task<TracerResult> ExecuteTracerAsync(
 		LlmModel model,
 		List<ToolDefinition> tools,
