@@ -94,8 +94,10 @@ public class SubagentRunner
 		if (!parent.Ephemeral)
 			SessionService.Save(parent.Data);
 
-		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, 
+parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
+		subSession.UpdateModel(service.Model);
 
 		// The constructor no longer displays the system prompt; this sub-session has no other replay path,
 		// so emit its (system-only) history to the client now. The seed user message displays when flushed.
@@ -201,6 +203,7 @@ public class SubagentRunner
 					if (fallback != null)
 					{
 						service = fallback;
+						subSession.UpdateModel(fallback.Model);
 						string reason = result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed";
 						_transport.Status(subSession.Id, $"{reason}; falling back to {service.Model.Config.Name}");
 						continue;
@@ -431,6 +434,7 @@ public class SubagentRunner
 							else
 							{
 								service = newService;
+								subSession.UpdateModel(newService.Model);
 								_transport.Status(subSession.Id, $"Model set to {modelArg}");
 								subSession.SendStats();
 							}

@@ -41,8 +41,10 @@ public static class HelperSession
 			return (false, errmsg, 0);
 		}
 
-		BeastSession data = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+		BeastSession data = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, 
+parent.Ephemeral);
 		Session session = new Session(data, role.SystemPrompt, transport, true);
+		session.UpdateModel(service.Model);
 
 		// The constructor no longer displays the system prompt; a helper session has no other replay path,
 		// so emit its (system-only) history now. The seed user message displays when flushed during the run.
@@ -103,6 +105,7 @@ public static class HelperSession
 					if (fallback != null)
 					{
 						service = fallback;
+						session.UpdateModel(fallback.Model);
 						transport.Status(session.Id, $"Rate limited; falling back to {service.Model.Config.Name}");
 						turn--;
 						continue;

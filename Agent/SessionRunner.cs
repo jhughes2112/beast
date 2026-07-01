@@ -962,16 +962,20 @@ turnScope.Token);
 	}
 
 	// Replaces _service when the model or role has changed, or when the service has permanently
-	// failed. Also updates session.Model if the registry selected a different model as fallback.
-	private LlmService? RefreshService(Role? role, Session session)
-	{
-		if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model && session == _currentSession)
-			return null;
+// failed. Also updates session.Model if the registry selected a different model as fallback.
+private LlmService? RefreshService(Role? role, Session session)
+{
+	if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model && session == _currentSession)
+		return null;
 
-		int minCtx = session.ContextLength + GetCompactionReserve(session);
-		LlmService? newService = _registry.CreateService(role, session.Model, minCtx);
-		return newService;
+	int minCtx = session.ContextLength + GetCompactionReserve(session);
+	LlmService? newService = _registry.CreateService(role, session.Model, minCtx);
+	if (newService != null)
+	{
+		session.UpdateModel(newService.Model);
 	}
+	return newService;
+}
 
 	// Returns the number of tokens to reserve for compaction: 10% of the current model's context
 	// window, capped at 7500. This ensures there is always enough room for a response regardless of model size.
