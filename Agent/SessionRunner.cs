@@ -833,17 +833,32 @@ turnScope.Token);
 						Role? modelRole = _roleService.GetRole(session.Role);
 						LlmModel? targetModel = modelRole != null ? _registry.GetModelForRole(modelRole, modelArg, 0) : null;
 						if (targetModel == null)
+						{
 							_transport.Error(session.Id, $"Unknown model: {modelArg}");
+						}
 						else
 						{
-							session.UpdateModel(targetModel);
-							session.MarkModelUserSelected(modelArg);
-							_registry.ResetAvailability(modelArg);
-							_service = null;  // force fresh service with new model next turn
-							_transport.Status(session.Id, $"Model set to {modelArg}");
-							// Reflect the new model on the client status line immediately rather than
-							// waiting for the next turn's Stats frame.
-							session.SendStats();
+							// Verify the target model has enough context window for the current conversation
+							// plus the compaction reserve. Without this check, RefreshService will silently
+							// fall through PickModel to a different model (often the previous one) when
+							// minContextRequired exceeds the target model's window, creating a mismatch
+							// between what the client shows and what the service actually uses.
+							int minRequired = session.ContextLength + GetCompactionReserve(session);
+							if (targetModel.Config.ContextWindow <= minRequired)
+							{
+								_transport.Error(session.Id, $"Model '{modelArg}' context window ({targetModel.Config.ContextWindow}) is too small for the current conversation ({minRequired} tokens needed).");
+							}
+							else
+							{
+								session.UpdateModel(targetModel);
+								session.MarkModelUserSelected(modelArg);
+								_registry.ResetAvailability(modelArg);
+								_service = null;  // force fresh service with new model next turn
+								_transport.Status(session.Id, $"Model set to {modelArg}");
+								// Reflect the new model on the client status line immediately rather than
+								// waiting for the next turn's Stats frame.
+								session.SendStats();
+							}
 						}
 					}
 					break;
