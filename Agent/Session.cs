@@ -219,6 +219,28 @@ public class Session
 	// Leaves the delegation loop. Called from the stop_work tool handler.
 	public void EndWork() => _workInProgress = false;
 
+	// ---- Reply obligation ----
+
+	// The terminator tool this session must call to answer the caller that spawned it; empty when
+	// no caller is waiting. Lives on the persisted data so it survives a save/load cycle and can
+	// be handed to a compaction successor.
+	public string TerminatorName => _data.TerminatorName;
+
+	// Token budget for the terminator reply. 0 = no limit.
+	public int OutputBudgetTokens => _data.OutputBudgetTokens;
+
+	// True while this session may still respond to its caller as a tool.
+	public bool OwesReply => !string.IsNullOrEmpty(_data.TerminatorName);
+
+	// Ends this session's ability to respond as a tool: called once the reply (or failure report)
+	// has been delivered, or when compaction hands the obligation to a successor. The session
+	// remains viable for conversation afterwards.
+	public void ClearReplyObligation()
+	{
+		_data.TerminatorName = string.Empty;
+		_data.OutputBudgetTokens = 0;
+	}
+
 	// ---- Mutation ----
 
 	// Sets the active model name. Call InvalidateProtocol() separately if the model switch
@@ -270,8 +292,8 @@ public class Session
 	private readonly object _costLock = new object();
 
 	// Commits cost into the session total. Called by LlmService immediately on success so cost is
-	// accurate before the caller commits the assistant turn, and by SubagentRunner to roll a
-	// completed sub-session's spend up into the calling agent.
+	// accurate before the caller commits the assistant turn, and by SessionHandler to roll a
+	// child session's spend up into the calling agent.
 	public void RecordCost(decimal cost)
 	{
 		lock (_costLock)
@@ -301,25 +323,8 @@ public class Session
 
 	public string? GetLastAssistantText() => _bundle.GetLastAssistantText();
 
-	// Drains and merges consecutive leading plain-text lines from the pending queue, stopping at the
-	// first queued slash command (left in place so the boundary drain applies it in arrival order).
-	// Returns the merged text, or null when the queue is empty or its head is a command. Called at each
-	// mid-turn checkpoint so steering text is injected the instant the in-flight tool round commits.
-	public string? TryDequeueLeadingText()
-	{
-		string accumulated = string.Empty;
-		while (_pending.TryPeek(out string? line))
-		{
-			if (line!.StartsWith("/", StringComparison.Ordinal))
-				break;
-			_pending.TryDequeue(out string? _);
-			accumulated = accumulated.Length == 0 ? line : accumulated + "\n" + line;
-		}
-		return accumulated.Length == 0 ? null : accumulated;
-	}
-
-	// True while any line remains queued. After TryDequeueLeadingText returns, a true here means the
-	// head is a slash command, so the caller ends the turn to let the boundary drain apply it.
+	// True while any line remains queued. The handler ends the turn cluster when this is set so the
+	// boundary drain applies the queued input in arrival order.
 	public bool HasPending => !_pending.IsEmpty;
 
 	// Dequeues the next pending line in arrival order (plain text or slash command), or returns false
@@ -508,7 +513,7 @@ public class Session
 
 	// Prepares for a new LLM turn: repairs dangling tool calls, flushes pending messages, and
 	// arms the per-turn CTS. Returns the turn-specific cancellation token; always pair with
-	// EndTurn. The dispatch loop polls TryDequeueLeadingText between tool rounds to pick up mid-turn input.
+	// EndTurn. The handler drains pending input between tool rounds to pick up mid-turn steering.
 	public CancellationToken BeginTurn()
 	{
 		// Repair before flushing so synthesized results land directly after their assistant
@@ -574,6 +579,8 @@ public class Session
 			_data.DisplayName,
 			_data.Model,
 			_data.Role,
+			_data.TerminatorName,
+			_data.OutputBudgetTokens,
 			forkedMessages,
 			_data.LastTokenUsage,
 			_data.TotalCost,

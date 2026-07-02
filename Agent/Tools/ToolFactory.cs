@@ -12,10 +12,14 @@ using System.Threading.Tasks;
 // Special tools (assign_work, stop_work, review_work, terminators) require their corresponding
 // callbacks to be non-null or they are silently omitted — the role declaring a tool name is
 // necessary but not sufficient; the caller must also supply the live callback.
+// All terminator tools share one callback shape: a success flag and an output string.
 public static class ToolFactory
 {
 	// The per-agent read_file window. Bounded so a single read cannot flood the context.
 	private const int ReadFileMaxLines = 500;
+
+	// Working-turn budget for the Developer/Reviewer subagents spawned by assign_work/review_work.
+	private const int SubagentMaxWorkTurns = 75;
 
 	public static Tool[] BuildForRole(
 		BeastSettings settings,
@@ -25,19 +29,16 @@ public static class ToolFactory
 		Session? session,
 		WebSearchConfig? webSearchConfig,
 		bool workInProgress,
-		Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>>? runDeveloper,
+		SpawnSubagent? spawnSubagent,
 		Action? onWorkAssigned,
 		Action? onStopWork,
-		Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>>? runReview,
-		Action<string>? onTaskComplete,
-		Action<bool, string>? onFinishReview,
-		Action<string>? onReturnToCaller)
+		Action<bool, string>? onTerminate)
 	{
 		List<Tool> tools = new List<Tool>();
 
 		// Resolve helper roles and check model availability upfront. A tool is omitted when its role is
 		// unconfigured or no model is available. GetModelForRole is a lightweight availability check —
-		// the actual LlmService is created inside HelperSession when the tool is called.
+		// the actual LlmService is created when the tool spawns its child session.
 		Role? explorerRole = roleService?.GetRole("Explorer");
 		bool explorerReady = explorerRole != null && registry?.GetModelForRole(explorerRole, string.Empty, 0) != null;
 		Role? webFetchRole = roleService?.GetRole("WebFetch");
@@ -132,7 +133,7 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && session != null)
+		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && spawnSubagent != null)
 		{
 			ToolConfig tc = settings.Tools["find_relevant_file_sections"];
 			FileSummarizer summarizer = new FileSummarizer();
@@ -156,13 +157,13 @@ public static class ToolFactory
 					string filePath = Str(args, "file_path");
 					string goal = Str(args, "goal");
 					string offset = Str(args, "offset");
-					// registry! is safe: explorerService being non-null implies registry was non-null at build time.
-					return await summarizer.SummarizeAsync(settings, toolCallId, filePath, offset, goal, explorerRole!, registry!, transport, session, maxOutputTokens, ct);
+					// explorerRole! is safe: explorerReady implies it was resolved at build time.
+					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, explorerRole!, spawnSubagent, maxOutputTokens, ct);
 				}
 			});
 		}
 
-		if (role.Tools.Contains("fetch_url") && webFetchReady && session != null)
+		if (role.Tools.Contains("fetch_url") && webFetchReady && spawnSubagent != null)
 		{
 			ToolConfig tc = settings.Tools["fetch_url"];
 			WebFetch webFetch = new WebFetch();
@@ -184,8 +185,8 @@ public static class ToolFactory
 				{
 					string url = Str(args, "url");
 					string goal = Str(args, "goal");
-					// registry! is safe: webFetchService being non-null implies registry was non-null at build time.
-					return await webFetch.FetchRawAsync(settings, toolCallId, url, goal, webFetchRole!, registry!, transport, session, maxOutputTokens, ct);
+					// webFetchRole! is safe: webFetchReady implies it was resolved at build time.
+					return await webFetch.FetchRawAsync(toolCallId, url, goal, webFetchRole!, spawnSubagent, maxOutputTokens, ct);
 				}
 			});
 		}
@@ -217,7 +218,7 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("assign_work") && runDeveloper != null && onWorkAssigned != null)
+		if (role.Tools.Contains("assign_work") && spawnSubagent != null && onWorkAssigned != null)
 		{
 			ToolConfig tc = settings.Tools["assign_work"];
 			tools.Add(new Tool
@@ -241,7 +242,7 @@ public static class ToolFactory
 
 					onWorkAssigned();
 
-					(bool ok, string text, int responseTokens) = await runDeveloper(prompt, maxOutputTokens, ct);
+					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, SubagentMaxWorkTurns, maxOutputTokens, ct);
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -277,7 +278,7 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("review_work") && runReview != null)
+		if (role.Tools.Contains("review_work") && spawnSubagent != null)
 		{
 			ToolConfig tc = settings.Tools["review_work"];
 			tools.Add(new Tool
@@ -299,7 +300,7 @@ public static class ToolFactory
 					if (string.IsNullOrWhiteSpace(prompt))
 						return new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0);
 
-					(bool ok, string text, int responseTokens) = await runReview(prompt, maxOutputTokens, ct);
+					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, SubagentMaxWorkTurns, maxOutputTokens, ct);
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -341,8 +342,9 @@ public static class ToolFactory
 		}
 
 		// Terminators are mutually exclusive; the role declares at most one. task_complete and finish_review are
-		// checked by name; return_to_caller is the fallback for any subagent that declares neither.
-		if (role.Tools.Contains("task_complete") && onTaskComplete != null)
+		// checked by name; return_to_caller is the fallback for any subagent that declares neither. Each maps
+		// its own parameter names onto the shared (success, output) callback.
+		if (role.Tools.Contains("task_complete") && onTerminate != null)
 		{
 			ToolConfig tc = settings.Tools["task_complete"];
 			tools.Add(new Tool
@@ -364,13 +366,13 @@ public static class ToolFactory
 					string results = Str(args, "results_of_review_work");
 					bool success = BoolOpt(args, "success") ?? true;
 					session!.SetTerminationStatus(success ? SessionStatus.Success : SessionStatus.Failure);
-					onTaskComplete(results);
+					onTerminate(success, results);
 					string ack = "Task marked complete.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
 			});
 		}
-		else if (role.Tools.Contains("finish_review") && onFinishReview != null)
+		else if (role.Tools.Contains("finish_review") && onTerminate != null)
 		{
 			ToolConfig tc = settings.Tools["finish_review"];
 			tools.Add(new Tool
@@ -395,13 +397,13 @@ public static class ToolFactory
 
 					string comments = Str(args, "comments");
 					session!.SetTerminationStatus(approved.Value ? SessionStatus.Success : SessionStatus.Failure);
-					onFinishReview(approved.Value, comments);
+					onTerminate(approved.Value, comments);
 					string ack = approved.Value ? "Review approved." : "Review rejected.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
 			});
 		}
-		else if (onReturnToCaller != null)
+		else if (onTerminate != null)
 		{
 			ToolConfig tc = settings.Tools["return_to_caller"];
 			tools.Add(new Tool
@@ -423,7 +425,7 @@ public static class ToolFactory
 					string output = Str(args, "output");
 					bool success = BoolOpt(args, "success") ?? true;
 					session!.SetTerminationStatus(success ? SessionStatus.Success : SessionStatus.Failure);
-					onReturnToCaller(output);
+					onTerminate(success, output);
 					string ack = "Returned to caller.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}

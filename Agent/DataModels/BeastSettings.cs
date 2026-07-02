@@ -132,7 +132,7 @@ public class OpenrouterSearchConfig
 	public string Model { get; set; } = "openai/gpt-4o-mini";
 
 	// Context window and per-response output ceiling for the search model. The search now runs through
-	// LlmService (see WebSearchOpenrouter/HelperSession), whose budget math needs a real window — a zero
+	// LlmService (see WebSearchOpenrouter), whose budget math needs a real window — a zero
 	// window reads as "context full" before the first turn. Defaults are sane for any hosted search model.
 	[JsonPropertyName("contextWindow")]
 	public int ContextWindow { get; set; } = 128000;

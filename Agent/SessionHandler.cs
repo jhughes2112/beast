@@ -4,353 +4,113 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Drives one session to completion. Root sessions run indefinitely until cancelled; child sessions
-// run until their terminator tool is called or their turn budget is exhausted. Behaviour is governed
-// by the Role (compaction via SummaryPrompt, nudges via EndOfTurnPrompt) and by SessionRunConfig
-// (structural differences: terminator, budget, turn cap, parent linkage).
+// Drives one session chain to completion. Every session runs the same loop; the differences are
+// configured, never discovered: the session itself carries its reply obligation (terminator tool
+// and output budget, persisted on BeastSession so it survives save/load), SessionRunConfig
+// declares the turn budget and parent linkage (root sessions declare none of them), the Role's
+// tool list declares which capabilities ToolFactory grants, and the Role's prompts drive
+// compaction and nudges.
 //
-// The active session may be replaced mid-run: root compaction returns a new session from RunAsync
-// and the orchestrator restarts on it; child compaction swaps _activeSession in-place so the same
-// handler continues on the compacted successor.
+// Sessions are never mutated in place. Compaction appends a fresh successor session to the chain
+// and the handler advances to it; the reply obligation is handed to the successor while the
+// predecessor keeps its full history — registered, saved, and replayable — as forensics. Once a
+// session answers its caller, its obligation is cleared: it remains viable for conversation but
+// can no longer reply as a tool.
 public class SessionHandler
 {
-	// May change when a child session compacts.
+	// Advances along the chain when the session compacts.
 	private Session _activeSession;
 	private LlmService? _service;
 	private string? _nextModel;
 	private bool _wantsCompact;
 
-	// Terminator sink written by the tool callbacks, read after each dispatch round.
+	// Terminator sink written by the tool callback, read after each dispatch round.
 	private string? _terminatorValue;
+	private bool _terminatorSucceeded;
 	private bool _terminatorCalled;
-	private bool _terminatorApproved;
+	private int _terminatorTokens;
+
+	// Failure reason recorded when the model could not complete and no fallback was available.
+	private string? _lastFailure;
+
+	// Cost already rolled up into the parent for the active session; RollUpCost records only the
+	// remainder, so the parent is billed exactly once however many times the rollup runs.
+	private decimal _costRecordedToParent;
 
 	// Last measured input token count, recorded by the tracer or after each successful turn.
 	// Used to compute whether the context window is full without a live model call.
 	private int _lastInputTokens;
 
-	// Guards NotifyChildComplete so it fires at most once (at the first terminator call or
-	// failure). The child loop continues running after notifying, so later inputs are handled.
-	private bool _notifiedComplete;
+	// Cancellation scope for the current turn cluster; replaced by ResetScope at each cluster
+	// start and after a steering resume. The session's /cancel handler cancels the installed scope.
+	private CancellationTokenSource _scope;
 
 	public SessionHandler(Session session)
 	{
 		_activeSession = session;
+		_scope = new CancellationTokenSource();
 	}
 
-	// Drives the session until it naturally ends. For root sessions this runs until cancelled or
-	// compaction; the returned Session may differ from the input (compacted successor). For child
-	// sessions this runs until the terminator tool fires, the turn budget is exhausted, or the
-	// parent cancels; the returned Session is always _activeSession.
-	public async Task<Session> RunAsync(SessionRunConfig config, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, WebSearchConfig? webSearchConfig, CancellationToken ct)
+	// Drives the session chain until it naturally ends: cancellation for a session without a turn
+	// budget, or budget exhaustion. Answering the caller does not end the run — the session stays
+	// alive after its reply so the user can keep interacting with it.
+	public async Task RunAsync(SessionRunConfig config, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, WebSearchConfig? webSearchConfig, CancellationToken ct)
 	{
-		bool isRoot = config.Parent == null;
-
-		_activeSession.ReplayToTransport();
+		// Only replay history that already existed before this handler started.
+		// Fresh child sessions have no committed messages yet (the seeded prompt is still
+		// pending in the queue) so replaying would produce an empty/duplicate stream.
+		// Resumed sessions (loaded from disk) need the full replay so the client sees them.
+		if (config.Parent == null || _activeSession.Data.Messages.Count > 1)
+			_activeSession.ReplayToTransport();
 		_activeSession.SendStats();
 		_activeSession.AnnounceToClient();
-
-		Role? role = roleService.GetRole(_activeSession.Role);
-		_service = RefreshService(role, _activeSession, registry);
-		_activeSession.UpdateCompletions(BuildCompletionCandidates(roleService, registry));
 
 		const int kMaxWindDownTurns = 5;
 		int maxWork = config.MaxWorkTurns > 0 ? config.MaxWorkTurns : int.MaxValue;
 		int maxTotal = config.MaxWorkTurns > 0 ? config.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
 		int turn = 0;
-		string? lastFailure = null;
-		int responseTokens = 0;
+		Role? role = null;
 
-		CancellationTokenSource scope = CancellationTokenSource.CreateLinkedTokenSource(ct);
-		_activeSession.SetDispatchScope(scope);
+		ResetScope(ct);
 
 		try
 		{
 			while (!ct.IsCancellationRequested && turn < maxTotal)
 			{
-				// 1. Drain pending commands and queued text.
+				// 1. Drain pending commands and queued text; refresh role, service, and completions.
 				DrainInput(roleService, registry, transport);
-
-				// 2. Refresh role and service; update completions.
 				role = roleService.GetRole(_activeSession.Role);
-				LlmService? refreshed = RefreshService(role, _activeSession, registry);
-				if (refreshed != null)
-					_service = refreshed;
+				RefreshService(role, registry);
 				_activeSession.UpdateCompletions(BuildCompletionCandidates(roleService, registry));
 
-				// 3. Compact if requested.
+				// 2. Compact when requested; the loop continues on the successor session.
 				if (_wantsCompact)
 				{
 					_wantsCompact = false;
-					if (isRoot)
-					{
-						Session? compacted = await CompactRootAsync(roleService, registry, transport, ct);
-						if (compacted != null)
-							return compacted;
-					}
-					else if (role != null && !string.IsNullOrEmpty(role.SummaryPrompt))
-					{
-						await CompactChildAsync(role, scope, config, registry, roleService, transport, orchestrator, ct);
-					}
+					await CompactAsync(role, config, registry, roleService, transport, orchestrator, ct);
 				}
 
-				// 4. Wait if there is nothing to do.
+				// 3. Wait if there is nothing to do.
 				if (!_activeSession.NeedsAttention() || _service == null || role == null)
 				{
 					await WaitForInputOrModelAsync(ct, role, registry, transport);
 					continue;
 				}
 
-				// 5. Run one turn cluster.
+				// 4. Run one turn cluster.
 				_activeSession.EnsureNamedAndAnnounce();
 				_activeSession.SendBusy();
+				ResetScope(ct);
 
-				bool contextFull = false;
-
-				scope.Dispose();
-				scope = CancellationTokenSource.CreateLinkedTokenSource(ct);
-				_activeSession.SetDispatchScope(scope);
-
-				bool windDown = turn >= maxWork;
+				// Wind-down only makes sense while the session still owes a reply to force out.
+				bool windDown = turn >= maxWork && _activeSession.OwesReply;
 				bool lastTurn = turn == maxTotal - 1;
-				Tool[] tools = isRoot
-					? BuildRootTools(role, _activeSession.WorkInProgress, settings.Settings, registry, roleService, webSearchConfig, orchestrator)
-					: BuildChildTools(role, windDown, config, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
-				string? forcedTool = windDown ? config.TerminatorName : null;
-				int outputCap = windDown ? config.OutputBudgetTokens : 0;
-
-				bool workToolsActive = _activeSession.WorkInProgress;
-
+				bool contextFull = false;
 				try
 				{
-					bool turnComplete = false;
-					while (!turnComplete)
-					{
-						// Reconcile service with any deferred /model switch before each LLM call.
-						if (_nextModel != null && (_service == null || _nextModel != _service.Model.ConfigId))
-						{
-							LlmModel? target = registry.GetModel(_nextModel);
-							if (target != null)
-							{
-								_activeSession.UpdateModel(target);
-								LlmService? switched = RefreshService(role, _activeSession, registry);
-								if (switched != null)
-									_service = switched;
-								_nextModel = null;
-							}
-						}
-						if (_service == null)
-							break;
-						LlmService service = _service;
-
-						int compactionReserveInner = GetCompactionReserve();
-
-						// Tracer: check context headroom before committing to a full call.
-						int threshold = _activeSession.ContextWindow - compactionReserveInner;
-						int pendingBytes = 0;
-						foreach (CanonicalMessage msg in _activeSession.Bundle.Canonical.Messages)
-						{
-							if (msg is UserMessage um)
-								pendingBytes += System.Text.Encoding.UTF8.GetByteCount(um.Text);
-						}
-						int estimate = _activeSession.ContextLength + (pendingBytes / 3) + _activeSession.Budget.PendingReserve;
-
-						if (estimate >= threshold)
-						{
-							TracerResult tracer = await service.RunTracerAsync(_activeSession, tools, null, scope.Token);
-							if (tracer.Succeeded)
-							{
-								_activeSession.Budget.RecordMeasurement(tracer.InputTokens);
-								_lastInputTokens = tracer.InputTokens + tracer.CachedTokens;
-								transport.Stats(_activeSession.Id, _activeSession.Model + ReasoningEffort.DisplaySuffix(service.Model.Config.ReasoningEffort), _activeSession.Role,
-									_activeSession.CumulativeInputTokens, _activeSession.CumulativeOutputTokens,
-									_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens);
-								if (tracer.InputTokens + tracer.CachedTokens >= threshold)
-								{
-									transport.Status(_activeSession.Id, $"Context full ({tracer.InputTokens + tracer.CachedTokens}/{_activeSession.ContextWindow}), compacting...");
-									contextFull = true;
-									turnComplete = true;
-									continue;
-								}
-							}
-							else if (tracer.ContextBlown)
-							{
-								transport.Status(_activeSession.Id, $"Context exceeds limit ({tracer.ErrorMessage}), compacting...");
-								contextFull = true;
-								turnComplete = true;
-								continue;
-							}
-						}
-
-						ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, compactionReserveInner, outputCap, transport, scope.Token);
-
-						if (result.Outcome == ProtocolCallOutcome.ContextFull)
-						{
-							contextFull = true;
-							turnComplete = true;
-						}
-						else if (result.Outcome == ProtocolCallOutcome.Interrupted)
-						{
-							if (ct.IsCancellationRequested)
-							{
-								turnComplete = true;
-							}
-							else
-							{
-								CancellationTokenSource? resumed = await WaitForSteeringAsync(scope, ct);
-								if (resumed == null)
-								{
-									turnComplete = true;
-								}
-								else
-								{
-									scope = resumed;
-									DrainInput(roleService, registry, transport);
-									LlmService? steeredSvc = RefreshService(role, _activeSession, registry);
-									if (steeredSvc != null)
-										_service = steeredSvc;
-								}
-							}
-						}
-						else if (result.Outcome != ProtocolCallOutcome.Success)
-						{
-							int minCtx = _activeSession.ContextLength + compactionReserveInner;
-							LlmService? fallback = registry.CreateFallbackService(service, minCtx);
-							if (fallback != null)
-							{
-								_activeSession.QueryLog.FallbackTransition(service, fallback,
-									result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited after retries" : "Model failed",
-									result.Outcome == ProtocolCallOutcome.TooManyRetries ? 10 : 5);
-								_service = fallback;
-								_activeSession.UpdateModel(fallback.Model);
-								_activeSession.SendStats();
-								transport.Status(_activeSession.Id, $"{(result.Outcome == ProtocolCallOutcome.TooManyRetries ? "Rate limited" : "Model failed")}; falling back to {fallback.Model.Config.Name}");
-							}
-							else
-							{
-								string detail = result.Outcome == ProtocolCallOutcome.TooManyRetries
-									? "Rate limited after too many retries, and no fallback model is available."
-									: string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage;
-								_activeSession.QueryLog.SessionFailure(_activeSession, service, detail, service.RoleModelIds.Count);
-								transport.Error(_activeSession.Id, detail);
-								lastFailure = string.IsNullOrEmpty(result.ErrorMessage) ? "all models failed" : result.ErrorMessage;
-								turnComplete = true;
-							}
-						}
-						else
-						{
-							_activeSession.CommitAssistantTurn(result.Payload!);
-							if (result.Payload!.Usage.PromptTokens > 0)
-								_lastInputTokens = result.Payload.Usage.PromptTokens;
-							bool hasToolCalls;
-							try
-							{
-								hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, _activeSession, transport, scope.Token);
-							}
-							catch (OperationCanceledException) when (scope.IsCancellationRequested && !ct.IsCancellationRequested)
-							{
-								Console.Error.WriteLine($"[SessionHandler] {role.Name} sub-session {_activeSession.Id} dispatch cancelled (ancestor cancel: {ct.IsCancellationRequested}).");
-								if (ct.IsCancellationRequested)
-								{
-									turnComplete = true;
-									break;
-								}
-								CancellationTokenSource? resumed = await WaitForSteeringAsync(scope, ct);
-								if (resumed == null)
-								{
-									turnComplete = true;
-									break;
-								}
-								scope = resumed;
-								DrainInput(roleService, registry, transport);
-								LlmService? cancelledSvc = RefreshService(role, _activeSession, registry);
-								if (cancelledSvc != null)
-									_service = cancelledSvc;
-								continue;
-							}
-
-							if (hasToolCalls)
-								_activeSession.CommitToolResults(result.Payload!);
-
-							if (isRoot)
-							{
-								string? steering = _activeSession.TryDequeueLeadingText();
-								if (!string.IsNullOrEmpty(steering))
-									_activeSession.Bundle.OnUserMessage(steering);
-
-								if (_activeSession.HasPending)
-								{
-									turnComplete = true;
-								}
-								else if (!string.IsNullOrEmpty(steering))
-								{
-									turnComplete = false;
-								}
-								else if (!hasToolCalls)
-								{
-									if (_activeSession.WorkInProgress && !string.IsNullOrEmpty(role.EndOfTurnPrompt))
-									{
-										_activeSession.AddUserMessage(role.EndOfTurnPrompt);
-										turnComplete = false;
-									}
-									else
-									{
-										turnComplete = true;
-									}
-								}
-								else
-								{
-									if (_activeSession.WorkInProgress != workToolsActive)
-									{
-										workToolsActive = _activeSession.WorkInProgress;
-										tools = BuildRootTools(role, workToolsActive, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
-									}
-									turnComplete = false;
-								}
-							}
-							else
-							{
-								if (_terminatorCalled)
-								{
-									responseTokens = _activeSession.LastTokenUsage?.CompletionTokens ?? 0;
-									if (config.OutputBudgetTokens > 0 && responseTokens > config.OutputBudgetTokens && !lastTurn)
-									{
-										_terminatorCalled = false;
-										_activeSession.AddUserMessage(
-											$"That output is about {responseTokens} tokens but must fit within {config.OutputBudgetTokens} tokens. "
-											+ $"Call {config.TerminatorName} again with a shorter output, preserving the key details (file paths, line numbers, names, key output).");
-									}
-									else
-									{
-										turnComplete = true;
-									}
-								}
-								else if (windDown)
-								{
-									_activeSession.AddUserMessage(
-										$"You are out of working turns. Call the {config.TerminatorName} tool now with your final result, "
-										+ "preserving the key details (file paths, line numbers, names, key output).");
-									turnComplete = true;
-								}
-								else if (!hasToolCalls)
-								{
-									string nudge = string.IsNullOrEmpty(role.EndOfTurnPrompt)
-										? $"Continue the task, then call the {config.TerminatorName} tool with your final result to finish."
-										: role.EndOfTurnPrompt;
-									_activeSession.AddUserMessage(nudge);
-									turnComplete = true;
-								}
-								else
-								{
-									turnComplete = true;
-								}
-							}
-
-							_activeSession.SendStats();
-						}
-					}
+					contextFull = await RunTurnClusterAsync(role, windDown, lastTurn, registry, roleService, settings, transport, webSearchConfig, orchestrator, ct);
 				}
-				catch (OperationCanceledException) when (scope.IsCancellationRequested && !ct.IsCancellationRequested)
+				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
 				{
 					Console.Error.WriteLine($"[SessionHandler] Session {_activeSession.Id} turn interrupted between tool calls.");
 					_activeSession.MarkInterrupted();
@@ -360,37 +120,27 @@ public class SessionHandler
 					_activeSession.SetDispatchScope(null);
 					_activeSession.SendIdle();
 					if (!_activeSession.Ephemeral)
-						SaveRoot(_activeSession);
+						SaveSession(_activeSession);
 				}
 
-				if (contextFull)
+				// 5. Compact when the context filled mid-cluster. When that fails the session cannot
+				// make further progress on this model: report it (which also unblocks a waiting
+				// caller) and force a service re-check so the loop parks instead of spinning.
+				if (contextFull && !await CompactAsync(role, config, registry, roleService, transport, orchestrator, ct))
 				{
-					if (isRoot)
-					{
-						Session? compacted = await CompactRootAsync(roleService, registry, transport, ct);
-						if (compacted != null)
-							return compacted;
-						_service = null;
-					}
-					else if (role != null && !string.IsNullOrEmpty(role.SummaryPrompt))
-					{
-						bool compacted = await CompactChildAsync(role, scope, config, registry, roleService, transport, orchestrator, ct);
-						if (!compacted)
-							transport.Status(_activeSession.Id, "Context window full and compaction failed. Use /model to switch to a larger model.");
-					}
-					else
-					{
-						transport.Status(_activeSession.Id, "Context window full. Use /compact to summarize or /model to switch to a larger model.");
-					}
+					transport.Status(_activeSession.Id, "Context window full and compaction failed. Use /model to switch to a larger model.");
+					_service = null;
+					if (_lastFailure == null)
+						_lastFailure = "the context window filled and compaction failed";
 				}
 
-				// Notify the caller once on the first terminator call or failure, then stay alive
+				// 6. Answer the caller at the first terminator call or failure. NotifyComplete clears
+				// the reply obligation, so it fires at most once; the session stays alive afterwards
 				// to accept new user input.
-				if ((_terminatorCalled || lastFailure != null) && !_notifiedComplete)
+				if (_terminatorCalled || _lastFailure != null)
 				{
-					_notifiedComplete = true;
-					NotifyChildComplete(lastFailure, responseTokens, role?.Name ?? _activeSession.Role, config);
-					lastFailure = null;
+					NotifyComplete(role.Name, config);
+					_lastFailure = null;
 					_terminatorCalled = false;
 				}
 				turn++;
@@ -403,122 +153,319 @@ public class SessionHandler
 		}
 		finally
 		{
-			scope.Dispose();
+			_scope.Dispose();
 			if (!_activeSession.Ephemeral)
-				SaveRoot(_activeSession);
-			if (config.Parent != null)
-				config.Parent.RecordCost(_activeSession.TotalCost);
+				SaveSession(_activeSession);
+			RollUpCost(config);
 			_activeSession.SendIdle();
-			if (!isRoot && !_notifiedComplete)
-				NotifyChildComplete(lastFailure, responseTokens, role?.Name ?? _activeSession.Role, config);
+			NotifyComplete(role?.Name ?? _activeSession.Role, config);
 		}
-
-		return _activeSession;
 	}
 
-	private async Task<Session?> CompactRootAsync(RoleService roleService, LlmRegistry registry, ITransportServer transport, CancellationToken ct)
+	// ---- Turn cluster ----
+
+	// Runs assistant turns and tool dispatch until the model stops calling tools, the user steers,
+	// or the run fails. Returns true when the context is full and the caller must compact.
+	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, bool lastTurn, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
-		Role? role = roleService.GetRole(_activeSession.Role);
-		if (role == null || string.IsNullOrEmpty(role.SummaryPrompt))
+		Tool[] tools = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
+		string? forcedTool = windDown ? _activeSession.TerminatorName : null;
+		int outputCap = windDown ? _activeSession.OutputBudgetTokens : 0;
+		bool workToolsActive = _activeSession.WorkInProgress;
+		bool contextFull = false;
+		bool turnComplete = false;
+
+		while (!turnComplete && !contextFull && !ct.IsCancellationRequested)
 		{
-			transport.Status(_activeSession.Id, "[Compaction] No role or summary prompt available.");
-			return null;
+			// Reconcile service with any deferred /model switch before each LLM call.
+			ApplyPendingModelSwitch(role, registry);
+			LlmService? service = _service;
+			if (service == null)
+				break;
+
+			contextFull = await CheckContextFullAsync(service, tools, transport, _scope.Token);
+			if (contextFull)
+				break;
+
+			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, GetCompactionReserve(), outputCap, transport, _scope.Token);
+
+			if (result.Outcome == ProtocolCallOutcome.ContextFull)
+			{
+				contextFull = true;
+			}
+			else if (result.Outcome == ProtocolCallOutcome.Interrupted)
+			{
+				turnComplete = !await TryResumeAfterInterruptAsync(role, roleService, registry, transport, ct);
+			}
+			else if (result.Outcome != ProtocolCallOutcome.Success)
+			{
+				string? failure = FallBackOrFail(service, result, registry, transport);
+				if (failure != null)
+				{
+					_lastFailure = failure;
+					turnComplete = true;
+				}
+			}
+			else
+			{
+				_activeSession.CommitAssistantTurn(result.Payload!);
+				if (result.Payload!.Usage.PromptTokens > 0)
+					_lastInputTokens = result.Payload.Usage.PromptTokens;
+
+				bool hasToolCalls;
+				try
+				{
+					hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, _activeSession, transport, _scope.Token);
+				}
+				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
+				{
+					Console.Error.WriteLine($"[SessionHandler] {role.Name} session {_activeSession.Id} dispatch cancelled.");
+					turnComplete = !await TryResumeAfterInterruptAsync(role, roleService, registry, transport, ct);
+					continue;
+				}
+
+				if (hasToolCalls)
+					_activeSession.CommitToolResults(result.Payload!);
+
+				// Drain any queued commands (e.g. /model) between tool rounds so they take
+				// effect before the next LLM call rather than waiting for the turn to end.
+				DrainInput(roleService, registry, transport);
+
+				turnComplete = TurnComplete(role, windDown, lastTurn, hasToolCalls);
+
+				// Rebuild the toolset when a tool toggled the work-in-progress state this round.
+				if (!turnComplete && _activeSession.WorkInProgress != workToolsActive)
+				{
+					workToolsActive = _activeSession.WorkInProgress;
+					tools = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
+				}
+
+				_activeSession.SendStats();
+			}
 		}
-
-		transport.Status(_activeSession.Id, "[Compaction] Started.");
-		string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, Array.Empty<Tool>(), registry, roleService, transport, ct);
-		if (string.IsNullOrWhiteSpace(summary))
-		{
-			transport.Status(_activeSession.Id, "[Compaction] Failed.");
-			return null;
-		}
-
-		string newDisplayName = Session.IncrementDisplayName(_activeSession.DisplayName);
-		string newId = Guid.NewGuid().ToString();
-		SaveRoot(_activeSession);
-
-		BeastSession freshData = new BeastSession(newId, newDisplayName, _activeSession.Model, _activeSession.Role,
-			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, _activeSession.Ephemeral);
-		Session newSession = new Session(freshData, role.SystemPrompt, transport, false);
-		if (_activeSession.WorkInProgress)
-			newSession.BeginWork();
-
-		newSession.AnnounceToClient();
-		transport.SessionReset(newSession.Id);
-		newSession.Bundle.Canonical.OnUserMessage(summary);
-		if (!newSession.Ephemeral)
-			SaveRoot(newSession);
-
-		transport.Status(_activeSession.Id, "[Compaction] Complete.");
-		return newSession;
+		return contextFull;
 	}
 
-	// Summarizes _activeSession, creates a new child session under the same parent, and updates
-	// _activeSession and _service so the loop continues on the compacted successor.
-	private async Task<bool> CompactChildAsync(Role role, CancellationTokenSource scope, SessionRunConfig config, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
+	// Decides whether the turn cluster is finished after a successful assistant round. One policy
+	// for every session; terminator behaviour engages only while the session owes a reply.
+	private bool TurnComplete(Role role, bool windDown, bool lastTurn, bool hasToolCalls)
 	{
-		if (string.IsNullOrEmpty(role.SummaryPrompt))
+		bool complete;
+		if (_terminatorCalled)
 		{
-			transport.Status(_activeSession.Id, "[Compaction] No summary prompt available.");
-			return false;
+			_terminatorTokens = _activeSession.LastTokenUsage?.CompletionTokens ?? 0;
+			int budget = _activeSession.OutputBudgetTokens;
+			if (budget > 0 && _terminatorTokens > budget && !lastTurn)
+			{
+				_terminatorCalled = false;
+				_activeSession.AddUserMessage(
+					$"That output is about {_terminatorTokens} tokens but must fit within {budget} tokens. "
+					+ $"Call {_activeSession.TerminatorName} again with a shorter output, preserving the key details (file paths, line numbers, names, key output).");
+				complete = false;
+			}
+			else
+			{
+				complete = true;
+			}
 		}
-
-		transport.Status(_activeSession.Id, "[Compaction] Started.");
-		string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, Array.Empty<Tool>(), registry, roleService, transport, ct);
-		if (string.IsNullOrWhiteSpace(summary))
+		else if (windDown)
 		{
-			transport.Status(_activeSession.Id, "[Compaction] Failed.");
-			return false;
+			_activeSession.AddUserMessage(
+				$"You are out of working turns. Call the {_activeSession.TerminatorName} tool now with your final result, "
+				+ "preserving the key details (file paths, line numbers, names, key output).");
+			complete = true;
 		}
-
-		LlmService? newService = registry.CreateService(role, _activeSession.Model, 0);
-		if (newService == null)
+		else if (_activeSession.HasPending)
 		{
-			transport.Status(_activeSession.Id, "[Compaction] Failed to create a fresh model service.");
-			return false;
+			// New input arrived mid-round; end the cluster so the boundary drain applies it in order.
+			complete = true;
 		}
-
-		Session predecessor = _activeSession;
-		predecessor.SetDispatchScope(null);
-		predecessor.SendIdle();
-		if (!predecessor.Ephemeral)
-			SessionService.Save(predecessor.Data);
-
-		// New child ID under the same grandparent. If there is no parent (restored orphan), use a new GUID.
-		string childId;
-		bool parentEphemeral;
-		if (config.Parent != null)
+		else if (hasToolCalls)
 		{
-			childId = config.Parent.AllocateChildId();
-			if (!config.Parent.Ephemeral)
-				SessionService.Save(config.Parent.Data);
-			parentEphemeral = config.Parent.Ephemeral;
+			complete = false;
 		}
 		else
 		{
-			childId = Guid.NewGuid().ToString();
-			parentEphemeral = predecessor.Ephemeral;
+			// Plain response with no tool calls: nudge and end the turn, unless fresh user input
+			// already drives the next one. Sessions that owe a reply are always steered back toward
+			// the terminator; other sessions only while their work loop is in progress.
+			string? nudge = null;
+			if (_activeSession.OwesReply)
+			{
+				nudge = string.IsNullOrEmpty(role.EndOfTurnPrompt)
+					? $"Continue the task, then call the {_activeSession.TerminatorName} tool with your final result to finish."
+					: role.EndOfTurnPrompt;
+			}
+			else if (_activeSession.WorkInProgress && !string.IsNullOrEmpty(role.EndOfTurnPrompt))
+			{
+				nudge = role.EndOfTurnPrompt;
+			}
+			if (nudge != null && !TailIsUserMessage())
+				_activeSession.AddUserMessage(nudge);
+			complete = true;
 		}
+		return complete;
+	}
 
-		string newDisplayName = Session.IncrementDisplayName(predecessor.DisplayName);
-		BeastSession compactedData = new BeastSession(childId, newDisplayName, newService.Model.ConfigId, role.Name,
-			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parentEphemeral);
-		Session compacted = new Session(compactedData, role.SystemPrompt, transport, true);
-		compacted.UpdateModel(newService.Model);
-		compacted.SetDispatchScope(scope);
-		compacted.SendBusy();
-		compacted.Bundle.Canonical.OnUserMessage(summary);
-		compacted.AnnounceToClient();
-		compacted.ReplayToTransport();
-		if (config.Parent != null)
-			config.Parent.AddChild(compacted);
+	// True when the conversation already ends on user text (e.g. steering committed by the drain),
+	// so an end-of-turn nudge would be redundant noise.
+	private bool TailIsUserMessage()
+	{
+		IReadOnlyList<CanonicalMessage> messages = _activeSession.Bundle.Canonical.Messages;
+		return messages.Count > 0 && messages[messages.Count - 1] is UserMessage;
+	}
 
-		_activeSession = compacted;
-		_service = newService;
-		orchestrator.UnregisterSession(predecessor.Id);
-		orchestrator.RegisterSession(compacted);
-		transport.Status(predecessor.Id, "[Compaction] Complete.");
-		return true;
+	// Estimates headroom and runs a cheap tracer call when close to the limit. Returns true when
+	// the context is full and the turn must end in compaction.
+	private async Task<bool> CheckContextFullAsync(LlmService service, Tool[] tools, ITransportServer transport, CancellationToken token)
+	{
+		bool full = false;
+		int threshold = _activeSession.ContextWindow - GetCompactionReserve();
+		int pendingBytes = 0;
+		foreach (CanonicalMessage msg in _activeSession.Bundle.Canonical.Messages)
+		{
+			if (msg is UserMessage um)
+				pendingBytes += System.Text.Encoding.UTF8.GetByteCount(um.Text);
+		}
+		int estimate = _activeSession.ContextLength + (pendingBytes / 3) + _activeSession.Budget.PendingReserve;
+
+		if (estimate >= threshold)
+		{
+			TracerResult tracer = await service.RunTracerAsync(_activeSession, tools, null, token);
+			if (tracer.Succeeded)
+			{
+				_activeSession.Budget.RecordMeasurement(tracer.InputTokens);
+				_lastInputTokens = tracer.InputTokens + tracer.CachedTokens;
+				transport.Stats(_activeSession.Id, _activeSession.Model + ReasoningEffort.DisplaySuffix(service.Model.Config.ReasoningEffort), _activeSession.Role,
+					_activeSession.CumulativeInputTokens, _activeSession.CumulativeOutputTokens,
+					_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens);
+				if (_lastInputTokens >= threshold)
+				{
+					transport.Status(_activeSession.Id, $"Context full ({_lastInputTokens}/{_activeSession.ContextWindow}), compacting...");
+					full = true;
+				}
+			}
+			else if (tracer.ContextBlown)
+			{
+				transport.Status(_activeSession.Id, $"Context exceeds limit ({tracer.ErrorMessage}), compacting...");
+				full = true;
+			}
+		}
+		return full;
+	}
+
+	// Swaps _service to a fallback model when one exists. Returns a failure message when no
+	// fallback is available and the turn must end.
+	private string? FallBackOrFail(LlmService service, ProtocolResult result, LlmRegistry registry, ITransportServer transport)
+	{
+		string? failure = null;
+		bool rateLimited = result.Outcome == ProtocolCallOutcome.TooManyRetries;
+		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + GetCompactionReserve());
+		if (fallback != null)
+		{
+			_activeSession.QueryLog.FallbackTransition(service, fallback,
+				rateLimited ? "Rate limited after retries" : "Model failed",
+				rateLimited ? 10 : 5);
+			_service = fallback;
+			_activeSession.UpdateModel(fallback.Model);
+			_activeSession.SendStats();
+			transport.Status(_activeSession.Id, $"{(rateLimited ? "Rate limited" : "Model failed")}; falling back to {fallback.Model.Config.Name}");
+		}
+		else
+		{
+			string detail = rateLimited
+				? "Rate limited after too many retries, and no fallback model is available."
+				: string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage;
+			_activeSession.QueryLog.SessionFailure(_activeSession, service, detail, service.RoleModelIds.Count);
+			transport.Error(_activeSession.Id, detail);
+			failure = string.IsNullOrEmpty(result.ErrorMessage) ? "all models failed" : result.ErrorMessage;
+		}
+		return failure;
+	}
+
+	// ---- Compaction ----
+
+	// Summarizes the active session into a fresh successor appended to the chain, then advances
+	// _activeSession/_service to it. The reply obligation is handed to the successor — the
+	// predecessor can no longer answer as a tool but is otherwise left intact: saved, registered,
+	// and replayable as forensics. Returns false when no summary could be produced or no service
+	// was available for the successor.
+	private async Task<bool> CompactAsync(Role? role, SessionRunConfig config, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
+	{
+		bool compacted = false;
+		if (role == null || string.IsNullOrEmpty(role.SummaryPrompt))
+		{
+			transport.Status(_activeSession.Id, "[Compaction] No role or summary prompt available.");
+		}
+		else
+		{
+			transport.Status(_activeSession.Id, "[Compaction] Started.");
+			string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, Array.Empty<Tool>(), registry, roleService, transport, ct);
+			LlmService? service = string.IsNullOrWhiteSpace(summary) ? null : registry.CreateService(role, _activeSession.Model, 0);
+			if (summary == null || service == null)
+			{
+				transport.Status(_activeSession.Id, "[Compaction] Failed.");
+			}
+			else
+			{
+				Session predecessor = _activeSession;
+
+				// Hand the reply obligation to the successor before the predecessor is saved, so a
+				// reload never resurrects two sessions both claiming to answer the same caller.
+				string terminatorName = predecessor.TerminatorName;
+				int outputBudgetTokens = predecessor.OutputBudgetTokens;
+				predecessor.ClearReplyObligation();
+
+				predecessor.SetDispatchScope(null);
+				predecessor.SendIdle();
+				if (!predecessor.Ephemeral)
+					SaveSession(predecessor);
+				RollUpCost(config);
+
+				// A child successor gets the next ID under the same parent; a root successor gets a
+				// fresh GUID. Everything else about the two is identical.
+				string successorId;
+				if (config.Parent != null)
+				{
+					successorId = config.Parent.AllocateChildId();
+					if (!config.Parent.Ephemeral)
+						SessionService.Save(config.Parent.Data);
+				}
+				else
+				{
+					successorId = Guid.NewGuid().ToString();
+				}
+
+				BeastSession successorData = new BeastSession(successorId, Session.IncrementDisplayName(predecessor.DisplayName),
+					service.Model.ConfigId, role.Name, terminatorName, outputBudgetTokens,
+					new List<CanonicalMessage>(), null, 0m, 0, 0, 0, predecessor.Ephemeral);
+				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
+				successor.UpdateModel(service.Model);
+				if (predecessor.WorkInProgress)
+					successor.BeginWork();
+				successor.SetDispatchScope(_scope);
+				successor.AnnounceToClient();
+				if (config.Parent == null)
+					transport.SessionReset(successor.Id);
+				successor.Bundle.Canonical.OnUserMessage(summary);
+				if (config.Parent != null)
+				{
+					successor.ReplayToTransport();
+					config.Parent.AddChild(successor);
+				}
+				if (!successor.Ephemeral)
+					SaveSession(successor);
+				orchestrator.RegisterSession(successor);
+
+				_activeSession = successor;
+				_service = service;
+				_lastInputTokens = 0;
+				_costRecordedToParent = 0m;
+				transport.Status(predecessor.Id, "[Compaction] Complete.");
+				compacted = true;
+			}
+		}
+		return compacted;
 	}
 
 	// ---- Input drain ----
@@ -542,29 +489,22 @@ public class SessionHandler
 				if (IsContextBlocked)
 				{
 					transport.Status(_activeSession.Id, "Context window full — use /compact or /model <id> before sending more input.");
-					continue;
 				}
-				_activeSession.Bundle.OnUserMessage(line);
+				else
+				{
+					_activeSession.Bundle.OnUserMessage(line);
 
-				// New input on a completed session: clear status so the session runs again.
-				if (_activeSession.Status != SessionStatus.Ongoing)
-					_activeSession.ResumeFromComplete();
+					// New input on a completed session: clear status so the session runs again.
+					if (_activeSession.Status != SessionStatus.Ongoing)
+						_activeSession.ResumeFromComplete();
+				}
 				continue;
 			}
 
 			string trimmed = line.TrimStart('/').Trim();
-			string verb;
-			string? args = null;
 			int spaceIdx = trimmed.IndexOf(' ');
-			if (spaceIdx >= 0)
-			{
-				verb = trimmed.Substring(0, spaceIdx).ToLowerInvariant();
-				args = trimmed.Substring(spaceIdx + 1).Trim();
-			}
-			else
-			{
-				verb = trimmed.ToLowerInvariant();
-			}
+			string verb = (spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed).ToLowerInvariant();
+			string? args = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : null;
 
 			switch (verb)
 			{
@@ -575,34 +515,7 @@ public class SessionHandler
 					break;
 				case "model":
 					if (args != null)
-					{
-						int modelArgSpace = args.IndexOf(' ');
-						string modelArg = modelArgSpace >= 0 ? args.Substring(0, modelArgSpace) : args;
-						Role? modelRole = roleService.GetRole(_activeSession.Role);
-						LlmModel? targetModel = modelRole != null ? registry.GetModelForRole(modelRole, modelArg, 0) : null;
-						if (targetModel == null)
-						{
-							transport.Error(_activeSession.Id, $"Unknown model: {modelArg}");
-						}
-						else
-						{
-							int minRequired = _activeSession.ContextLength + GetCompactionReserve();
-							if (targetModel.Config.ContextWindow <= minRequired)
-							{
-								transport.Error(_activeSession.Id, $"Model '{modelArg}' context window ({targetModel.Config.ContextWindow}) is too small for the current conversation ({minRequired} tokens needed).");
-							}
-							else
-							{
-								_nextModel = targetModel.ConfigId;
-								_activeSession.MarkModelUserSelected(modelArg);
-								registry.ResetAvailability(modelArg);
-								_lastInputTokens = 0;
-								transport.Status(_activeSession.Id, $"Model queued: {modelArg}");
-								if (_activeSession.Status != SessionStatus.Ongoing)
-									_activeSession.ResumeFromComplete();
-							}
-						}
-					}
+						QueueModelSwitch(args, roleService, registry, transport);
 					break;
 				case "help":
 					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /cancel");
@@ -615,29 +528,60 @@ public class SessionHandler
 		transport.PendingQueue(_activeSession.Id, _activeSession.PeekAllPending());
 	}
 
-	// ---- Tool building ----
-
-	private Tool[] BuildRootTools(Role role, bool workInProgress, BeastSettings beastSettings, LlmRegistry registry, RoleService roleService, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator)
+	// Validates a /model request and queues it; applied before the next LLM call.
+	private void QueueModelSwitch(string args, RoleService roleService, LlmRegistry registry, ITransportServer transport)
 	{
-		return ToolFactory.BuildForRole(
-			beastSettings,
-			role,
-			registry,
-			roleService,
-			_activeSession,
-			webSearchConfig,
-			workInProgress,
-			(prompt, budget, spawnCt) => orchestrator.SpawnChildAsync(beastSettings, _activeSession, "Developer", prompt, budget, spawnCt),
-			() => _activeSession.BeginWork(),
-			() => _activeSession.EndWork(),
-			null, null, null, null);
+		int spaceIdx = args.IndexOf(' ');
+		string modelArg = spaceIdx >= 0 ? args.Substring(0, spaceIdx) : args;
+		Role? role = roleService.GetRole(_activeSession.Role);
+		LlmModel? target = role != null ? registry.GetModelForRole(role, modelArg, 0) : null;
+		int minRequired = _activeSession.ContextLength + GetCompactionReserve();
+
+		if (target == null)
+		{
+			transport.Error(_activeSession.Id, $"Unknown model: {modelArg}");
+		}
+		else if (target.Config.ContextWindow <= minRequired)
+		{
+			transport.Error(_activeSession.Id, $"Model '{modelArg}' context window ({target.Config.ContextWindow}) is too small for the current conversation ({minRequired} tokens needed).");
+		}
+		else
+		{
+			_nextModel = target.ConfigId;
+			_activeSession.MarkModelUserSelected(modelArg);
+			registry.ResetAvailability(modelArg);
+			_lastInputTokens = 0;
+			transport.Status(_activeSession.Id, $"Model queued: {modelArg}");
+			if (_activeSession.Status != SessionStatus.Ongoing)
+				_activeSession.ResumeFromComplete();
+		}
 	}
 
-	private Tool[] BuildChildTools(Role role, bool windDown, SessionRunConfig config, BeastSettings beastSettings, LlmRegistry registry, RoleService roleService, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator)
+	// Applies a queued /model switch to the session and service.
+	private void ApplyPendingModelSwitch(Role? role, LlmRegistry registry)
 	{
-		bool isReview = string.Equals(config.TerminatorName, "finish_review", StringComparison.Ordinal);
-		bool isDeveloper = string.Equals(config.TerminatorName, "task_complete", StringComparison.Ordinal);
+		if (_nextModel != null)
+		{
+			if (_service == null || _nextModel != _service.Model.ConfigId)
+			{
+				LlmModel? target = registry.GetModel(_nextModel);
+				if (target != null)
+				{
+					_activeSession.UpdateModel(target);
+					RefreshService(role, registry);
+				}
+			}
+			_nextModel = null;
+		}
+	}
 
+	// ---- Tool building ----
+
+	// One toolset builder for every session. Which tools exist is configured by the role's tool
+	// list (ToolFactory checks it); the terminator callback is supplied only while the session
+	// owes a reply, and ToolFactory picks the matching terminator tool from the role.
+	private Tool[] BuildTools(Role role, bool windDown, BeastSettings beastSettings, LlmRegistry registry, RoleService roleService, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator)
+	{
 		Tool[] full = ToolFactory.BuildForRole(
 			beastSettings,
 			role,
@@ -645,21 +589,12 @@ public class SessionHandler
 			roleService,
 			_activeSession,
 			webSearchConfig,
-			false,
-			null, null, null,
-			isDeveloper
-				? (Func<string, int, CancellationToken, Task<(bool ok, string text, int responseTokens)>>)
-				  ((prompt, budget, reviewCt) => orchestrator.SpawnChildAsync(beastSettings, _activeSession, "Reviewer", prompt, budget, reviewCt))
-				: null,
-			isDeveloper
-				? (Action<string>)(output => { _terminatorValue = output; _terminatorCalled = true; })
-				: null,
-			isReview
-				? (Action<bool, string>)((approved, comments) => { _terminatorValue = comments; _terminatorApproved = approved; _terminatorCalled = true; })
-				: null,
-			(!isReview && !isDeveloper)
-				? (Action<string>)(output => { _terminatorValue = output; _terminatorCalled = true; })
-				: null);
+			_activeSession.WorkInProgress,
+			(roleName, displayName, prompt, maxWorkTurns, budget, spawnCt) =>
+				orchestrator.SpawnChildAsync(beastSettings, _activeSession, roleName, displayName, prompt, maxWorkTurns, budget, spawnCt),
+			() => _activeSession.BeginWork(),
+			() => _activeSession.EndWork(),
+			_activeSession.OwesReply ? Terminate : null);
 
 		if (!windDown)
 			return full;
@@ -668,7 +603,7 @@ public class SessionHandler
 		Tool? terminator = null;
 		foreach (Tool t in full)
 		{
-			if (string.Equals(t.Definition.Function.Name, config.TerminatorName, StringComparison.Ordinal))
+			if (string.Equals(t.Definition.Function.Name, _activeSession.TerminatorName, StringComparison.Ordinal))
 			{
 				terminator = t;
 				break;
@@ -677,30 +612,52 @@ public class SessionHandler
 		return terminator != null ? new Tool[] { terminator } : full;
 	}
 
+	// Terminator tool callback: records the reply so the loop can deliver it to the caller. Every
+	// terminator tool shares this shape — a success flag and an output string.
+	private void Terminate(bool success, string output)
+	{
+		_terminatorSucceeded = success;
+		_terminatorValue = output;
+		_terminatorCalled = true;
+	}
+
 	// ---- Steering / idle waits ----
 
-	// Parks the child session until the user sends steering input after a direct /cancel, then
-	// returns a fresh scope. Returns null if the wait is cancelled by an ancestor or shutdown.
-	private async Task<CancellationTokenSource?> WaitForSteeringAsync(CancellationTokenSource current, CancellationToken ct)
+	// Installs a fresh dispatch cancellation scope linked to the ancestor token, replacing (and
+	// disposing) the previous one. Clears the session's reference first so /cancel never races a
+	// disposed scope.
+	private void ResetScope(CancellationToken ct)
 	{
+		_activeSession.SetDispatchScope(null);
+		_scope.Dispose();
+		_scope = CancellationTokenSource.CreateLinkedTokenSource(ct);
+		_activeSession.SetDispatchScope(_scope);
+	}
+
+	// Parks the session until the user sends steering input after a direct /cancel, then installs
+	// a fresh scope, re-drains input, and refreshes the service. Returns false when the wait is
+	// cancelled by an ancestor or shutdown.
+	private async Task<bool> TryResumeAfterInterruptAsync(Role? role, RoleService roleService, LlmRegistry registry, ITransportServer transport, CancellationToken ct)
+	{
+		bool resumed = false;
 		_activeSession.SendIdle();
 		try
 		{
 			await _activeSession.WaitForInputAsync(ct);
+			resumed = !ct.IsCancellationRequested;
 		}
 		catch (OperationCanceledException)
 		{
-			return null;
 		}
-		if (ct.IsCancellationRequested)
-			return null;
 
-		_activeSession.SendBusy();
-		_activeSession.SetDispatchScope(null);
-		current.Dispose();
-		CancellationTokenSource fresh = CancellationTokenSource.CreateLinkedTokenSource(ct);
-		_activeSession.SetDispatchScope(fresh);
-		return fresh;
+		if (resumed)
+		{
+			_activeSession.SendBusy();
+			ResetScope(ct);
+			DrainInput(roleService, registry, transport);
+			RefreshService(role, registry);
+		}
+		return resumed;
 	}
 
 	// Waits for input or until the model becomes available again, whichever comes first.
@@ -734,15 +691,20 @@ public class SessionHandler
 
 	// ---- Helpers ----
 
-	private LlmService? RefreshService(Role? role, Session session, LlmRegistry registry)
+	// Ensures _service matches the session's model and is healthy; creates a replacement when it
+	// is missing, down, or pointing at a different model. Keeps the old service when creation fails.
+	private void RefreshService(Role? role, LlmRegistry registry)
 	{
-		if (_service != null && !_service.IsDown && _service.Model.ConfigId == session.Model)
-			return null;
-		int minCtx = session.ContextLength + GetCompactionReserve();
-		LlmService? newService = registry.CreateService(role, session.Model, minCtx);
-		if (newService != null)
-			session.UpdateModel(newService.Model);
-		return newService;
+		if (_service == null || _service.IsDown || _service.Model.ConfigId != _activeSession.Model)
+		{
+			int minCtx = _activeSession.ContextLength + GetCompactionReserve();
+			LlmService? newService = registry.CreateService(role, _activeSession.Model, minCtx);
+			if (newService != null)
+			{
+				_activeSession.UpdateModel(newService.Model);
+				_service = newService;
+			}
+		}
 	}
 
 	private int GetCompactionReserve()
@@ -750,7 +712,7 @@ public class SessionHandler
 		return Math.Min((int)(_activeSession.ContextWindow * 0.1), 7500);
 	}
 
-	private void SaveRoot(Session session)
+	private void SaveSession(Session session)
 	{
 		if (session.InferDisplayName())
 			session.AnnounceToClient();
@@ -789,40 +751,66 @@ public class SessionHandler
 		return $"  in:${cost.Input:0.00} out:${cost.Output:0.00} /Mtok";
 	}
 
-	// Calls OnComplete with the right result once the child loop exits. Handles the three outcomes:
-	// terminator called cleanly, run failed with a known reason, or turns exhausted (salvage last text).
-	private void NotifyChildComplete(string? lastFailure, int responseTokens, string roleName, SessionRunConfig config)
+	// Answers the caller once: delivers the terminator result, a failure report, or the salvaged
+	// last assistant text, then clears the session's reply obligation — it remains viable for
+	// conversation but can no longer respond as a tool. A no-op when no reply is owed, which is
+	// what makes it safe to call from both the turn loop and the run's finally.
+	private void NotifyComplete(string roleName, SessionRunConfig config)
 	{
-		if (config.OnComplete == null)
-			return;
-
-		if (_terminatorCalled)
+		if (_activeSession.OwesReply)
 		{
-			string output = _terminatorValue ?? string.Empty;
-			bool isReview = string.Equals(config.TerminatorName, "finish_review", StringComparison.Ordinal);
-			if (isReview)
-				output = _terminatorApproved ? $"[APPROVED]\n{output}" : $"[REJECTED]\n{output}";
-			config.OnComplete(true, output, responseTokens);
-			return;
-		}
+			bool ok;
+			string output;
+			int tokens = _terminatorTokens;
 
-		string salvaged = LastAssistantText();
-		if (!string.IsNullOrEmpty(lastFailure))
+			if (_terminatorCalled)
+			{
+				ok = _terminatorSucceeded;
+				output = _terminatorValue ?? string.Empty;
+			}
+			else
+			{
+				string salvaged = LastAssistantText();
+				if (!string.IsNullOrEmpty(_lastFailure))
+				{
+					ok = false;
+					output = string.IsNullOrEmpty(salvaged)
+						? $"The {roleName} subagent could not finish: {_lastFailure}."
+						: $"The {roleName} subagent could not finish: {_lastFailure}.\n\nLast progress before it stopped:\n{salvaged}";
+				}
+				else if (string.IsNullOrEmpty(salvaged))
+				{
+					ok = false;
+					output = "The subagent finished without returning a result.";
+				}
+				else
+				{
+					ok = true;
+					output = salvaged;
+					tokens = _activeSession.LastTokenUsage?.CompletionTokens ?? _terminatorTokens;
+				}
+			}
+
+			// Bill the parent before the caller resumes so its cost display is current at the
+			// moment the tool result lands.
+			RollUpCost(config);
+			if (config.OnComplete != null)
+				config.OnComplete(ok, output, tokens);
+			_activeSession.ClearReplyObligation();
+			if (!_activeSession.Ephemeral)
+				SaveSession(_activeSession);
+		}
+	}
+
+	// Rolls the active session's spend up into the parent, recording only what has not been
+	// recorded yet. Runs at reply time, at compaction hand-off, and at handler exit.
+	private void RollUpCost(SessionRunConfig config)
+	{
+		if (config.Parent != null)
 		{
-			string message = string.IsNullOrEmpty(salvaged)
-				? $"The {roleName} subagent could not finish: {lastFailure}."
-				: $"The {roleName} subagent could not finish: {lastFailure}.\n\nLast progress before it stopped:\n{salvaged}";
-			config.OnComplete(false, message, responseTokens);
-			return;
+			config.Parent.RecordCost(_activeSession.TotalCost - _costRecordedToParent);
+			_costRecordedToParent = _activeSession.TotalCost;
 		}
-
-		if (string.IsNullOrEmpty(salvaged))
-		{
-			config.OnComplete(false, "The subagent finished without returning a result.", responseTokens);
-			return;
-		}
-
-		config.OnComplete(true, salvaged, _activeSession.LastTokenUsage?.CompletionTokens ?? responseTokens);
 	}
 
 	private string LastAssistantText()

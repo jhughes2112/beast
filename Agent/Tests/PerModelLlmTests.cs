@@ -77,13 +77,13 @@ public static class PerModelLlmTests
 		try
 		{
 			TestCaptureTransport localTransport = new TestCaptureTransport();
-			BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+			BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), $"test-{modelId}", string.Empty, role.Name, string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
 			Session session = new Session(data, role.SystemPrompt, localTransport, false);
 			session.AddUserMessage("Reply with exactly: PING");
 
 			using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
 			using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-			Tool[] tools = ToolFactory.BuildForRole(settings.Settings, role, null, null, null, null, false, null, null, null, null, null, null, null);
+			Tool[] tools = ToolFactory.BuildForRole(settings.Settings, role, null, null, null, null, false, null, null, null, null);
 
 			session.UpdateModel(service.Model);
 			CancellationToken turnToken = session.BeginTurn();

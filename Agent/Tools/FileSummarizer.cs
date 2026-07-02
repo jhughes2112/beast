@@ -22,23 +22,20 @@ public class FileSummarizer
 
 	// The Explorer digests one file window and returns its citations via return_to_caller. It has no tools to
 	// work with, so there is nothing to do but cite, but flaky models/servers do not always emit the tool call
-	// on the first try: HelperSession cycles the tool_choice constraint across these turns and, failing that,
-	// salvages the last assistant message, so a few turns are allotted rather than a single forced one.
-	private const int MaxTurns = 5;
+	// on the first try: the session's wind-down forces the terminator once these working turns run out and,
+	// failing that, salvages the last assistant message, so a few turns are allotted rather than a single forced one.
+	private const int MaxWorkTurns = 5;
 
 	// Entry point for the find_relevant_file_sections tool. Reads a line-numbered window from the caller's offset and lets
 	// the Explorer cite the parts relevant to the goal. A small file (or a failed read) is returned raw.
-	// explorerRole and explorerService are pre-resolved by BuildForRole; registry is still passed for runtime fallback.
+	// explorerRole is pre-resolved by BuildForRole; the spawn delegate runs the Explorer as a child session.
 	public async Task<ToolResult> SummarizeAsync(
-		BeastSettings settings,
 		string toolCallId,
 		string filePath,
 		string offset,
 		string goal,
 		Role explorerRole,
-		LlmRegistry registry,
-		ITransportServer transport,
-		Session parent,
+		SpawnSubagent spawn,
 		int maxOutputTokens,
 		CancellationToken cancellationToken)
 	{
@@ -62,7 +59,7 @@ public class FileSummarizer
 		if (fileBytes < SmallFileMaxBytes || CountLines(raw.StdOut) < SmallFileMaxLines)
 			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 
-		return await ExploreAsync(settings, toolCallId, filePath, raw.StdOut, goal, explorerRole, registry, transport, parent, maxOutputTokens, cancellationToken);
+		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, explorerRole, spawn, maxOutputTokens, cancellationToken);
 	}
 
 	// Counts physical lines in already-read content; used only for the small-file threshold.
@@ -83,21 +80,18 @@ public class FileSummarizer
 	// Interprets the line-numbered window with the Explorer role, which returns its citations (file, line,
 	// line count) via return_to_caller. Cost rolls up into the calling session.
 	private async Task<ToolResult> ExploreAsync(
-		BeastSettings settings,
 		string toolCallId,
 		string filePath,
 		string content,
 		string goal,
 		Role explorerRole,
-		LlmRegistry registry,
-		ITransportServer transport,
-		Session parent,
+		SpawnSubagent spawn,
 		int maxOutputTokens,
 		CancellationToken cancellationToken)
 	{
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await HelperSession.RunAsync(settings, parent, explorerRole, registry, $"find_relevant_file_sections {filePath}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
+		(bool ok, string answer, int tokens) = await spawn(explorerRole.Name, $"find_relevant_file_sections {filePath}", seed, MaxWorkTurns, maxOutputTokens, cancellationToken);
 		if (!ok)
 		{
 			string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

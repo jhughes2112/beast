@@ -269,8 +269,8 @@ public class RoleService
 
 	// Used internally by the find_relevant_file_sections tool (FileSummarizer.ExploreAsync). It is seeded with the caller's
 	// goal, the file path, and a line-numbered window of that file, and replies with citations the caller can
-	// read directly: file, start line, and line count. It runs via HelperSession, finishing by calling
-	// return_to_caller (forced on the last turn). This should be a fast model, since it runs on every digest.
+	// read directly: file, start line, and line count. It runs as a child session, finishing by calling
+	// return_to_caller (forced during wind-down). This should be a fast model, since it runs on every digest.
 	private static Role ExplorerRole()
 	{
 		const string description = "To reduce context by providing a brief roadmap of a file relevant to a goal";

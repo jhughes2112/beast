@@ -17,27 +17,24 @@ public class WebFetch
 	private static readonly HttpClient SharedHttpClient = new();
 	private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
-	// The WebFetch role now does real work — reading and parsing the saved files — so it gets several turns; the
-	// terminator is forced on the last one so the loop always finishes (see HelperSession).
-	private const int MaxTurns = 8;
+	// The WebFetch role now does real work — reading and parsing the saved files — so it gets several turns;
+	// the session's wind-down forces the terminator once these run out so the run always finishes.
+	private const int MaxWorkTurns = 8;
 
 	// Resources larger than this are not auto-downloaded: the WebFetch role is told the size and can fetch them
 	// itself with curl/wget via bash if the objective actually needs them.
 	private const long MaxAutoDownloadBytes = 1_048_576;
 
-	// Fetches the resource and interprets it with the WebFetch role: a throwaway sub-session is seeded with the URL,
+	// Fetches the resource and interprets it with the WebFetch role: a child session is seeded with the URL,
 	// the objective, and the paths of the saved files, then returns only what the objective asked for via
-	// return_to_caller. Cost rolls up into the calling session. Everything is contained here.
-	// webFetchRole and webFetchService are pre-resolved by BuildForRole; registry is still passed for runtime fallback.
+	// return_to_caller. Cost rolls up into the calling session.
+	// webFetchRole is pre-resolved by BuildForRole; the spawn delegate runs it as a child session.
 	public async Task<ToolResult> FetchRawAsync(
-		BeastSettings settings,
 		string toolCallId,
 		string url,
 		string objective,
 		Role webFetchRole,
-		LlmRegistry registry,
-		ITransportServer transport,
-		Session parent,
+		SpawnSubagent spawn,
 		int maxOutputTokens,
 		CancellationToken cancellationToken)
 	{
@@ -85,7 +82,7 @@ public class WebFetch
 				}
 			}
 
-			(bool ok, string answer, int tokens) = await HelperSession.RunAsync(settings, parent, webFetchRole, registry, $"fetch_url {url}", seed, MaxTurns, maxOutputTokens, transport, cancellationToken);
+			(bool ok, string answer, int tokens) = await spawn(webFetchRole.Name, $"fetch_url {url}", seed, MaxWorkTurns, maxOutputTokens, cancellationToken);
 			if (!ok)
 			{
 				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

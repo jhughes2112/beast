@@ -77,13 +77,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 			_allSessions.Remove(sessionId);
 	}
 
-	// Spawns a child session under parent for the named role, runs it to completion via a
-	// SessionHandler in child mode, and returns the result through the OnComplete callback.
+	// Spawns a child session under parent for the named role, runs it via a SessionHandler until
+	// it answers, and returns the result through the OnComplete callback. One entry point for
+	// every subagent — Developer, Reviewer, and the helper roles (Explorer, WebFetch) alike.
 	public async Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(
 		BeastSettings settings,
 		Session parent,
 		string roleName,
+		string? displayName,
 		string prompt,
+		int maxWorkTurns,
 		int outputBudgetTokens,
 		CancellationToken ct)
 	{
@@ -101,12 +104,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (service == null)
 			return (false, $"No model available for role '{roleName}'.", 0);
 
-		// Build display name from the first line of the prompt.
-		int nl = prompt.IndexOf('\n');
-		string head = (nl >= 0 ? prompt.Substring(0, nl) : prompt).Trim();
-		if (head.Length > 60)
-			head = head.Substring(0, 60);
-		string displayName = head.Length > 0 ? $"{role.Name} {head}" : role.Name;
+		// No caller-supplied name: build one from the first line of the prompt.
+		if (displayName == null)
+		{
+			int nl = prompt.IndexOf('\n');
+			string head = (nl >= 0 ? prompt.Substring(0, nl) : prompt).Trim();
+			if (head.Length > 60)
+				head = head.Substring(0, 60);
+			displayName = head.Length > 0 ? $"{role.Name} {head}" : role.Name;
+		}
 
 		// Allocate child ID and persist the parent counter so it survives a reload.
 		string childId = parent.AllocateChildId();
@@ -117,26 +123,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string banner = await WorktreeBannerAsync(ct);
 		string seededPrompt = string.IsNullOrEmpty(banner) ? prompt : $"{banner}\n\n{prompt}";
 
-		bool isDeveloper = role.Tools.Contains("task_complete");
-		bool isReview = role.Tools.Contains("finish_review");
-		string terminatorName = isReview ? "finish_review" : (isDeveloper ? "task_complete" : "return_to_caller");
-
+		// The reply obligation is written onto the session itself so it survives save/load and can
+		// travel to a compaction successor: the child knows which tool answers the caller.
 		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
-			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+			role.TerminatorName, outputBudgetTokens, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
 		subSession.UpdateModel(service.Model);
-		subSession.ReplayToTransport();
-		subSession.AddUserMessage(seededPrompt);
 		subSession.AnnounceToClient();
 		parent.AddChild(subSession);
 		RegisterSession(subSession);
+		subSession.AddUserMessage(seededPrompt);
 
 		TaskCompletionSource<(bool ok, string text, int responseTokens)> tcs =
 			new TaskCompletionSource<(bool, string, int)>(TaskCreationOptions.RunContinuationsAsynchronously);
 
 		SessionRunConfig config = new SessionRunConfig(
-			parent, terminatorName, outputBudgetTokens, 75,
-			(ok, text, tokens) => tcs.TrySetResult((ok, text, tokens)));
+			parent, maxWorkTurns, (ok, text, tokens) => tcs.TrySetResult((ok, text, tokens)));
 
 		SessionHandler handler = new SessionHandler(subSession);
 
@@ -180,47 +182,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 	// ---- Root session loop ----
 
-	// Drives one root session chain, restarting after compaction or session replacement until cancelled.
+	// Drives one root session chain until cancelled. Compaction successors are created and
+	// registered by the SessionHandler itself; the handler simply advances along the chain.
 	private async Task RunRootHandlerAsync(Session initial, CancellationToken ct)
 	{
-		Session current = initial;
-
-		while (!ct.IsCancellationRequested)
-		{
-			SessionRunConfig config = new SessionRunConfig(null, null, 0, 0, null);
-			SessionHandler handler = new SessionHandler(current);
-
-			Session next = await handler.RunAsync(config, _registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, ct);
-
-			// Check whether this session was deleted by the orchestrator while the handler was running.
-			bool wasDeleted;
-			lock (_sessionLock)
-				wasDeleted = !_allSessions.ContainsKey(current.Id);
-
-			UnregisterSession(current.Id);
-
-			if (ct.IsCancellationRequested)
-				break;
-
-			if (next != current)
-			{
-				// Compaction returned a new root — follow it.
-				current = next;
-				RegisterSession(current);
-				continue;
-			}
-
-			if (wasDeleted)
-			{
-				// The session was deleted; start a fresh one.
-				current = CreateFreshRootSession(current.Role, current.Ephemeral);
-				RegisterSession(current);
-				_transport.SessionReset(current.Id);
-				continue;
-			}
-
-			break;
-		}
+		SessionRunConfig config = new SessionRunConfig(null, 0, null);
+		SessionHandler handler = new SessionHandler(initial);
+		await handler.RunAsync(config, _registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, ct);
 	}
 
 	// ---- Session initialization ----
@@ -240,7 +208,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		return CreateFreshRootSession(string.Empty, _ephemeral);
 	}
 
-	internal Session CreateFreshRootSession(string roleName, bool ephemeral)
+	private Session CreateFreshRootSession(string roleName, bool ephemeral)
 	{
 		if (string.IsNullOrEmpty(roleName))
 		{
@@ -255,7 +223,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
 		string modelId = model?.ConfigId ?? string.Empty;
 		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName,
-			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
+			string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
 	}
 

@@ -17,11 +17,25 @@ public class BeastSession
 	[JsonPropertyName("model")]
 	public string Model { get; internal set; }
 
+	// JsonInclude: with a JsonConstructor present, properties that are not constructor parameters
+	// are only repopulated on load through public setters; JsonInclude opts the internal setter in.
+	[JsonInclude]
 	[JsonPropertyName("contextWindow")]
 	public int ContextWindow { get; internal set; }
 
 	[JsonPropertyName("role")]
 	public string Role { get; internal set; }
+
+	// The reply obligation this session carries: the terminator tool it must call to answer the
+	// caller that spawned it, and the token budget for that answer. Empty when no caller is
+	// waiting — root sessions, sessions that already replied, and compaction predecessors that
+	// handed the obligation to their successor. Persisted so a reloaded session still knows
+	// whether it may respond as a tool.
+	[JsonPropertyName("terminatorName")]
+	public string TerminatorName { get; internal set; }
+
+	[JsonPropertyName("outputBudgetTokens")]
+	public int OutputBudgetTokens { get; internal set; }
 
 	// Typed canonical conversation history. Single source of truth for the session.
 	// Live protocol listeners keep their own native runtime state and rehydrate from this list
@@ -58,17 +72,20 @@ public class BeastSession
 
 	// Tracks the highest child ID suffix allocated by this session, persisted so that reloaded sessions
 	// do not reuse an already-taken child ID (which would append to an unrelated session file).
+	[JsonInclude]
 	[JsonPropertyName("childCounter")]
 	public int ChildCounter { get; internal set; }
 
 	// Persisted termination status: Ongoing, Success, Failure, or Incomplete. Set by the terminal
 	// tool handler (return_to_caller, task_complete, finish_review) so reloaded sessions remember
 	// how they finished without re-deriving it from code paths.
+	[JsonInclude]
 	[JsonPropertyName("terminalStatus")]
 	public string TerminalStatus { get; internal set; }
 
 	// Creation order for sorting: for root sessions, a global counter assigned at creation.
 	// For child sessions, the child number (N in parentId_N).
+	[JsonInclude]
 	[JsonPropertyName("creationOrder")]
 	public long CreationOrder { get; internal set; }
 
@@ -78,6 +95,8 @@ public class BeastSession
 		string displayName,
 		string model,
 		string role,
+		string terminatorName,
+		int outputBudgetTokens,
 		List<CanonicalMessage> messages,
 		TokenUsageInfo? lastTokenUsage,
 		decimal totalCost,
@@ -90,6 +109,9 @@ public class BeastSession
 		DisplayName = displayName;
 		Model = model;
 		Role = role;
+		// Null-coalesced so session files written before the obligation existed still load.
+		TerminatorName = terminatorName ?? string.Empty;
+		OutputBudgetTokens = outputBudgetTokens;
 		Messages = messages ?? new List<CanonicalMessage>();
 		LastTokenUsage = lastTokenUsage;
 		TotalCost = totalCost;

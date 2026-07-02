@@ -45,6 +45,23 @@ public class Role
 	[JsonPropertyName("end_of_turn_prompt")]
 	public string EndOfTurnPrompt { get; }
 
+	// Terminator tool this role finishes with when run as a subagent, chosen by its tool list;
+	// return_to_caller is the fallback for roles that declare no explicit terminator. Terminators
+	// are mutually exclusive — a role declares at most one.
+	[JsonIgnore]
+	public string TerminatorName
+	{
+		get
+		{
+			string name = "return_to_caller";
+			if (Tools.Contains("task_complete"))
+				name = "task_complete";
+			else if (Tools.Contains("finish_review"))
+				name = "finish_review";
+			return name;
+		}
+	}
+
 	[JsonConstructor]
 	public Role(
 		string name,
