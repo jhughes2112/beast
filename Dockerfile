@@ -38,6 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-21-jdk-headless \
     # Shell / scripting utilities (ripgrep gives the agents fast `rg` search)
     jq sqlite3 zip unzip bc file tree ripgrep \
+    # Networking diagnostics: ping (iputils-ping), dig/nslookup/host (dnsutils), ip/ss (iproute2),
+    # ifconfig/netstat (net-tools), traceroute, and nc (netcat-openbsd) for port checks
+    iputils-ping dnsutils iproute2 net-tools traceroute netcat-openbsd \
     # PDF text extraction (poppler-utils provides `pdftotext`, used by the WebFetch role on PDFs)
     poppler-utils \
     # Archive, document, and text-handling tools — all light. The WebFetch role and agent bash use
@@ -95,6 +98,10 @@ ENV PATH=/usr/local/go/bin:$PATH
 # `find -exec /bin/sh`, `awk 'BEGIN{system(...)}'`, `xargs /bin/sh` all bypass the whole restriction. Bash
 # builtins (echo, pwd, printf, test, read, ...) still work; only external command resolution is narrowed.
 # Names not present on the image are skipped, so the list can name optional tools harmlessly.
+# Network diagnostics are observe-only: ping/traceroute/dig/nslookup/host/ss/netstat answer "can I
+# reach it / what resolves / what's listening" but can't reconfigure anything. `ip` and `ifconfig`
+# stay out (their argument forms mutate interfaces/routes when root), as does `nc` (an arbitrary
+# data channel, not a diagnostic).
 RUN mkdir -p /opt/agent-bins/readonly \
     && for cmd in \
          cat head tail nl tac \
@@ -104,6 +111,7 @@ RUN mkdir -p /opt/agent-bins/readonly \
          od xxd hexdump strings \
          sha256sum sha1sum md5sum b2sum cksum base64 base32 \
          git jq xmllint pdftotext \
+         ping traceroute dig nslookup host ss netstat \
          date uname whoami id which printenv ; do \
          target="$(command -v "$cmd" || true)" ; \
          if [ -n "$target" ]; then ln -sf "$target" "/opt/agent-bins/readonly/$cmd" ; fi ; \
