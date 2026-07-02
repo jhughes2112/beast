@@ -1230,13 +1230,15 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
+					int oldHoverSlot = _hoverSlot;
 					_mouseRow = inputEv.Row;
 					_mouseCol = inputEv.Col;
 					// Over the session-tree panel there is no history block to highlight.
 					bool overPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
 					int? slot = overPanel ? null : SlotAtTerminalRow(inputEv.Row);
 					_hoverSlot = slot ?? -1;
-					Redraw();
+					if (oldHoverSlot != _hoverSlot)
+						Redraw();
 				}
 				continue;
 			}
