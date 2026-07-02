@@ -43,7 +43,7 @@ public class Session
 	// Set by UpdateModel each turn; empty until the first turn or when thinking is off.
 	private string _modelDisplaySuffix = string.Empty;
 
-	private readonly ConcurrentDictionary<string, Session> _children = new ConcurrentDictionary<string, Session>();
+	private readonly Dictionary<string, Session> _children = new Dictionary<string, Session>(StringComparer.Ordinal);
 
 	public SessionLogger QueryLog { get; }
 
@@ -61,6 +61,9 @@ public class Session
 	// system picks" (fresh session, resume, or after /clear). While set, system paths (fallback,
 	// refresh) must not overwrite it — only a new /model command or session rehydration can change it.
 	private string? _userSelectedModel;
+
+	// Last completions payload sent; compared each update to suppress redundant frames.
+	private string _completionsJson = string.Empty;
 
 	// Expose raw data only for persistence (SessionService.Save). All other access goes through
 	// the typed properties and methods below.
@@ -92,6 +95,17 @@ public class Session
 			_data.CumulativeInputTokens, _data.CumulativeOutputTokens,
 			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens);
 		_transport.SessionStatus(_data.Id, _status.ToString());
+	}
+
+	// Updates the tab-completion candidates. Serializes to JSON and sends over transport only when
+	// the candidate list has changed since the last call.
+	public void UpdateCompletions(List<string> candidates)
+	{
+		string json = System.Text.Json.JsonSerializer.Serialize(candidates);
+		if (string.Equals(json, _completionsJson, StringComparison.Ordinal))
+			return;
+		_completionsJson = json;
+		_transport.Completions(_data.Id, json);
 	}
 
 	public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
@@ -167,6 +181,15 @@ public class Session
 		_status = status;
 		_data.TerminalStatus = status.ToString();
 		_transport.SessionStatus(_data.Id, status.ToString());
+	}
+
+	// Resets the session back to Ongoing, clearing the persisted terminal status. Called when
+	// new user input arrives on a completed session so it can run again.
+	public void ResumeFromComplete()
+	{
+		_status = SessionStatus.Ongoing;
+		_data.TerminalStatus = string.Empty;
+		_transport.SessionStatus(_data.Id, SessionStatus.Ongoing.ToString());
 	}
 
 	public SessionStatus Status => _status;
@@ -303,7 +326,7 @@ public class Session
 	// when the queue is empty. The boundary drain uses this to process everything that is waiting.
 	public bool TryDequeuePending(out string? line) => _pending.TryDequeue(out line);
 
-	public void AddChild(Session child) => _children.TryAdd(child.Id, child);
+	public void AddChild(Session child) => _children[child.Id] = child;
 
 	// Routes incoming text to the correct session by ID.
 	// - If targetId matches this session (targetId == _data.Id):

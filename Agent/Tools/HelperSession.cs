@@ -41,8 +41,7 @@ public static class HelperSession
 			return (false, errmsg, 0);
 		}
 
-		BeastSession data = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, 
-parent.Ephemeral);
+		BeastSession data = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session session = new Session(data, role.SystemPrompt, transport, true);
 		session.UpdateModel(service.Model);
 
