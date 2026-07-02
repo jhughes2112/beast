@@ -25,6 +25,7 @@ internal static class SessionTreeLayer
 		Rgb successFg    = new Rgb(130, 170, 210);   // soft blue
 		Rgb failureFg    = new Rgb(210, 140, 140);   // muted red
 		Rgb incompleteFg = new Rgb(140, 140, 140);   // gray
+		Rgb workingFg    = new Rgb(206, 178, 108);   // amber — still owes its caller a reply
 
 		Screen s = new Screen(panelW, h, new Cell(' ', headerFg, panelBg, CellStyle.None));
 
@@ -61,6 +62,7 @@ internal static class SessionTreeLayer
 					SessionStatus.Success    => successFg,
 					SessionStatus.Failure    => failureFg,
 					SessionStatus.Incomplete => incompleteFg,
+					SessionStatus.Working    => workingFg,
 					_                        => new Rgb(160, 160, 160)
 				};
 			}

@@ -465,7 +465,8 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				if (!_busySessions.Contains(effectiveId))
 					session.BusyStartTick = Environment.TickCount64;
 				_busySessions.Add(effectiveId);
-				session.Status = SessionStatus.Ongoing;
+				// Status is the agent's to report (SessionStatus frames), not inferred from busyness:
+				// a busy session may be Working (owes its caller a reply) or plain Ongoing chat.
 				// The separator busy animation reflects the viewed session only; the F10 overlay
 				// dots show every session's busy state independently via NotifySessionList.
 				if (isActive)

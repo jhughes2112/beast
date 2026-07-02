@@ -87,6 +87,10 @@ public class Session
 	// queries it for completion sizing and tool-response reservations.
 	public ContextBudget Budget => _budget;
 
+	// The status the client should display: a session that has not terminated but still owes its
+	// caller a reply reads as Working, distinct from a free-floating Ongoing conversation.
+	private SessionStatus EffectiveStatus => _status == SessionStatus.Ongoing && OwesReply ? SessionStatus.Working : _status;
+
 	// Sends current session stats and termination status to the client.
 	public void SendStats()
 	{
@@ -94,7 +98,7 @@ public class Session
 		_transport.Stats(_data.Id, _data.Model + _modelDisplaySuffix, _data.Role,
 			_data.CumulativeInputTokens, _data.CumulativeOutputTokens,
 			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens);
-		_transport.SessionStatus(_data.Id, _status.ToString());
+		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
 	// Updates the tab-completion candidates. Serializes to JSON and sends over transport only when
@@ -196,12 +200,13 @@ public class Session
 	}
 
 	// Resets the session back to Ongoing, clearing the persisted terminal status. Called when
-	// new user input arrives on a completed session so it can run again.
+	// new user input arrives on a completed session so it can run again. Reported through
+	// EffectiveStatus so a session that still owes its reply reads as Working, not Ongoing.
 	public void ResumeFromComplete()
 	{
 		_status = SessionStatus.Ongoing;
 		_data.TerminalStatus = string.Empty;
-		_transport.SessionStatus(_data.Id, SessionStatus.Ongoing.ToString());
+		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
 	public SessionStatus Status => _status;
@@ -252,12 +257,14 @@ public class Session
 
 	// Ends this session's ability to respond as a tool: called once the reply (or failure report)
 	// has been delivered, or when compaction hands the obligation to a successor. The session
-	// remains viable for conversation afterwards, with no budgets applying.
+	// remains viable for conversation afterwards, with no budgets applying. Pushes the status to
+	// the client since Working derives from the obligation that just cleared.
 	public void ClearReplyObligation()
 	{
 		_data.TerminatorName = string.Empty;
 		_data.OutputBudgetTokens = 0;
 		_data.MaxWorkTurns = 0;
+		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
 	// ---- Mutation ----

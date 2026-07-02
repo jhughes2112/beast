@@ -156,7 +156,9 @@ internal static class SessionTree
 		{
 			string name = sessionDisplayNames.TryGetValue(id, out string? announced) ? announced : id;
 			bool isBusy = busySessions.Contains(id);
-			SessionStatus status = isBusy ? SessionStatus.Ongoing : (sessions.TryGetValue(id, out BeastApp.SessionState? st) ? st.Status : SessionStatus.Ongoing);
+			// Status comes straight from the agent's report — busyness colors the dot, not the name,
+			// so a Working session stays visually distinct whether it is running or parked.
+			SessionStatus status = sessions.TryGetValue(id, out BeastApp.SessionState? st) ? st.Status : SessionStatus.Ongoing;
 			list.Add(new SessionDisplayInfo(id, name, isBusy, depth, status));
 		}
 

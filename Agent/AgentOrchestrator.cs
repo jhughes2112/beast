@@ -428,7 +428,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			// Whoever spawned this session cannot be waiting across a process restart; without a
 			// caller the reply obligation is meaningless and would only steer a revived session
-			// toward answering into the void.
+			// toward answering into the void. A session unloaded before it delivered its reply is
+			// marked Incomplete first, so the tree shows its work was cut short rather than
+			// blending it in with ordinary conversations.
+			if (session.OwesReply && session.Status == SessionStatus.Ongoing)
+				session.SetTerminationStatus(SessionStatus.Incomplete);
 			session.ClearReplyObligation();
 
 			session.AnnounceToClient();

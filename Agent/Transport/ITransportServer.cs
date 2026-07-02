@@ -32,10 +32,11 @@ public enum FrameType : byte
 // Session termination status reported via SessionStatus frames.
 public enum SessionStatus
 {
-	Ongoing,      // Session is currently busy or has not yet finished.
+	Ongoing,      // Free-floating conversation: no caller is owed anything.
 	Success,      // Session finished with a successful result (ok=true).
 	Failure,      // Session finished with a failure (ok=false).
-	Incomplete    // Session ended without any tool call being made.
+	Incomplete,   // Session ended without delivering its reply (no tool call, or unloaded mid-work).
+	Working       // Session still owes its caller a reply — work is pending or in progress.
 }
 
 // Single-character tags that identify the type of a streaming block.
