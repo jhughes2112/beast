@@ -37,6 +37,14 @@ public class BeastSession
 	[JsonPropertyName("outputBudgetTokens")]
 	public int OutputBudgetTokens { get; internal set; }
 
+	// Working-turn budget carried with the reply obligation: how many turns the session may work
+	// before wind-down forces the terminator. 0 = unlimited (root sessions). Travels to a
+	// compaction successor and clears with the obligation — once the caller has been answered,
+	// no budget applies.
+	[JsonInclude]
+	[JsonPropertyName("maxWorkTurns")]
+	public int MaxWorkTurns { get; internal set; }
+
 	// Typed canonical conversation history. Single source of truth for the session.
 	// Live protocol listeners keep their own native runtime state and rehydrate from this list
 	// on creation or model switch.
@@ -119,6 +127,7 @@ public class BeastSession
 		CumulativeOutputTokens = cumulativeOutputTokens;
 		CurrentContextSize = currentContextSize;
 		Ephemeral = ephemeral;
+		MaxWorkTurns = 0;
 		ChildCounter = 0;
 		TerminalStatus = "Ongoing";
 		CreationOrder = 0;

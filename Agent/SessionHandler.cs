@@ -5,11 +5,12 @@ using System.Threading.Tasks;
 
 
 // Drives one session chain to completion. Every session runs the same loop; the differences are
-// configured, never discovered: the session itself carries its reply obligation (terminator tool
-// and output budget, persisted on BeastSession so it survives save/load), SessionRunConfig
-// declares the turn budget and parent linkage (root sessions declare none of them), the Role's
-// tool list declares which capabilities ToolFactory grants, and the Role's prompts drive
-// compaction and nudges.
+// configured, never discovered: the session itself carries its reply obligation (terminator tool,
+// output budget, and work-turn budget, all persisted on BeastSession so they survive save/load
+// and travel to compaction successors; root sessions carry none of them), the orchestrator
+// resolves the parent linkage from the session id and holds the live completion callback for a
+// waiting caller, the Role's tool list declares which capabilities ToolFactory grants, and the
+// Role's prompts drive compaction and nudges.
 //
 // Sessions are never mutated in place. Compaction appends a fresh successor session to the chain
 // and the handler advances to it; the reply obligation is handed to the successor while the
@@ -51,23 +52,19 @@ public class SessionHandler
 		_scope = new CancellationTokenSource();
 	}
 
-	// Drives the session chain until it naturally ends: cancellation for a session without a turn
-	// budget, or budget exhaustion. Answering the caller does not end the run — the session stays
-	// alive after its reply so the user can keep interacting with it.
-	public async Task RunAsync(SessionRunConfig config, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, WebSearchConfig? webSearchConfig, CancellationToken ct)
+	// Drives the session chain until shutdown. Answering the caller does not end the run — the
+	// session stays alive after its reply so the user can keep interacting with it. replayOnStart
+	// is true only for a resumed root (the client has not seen its history yet); fresh children
+	// have nothing committed, and revived sessions were already replayed by the restore pass or
+	// streamed live.
+	public async Task RunAsync(LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, WebSearchConfig? webSearchConfig, bool replayOnStart, CancellationToken ct)
 	{
-		// Only replay history that already existed before this handler started.
-		// Fresh child sessions have no committed messages yet (the seeded prompt is still
-		// pending in the queue) so replaying would produce an empty/duplicate stream.
-		// Resumed sessions (loaded from disk) need the full replay so the client sees them.
-		if (config.Parent == null || _activeSession.Data.Messages.Count > 1)
+		if (replayOnStart)
 			_activeSession.ReplayToTransport();
 		_activeSession.SendStats();
 		_activeSession.AnnounceToClient();
 
 		const int kMaxWindDownTurns = 5;
-		int maxWork = config.MaxWorkTurns > 0 ? config.MaxWorkTurns : int.MaxValue;
-		int maxTotal = config.MaxWorkTurns > 0 ? config.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
 		int turn = 0;
 		Role? role = null;
 
@@ -75,8 +72,16 @@ public class SessionHandler
 
 		try
 		{
-			while (!ct.IsCancellationRequested && turn < maxTotal)
+			// Handlers run until shutdown: a session that exists is always serviced. Budgets never end
+			// the run — running out of turns while a reply is owed forces the answer out (step 7) and
+			// the session continues as a free-floating conversation.
+			while (!ct.IsCancellationRequested)
 			{
+				// Budgets live on the session (part of its reply obligation), so they survive reload,
+				// travel to compaction successors, and clear the moment the caller has been answered.
+				int maxWork = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns : int.MaxValue;
+				int maxTotal = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
+
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
 				DrainInput(roleService, registry, transport);
 				role = roleService.GetRole(_activeSession.Role);
@@ -87,7 +92,7 @@ public class SessionHandler
 				if (_wantsCompact)
 				{
 					_wantsCompact = false;
-					await CompactAsync(role, config, registry, roleService, transport, orchestrator, ct);
+					await CompactAsync(role, registry, roleService, transport, orchestrator, ct);
 				}
 
 				// 3. Wait if there is nothing to do.
@@ -126,7 +131,7 @@ public class SessionHandler
 				// 5. Compact when the context filled mid-cluster. When that fails the session cannot
 				// make further progress on this model: report it (which also unblocks a waiting
 				// caller) and force a service re-check so the loop parks instead of spinning.
-				if (contextFull && !await CompactAsync(role, config, registry, roleService, transport, orchestrator, ct))
+				if (contextFull && !await CompactAsync(role, registry, roleService, transport, orchestrator, ct))
 				{
 					transport.Status(_activeSession.Id, "Context window full and compaction failed. Use /model to switch to a larger model.");
 					_service = null;
@@ -139,11 +144,18 @@ public class SessionHandler
 				// to accept new user input.
 				if (_terminatorCalled || _lastFailure != null)
 				{
-					NotifyComplete(role.Name, config);
+					NotifyComplete(role.Name, orchestrator);
 					_lastFailure = null;
 					_terminatorCalled = false;
 				}
 				turn++;
+
+				// 7. Out of turns while still owing a reply: answer the caller now with whatever the
+				// session produced (NotifyComplete salvages the last assistant text). The obligation —
+				// and with it every budget — is cleared; from here on this is just a session the user
+				// can chat with.
+				if (_activeSession.OwesReply && turn >= maxTotal)
+					NotifyComplete(role.Name, orchestrator);
 			}
 		}
 		catch (OperationCanceledException)
@@ -156,9 +168,16 @@ public class SessionHandler
 			_scope.Dispose();
 			if (!_activeSession.Ephemeral)
 				SaveSession(_activeSession);
-			RollUpCost(config);
+			RollUpCost(orchestrator);
 			_activeSession.SendIdle();
-			NotifyComplete(role?.Name ?? _activeSession.Role, config);
+			NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator);
+
+			// The loop only exits on shutdown or an unhandled failure. Release the session either way;
+			// after a failure with input already queued, hand it straight back to the orchestrator so
+			// a fresh handler processes that input rather than leaving it to sit.
+			_activeSession.DetachHandler();
+			if (!ct.IsCancellationRequested && _activeSession.HasPending)
+				orchestrator.EnsureHandler(_activeSession);
 		}
 	}
 
@@ -390,7 +409,7 @@ public class SessionHandler
 	// predecessor can no longer answer as a tool but is otherwise left intact: saved, registered,
 	// and replayable as forensics. Returns false when no summary could be produced or no service
 	// was available for the successor.
-	private async Task<bool> CompactAsync(Role? role, SessionRunConfig config, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
+	private async Task<bool> CompactAsync(Role? role, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
 		bool compacted = false;
 		if (role == null || string.IsNullOrEmpty(role.SummaryPrompt))
@@ -409,27 +428,30 @@ public class SessionHandler
 			else
 			{
 				Session predecessor = _activeSession;
+				Session? parent = orchestrator.FindParent(predecessor);
 
-				// Hand the reply obligation to the successor before the predecessor is saved, so a
-				// reload never resurrects two sessions both claiming to answer the same caller.
+				// Hand the reply obligation (terminator, output budget, turn budget) to the successor
+				// before the predecessor is saved, so a reload never resurrects two sessions both
+				// claiming to answer the same caller.
 				string terminatorName = predecessor.TerminatorName;
 				int outputBudgetTokens = predecessor.OutputBudgetTokens;
+				int maxWorkTurns = predecessor.MaxWorkTurns;
 				predecessor.ClearReplyObligation();
 
 				predecessor.SetDispatchScope(null);
 				predecessor.SendIdle();
 				if (!predecessor.Ephemeral)
 					SaveSession(predecessor);
-				RollUpCost(config);
+				RollUpCost(orchestrator);
 
 				// A child successor gets the next ID under the same parent; a root successor gets a
 				// fresh GUID. Everything else about the two is identical.
 				string successorId;
-				if (config.Parent != null)
+				if (parent != null)
 				{
-					successorId = config.Parent.AllocateChildId();
-					if (!config.Parent.Ephemeral)
-						SessionService.Save(config.Parent.Data);
+					successorId = parent.AllocateChildId();
+					if (!parent.Ephemeral)
+						SessionService.Save(parent.Data);
 				}
 				else
 				{
@@ -440,22 +462,36 @@ public class SessionHandler
 					service.Model.ConfigId, role.Name, terminatorName, outputBudgetTokens,
 					new List<CanonicalMessage>(), null, 0m, 0, 0, 0, predecessor.Ephemeral);
 				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
+				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.UpdateModel(service.Model);
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
 				successor.SetDispatchScope(_scope);
 				successor.AnnounceToClient();
-				if (config.Parent == null)
+				if (parent == null)
 					transport.SessionReset(successor.Id);
 				successor.Bundle.Canonical.OnUserMessage(summary);
-				if (config.Parent != null)
+				if (parent != null)
 				{
 					successor.ReplayToTransport();
-					config.Parent.AddChild(successor);
+					parent.AddChild(successor);
 				}
 				if (!successor.Ephemeral)
 					SaveSession(successor);
 				orchestrator.RegisterSession(successor);
+
+				// The caller waiting on the predecessor (if any) is now waiting on the successor,
+				// which inherited the obligation to answer it.
+				orchestrator.TransferCompletion(predecessor.Id, successor.Id);
+
+				// This handler now drives the successor. The predecessor gets its own handler right
+				// away — every session that exists is serviced — parked on the input wait until the
+				// user actually talks to it (its context is full, so an unprompted turn would only
+				// trigger another compaction).
+				successor.TryAttachHandler();
+				predecessor.DetachHandler();
+				predecessor.MarkInterrupted();
+				orchestrator.EnsureHandler(predecessor);
 
 				_activeSession = successor;
 				_service = service;
@@ -755,7 +791,7 @@ public class SessionHandler
 	// last assistant text, then clears the session's reply obligation — it remains viable for
 	// conversation but can no longer respond as a tool. A no-op when no reply is owed, which is
 	// what makes it safe to call from both the turn loop and the run's finally.
-	private void NotifyComplete(string roleName, SessionRunConfig config)
+	private void NotifyComplete(string roleName, ISessionOrchestrator orchestrator)
 	{
 		if (_activeSession.OwesReply)
 		{
@@ -793,9 +829,8 @@ public class SessionHandler
 
 			// Bill the parent before the caller resumes so its cost display is current at the
 			// moment the tool result lands.
-			RollUpCost(config);
-			if (config.OnComplete != null)
-				config.OnComplete(ok, output, tokens);
+			RollUpCost(orchestrator);
+			orchestrator.CompleteSession(_activeSession.Id, ok, output, tokens);
 			_activeSession.ClearReplyObligation();
 			if (!_activeSession.Ephemeral)
 				SaveSession(_activeSession);
@@ -804,11 +839,12 @@ public class SessionHandler
 
 	// Rolls the active session's spend up into the parent, recording only what has not been
 	// recorded yet. Runs at reply time, at compaction hand-off, and at handler exit.
-	private void RollUpCost(SessionRunConfig config)
+	private void RollUpCost(ISessionOrchestrator orchestrator)
 	{
-		if (config.Parent != null)
+		Session? parent = orchestrator.FindParent(_activeSession);
+		if (parent != null)
 		{
-			config.Parent.RecordCost(_activeSession.TotalCost - _costRecordedToParent);
+			parent.RecordCost(_activeSession.TotalCost - _costRecordedToParent);
 			_costRecordedToParent = _activeSession.TotalCost;
 		}
 	}

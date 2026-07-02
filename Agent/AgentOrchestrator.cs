@@ -24,6 +24,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private readonly object _sessionLock = new object();
 	private readonly Dictionary<string, Session> _allSessions = new Dictionary<string, Session>(StringComparer.Ordinal);
 
+	// Live completion callbacks, keyed by the session that owes the reply: each is a caller in this
+	// process awaiting SpawnChildAsync's result. Deliberately not persisted — a session loaded from
+	// disk can have no waiting caller, so it reconstitutes with no callback and just chats.
+	// Compaction re-keys an entry to the successor that inherited the obligation. Guarded by _sessionLock.
+	private readonly Dictionary<string, Action<bool, string, int>> _completions = new Dictionary<string, Action<bool, string, int>>(StringComparer.Ordinal);
+
 	public AgentOrchestrator(
 		LlmRegistry registry,
 		RoleService roleService,
@@ -128,6 +134,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
 			role.TerminatorName, outputBudgetTokens, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
+		// Claim the session before registering it so no Deliver can slip in and start a second,
+		// generic handler ahead of the configured one below.
+		subSession.TryAttachHandler();
 		subSession.UpdateModel(service.Model);
 		subSession.AnnounceToClient();
 		parent.AddChild(subSession);
@@ -137,15 +146,29 @@ public class AgentOrchestrator : ISessionOrchestrator
 		TaskCompletionSource<(bool ok, string text, int responseTokens)> tcs =
 			new TaskCompletionSource<(bool, string, int)>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-		SessionRunConfig config = new SessionRunConfig(
-			parent, maxWorkTurns, (ok, text, tokens) => tcs.TrySetResult((ok, text, tokens)));
+		// The work-turn budget rides on the session with the rest of the reply obligation; the live
+		// callback that resolves this caller is registered against the session id (and follows the
+		// obligation to a compaction successor via TransferCompletion).
+		subSession.SetMaxWorkTurns(maxWorkTurns);
+		lock (_sessionLock)
+			_completions[subSession.Id] = (ok, text, tokens) => tcs.TrySetResult((ok, text, tokens));
 
 		SessionHandler handler = new SessionHandler(subSession);
 
-		// Fire-and-forget: the handler keeps the session alive after the terminator fires so the
-		// user can continue interacting with it. The TCS resolves at the first OnComplete callback.
-		// The local function owns the lifetime: unregisters the session and sets a fallback result
-		// (no-op if OnComplete already resolved the TCS) once the handler truly exits.
+		// The handler runs on the orchestrator's lifetime token, not the caller's turn scope: the
+		// session must outlive the parent's turn so the user can keep talking to it after it answers.
+		// The caller's ct instead governs the wait below — a parent /cancel unblocks the caller
+		// immediately and interrupts the child's current work, but the child session itself survives
+		// (dormant if its handler winds down) and is revived by EnsureHandler on the next message.
+		using CancellationTokenRegistration cancelReg = ct.Register(() =>
+		{
+			subSession.Interrupt();
+			tcs.TrySetCanceled(ct);
+		});
+
+		// Fire-and-forget: the handler keeps servicing the session after the terminator fires so the
+		// user can continue interacting with it. The TCS resolves at the first OnComplete callback;
+		// the fallback result is a no-op if OnComplete already resolved it.
 		_ = RunChildAndCleanUpAsync();
 		return await tcs.Task;
 
@@ -153,31 +176,108 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			try
 			{
-				await handler.RunAsync(config, _registry, _roleService, _settings, _transport, this, settings.WebSearch, ct);
+				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, settings.WebSearch, replayOnStart: false, _cancellationTokenSource.Token);
 			}
 			catch (OperationCanceledException)
 			{
-				tcs.TrySetCanceled(ct);
+				tcs.TrySetCanceled(_cancellationTokenSource.Token);
 			}
 			catch (Exception ex)
 			{
+				Console.Error.WriteLine($"[Orchestrator] Child session {subSession.Id} handler failed: {ex}");
 				tcs.TrySetResult((false, ex.Message, 0));
 			}
 			finally
 			{
-				UnregisterSession(subSession.Id);
 				tcs.TrySetResult((false, "The subagent finished without returning a result.", 0));
 			}
 		}
 	}
 
-	// Routes a message to the session identified by sessionId.
+	// Routes a message to the session identified by sessionId. Every registered session normally
+	// has a servicing handler already; EnsureHandler here is a self-healing backstop for the one
+	// way a handler can die early (an unhandled failure) — the next message restarts it instead of
+	// queuing forever.
 	public void Deliver(string sessionId, string content)
 	{
 		Session? session;
 		lock (_sessionLock)
 			_allSessions.TryGetValue(sessionId, out session);
-		session?.Deliver(sessionId, content);
+		if (session != null)
+		{
+			session.Deliver(sessionId, content);
+			EnsureHandler(session);
+		}
+	}
+
+	// Starts the servicing handler for a session when none is attached; a no-op otherwise. Called
+	// eagerly wherever a session comes into existence without its own configured handler (restored
+	// from disk, compaction predecessor) and as a backstop from Deliver. Runs on the orchestrator's
+	// lifetime token. Everything the handler needs is reconstituted from the session itself: the
+	// budgets ride on BeastSession, the parent resolves from the session id, and a completion
+	// callback exists only if a live caller registered one.
+	public void EnsureHandler(Session session)
+	{
+		if (!session.TryAttachHandler())
+			return;
+
+		SessionHandler handler = new SessionHandler(session);
+		_ = RunRevivedAsync();
+
+		async Task RunRevivedAsync()
+		{
+			try
+			{
+				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, replayOnStart: false, _cancellationTokenSource.Token);
+			}
+			catch (OperationCanceledException)
+			{
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"[Orchestrator] Revived session {session.Id} handler failed: {ex}");
+			}
+		}
+	}
+
+	// Resolves the registered parent Session for a child id ("parentId_N"), or null for roots and
+	// parents that are no longer registered.
+	public Session? FindParent(Session session)
+	{
+		string? parentId = GetParentId(session.Id);
+		Session? parent = null;
+		if (parentId != null)
+		{
+			lock (_sessionLock)
+				_allSessions.TryGetValue(parentId, out parent);
+		}
+		return parent;
+	}
+
+	// Moves a waiting caller's callback to the compaction successor that inherited the obligation.
+	public void TransferCompletion(string fromSessionId, string toSessionId)
+	{
+		lock (_sessionLock)
+		{
+			if (_completions.TryGetValue(fromSessionId, out Action<bool, string, int>? callback))
+			{
+				_completions.Remove(fromSessionId);
+				_completions[toSessionId] = callback;
+			}
+		}
+	}
+
+	// Fires and clears the callback waiting on this session, if any. A no-op for sessions with no
+	// live caller (roots, restored sessions, sessions that already answered).
+	public void CompleteSession(string sessionId, bool ok, string text, int responseTokens)
+	{
+		Action<bool, string, int>? callback;
+		lock (_sessionLock)
+		{
+			if (_completions.TryGetValue(sessionId, out callback))
+				_completions.Remove(sessionId);
+		}
+		callback?.Invoke(ok, text, responseTokens);
 	}
 
 	// ---- Root session loop ----
@@ -186,9 +286,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// registered by the SessionHandler itself; the handler simply advances along the chain.
 	private async Task RunRootHandlerAsync(Session initial, CancellationToken ct)
 	{
-		SessionRunConfig config = new SessionRunConfig(null, 0, null);
 		SessionHandler handler = new SessionHandler(initial);
-		await handler.RunAsync(config, _registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, ct);
+		initial.TryAttachHandler();
+		await handler.RunAsync(_registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, replayOnStart: true, ct);
 	}
 
 	// ---- Session initialization ----
@@ -319,10 +419,31 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		foreach (SessionService.SessionFileInfo info in ordered)
 		{
-			Session session = new Session(info.Session, string.Empty, _transport, true);
+			// The resumed root already has a live, registered Session; its handler replays it.
+			// Building a second wrapper for it here would shadow the live one in the registry.
+			if (string.Equals(info.Session.Id, root.Id, StringComparison.Ordinal))
+				continue;
+
+			Session session = new Session(info.Session, string.Empty, _transport, info.Session.Id.Contains('_'));
+
+			// Whoever spawned this session cannot be waiting across a process restart; without a
+			// caller the reply obligation is meaningless and would only steer a revived session
+			// toward answering into the void.
+			session.ClearReplyObligation();
+
 			session.AnnounceToClient();
 			session.SendStats();
 			session.ReplayToTransport();
+
+			// Park the session until real user input arrives: an interrupted save can end with
+			// dangling tool calls, and a fleet of restored sessions must not start running turns
+			// (and spending tokens) on their own at startup.
+			session.MarkInterrupted();
+
+			// Every session that exists is serviced: register it and start its handler immediately.
+			// The handler sits in the idle wait until the user talks to it.
+			RegisterSession(session);
+			EnsureHandler(session);
 		}
 	}
 
@@ -408,7 +529,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 				lock (_sessionLock)
 					all = new List<Session>(_allSessions.Values);
 				foreach (Session s in all)
+				{
 					s.Deliver(s.Id, content);
+					EnsureHandler(s);
+				}
 			}
 		}
 	}

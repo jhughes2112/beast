@@ -27,4 +27,22 @@ public interface ISessionOrchestrator
 	// Removes a session from the orchestrator's tracking. Called when a session is
 	// compacted, deleted, or replaced.
 	void UnregisterSession(string sessionId);
+
+	// Starts the servicing handler for a session when none is attached; a no-op while one is
+	// already driving it. Every session that exists gets a handler — this is how sessions without
+	// their own configured handler (restored from disk, compaction predecessors) get serviced, and
+	// Deliver uses it as a self-healing backstop after a handler failure.
+	void EnsureHandler(Session session);
+
+	// Resolves the registered parent of a child session ("parentId_N") for cost rollup and
+	// child-id allocation. Null for roots and for parents no longer registered.
+	Session? FindParent(Session session);
+
+	// Moves the live completion callback (a caller awaiting the session's reply) from a compacted
+	// session to its successor, which inherited the reply obligation.
+	void TransferCompletion(string fromSessionId, string toSessionId);
+
+	// Resolves and clears the completion callback waiting on this session, if any. Loaded-from-disk
+	// sessions never have one — a callback is a live caller in this process, not persistable state.
+	void CompleteSession(string sessionId, bool ok, string text, int responseTokens);
 }

@@ -147,6 +147,18 @@ public class Session
 		return $"{_data.Id}_{n}";
 	}
 
+	// ---- Handler attachment ----
+
+	// At most one SessionHandler may drive this session at a time. Every handler-start path claims
+	// the session via TryAttachHandler first; the handler detaches on exit (or hands attachment to
+	// its compaction successor). The orchestrator uses this to revive a dormant session — one whose
+	// handler has exited — with a fresh handler when new input arrives for it.
+	private int _handlerAttached;
+
+	public bool TryAttachHandler() => Interlocked.CompareExchange(ref _handlerAttached, 1, 0) == 0;
+
+	public void DetachHandler() => Interlocked.Exchange(ref _handlerAttached, 0);
+
 	// ---- Busy/Idle signaling ----
 
 	// Reference count: Busy fires on 0→1, Idle fires on 1→0.
@@ -229,16 +241,23 @@ public class Session
 	// Token budget for the terminator reply. 0 = no limit.
 	public int OutputBudgetTokens => _data.OutputBudgetTokens;
 
+	// Working-turn budget before wind-down forces the terminator. 0 = unlimited. Part of the
+	// reply obligation: set at spawn, handed to a compaction successor, cleared with the reply.
+	public int MaxWorkTurns => _data.MaxWorkTurns;
+
+	public void SetMaxWorkTurns(int maxWorkTurns) => _data.MaxWorkTurns = maxWorkTurns;
+
 	// True while this session may still respond to its caller as a tool.
 	public bool OwesReply => !string.IsNullOrEmpty(_data.TerminatorName);
 
 	// Ends this session's ability to respond as a tool: called once the reply (or failure report)
 	// has been delivered, or when compaction hands the obligation to a successor. The session
-	// remains viable for conversation afterwards.
+	// remains viable for conversation afterwards, with no budgets applying.
 	public void ClearReplyObligation()
 	{
 		_data.TerminatorName = string.Empty;
 		_data.OutputBudgetTokens = 0;
+		_data.MaxWorkTurns = 0;
 	}
 
 	// ---- Mutation ----
