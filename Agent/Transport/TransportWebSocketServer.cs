@@ -145,6 +145,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 	public void SessionAnnounce(string sessionId, string json) => Send(FrameType.SessionAnnounce, sessionId, json);
 	public void SessionReset(string sessionId) => Send(FrameType.SessionReset, sessionId, string.Empty);
 	public void SessionStatus(string sessionId, string status) => Send(FrameType.SessionStatus, sessionId, status);
+	public void PendingQueue(string sessionId, string[] lines) => Send(FrameType.PendingQueue, sessionId, string.Join("\n", lines));
 	public void StreamStart(string sessionId, string tag) => Send(FrameType.StreamStart, sessionId, tag);
 	public void StreamChunk(string sessionId, string chunk) => Send(FrameType.StreamChunk, sessionId, chunk);
 	public void StreamEnd(string sessionId, string tag) => Send(FrameType.StreamEnd, sessionId, tag);

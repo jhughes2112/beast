@@ -24,6 +24,7 @@ public class TransportConsoleDebug : ITransportServer
 	public void SessionAnnounce(string sessionId, string json) { }
 	public void SessionReset(string sessionId) => Console.WriteLine($"{sessionId} [session-reset]");
 	public void SessionStatus(string sessionId, string status) => Console.WriteLine($"{sessionId} [session-status] {status}");
+	public void PendingQueue(string sessionId, string[] lines) { }
 
 	// Streaming renders inline so the user sees tokens as they arrive.
 	public void StreamStart(string sessionId, string tag) => Console.Write($"{sessionId} [stream:{tag}] ");

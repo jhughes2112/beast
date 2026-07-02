@@ -25,7 +25,8 @@ public enum FrameType : byte
 	Busy = 17,             // agent is actively processing
 	SessionAnnounce = 18,  // agent announces a session; content is JSON {id, name}
 	SessionReset = 19,     // agent reset its session set (e.g. active root deleted from F10); client forgets all sessions and adopts the named one
-	SessionStatus = 20     // agent reports a session's termination status; content is a SessionStatus enum name
+	SessionStatus = 20,    // agent reports a session's termination status; content is a SessionStatus enum name
+	PendingQueue = 21      // agent sends the current pending-input queue snapshot; content is newline-delimited lines
 }
 
 // Session termination status reported via SessionStatus frames.
@@ -74,6 +75,9 @@ public interface ITransportServer
 	// Tells the client to forget every session it knows and adopt the named one as the sole active session.
 	// Sent when the agent stands up a fresh root (e.g. the active root was deleted from F10) so the F10 list resets.
 	void SessionReset(string sessionId);
+	// Sends the current pending-input queue snapshot so the client can rebuild the ghost region exactly.
+	// Content is a newline-delimited list of the queued lines (empty string = queue is empty).
+	void PendingQueue(string sessionId, string[] lines);
 	// Reports a session's termination status (Success / Failure / Incomplete) so the F10 overlay can color it.
 	void SessionStatus(string sessionId, string status);
 	// Streaming: bracket a sequence of incremental chunks with start/end frames.

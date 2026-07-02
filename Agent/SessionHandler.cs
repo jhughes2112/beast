@@ -17,6 +17,7 @@ public class SessionHandler
 	// May change when a child session compacts.
 	private Session _activeSession;
 	private LlmService? _service;
+	private string? _nextModel;
 	private bool _wantsCompact;
 
 	// Terminator sink written by the tool callbacks, read after each dispatch round.
@@ -125,8 +126,19 @@ public class SessionHandler
 					bool turnComplete = false;
 					while (!turnComplete)
 					{
-						// /model in a DrainInput steering path may have nulled _service; re-check and
-						// break to the outer loop which will wait for a valid service via step 4.
+						// Reconcile service with any deferred /model switch before each LLM call.
+						if (_nextModel != null && (_service == null || _nextModel != _service.Model.ConfigId))
+						{
+							LlmModel? target = registry.GetModel(_nextModel);
+							if (target != null)
+							{
+								_activeSession.UpdateModel(target);
+								LlmService? switched = RefreshService(role, _activeSession, registry);
+								if (switched != null)
+									_service = switched;
+								_nextModel = null;
+							}
+						}
 						if (_service == null)
 							break;
 						LlmService service = _service;
@@ -581,13 +593,11 @@ public class SessionHandler
 							}
 							else
 							{
-								_activeSession.UpdateModel(targetModel);
+								_nextModel = targetModel.ConfigId;
 								_activeSession.MarkModelUserSelected(modelArg);
 								registry.ResetAvailability(modelArg);
-								_service = null;
 								_lastInputTokens = 0;
-								transport.Status(_activeSession.Id, $"Model set to {modelArg}");
-								_activeSession.SendStats();
+								transport.Status(_activeSession.Id, $"Model queued: {modelArg}");
 								if (_activeSession.Status != SessionStatus.Ongoing)
 									_activeSession.ResumeFromComplete();
 							}
@@ -602,6 +612,7 @@ public class SessionHandler
 					break;
 			}
 		}
+		transport.PendingQueue(_activeSession.Id, _activeSession.PeekAllPending());
 	}
 
 	// ---- Tool building ----
@@ -693,21 +704,26 @@ public class SessionHandler
 	}
 
 	// Waits for input or until the model becomes available again, whichever comes first.
-	// Uses an exact delay derived from the registry's rate-limit backoff so there is no polling:
-	// either user input wakes the semaphore or the precise timer fires. For permanently-down
-	// models (long.MaxValue) a 60s sentinel keeps the status message fresh in case /reload
-	// or /model is issued without triggering the input signal.
+	// When the model is immediately available, waits on the input signal so the loop always
+	// has a real async yield point — without it the loop spins synchronously and starves other
+	// async tasks (including the transport read loop that delivers user input).
 	private async Task WaitForInputOrModelAsync(CancellationToken ct, Role? role, LlmRegistry registry, ITransportServer transport)
 	{
 		long waitMs = role != null ? registry.GetMillisecondsUntilAvailable(role) : 1000;
+
 		if (waitMs == 0)
+		{
+			// Model is ready; block until the user sends input. This is the normal idle path
+			// and must be a real await so other continuations (transport receive, etc.) can run.
+			try { await _activeSession.WaitForInputAsync(ct); }
+			catch (OperationCanceledException) { }
 			return;
+		}
 
 		int delayMs = waitMs == long.MaxValue ? 60000 : (int)Math.Min(waitMs, int.MaxValue);
-		if (role != null)
-			transport.Status(_activeSession.Id, waitMs == long.MaxValue
-				? "No Models Available"
-				: $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
+		transport.Status(_activeSession.Id, waitMs == long.MaxValue
+			? "No Models Available"
+			: $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
 
 		using CancellationTokenSource waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 		Task waitTask = _activeSession.WaitForInputAsync(waitCts.Token);

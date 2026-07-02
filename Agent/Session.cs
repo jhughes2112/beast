@@ -326,6 +326,9 @@ public class Session
 	// when the queue is empty. The boundary drain uses this to process everything that is waiting.
 	public bool TryDequeuePending(out string? line) => _pending.TryDequeue(out line);
 
+	// Returns a snapshot of everything currently in the pending queue without consuming any items.
+	public string[] PeekAllPending() => _pending.ToArray();
+
 	public void AddChild(Session child) => _children[child.Id] = child;
 
 	// Routes incoming text to the correct session by ID.

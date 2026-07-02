@@ -32,6 +32,9 @@ public interface IDisplay
 	// Clears the given session's pending-input ghost shown above the input separator. Called when that
 	// session echoes a user message back, meaning its queued steering text was consumed.
 	void ClearPendingGhost(string sessionId);
+	// Replaces the given session's pending-input ghost with the provided lines. Called whenever the
+	// agent sends a PendingQueue snapshot so the ghost reflects exactly what is still queued.
+	void SetPendingGhost(string sessionId, string[] lines);
 	// True when auto-tracking of incoming messages should be suppressed: the session overlay
 	// is open or the user has scrolled away from the bottom of the conversation.
 	bool IsAutoTrackSuppressed();

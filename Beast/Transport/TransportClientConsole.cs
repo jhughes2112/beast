@@ -23,6 +23,7 @@ public class TransportClientConsole : ITransportServer
 	public void SessionAnnounce(string sessionId, string json) { }
 	public void SessionReset(string sessionId) { }
 	public void SessionStatus(string sessionId, string status) { }
+	public void PendingQueue(string sessionId, string[] lines) { }
 	public void StreamStart(string sessionId, string tag) { }
 	public void StreamChunk(string sessionId, string chunk) { }
 	public void StreamEnd(string sessionId, string tag) { }

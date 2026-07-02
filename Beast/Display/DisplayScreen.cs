@@ -337,6 +337,19 @@ public class DisplayScreen : IDisplay
 		}
 	}
 
+	public void SetPendingGhost(string sessionId, string[] lines)
+	{
+		lock (_consoleLock)
+		{
+			if (lines.Length == 0)
+				_pendingGhost.Remove(sessionId);
+			else
+				_pendingGhost[sessionId] = new List<string>(lines);
+			if (string.Equals(sessionId, _sessionActiveId, StringComparison.Ordinal))
+				Redraw();
+		}
+	}
+
 	public bool IsAutoTrackSuppressed()
 	{
 		lock (_consoleLock)
@@ -1875,24 +1888,7 @@ public class DisplayScreen : IDisplay
 				return;
 			}
 
-			// Optimistically reflect a /model <id> change in the status bar immediately rather than
-			// waiting for the agent to round-trip a Stats frame back to us.
-			if (verb.Equals("model", StringComparison.OrdinalIgnoreCase) && spaceIdx >= 0)
-			{
-				// Completions append a pricing annotation after the id; keep only the id token.
-				string newModel = trimmed.Substring(spaceIdx + 1).Trim();
-				int modelSpace = newModel.IndexOf(' ');
-				if (modelSpace >= 0)
-					newModel = newModel.Substring(0, modelSpace);
-				if (newModel.Length > 0)
-				{
-					lock (_consoleLock)
-					{
-						_modelOverride = newModel;
-						Redraw();
-					}
-				}
-			}
+
 		}
 
 		if (_sendAsync == null)

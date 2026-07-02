@@ -519,9 +519,14 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 			case FrameType.User:
 				session.Model.Update(session.NextIndex++, FrameType.User, content);
-				// The agent echoing a user message back means this session's queued steering text was
-				// consumed — clear its pending ghost (even if a different session is currently viewed).
-				_display.ClearPendingGhost(effectiveId);
+				break;
+
+			case FrameType.PendingQueue:
+				// Agent sent the current queue snapshot — rebuild the ghost to match exactly.
+				string[] pendingLines = string.IsNullOrEmpty(content)
+					? Array.Empty<string>()
+					: content.Split('\n');
+				_display.SetPendingGhost(effectiveId, pendingLines);
 				break;
 
 			case FrameType.ToolCall:
