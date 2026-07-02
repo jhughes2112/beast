@@ -329,10 +329,13 @@ public class ProtocolChatCompletions
 
 				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 				{
+					string rateLimitMessage = string.IsNullOrEmpty(responseBody)
+						? $"HTTP {(int)httpResponse.StatusCode} with empty response body. Endpoint: {model.Endpoint}"
+						: responseBody;
 					return logger.ProtocolFailure(
 						ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody)),
 						model, DetectedProtocol.ChatCompletions, "RateLimited",
-						(int)httpResponse.StatusCode, responseBody, responseBody, null);
+						(int)httpResponse.StatusCode, rateLimitMessage, responseBody, null);
 				}
 
 				int statusCode = (int)httpResponse.StatusCode;
@@ -541,6 +544,9 @@ httpResponse);
 		{
 			string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 			int statusCode = (int)httpResponse.StatusCode;
+			string errorLogMessage = string.IsNullOrEmpty(errorBody)
+				? $"HTTP {statusCode} with empty response body. Endpoint: {url}"
+				: errorBody;
 
 			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
 			// the provider rejects streaming for this model, so we disable it and fall through to
@@ -552,7 +558,7 @@ httpResponse);
 				logger.ProtocolFailure(
 					model, DetectedProtocol.ChatCompletions,
 					statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
-					statusCode, errorBody, errorBody, null);
+					statusCode, errorLogMessage, errorBody, null);
 				return null;
 			}
 
@@ -561,13 +567,13 @@ httpResponse);
 				return logger.ProtocolFailure(
 					ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody)),
 					model, DetectedProtocol.ChatCompletions, "RateLimited",
-					statusCode, errorBody, errorBody, null);
+					statusCode, errorLogMessage, errorBody, null);
 			}
 
 			logger.ProtocolFailure(
 				model, DetectedProtocol.ChatCompletions,
 				statusCode >= 500 ? "ServerError" : "Transient",
-				statusCode, errorBody, errorBody, null);
+				statusCode, errorLogMessage, errorBody, null);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 

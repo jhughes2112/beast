@@ -5,10 +5,12 @@
 // Surrogate code units report width 1; callers replace them with a placeholder, since one Cell holds a
 // single UTF-16 char and cannot carry an astral-plane glyph.
 //
-// Note: U+2600–U+26FF (misc symbols: ☑ ☀ ⚠ …) and U+2700–U+27BF (dingbats: ✓ ✔ ✖ …) are marked wide
-// because they render two columns wide in most modern terminals. The star (⭐ U+2B50) and box (☑ U+2611)
-// glyphs are among those that occupy two cells. This matches the behaviour of modern terminal emulators
-// (iTerm2, Windows Terminal, alacritty).
+// Note: U+2600–U+26FF (misc symbols: ☑ ☀ ⚠ …) are marked wide because they render two columns
+// wide in most modern terminals. The star (⭐ U+2B50) and box (☑ U+2611) glyphs are among those
+// that occupy two cells. This matches the behaviour of modern terminal emulators
+// (iTerm2, Windows Terminal, alacritty). U+2700–U+27BF (dingbats: ✓ ✗ ✖ …) are NOT marked wide
+// here: characters like ✓ (U+2713) and ✗ (U+2717) are single-width in modern terminals. Only dingbats
+// with emoji presentation (via variation selectors) are wide, not the bare code points.
 // U+29C9 (⧉) is NOT in this list: despite visually overflowing into two columns in some fonts, Windows
 // Terminal advances the cursor only one column for it. The copy button uses "⧉ " (glyph + space) instead.
 public static class CharWidth
@@ -43,7 +45,6 @@ public static class CharWidth
 			|| (c >= 0x23E9 && c <= 0x23FA)   // media control symbols (⏩ ⏪ ⏫ ⏬ ⏰ ⏳ …)
 			|| (c >= 0x25FD && c <= 0x25FE)   // ◽ ◾
 			|| (c >= 0x2600 && c <= 0x26FF)   // misc symbols (☑ ☀ ⚠ …)
-			|| (c >= 0x2700 && c <= 0x27BF)   // dingbats (✓ ✔ ✖ …)
 			|| c == 0x2B50                    // star ⭐
 			|| (c >= 0x2E80 && c <= 0x303E)   // CJK radicals … Kangxi
 			|| (c >= 0x3041 && c <= 0x33FF)   // Hiragana … CJK compatibility

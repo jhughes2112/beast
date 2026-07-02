@@ -166,18 +166,26 @@ static class ProtocolHelpers
 	}
 
 	// Logs and returns a Failed result for permanent client errors (4xx excluding retryable).
-	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string modelId)
+	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string 
+modelId)
 	{
 		string failureType = (statusCode == 401 || statusCode == 403) ? "AuthFailure" : "ClientError";
-		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, responseBody, responseBody, null);
+		string message = string.IsNullOrEmpty(responseBody)
+			? $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}"
+			: responseBody;
+		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, message, responseBody, null);
 		return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
 	}
 
 	// Logs and returns a Transient result for server errors or retryable 4xx (408/425).
-	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string modelId, HttpResponseMessage response)
+	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, 
+string modelId, HttpResponseMessage response)
 	{
 		string failureType = statusCode >= 500 ? "ServerError" : "Transient";
-		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, responseBody, responseBody, null);
+		string message = string.IsNullOrEmpty(responseBody)
+			? $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}"
+			: responseBody;
+		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, message, responseBody, null);
 		return ProtocolResult.Transient($"HTTP {statusCode}: {responseBody}", TryGetRetryAfter(response, responseBody));
 	}
 }
