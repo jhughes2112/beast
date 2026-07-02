@@ -209,14 +209,18 @@ public class DisplayScreen : IDisplay
 	private StreamWriter? _bufferedOut;
 	private bool _needsErase = true;
 
+	// The previously emitted frame — what the terminal currently shows. Redraw diffs the new frame against
+	// it and emits only the changed cells, which is what makes per-tick redraws (busy spinner, elapsed time,
+	// cursor glow) affordable. Null (or a size mismatch) forces a full write.
+	private Screen? _lastFrame;
+
 	// Agent busy animation: driven by SeparatorLayer. State fields wired up here; arrays live in SeparatorLayer.
 	private bool _agentBusy = false;
 	private long _busyStartTick = 0;
 	// Incremented each time a new block type arrives (StreamStart or ToolCall) so the word changes per activity, not per clock tick.
-		private int _busyWordIndex = 0;
+	private int _busyWordIndex = 0;
 
 	private int _currentAnimationIndex = 0;
-	private int _lastRenderedBusyWordIndex = -1;
 
 	public DisplayScreen(CollapseMode initialMode)
 	{
@@ -239,8 +243,7 @@ public class DisplayScreen : IDisplay
 			_followReadyTick = 0;
 			_needsErase = true;
 			// New conversation model — the previous layout is not a valid anchoring basis.
-						_lastStack = null;
-			_lastRenderedBusyWordIndex = -1;
+			_lastStack = null;
 			if (_runCts != null)
 				Redraw();
 		}
@@ -295,7 +298,7 @@ public class DisplayScreen : IDisplay
 	{
 		lock (_consoleLock)
 		{
-						if (busy)
+			if (busy)
 			{
 				if (!_agentBusy)
 				{
@@ -749,15 +752,24 @@ public class DisplayScreen : IDisplay
 		if (_mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && _mouseCol < historyW && SlotAtTerminalRow(_mouseRow).HasValue)
 			frame.WriteText(historyW - 6, _mouseRow, "⧉ ", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
 
-		// 6. Emit.
+		// 6. Emit. With a matching previous frame only the changed cells are written; a first frame,
+		// resize, or explicit erase falls back to a full write.
 		_drawBuf.Clear();
 		_drawBuf.Append("\x1b[?25l"); // HideCursor
-		if (_needsErase)
+		if (_needsErase || _lastFrame == null || _lastFrame.W != w || _lastFrame.H != h)
 		{
-			_drawBuf.Append("\x1b[2J");
-			_needsErase = false;
+			if (_needsErase)
+			{
+				_drawBuf.Append("\x1b[2J");
+				_needsErase = false;
+			}
+			ScreenAnsiWriter.Write(_drawBuf, frame, startRow: 1, startCol: 1);
 		}
-		ScreenAnsiWriter.Write(_drawBuf, frame, startRow: 1, startCol: 1);
+		else
+		{
+			ScreenAnsiWriter.WriteDiff(_drawBuf, frame, _lastFrame, startRow: 1, startCol: 1);
+		}
+		_lastFrame = frame;
 
 		(int curRow, int curCol) = GetCursorScreenPos(inputStart, skip, w);
 		_drawBuf.Append("\x1b[").Append(Math.Max(1, Math.Min(h, curRow + 1))).Append(';').Append(Math.Max(1, curCol + 1)).Append('H');
@@ -1213,15 +1225,12 @@ public class DisplayScreen : IDisplay
 						// Transient status expired — Redraw will revert to the base (rooted path).
 						needRedraw = true;
 					}
-										if (_agentBusy)
+					if (_agentBusy)
 					{
-						// Only redraw when the busy animation actually advances to a new word,
-						// not on every tick. _busyWordIndex increments on new activity.
-						if (_busyWordIndex != _lastRenderedBusyWordIndex)
-						{
-							_lastRenderedBusyWordIndex = _busyWordIndex;
-							needRedraw = true;
-						}
+						// The spinner frames, elapsed-time label, and tab-title animation are all
+						// clock-driven, so redraw every tick while busy. Frame diffing keeps the
+						// emit down to the handful of separator cells that actually changed.
+						needRedraw = true;
 					}
 					if (needRedraw)
 						Redraw();
@@ -1238,15 +1247,15 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					int oldHoverSlot = _hoverSlot;
 					_mouseRow = inputEv.Row;
 					_mouseCol = inputEv.Col;
 					// Over the session-tree panel there is no history block to highlight.
 					bool overPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
 					int? slot = overPanel ? null : SlotAtTerminalRow(inputEv.Row);
 					_hoverSlot = slot ?? -1;
-					if (oldHoverSlot != _hoverSlot)
-						Redraw();
+					// The cursor glow and copy affordance track the mouse cell-by-cell, so every move
+					// redraws; frame diffing keeps the emit to the small region around the cursor.
+					Redraw();
 				}
 				continue;
 			}

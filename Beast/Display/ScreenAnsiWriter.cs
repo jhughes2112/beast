@@ -7,6 +7,16 @@ using System.Text;
 // Null Fg/Bg are emitted as the terminal default (\x1b[39m for fg, \x1b[49m for bg).
 public static class ScreenAnsiWriter
 {
+	// Running SGR state threaded through span emission so identical state between adjacent cells (and
+	// across spans within one write) emits no extra escapes. Valid=false means the terminal state is unknown.
+	private struct SgrTracker
+	{
+		public Rgb?      Fg;
+		public Rgb?      Bg;
+		public CellStyle Style;
+		public bool      Valid;
+	}
+
 	// Writes the full screen into buf, positioning the cursor at (startRow, startCol) (1-based) at the start
 	// of each row. Caller is responsible for hiding/showing the cursor and final reset.
 	public static void Write(StringBuilder buf, Screen screen, int startRow, int startCol)
@@ -14,44 +24,102 @@ public static class ScreenAnsiWriter
 		if (screen.W == 0 || screen.H == 0)
 			return;
 
-		Rgb?      lastFg    = default;
-		Rgb?      lastBg    = default;
-		CellStyle lastStyle = CellStyle.None;
-		bool      haveLast  = false;
+		SgrTracker tracker = new SgrTracker();
+
+		for (int y = 0; y < screen.H; y++)
+			EmitSpan(buf, screen, y, 0, screen.W - 1, startRow, startCol, ref tracker);
+
+		buf.Append("\x1b[0m");
+	}
+
+	// Writes only the cells that differ from prev (a same-sized Screen holding what the terminal currently
+	// shows) — one contiguous span per row, from the first changed cell to the last. This is what makes
+	// per-tick redraws (busy spinner, clock, cursor glow) cheap: an unchanged frame emits nothing, and a
+	// small change emits a few dozen bytes instead of the whole screen.
+	public static void WriteDiff(StringBuilder buf, Screen screen, Screen prev, int startRow, int startCol)
+	{
+		if (screen.W == 0 || screen.H == 0)
+			return;
+
+		SgrTracker tracker = new SgrTracker();
+		bool wrote = false;
 
 		for (int y = 0; y < screen.H; y++)
 		{
-			buf.Append('\x1b').Append('[').Append(startRow + y).Append(';').Append(startCol).Append('H');
-
+			int first = -1;
+			int last  = -1;
 			for (int x = 0; x < screen.W; x++)
 			{
 				Cell c = screen.Get(x, y);
-				bool changed = !haveLast
-					|| !ColorEquals(c.Fg, lastFg)
-					|| !ColorEquals(c.Bg, lastBg)
-					|| c.Style != lastStyle;
-
-				if (changed)
+				Cell p = prev.Get(x, y);
+				if (!RenderEquals(c, p))
 				{
-					EmitState(buf, c.Fg, c.Bg, c.Style, lastFg, lastBg, lastStyle, haveLast);
-					lastFg = c.Fg;
-					lastBg = c.Bg;
-					lastStyle = c.Style;
-					haveLast = true;
+					if (first < 0)
+						first = x;
+					last = x;
+					// A wide glyph being replaced leaves its right half on the terminal; the span must
+					// rewrite that column too even if the new cell there matches the stored prev cell.
+					if (CharWidth.Of(p.Ch) == 2 && x + 1 < screen.W)
+						last = x + 1;
 				}
-
-				buf.Append(c.Ch == '\0' ? ' ' : c.Ch);
-
-				// A wide glyph (CJK, emoji, checkbox mark) advances the terminal cursor two columns on its
-				// own, so skip the reserved trailing cell the layout left blank — keeping the grid and the
-				// terminal column-aligned. Driving the skip off the glyph's width (not a marker cell) also
-				// keeps a wide glyph two columns wide even if an overlay overwrote the cell behind it.
-				if (CharWidth.Of(c.Ch) == 2)
-					x++;
 			}
+
+			if (first < 0)
+				continue;
+
+			// Never start a span on a wide glyph's reserved trailing cell — back up onto the glyph so it
+			// is re-emitted whole and the terminal's two-column advance stays aligned with the grid.
+			if (first > 0 && CharWidth.Of(screen.Get(first - 1, y).Ch) == 2)
+				first--;
+
+			EmitSpan(buf, screen, y, first, last, startRow, startCol, ref tracker);
+			wrote = true;
 		}
 
-		buf.Append("\x1b[0m");
+		if (wrote)
+			buf.Append("\x1b[0m");
+	}
+
+	// Emits cells [x0, x1] of row y, positioning the cursor first. Threads the SGR tracker so state carries
+	// across spans within one write.
+	private static void EmitSpan(StringBuilder buf, Screen screen, int y, int x0, int x1, int startRow, int startCol, ref SgrTracker tracker)
+	{
+		buf.Append('\x1b').Append('[').Append(startRow + y).Append(';').Append(startCol + x0).Append('H');
+
+		for (int x = x0; x <= x1; x++)
+		{
+			Cell c = screen.Get(x, y);
+			bool changed = !tracker.Valid
+				|| !ColorEquals(c.Fg, tracker.Fg)
+				|| !ColorEquals(c.Bg, tracker.Bg)
+				|| c.Style != tracker.Style;
+
+			if (changed)
+			{
+				EmitState(buf, c.Fg, c.Bg, c.Style, tracker.Fg, tracker.Bg, tracker.Style, tracker.Valid);
+				tracker.Fg = c.Fg;
+				tracker.Bg = c.Bg;
+				tracker.Style = c.Style;
+				tracker.Valid = true;
+			}
+
+			buf.Append(c.Ch == '\0' ? ' ' : c.Ch);
+
+			// A wide glyph (CJK, emoji, checkbox mark) advances the terminal cursor two columns on its
+			// own, so skip the reserved trailing cell the layout left blank — keeping the grid and the
+			// terminal column-aligned. Driving the skip off the glyph's width (not a marker cell) also
+			// keeps a wide glyph two columns wide even if an overlay overwrote the cell behind it.
+			if (CharWidth.Of(c.Ch) == 2)
+				x++;
+		}
+	}
+
+	// Whether two cells render identically on the terminal. '\0' and ' ' are the same visible glyph.
+	private static bool RenderEquals(Cell a, Cell b)
+	{
+		char ca = a.Ch == '\0' ? ' ' : a.Ch;
+		char cb = b.Ch == '\0' ? ' ' : b.Ch;
+		return ca == cb && a.Style == b.Style && ColorEquals(a.Fg, b.Fg) && ColorEquals(a.Bg, b.Bg);
 	}
 
 	private static bool ColorEquals(Rgb? a, Rgb? b)

@@ -20,6 +20,7 @@ public static class FileToolsTests
 			await TestReadAsync(ctx, tempDir);
 			await TestEditExactAsync(ctx, tempDir);
 			await TestEditFuzzyAsync(ctx, tempDir);
+			await TestEditEchoInterleavedAsync(ctx, tempDir);
 			await TestEditNotFoundAsync(ctx, tempDir);
 			TestReadBinary(ctx, tempDir);
 			TestWriteBinary(ctx, tempDir);
@@ -103,6 +104,27 @@ public static class FileToolsTests
 		ctx.AssertContains(rep.StdOut, "Edit applied", $"Edit fuzzy: applied (err: {rep.StdErr})");
 		string after = File.ReadAllText(path);
 		ctx.AssertContains(after, "Bar", "Edit fuzzy: replacement applied");
+	}
+
+	private static async Task TestEditEchoInterleavedAsync(TestContext ctx, string tempDir)
+	{
+		string path = Path.Combine(tempDir, "edit_echo.txt");
+		File.WriteAllText(path, "one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+
+		using CancellationTokenSource cts = new CancellationTokenSource();
+
+		// Only 'three' and 'five' change; 'four' between them must come back as context ('|'), not as a
+		// removed-then-re-added line — the echo interleaves changes where they sit.
+		string oldText = "two\nthree\nfour\nfive\nsix";
+		string newText = "two\nTHREE\nfour\nFIVE\nsix";
+		ToolResult rep = await FileTools.EditFileAsync("edittool5", path, oldText, newText, cts.Token);
+		ctx.AssertContains(rep.StdOut, "Edit applied at line 3", $"Edit echo: applied at first changed line (err: {rep.StdErr})");
+		ctx.AssertContains(rep.StdOut, "- three", "Edit echo: old line removed");
+		ctx.AssertContains(rep.StdOut, "+ THREE", "Edit echo: new line added");
+		ctx.AssertContains(rep.StdOut, "| four", "Edit echo: shared interior line is context");
+		ctx.Assert(!rep.StdOut.Contains("- four"), "Edit echo: shared interior line not removed");
+		ctx.AssertContains(rep.StdOut, "- five", "Edit echo: second old line removed");
+		ctx.AssertContains(rep.StdOut, "+ FIVE", "Edit echo: second new line added");
 	}
 
 	private static async Task TestEditNotFoundAsync(TestContext ctx, string tempDir)

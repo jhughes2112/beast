@@ -357,11 +357,13 @@ public static class FileTools
 		return result;
 	}
 
-	// Echoes the edit as a unified diff: a few context lines before, the removed ('-') and added ('+')
-	// lines, then context after. Lines identical at the top and bottom of the replaced span are folded
-	// back into context so a pure insertion shows only the new lines, not a delete-then-re-add of the
-	// shared text. This confirms placement (the whitespace-normalized fallback can land on a different
-	// region than the model pictured) and reads cleanly both for the human display and the model.
+	// Echoes the edit as a unified diff: a few context lines before, the changed lines, then context
+	// after. Lines identical at the top and bottom of the replaced span are folded back into context,
+	// and the middle is diffed line-by-line (LCS) so interior lines shared between old and new render
+	// as context too — an edit that touches a few scattered lines reads in-situ, interleaved where the
+	// changes actually sit, instead of one removed block followed by one added block. This confirms
+	// placement (the whitespace-normalized fallback can land on a different region than the model
+	// pictured) and reads cleanly both for the human display and the model.
 	private static string BuildEditEcho(string newContent, int replaceStart, string oldText, string newText)
 	{
 		const int contextLines = 3;
@@ -381,7 +383,8 @@ public static class FileTools
 			suffix++;
 
 		// Everything before the change is identical in both files, so the first changed line has the
-		// same number in each. Added lines reuse that numbering; removed lines map to the same range.
+		// same number in each. Numbers track the new file; removed lines carry the number of the
+		// position they were removed from.
 		int changeStartLine = LineOfIndex(newContent, replaceStart);
 		int realStart = changeStartLine + prefix;
 		int removedCount = oldLines.Length - prefix - suffix;
@@ -397,16 +400,86 @@ public static class FileTools
 		for (int i = firstBefore; i < realStart; i++)
 			AppendDiffLine(sb, i + 1, '|', allLines[i]);
 
-		for (int i = 0; i < removedCount; i++)
-			AppendDiffLine(sb, realStart + 1 + i, '-', oldLines[prefix + i]);
-
-		for (int i = 0; i < addedCount; i++)
-			AppendDiffLine(sb, realStart + 1 + i, '+', newLines[prefix + i]);
+		List<(char Marker, string Text)> ops = DiffLines(oldLines, prefix, removedCount, newLines, prefix, addedCount);
+		int newLineNo = realStart;
+		foreach ((char marker, string text) in ops)
+		{
+			if (marker == '-')
+			{
+				AppendDiffLine(sb, newLineNo + 1, '-', text);
+			}
+			else
+			{
+				AppendDiffLine(sb, newLineNo + 1, marker, text);
+				newLineNo++;
+			}
+		}
 
 		for (int i = afterStart; i <= lastAfter; i++)
 			AppendDiffLine(sb, i + 1, '|', allLines[i]);
 
 		return sb.ToString();
+	}
+
+	// Line-level LCS diff of the changed middle of the replaced span. Lines shared between old and new
+	// come back as '|' context; each changed region is grouped as its '-' lines followed by its '+'
+	// lines so the display can pair equal-length runs for intra-line highlighting. A span too large for
+	// the quadratic LCS table falls back to the plain removed-block/added-block form.
+	private static List<(char Marker, string Text)> DiffLines(string[] oldLines, int oldStart, int oldCount, string[] newLines, int newStart, int newCount)
+	{
+		List<(char Marker, string Text)> ops = new List<(char Marker, string Text)>(oldCount + newCount);
+
+		if ((long)oldCount * newCount > 1_000_000)
+		{
+			for (int i = 0; i < oldCount; i++)
+				ops.Add((Marker: '-', Text: oldLines[oldStart + i]));
+			for (int j = 0; j < newCount; j++)
+				ops.Add((Marker: '+', Text: newLines[newStart + j]));
+		}
+		else
+		{
+			// lcs[i, j] = length of the longest common subsequence of old[i..] and new[j..].
+			int[,] lcs = new int[oldCount + 1, newCount + 1];
+			for (int i = oldCount - 1; i >= 0; i--)
+			{
+				for (int j = newCount - 1; j >= 0; j--)
+				{
+					if (oldLines[oldStart + i] == newLines[newStart + j])
+						lcs[i, j] = lcs[i + 1, j + 1] + 1;
+					else
+						lcs[i, j] = Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+				}
+			}
+
+			// Walk forward, buffering '+' lines so each changed region emits its '-' lines first.
+			List<(char Marker, string Text)> pendingAdds = new List<(char Marker, string Text)>();
+			int a = 0;
+			int b = 0;
+			while (a < oldCount || b < newCount)
+			{
+				if (a < oldCount && b < newCount && oldLines[oldStart + a] == newLines[newStart + b])
+				{
+					ops.AddRange(pendingAdds);
+					pendingAdds.Clear();
+					ops.Add((Marker: '|', Text: newLines[newStart + b]));
+					a++;
+					b++;
+				}
+				else if (b >= newCount || (a < oldCount && lcs[a + 1, b] >= lcs[a, b + 1]))
+				{
+					ops.Add((Marker: '-', Text: oldLines[oldStart + a]));
+					a++;
+				}
+				else
+				{
+					pendingAdds.Add((Marker: '+', Text: newLines[newStart + b]));
+					b++;
+				}
+			}
+			ops.AddRange(pendingAdds);
+		}
+
+		return ops;
 	}
 
 	// Splits into lines, treating empty input as no lines (so a pure deletion adds no phantom '+' row).
