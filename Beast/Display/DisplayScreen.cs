@@ -213,9 +213,10 @@ public class DisplayScreen : IDisplay
 	private bool _agentBusy = false;
 	private long _busyStartTick = 0;
 	// Incremented each time a new block type arrives (StreamStart or ToolCall) so the word changes per activity, not per clock tick.
-	private int _busyWordIndex = 0;
+		private int _busyWordIndex = 0;
 
 	private int _currentAnimationIndex = 0;
+	private int _lastRenderedBusyWordIndex = -1;
 
 	public DisplayScreen(CollapseMode initialMode)
 	{
@@ -238,7 +239,8 @@ public class DisplayScreen : IDisplay
 			_followReadyTick = 0;
 			_needsErase = true;
 			// New conversation model — the previous layout is not a valid anchoring basis.
-			_lastStack = null;
+						_lastStack = null;
+			_lastRenderedBusyWordIndex = -1;
 			if (_runCts != null)
 				Redraw();
 		}
@@ -293,11 +295,12 @@ public class DisplayScreen : IDisplay
 	{
 		lock (_consoleLock)
 		{
-			if (busy)
+						if (busy)
 			{
 				if (!_agentBusy)
 				{
 					_agentBusy = true;
+					_busyWordIndex++;
 					_currentAnimationIndex = Random.Shared.Next(SeparatorLayer.AnimationCount);
 				}
 				else
@@ -1210,10 +1213,15 @@ public class DisplayScreen : IDisplay
 						// Transient status expired — Redraw will revert to the base (rooted path).
 						needRedraw = true;
 					}
-					if (_agentBusy)
+										if (_agentBusy)
 					{
-						// Keep animating the separator worm while the agent is busy.
-						needRedraw = true;
+						// Only redraw when the busy animation actually advances to a new word,
+						// not on every tick. _busyWordIndex increments on new activity.
+						if (_busyWordIndex != _lastRenderedBusyWordIndex)
+						{
+							_lastRenderedBusyWordIndex = _busyWordIndex;
+							needRedraw = true;
+						}
 					}
 					if (needRedraw)
 						Redraw();
