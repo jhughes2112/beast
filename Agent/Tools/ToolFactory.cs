@@ -271,9 +271,9 @@ public static class ToolFactory
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
+					string summary = Str(args, "summary");
 					onStopWork();
-					string ack = "Work loop stopped.";
-					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
+					return Task.FromResult(new ToolResult(toolCallId, summary, string.Empty, 0, ToolDispatch.EstimateTokens(summary)));
 				}
 			});
 		}

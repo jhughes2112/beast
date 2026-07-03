@@ -730,6 +730,9 @@ internal static class BlockRenderer
 		// The goal is the body of the call — render it as prose itself, not as a labelled "goal <value>" property.
 		if (toolName == "find_relevant_file_sections" && propName.Equals("goal", StringComparison.OrdinalIgnoreCase))
 			return true;
+		// stop_work's summary is free-form user text that should render as markdown.
+		if (toolName == "stop_work" && propName.Equals("summary", StringComparison.OrdinalIgnoreCase))
+			return true;
 		return false;
 	}
 
