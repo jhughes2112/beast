@@ -568,6 +568,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 					await _registry.ProbeEndpointsAsync(ct);
 					_registry.ResetAllAvailability();
 					_transport.Status(sessionId, "Config files reloaded.");
+
+					// Signal every active session to refresh its role and LlmService so
+					// changes to roles.json (roles added/removed/modified) and settings.json
+					// (models/endpoints) propagate immediately to running sessions.
+					List<Session> allSessions;
+					lock (_sessionLock)
+						allSessions = new List<Session>(_allSessions.Values);
+					foreach (Session s in allSessions)
+						s.RequestRefresh();
 				}
 				catch (Exception ex)
 				{

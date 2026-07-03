@@ -62,6 +62,11 @@ public class Session
 	// refresh) must not overwrite it — only a new /model command or session rehydration can change it.
 	private string? _userSelectedModel;
 
+	// Set by the orchestrator's /reload command to signal the handler to re-fetch its role and
+	// recreate its LlmService on the next loop iteration. Checked in DrainInput, cleared after
+	// processing. The flag survives the idle wait because it is not tied to the pending queue.
+	private bool _needsRefresh;
+
 	// Last completions payload sent; compared each update to suppress redundant frames.
 	private string _completionsJson = string.Empty;
 
@@ -288,6 +293,22 @@ public class Session
 
 	// Resets all mutable session state. Called when a session is cleared or rehydrated.
 	public void Reset() => _userSelectedModel = null;
+
+	// Set by the orchestrator's /reload command to signal the handler to re-fetch its role and
+	// recreate its LlmService on the next loop iteration. The handler checks this at the top of
+	// its loop and clears it after processing.
+	public bool NeedsRefresh => _needsRefresh;
+
+	// Signals the handler to re-fetch the session's role and recreate its LlmService on the next
+	// loop iteration. Also wakes the handler if it is idling on the input wait.
+	public void RequestRefresh()
+	{
+		_needsRefresh = true;
+		Signal();
+	}
+
+	// Clears the refresh flag after the handler has processed it.
+	public void ClearRefresh() => _needsRefresh = false;
 
 	// Signals the bundle that the active protocol should be discarded on next turn.
 	public void InvalidateProtocol() => _bundle.InvalidateProtocol();

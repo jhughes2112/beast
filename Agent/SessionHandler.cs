@@ -516,8 +516,33 @@ public class SessionHandler
 	// Drains all pending commands and queued text for any session type.
 	// When the context is full, plain text is dropped with a message;
 	// /compact and /model are always let through to resolve the blocked state.
+	// Also checks the session's NeedsRefresh flag: when set, re-fetches the role
+	// and recreates the LlmService so /reload changes propagate immediately.
 	private void DrainInput(RoleService roleService, LlmRegistry registry, ITransportServer transport)
 	{
+		if (_activeSession.NeedsRefresh)
+		{
+			_activeSession.ClearRefresh();
+			// Re-fetch role — it may have been modified or removed.
+			Role? refreshedRole = roleService.GetRole(_activeSession.Role);
+			if (refreshedRole == null)
+			{
+				// The session's role no longer exists in roles.json.
+				// Clear service so the handler parks; send a status so the user knows.
+				_service = null;
+				transport.Status(_activeSession.Id, $"Role '{_activeSession.Role}' no longer exists after reload. This session is orphaned.");
+			}
+			else
+			{
+				// Force service recreation so updated model configs (endpoints, etc.)
+				// from the reloaded settings take effect.
+				_service = null;
+				RefreshService(refreshedRole, registry);
+				_activeSession.SendStats();
+				transport.Status(_activeSession.Id, "Configuration reloaded for this session.");
+			}
+		}
+
 		while (_activeSession.TryDequeuePending(out string? line))
 		{
 			if (!line!.StartsWith("/", StringComparison.Ordinal))
