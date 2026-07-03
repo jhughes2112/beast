@@ -2,6 +2,7 @@ using NAudio.Wave;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,7 +17,7 @@ public class BeastApp : IAsyncDisposable
 		public ConversationModel Model { get; } = new ConversationModel();
 		public int NextIndex;
 		public int StreamIndex = -1;
-		public string StreamContent = "";
+		public StringBuilder StreamContent = new StringBuilder();
 		public Dictionary<string, int> StreamTagToSlot = new Dictionary<string, int>();
 		public Dictionary<int, FrameType> SlotTypes = new Dictionary<int, FrameType>();
 		public Dictionary<FrameType, int> PendingCommit = new Dictionary<FrameType, int>();
@@ -486,11 +487,11 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 			case FrameType.StreamStart:
 				FrameType startType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
-				session.StreamContent = "";
+				session.StreamContent.Clear();
 				session.StreamIndex = session.NextIndex++;
 				session.StreamTagToSlot[content] = session.StreamIndex;
 				session.SlotTypes[session.StreamIndex] = startType;
-				session.Model.Update(session.StreamIndex, startType, session.StreamContent);
+				session.Model.Update(session.StreamIndex, startType, "");
 				if (isActive)
 					_display.OnStreamStart(session.StreamIndex, startType);
 				break;
@@ -498,9 +499,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 			case FrameType.StreamChunk:
 				if (session.StreamIndex < 0)
 					break;
-				session.StreamContent += content;
+				session.StreamContent.Append(content);
 				session.SlotTypes.TryGetValue(session.StreamIndex, out FrameType chunkType);
-				session.Model.Update(session.StreamIndex, chunkType, session.StreamContent);
+				session.Model.Update(session.StreamIndex, chunkType, session.StreamContent.ToString());
 				if (isActive)
 					_display.OnStreamChunk(content);
 				break;
@@ -513,7 +514,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					session.StreamTagToSlot.Remove(content);
 				}
 				session.StreamIndex = -1;
-				session.StreamContent = "";
+				session.StreamContent.Clear();
 				if (isActive)
 					_display.OnStreamEnd();
 				break;

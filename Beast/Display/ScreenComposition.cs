@@ -70,6 +70,27 @@ public sealed class StackLayout
 		_totalRows += block.Height + SpacerRows;
 	}
 
+	// Swaps in a rebuilt block for the same slot when its height is unchanged, leaving every placement
+	// valid — the in-place patch for a content change that didn't move anything. Returns false when the
+	// slot is absent or the height differs, in which case the caller must rebuild the layout.
+	public bool TryReplaceBlock(BlockLayer block)
+	{
+		bool replaced = false;
+		for (int i = 0; i < _placements.Count; i++)
+		{
+			if (_placements[i].SlotIndex == block.SlotIndex)
+			{
+				if (_blocks[i].Height == block.Height)
+				{
+					_blocks[i] = block;
+					replaced = true;
+				}
+				break;
+			}
+		}
+		return replaced;
+	}
+
 	// Returns the slot index at the given composite row, or null if the row is a spacer / out of range.
 	public int? SlotAtRow(int row)
 	{

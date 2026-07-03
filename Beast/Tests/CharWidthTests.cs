@@ -163,12 +163,14 @@ public static class CharWidthTests
 
 	private static void TestDingbats(TestContext ctx)
 	{
-		// U+2700–U+27BF dingbats should be wide
-		AssertWidth(ctx, (char)0x2700, 2, "Dingbats: U+2700 is wide");
-		AssertWidth(ctx, (char)0x2713, 2, "Dingbats: U+2713 (✓ checkmark) is wide");
-		AssertWidth(ctx, (char)0x2714, 2, "Dingbats: U+2714 (✔ heavy check) is wide");
-		AssertWidth(ctx, (char)0x2716, 2, "Dingbats: U+2716 (✖ multiply) is wide");
-		AssertWidth(ctx, (char)0x27BF, 2, "Dingbats: U+27BF (end) is wide");
+		// U+2700–U+27BF dingbats are single-width: text-presentation glyphs like ✓ and ✖ advance one
+		// column in modern terminals (only variation-selector emoji forms are wide, and those arrive as
+		// separate codepoints). Runtime probing overrides these on terminals that disagree.
+		AssertWidth(ctx, (char)0x2700, 1, "Dingbats: U+2700 is single-width");
+		AssertWidth(ctx, (char)0x2713, 1, "Dingbats: U+2713 (✓ checkmark) is single-width");
+		AssertWidth(ctx, (char)0x2714, 1, "Dingbats: U+2714 (✔ heavy check) is single-width");
+		AssertWidth(ctx, (char)0x2716, 1, "Dingbats: U+2716 (✖ multiply) is single-width");
+		AssertWidth(ctx, (char)0x27BF, 1, "Dingbats: U+27BF (end) is single-width");
 	}
 
 	private static void TestStar(TestContext ctx)
@@ -179,8 +181,10 @@ public static class CharWidthTests
 
 	private static void TestCopyGlyph(TestContext ctx)
 	{
-		// U+29C9 copy/clipboard glyph ⧉
-		AssertWidth(ctx, (char)0x29C9, 2, "Copy glyph ⧉ U+29C9 is wide");
+		// U+29C9 copy/clipboard glyph ⧉: draws into two columns in some fonts, but the terminal advances
+		// the cursor only one column, so the grid must treat it as single-width (the renderer pads it
+		// with a trailing space instead).
+		AssertWidth(ctx, (char)0x29C9, 1, "Copy glyph ⧉ U+29C9 is single-width");
 	}
 
 	private static void TestZeroWidth(TestContext ctx)

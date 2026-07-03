@@ -160,10 +160,14 @@ public class DisplayScreen : IDisplay
 	// Set every Redraw; used by mouse hit-testing so column math matches the reflowed layout.
 	private int _historyWidth = 0;
 
-	// Last frame's StackLayout — captured during Redraw so mouse handlers can map row→slot without recomputing.
-	// _lastViewTop is that frame's window offset (rows from the top of the stack); valid only when _lastStack
-	// is non-null, which is how a "no prior frame" state is signaled.
-	private StackLayout? _lastStack;
+	// The cached block composition — the session log as a StackLayout of pre-rendered block Screens.
+	// It survives across frames untouched: a content update that keeps a block's height (the common case
+	// for a streamed token) is patched in place via _dirtySlots, and the layout is rebuilt only when a
+	// block appears, disappears, or changes height (or the width reflows, signaled by nulling this).
+	// Mouse handlers also use it to map row→slot. _lastViewTop is the last rendered window offset (rows
+	// from the top of the stack); anchoring and hit-testing are valid only while _stack is non-null.
+	private StackLayout? _stack;
+	private readonly HashSet<int> _dirtySlots = new HashSet<int>();
 	private int          _lastViewTop = 0;
 	private int          _lastHistoryHeight = 0;
 
@@ -242,8 +246,9 @@ public class DisplayScreen : IDisplay
 			// Viewing a new session restarts the follow timer from scratch.
 			_followReadyTick = 0;
 			_needsErase = true;
-			// New conversation model — the previous layout is not a valid anchoring basis.
-			_lastStack = null;
+			// New conversation model — the previous composition and anchoring basis are invalid.
+			_stack = null;
+			_dirtySlots.Clear();
 			if (_runCts != null)
 				Redraw();
 		}
@@ -290,9 +295,11 @@ public class DisplayScreen : IDisplay
 		}
 	}
 
-	public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _busyWordIndex++; _followReadyTick = 0; } }
+	// Entering/leaving the streaming state changes the slot's forced-expanded rendering even when its
+	// content hasn't changed, so the slot is marked dirty here as well as on content updates.
+	public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _dirtySlots.Add(streamIndex); _busyWordIndex++; _followReadyTick = 0; } }
 	public void OnStreamChunk(string chunk) { lock (_consoleLock) _followReadyTick = 0; }
-	public void OnStreamEnd() { lock (_consoleLock) _streamingSlot = -1; }
+	public void OnStreamEnd() { lock (_consoleLock) { if (_streamingSlot >= 0) _dirtySlots.Add(_streamingSlot); _streamingSlot = -1; } }
 
 	public void SetAgentBusy(bool busy, long startTick)
 	{
@@ -318,6 +325,8 @@ public class DisplayScreen : IDisplay
 			else
 			{
 				_agentBusy = false;
+				if (_streamingSlot >= 0)
+					_dirtySlots.Add(_streamingSlot);
 				_streamingSlot = -1;
 				Redraw();
 			}
@@ -462,8 +471,15 @@ public class DisplayScreen : IDisplay
 
 		Console.Write("\x1b[?1049h");                           // EnterAltScreen
 		Console.Write("\x1b[?7l");                              // DisableWrap
-		Console.Write("\x1b[?1000h\x1b[?1003h\x1b[?1006h");     // EnableMouse
 		Console.CursorVisible = false;
+
+		// Measure real glyph widths on the live terminal now, while the probe owns the input stream:
+		// mouse reporting is still off and the input loop hasn't started, so the only input records are
+		// the probe's own CPR replies. The first Redraw below erases the probe's scratch row.
+		lock (_consoleLock)
+			CharWidth.InitialProbe();
+
+		Console.Write("\x1b[?1000h\x1b[?1003h\x1b[?1006h");     // EnableMouse
 
 		lock (_consoleLock)
 			Redraw();
@@ -507,6 +523,7 @@ public class DisplayScreen : IDisplay
 			// restart the follow delay rather than drifting away to another active session.
 			_followReadyTick = 0;
 			_blockCache.Remove(msg.Index);
+			_dirtySlots.Add(msg.Index);
 			Redraw();
 		}
 	}
@@ -535,8 +552,8 @@ public class DisplayScreen : IDisplay
 			// Block widths change with the viewport, so horizontal offsets no longer mean the same thing.
 			_blockHScroll.Clear();
 			_renderedWidth = historyW;
-			// Reflow changes every block height; the previous layout is not a valid anchoring basis.
-			_lastStack = null;
+			// Reflow changes every block height; the previous composition and anchoring basis are invalid.
+			_stack = null;
 		}
 
 		if (w != _lastWidth || h != _lastHeight)
@@ -591,26 +608,40 @@ public class DisplayScreen : IDisplay
 
 		int historyH = Math.Max(0, popupTop - ghostRows);
 
-		// 1. Lay out one BlockLayer per visible message. Only placements (top/height) are computed here;
-		// no full-history Screen is built. SpacerRows=1 gives every block one row of breathing room beneath
-		// it without making the spacer part of the block (so toggle/hover math stays clean).
-		StackLayout stack = new StackLayout(historyW, spacerRows: 1);
-		BuildBlockLayers(stack, historyW);
+		// 1. Bring the cached composition up to date. Dirty slots whose blocks kept their height are
+		// patched into the existing layout in place — a streamed token that doesn't add a row re-renders
+		// only its own block and moves nothing. Anything structural (a block appearing, hiding, or
+		// changing height) rebuilds the layout: one BlockLayer per visible message, placements only —
+		// no full-history Screen is ever built. SpacerRows=1 gives every block one row of breathing room
+		// beneath it without making the spacer part of the block (so toggle/hover math stays clean).
+		StackLayout? oldStack = _stack;
+		bool rebuilt = false;
+		if (_stack == null || (_dirtySlots.Count > 0 && !PatchDirtyBlocks(_stack, historyW)))
+		{
+			_stack = BuildStack(historyW);
+			rebuilt = true;
+		}
+		_dirtySlots.Clear();
+		StackLayout stack = _stack;
 
 		Cell bgCell = new Cell(' ', null, Palette.Background, CellStyle.None);
 
 		int totalRows = stack.TotalRows;
 		int maxOffset = Math.Max(0, totalRows - historyH);
 
-		// 2. Re-anchor against the previous frame's layout so block height changes (collapse,
+		// 2. On a rebuild, re-anchor against the previous layout so block height changes (collapse,
 		// expand, streaming growth, blocks appearing or hiding) keep the on-screen content stable,
 		// then clamp the animation values into the new valid range. A click-toggle pins its own block
 		// under the cursor and takes precedence over the generic frame-to-frame anchoring — except when
-		// pinned to the bottom, where following new content is the right behavior.
-		if (_pendingToggleSlot >= 0 && _scrollTarget >= 0.5f)
-			ResolvePendingToggleAnchor(stack, totalRows, historyH, maxOffset);
-		else
-			ApplyLayoutAnchoring(stack);
+		// pinned to the bottom, where following new content is the right behavior. An in-place patch
+		// moves nothing, so it never needs anchoring.
+		if (rebuilt)
+		{
+			if (_pendingToggleSlot >= 0 && _scrollTarget >= 0.5f)
+				ResolvePendingToggleAnchor(stack, totalRows, historyH, maxOffset);
+			else
+				ApplyLayoutAnchoring(oldStack, stack);
+		}
 		_pendingToggleSlot = -1;
 
 		if (_scrollTarget > maxOffset)
@@ -632,9 +663,10 @@ public class DisplayScreen : IDisplay
 			viewOffsetFromTop = 0;
 
 		// Render only the visible window directly — cost scales with what is on screen, not history size.
+		// The window is a fresh composite of the cached block Screens; the effects below (hover,
+		// scrollbar, glow) apply to this copy, never to the cached content itself.
 		Screen historyView = stack.RenderWindow(historyH, viewOffsetFromTop, bgCell, _blockHScroll);
 
-		_lastStack = stack;
 		_lastViewTop = viewOffsetFromTop;
 		_lastHistoryHeight = historyH;
 
@@ -779,49 +811,87 @@ public class DisplayScreen : IDisplay
 		Console.Out.Flush();
 	}
 
-	// Builds (or pulls from cache) one BlockLayer per visible message and adds them to the stack in order.
-	private void BuildBlockLayers(StackLayout stack, int w)
+	// Builds a fresh composition: one BlockLayer per visible message, in order.
+	private StackLayout BuildStack(int w)
 	{
-		if (_model == null)
-			return;
-
-		foreach (DisplayMessage msg in _model.Messages)
+		StackLayout stack = new StackLayout(w, spacerRows: 1);
+		if (_model != null)
 		{
-			if (ConversationModel.ShouldHide(msg.Type, _model.Mode))
-				continue;
-			if (string.IsNullOrEmpty(msg.Content))
-				continue;
-
-			bool isStreaming = msg.Index == _streamingSlot;
-
-			// Streaming slots bypass cache (content changes constantly).
-			BlockLayer layer;
-			if (isStreaming || !_blockCache.TryGetValue(msg.Index, out BlockLayer? cached))
+			foreach (DisplayMessage msg in _model.Messages)
 			{
-				layer = BlockRenderer.Build(msg, w, isStreaming);
-				// Force streaming slots fully expanded so the user always sees content as it arrives.
-				// Once streaming ends the normal collapsed state takes over.
-				if (isStreaming)
-					layer = new BlockLayer(layer.SlotIndex, layer.Collapsed, layer.Expanded, isExpanded: true);
-				else
-					_blockCache[msg.Index] = layer;
+				if (ConversationModel.ShouldHide(msg.Type, _model.Mode))
+					continue;
+				if (string.IsNullOrEmpty(msg.Content))
+					continue;
+				stack.Add(BuildLayerFor(msg, w));
+			}
+		}
+		return stack;
+	}
+
+	// Builds (or pulls from cache) the BlockLayer for one visible message. Both the collapsed and the
+	// expanded Screens are pre-rendered so toggles and copies swap between them without re-rendering.
+	private BlockLayer BuildLayerFor(DisplayMessage msg, int w)
+	{
+		bool isStreaming = msg.Index == _streamingSlot;
+
+		// Streaming slots bypass cache (content changes constantly).
+		BlockLayer layer;
+		if (isStreaming || !_blockCache.TryGetValue(msg.Index, out BlockLayer? cached))
+		{
+			layer = BlockRenderer.Build(msg, w, isStreaming);
+			// Force streaming slots fully expanded so the user always sees content as it arrives.
+			// Once streaming ends the normal collapsed state takes over.
+			if (isStreaming)
+				layer = new BlockLayer(layer.SlotIndex, layer.Collapsed, layer.Expanded, isExpanded: true);
+			else
+				_blockCache[msg.Index] = layer;
+		}
+		else
+		{
+			// Cache stores a layer with whichever IsExpanded was current when built; rebuild if it has changed.
+			if (cached.IsExpanded == !msg.Collapsed)
+			{
+				layer = cached;
 			}
 			else
 			{
-				// Cache stores a layer with whichever IsExpanded was current when built; rebuild if it has changed.
-				if (cached.IsExpanded == !msg.Collapsed)
+				layer = new BlockLayer(msg.Index, cached.Collapsed, cached.Expanded, !msg.Collapsed);
+				_blockCache[msg.Index] = layer;
+			}
+		}
+		return layer;
+	}
+
+	// Applies dirty-slot updates to the cached composition in place. Returns false when any change is
+	// structural — a block appeared, disappeared, or changed height — and the layout must be rebuilt.
+	// Replacements applied before a failure are harmless: they kept their heights, and the rebuild that
+	// follows re-pulls every layer from the block cache anyway.
+	private bool PatchDirtyBlocks(StackLayout stack, int w)
+	{
+		bool patched = _model != null;
+		if (_model != null)
+		{
+			foreach (int slot in _dirtySlots)
+			{
+				if (slot < 0 || slot >= _model.Messages.Count)
+					continue;
+				DisplayMessage msg = _model.Messages[slot];
+				bool visible = !ConversationModel.ShouldHide(msg.Type, _model.Mode) && !string.IsNullOrEmpty(msg.Content);
+				bool present = stack.PlacementOfSlot(slot).HasValue;
+				if (visible != present)
 				{
-					layer = cached;
+					patched = false;
+					break;
 				}
-				else
+				if (visible && !stack.TryReplaceBlock(BuildLayerFor(msg, w)))
 				{
-					layer = new BlockLayer(msg.Index, cached.Collapsed, cached.Expanded, !msg.Collapsed);
-					_blockCache[msg.Index] = layer;
+					patched = false;
+					break;
 				}
 			}
-
-			stack.Add(layer);
 		}
+		return patched;
 	}
 
 	// Re-anchors the scroll offset so on-screen content stays put when the block layout changes
@@ -854,10 +924,10 @@ public class DisplayScreen : IDisplay
 	// _consoleLock. Returns true if a scrollable block absorbed the gesture.
 	private bool ScrollHoveredBlockHorizontally(int delta)
 	{
-		if (_hoverSlot < 0 || _lastStack == null)
+		if (_hoverSlot < 0 || _stack == null)
 			return false;
 
-		int blockW = _lastStack.BlockWidthOfSlot(_hoverSlot);
+		int blockW = _stack.BlockWidthOfSlot(_hoverSlot);
 		int maxOff = blockW - _historyWidth;
 		if (maxOff <= 0)
 			return false;   // nothing hidden to the side
@@ -878,16 +948,16 @@ public class DisplayScreen : IDisplay
 		return true;
 	}
 
-	private void ApplyLayoutAnchoring(StackLayout stack)
+	private void ApplyLayoutAnchoring(StackLayout? oldStack, StackLayout stack)
 	{
-		if (_lastStack == null)
+		if (oldStack == null)
 			return;
 		// Pinned to the bottom: follow new content instead of anchoring (the normal streaming case).
 		if (_scrollTarget < 0.5f)
 			return;
 
 		int oldViewTop = _lastViewTop;
-		IReadOnlyList<BlockPlacement> oldP = _lastStack.Placements;
+		IReadOnlyList<BlockPlacement> oldP = oldStack.Placements;
 		IReadOnlyList<BlockPlacement> newP = stack.Placements;
 		int spacer = stack.SpacerRows;
 
@@ -1099,12 +1169,12 @@ public class DisplayScreen : IDisplay
 
 	private int? SlotAtTerminalRow(int row)
 	{
-		if (_lastStack == null)
+		if (_stack == null)
 			return null;
 		if (row < 0 || row >= _lastHistoryHeight)
 			return null;
 		int sourceRow = row + _lastViewTop;
-		return _lastStack.SlotAtRow(sourceRow);
+		return _stack.SlotAtRow(sourceRow);
 	}
 
 	// Copies the block under the given terminal row to the clipboard, replacing its contents — or appending
@@ -1186,14 +1256,9 @@ public class DisplayScreen : IDisplay
 					int curH = Console.WindowHeight;
 					if (curW != _lastWidth || curH != _lastHeight)
 					{
-						// Reflow immediately on resize instead of waiting for a mouse/key event.
-						_lastWidth = curW;
-						_lastHeight = curH;
-						_needsErase = true;
-						_blockCache.Clear();
-						_blockHScroll.Clear();
-						_renderedWidth = curW;
-						_lastStack = null;
+						// Reflow immediately on resize instead of waiting for a mouse/key event. Redraw
+						// notices the size change itself: a width change invalidates the composition and
+						// block caches, a height-only change just renders a different window.
 						needRedraw = true;
 					}
 					float remaining = _scrollTarget - _historyScrollOffset;
@@ -1237,7 +1302,16 @@ public class DisplayScreen : IDisplay
 				}
 			}
 
-			ConsoleInputEvent? evOpt = WindowsConsole.ReadInputWithTimeout(16);
+			// Poll faster only while something is animating (busy spinner, scroll glide, scrollbar fade,
+			// transient status); an idle screen just needs to notice the next keystroke.
+			int pollTimeout;
+			lock (_consoleLock)
+			{
+				bool animating = _agentBusy || _scrollbarShowUntil > 0 || _transientStatusUntil > 0 || _historyScrollOffset != _scrollTarget;
+				pollTimeout = animating ? 16 : 32;
+			}
+
+			ConsoleInputEvent? evOpt = WindowsConsole.ReadInputWithTimeout(pollTimeout);
 			if (evOpt == null)
 				continue;
 			ConsoleInputEvent inputEv = evOpt.Value;
@@ -1330,7 +1404,7 @@ public class DisplayScreen : IDisplay
 							// is scrolled off above) drop its top to the clicked row so the collapsed block
 							// sits directly under the mouse and can be toggled back open.
 							int desiredRow = inputEv.Row;
-							BlockPlacement? op = _lastStack?.PlacementOfSlot(slot.Value);
+							BlockPlacement? op = _stack?.PlacementOfSlot(slot.Value);
 							if (op.HasValue)
 							{
 								int topRow = op.Value.Top - _lastViewTop;
