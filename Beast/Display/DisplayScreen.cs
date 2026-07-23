@@ -1253,6 +1253,13 @@ public class DisplayScreen : IDisplay
 			try
 			{
 				using JsonDocument doc = JsonDocument.Parse(argsJson);
+				// EnumerateObject throws on a valid non-object root (array, string, number) —
+				// copy such arguments raw instead of crashing the copy action.
+				if (doc.RootElement.ValueKind != JsonValueKind.Object)
+				{
+					sb.Append(' ').Append(argsJson);
+					return;
+				}
 				List<string> inlineArgs = new List<string>();
 				List<string> blockArgs = new List<string>();
 				foreach (JsonProperty prop in doc.RootElement.EnumerateObject())

@@ -794,8 +794,13 @@ internal static class BlockRenderer
 		try
 		{
 			using JsonDocument doc = JsonDocument.Parse(argsJson);
-			root = doc.RootElement.Clone();
-			parsed = true;
+			// Only an object supports the TryGetProperty lookups below — a valid array/string/
+			// number root would throw InvalidOperationException out of Get() and crash the render.
+			if (doc.RootElement.ValueKind == JsonValueKind.Object)
+			{
+				root = doc.RootElement.Clone();
+				parsed = true;
+			}
 		}
 		catch { }
 

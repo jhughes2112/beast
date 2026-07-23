@@ -45,9 +45,10 @@ public class SettingsService
 			WriteSettings(_workDirSettingsPath, localSettings);
 		}
 
-		// 3. Both parsed: swap in the base, then merge local overrides over it.
+		// 3. Both parsed: merge local overrides into the base, THEN publish with a single reference
+		// assignment — a concurrent reader never sees a half-merged settings object.
+		MergeSettings(home, localSettings);
 		Settings = home;
-		MergeSettings(localSettings);
 	}
 
 	private BeastSettings? LoadSettingsFromFile(string path)
@@ -85,25 +86,25 @@ public class SettingsService
 		}
 	}
 
-	private void MergeSettings(BeastSettings local)
+	private static void MergeSettings(BeastSettings target, BeastSettings local)
 	{
-		// Apply local overrides to the Settings object, which is pre-loaded with user settings.
+		// Apply local overrides to the target object, which is pre-loaded with user settings.
 		if (!string.IsNullOrWhiteSpace(local.IdleSoundFile))
-			Settings.IdleSoundFile = local.IdleSoundFile;
+			target.IdleSoundFile = local.IdleSoundFile;
 
 		if (!string.IsNullOrWhiteSpace(local.SubagentSoundFile))
-			Settings.SubagentSoundFile = local.SubagentSoundFile;
+			target.SubagentSoundFile = local.SubagentSoundFile;
 
 		// If the local settings file defines any providers, it replaces the entire list.
 		if (local.Providers != null && local.Providers.Count > 0)
-			Settings.Providers = local.Providers;
+			target.Providers = local.Providers;
 
 		// If the local settings file defines web search, it replaces the existing config.
 		if (local.WebSearch != null)
-			Settings.WebSearch = local.WebSearch;
+			target.WebSearch = local.WebSearch;
 
 		if (local.CompactionReserveTokens > 0)
-			Settings.CompactionReserveTokens = local.CompactionReserveTokens;
+			target.CompactionReserveTokens = local.CompactionReserveTokens;
 	}
 
 	private void WriteSettings(string path, BeastSettings settings)

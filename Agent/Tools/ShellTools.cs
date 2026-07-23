@@ -91,6 +91,30 @@ public static class ShellTools
 		return RunBashAsync(toolcallid, command, timeoutSeconds, true, cancellationToken);
 	}
 
+	// Appends a line to a capped capture buffer. Returns false once the cap is reached — including
+	// when a SINGLE oversized line would blow past it, in which case only the room that remains is
+	// kept, so the buffer never exceeds the cap by more than a newline.
+	private static bool AppendCapped(StringBuilder captured, string line)
+	{
+		bool appended;
+		int room = MaxCapturedChars - captured.Length;
+		if (room <= 0)
+		{
+			appended = false;
+		}
+		else if (line.Length > room)
+		{
+			captured.Append(line, 0, room).AppendLine();
+			appended = false;
+		}
+		else
+		{
+			captured.AppendLine(line);
+			appended = true;
+		}
+		return appended;
+	}
+
 	// Renders a captured stream, appending a truncation notice when the capture cap was hit so the
 	// model knows the tail is missing rather than the command having produced nothing further.
 	private static string CappedText(StringBuilder captured, bool capped, string streamName)
@@ -160,18 +184,14 @@ public static class ShellTools
 					{
 						if (e.Data == null)
 							outputEof.TrySetResult(true);
-						else if (output.Length < MaxCapturedChars)
-							output.AppendLine(e.Data);
-						else
+						else if (!AppendCapped(output, e.Data))
 							outputCapped = true;
 					};
 					process.ErrorDataReceived += (_, e) =>
 					{
 						if (e.Data == null)
 							errorEof.TrySetResult(true);
-						else if (error.Length < MaxCapturedChars)
-							error.AppendLine(e.Data);
-						else
+						else if (!AppendCapped(error, e.Data))
 							errorCapped = true;
 					};
 

@@ -85,6 +85,10 @@ public class SessionHandler
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
 				DrainInput(roleService, registry, transport);
 				role = roleService.GetRole(_activeSession.Role);
+
+				// Apply a queued /model right away — even when the session then parks idle — so the
+				// choice takes visible effect immediately instead of waiting for the next turn.
+				ApplyPendingModelSwitch(role, registry);
 				RefreshService(role, registry);
 				_activeSession.UpdateCompletions(BuildCompletionCandidates(roleService, registry));
 
@@ -607,36 +611,62 @@ public class SessionHandler
 		transport.PendingQueue(_activeSession.Id, _activeSession.PeekAllPending());
 	}
 
-	// Validates a /model request and queues it; applied before the next LLM call.
+	// Validates a /model request and queues it; applied before the next LLM call (or immediately
+	// when the session is idle). The request is resolved DIRECTLY and never substituted: asking
+	// for a model that is down resets its availability and honors the choice, and an unknown or
+	// out-of-role model is an error — previously GetModelForRole silently swapped in a different
+	// model while the status message still named the one the user asked for.
 	private void QueueModelSwitch(string args, RoleService roleService, LlmRegistry registry, ITransportServer transport)
 	{
 		int spaceIdx = args.IndexOf(' ');
 		string modelArg = spaceIdx >= 0 ? args.Substring(0, spaceIdx) : args;
 		Role? role = roleService.GetRole(_activeSession.Role);
-		LlmModel? target = role != null ? registry.GetModelForRole(role, modelArg, 0) : null;
+		LlmModel? target = registry.GetModel(modelArg);
 		int minRequired = _activeSession.ContextLength + GetCompactionReserve();
+
+		bool inRole = false;
+		if (role != null && target != null)
+		{
+			foreach (string id in role.Models)
+			{
+				if (string.Equals(id, target.ConfigId, StringComparison.OrdinalIgnoreCase))
+				{
+					inRole = true;
+					break;
+				}
+			}
+		}
 
 		if (target == null)
 		{
 			transport.Error(_activeSession.Id, $"Unknown model: {modelArg}");
 		}
+		else if (!inRole)
+		{
+			transport.Error(_activeSession.Id, $"Model '{target.ConfigId}' is not in the '{_activeSession.Role}' role's model list.");
+		}
 		else if (target.Config.ContextWindow <= minRequired)
 		{
-			transport.Error(_activeSession.Id, $"Model '{modelArg}' context window ({target.Config.ContextWindow}) is too small for the current conversation ({minRequired} tokens needed).");
+			transport.Error(_activeSession.Id, $"Model '{target.ConfigId}' context window ({target.Config.ContextWindow}) is too small for the current conversation ({minRequired} tokens needed).");
 		}
 		else
 		{
+			// Canonical ConfigId everywhere (not the raw typed arg), so the later ordinal
+			// comparisons in the apply and switch-back paths always match. Availability is reset
+			// BEFORE anything selects against it — the whole point of an explicit /model on a
+			// down model is to force a retry.
+			registry.ResetAvailability(target.ConfigId);
 			_nextModel = target.ConfigId;
-			_activeSession.MarkModelUserSelected(modelArg);
-			registry.ResetAvailability(modelArg);
+			_activeSession.MarkModelUserSelected(target.ConfigId);
 			_lastInputTokens = 0;
-			transport.Status(_activeSession.Id, $"Model queued: {modelArg}");
+			transport.Status(_activeSession.Id, $"Model queued: {target.ConfigId}");
 			if (_activeSession.Status != SessionStatus.Ongoing)
 				_activeSession.ResumeFromComplete();
 		}
 	}
 
-	// Applies a queued /model switch to the session and service.
+	// Applies a queued /model switch to the session and service, pushing fresh stats so the
+	// client's model display reflects the switch the moment it lands.
 	private void ApplyPendingModelSwitch(Role? role, LlmRegistry registry)
 	{
 		if (_nextModel != null)
@@ -648,6 +678,7 @@ public class SessionHandler
 				{
 					_activeSession.UpdateModel(target);
 					RefreshService(role, registry);
+					_activeSession.SendStats();
 				}
 			}
 			_nextModel = null;
@@ -722,9 +753,23 @@ public class SessionHandler
 		_activeSession.SendIdle();
 		try
 		{
-			await _activeSession.WaitForInputAsync(ct);
+			// Wait until REAL input is queued. The input semaphore can hold a stale permit: any
+			// line delivered while the turn was running signals it, and the mid-turn drains consume
+			// the queue without consuming the permit. Without the HasPending check a single Escape
+			// appeared not to stop the agent — the park woke instantly on the stale permit and the
+			// turn resumed, until a second Escape found the semaphore empty and actually parked.
 			// A deletion also releases this wait; it must read as "do not resume", not as steering.
-			resumed = !ct.IsCancellationRequested && !_activeSession.Deleted;
+			for (; ; )
+			{
+				await _activeSession.WaitForInputAsync(ct);
+				if (ct.IsCancellationRequested || _activeSession.Deleted)
+					break;
+				if (_activeSession.HasPending)
+				{
+					resumed = true;
+					break;
+				}
+			}
 		}
 		catch (OperationCanceledException)
 		{
@@ -775,6 +820,23 @@ public class SessionHandler
 	// is missing, down, or pointing at a different model. Keeps the old service when creation fails.
 	private void RefreshService(Role? role, LlmRegistry registry)
 	{
+		// Return to the user's explicit /model choice as soon as it can actually serve again: a
+		// rate-limit fallback is a temporary substitute, not a silent permanent switch. Guarded by
+		// IsAvailableNow so a still-limited choice is not flapped back to just to park on its
+		// backoff, and by the ConfigId check so a fallback that landed elsewhere is what's replaced.
+		string? userChoice = _activeSession.UserSelectedModel;
+		if (userChoice != null && _service != null && _service.Model.ConfigId != userChoice && registry.IsAvailableNow(userChoice))
+		{
+			int minRequired = _activeSession.ContextLength + GetCompactionReserve();
+			LlmService? preferred = registry.CreateService(role, userChoice, minRequired);
+			if (preferred != null && preferred.Model.ConfigId == userChoice)
+			{
+				_activeSession.UpdateModel(preferred.Model);
+				_service = preferred;
+				_activeSession.SendStats();
+			}
+		}
+
 		if (_service == null || _service.IsDown || _service.Model.ConfigId != _activeSession.Model)
 		{
 			int minCtx = _activeSession.ContextLength + GetCompactionReserve();

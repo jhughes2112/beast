@@ -279,8 +279,14 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 		if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
 		{
-			// Root: the agent replies with SessionReset for the new root, which clears and rebuilds the
-			// client's session map and active view. Leave that to the frame so the two never disagree.
+			// Root: remove its subtree locally and adopt another root when one remains. Only when
+			// nothing remains does the agent start a fresh root and announce it via SessionReset —
+			// that frame then rebuilds the client state from scratch.
+			(bool rootWasActive, string rootPrefix) = SessionTree.CollectSubtreeIds(sessionId, _sessions.Keys, _activeSessionId);
+			SessionTree.RemoveSessionFromLists(rootPrefix, sessionId, _sessions, _busySessions, _sessionDisplayNames);
+			string remaining = SessionTree.GetRootSessionId(_sessions);
+			if (!string.IsNullOrEmpty(remaining))
+				UpdateDisplayAfterDelete(rootWasActive, remaining);
 			return;
 		}
 

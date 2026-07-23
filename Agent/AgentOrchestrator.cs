@@ -240,6 +240,46 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 	}
 
+	// Marks every registered session deleted (stopping its handler and blocking further saves),
+	// unregisters it, and fails any caller still waiting on one. Used when the worktree is about
+	// to be finished and removed — nothing may keep writing while it is torn down.
+	private void QuiesceAllSessions(string reason)
+	{
+		List<Session> live;
+		lock (_sessionLock)
+			live = new List<Session>(_allSessions.Values);
+		foreach (Session s in live)
+		{
+			s.MarkDeleted();
+			UnregisterSession(s.Id);
+			CompleteSession(s.Id, false, reason, 0);
+		}
+	}
+
+	// Starts a fresh root session and announces it with SessionReset — the client's contract when
+	// its root was deleted is that the agent supplies the replacement and names it in this frame.
+	private void StartReplacementRoot()
+	{
+		Session replacement = CreateFreshRootSession(string.Empty, _ephemeral);
+		RegisterSession(replacement);
+		_transport.SessionReset(replacement.Id);
+		EnsureHandler(replacement);
+	}
+
+	// True when any registered session is a root (no parent suffix in its id).
+	private bool AnyRootRegistered()
+	{
+		lock (_sessionLock)
+		{
+			foreach (string id in _allSessions.Keys)
+			{
+				if (!id.Contains('_'))
+					return true;
+			}
+		}
+		return false;
+	}
+
 	// Resolves the registered parent Session for a child id ("parentId_N"), or null for roots and
 	// parents that are no longer registered.
 	public Session? FindParent(Session session)
@@ -594,7 +634,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 				}
 				break;
 			case "help":
-				_transport.Output(sessionId, "Commands: /compact, /clear, /reload, /model <id>, /finish, /test, /quit");
+				_transport.Output(sessionId, "Commands: /compact, /reload, /model <id>, /finish, /test, /quit");
 				break;
 			case "delete-session":
 			{
@@ -628,6 +668,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 					}
 					SessionService.DeleteTree(target);
 					_transport.Status(sessionId, $"Deleted session: {target}");
+
+					// If that removed the last root, the client is now showing nothing and waiting
+					// for the replacement the agent is contracted to provide: start a fresh root
+					// and announce it via SessionReset so the user can keep working.
+					if (!AnyRootRegistered())
+						StartReplacementRoot();
 				}
 				break;
 			}
@@ -706,6 +752,28 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 
 		string baseBranch = lines.Length > 2 ? lines[2].Trim() : string.Empty;
+
+		// The check said clean — but a still-running handler could land new commits or edits
+		// between that check and the forced worktree removal below. Quiesce every session first,
+		// then re-check: anything that slipped in while the handlers wound down keeps the worktree
+		// alive instead of being destroyed with it.
+		QuiesceAllSessions("The worktree is being finished.");
+
+		ToolResult recheck = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
+		string[] recheckLines = recheck.StdOut.Trim().Length == 0
+			? Array.Empty<string>()
+			: recheck.StdOut.Trim().Split('\n');
+		if (recheckLines.Length == 0 || recheckLines[0].Trim() != "OK")
+		{
+			string changed = recheckLines.Length > 1
+				? string.Join("\n", recheckLines, 1, recheckLines.Length - 1)
+				: "Could not determine worktree status.";
+			_transport.Error(sessionId,
+				"Aborting /finish: the worktree changed while sessions were being stopped:\n" + changed +
+				"\nThe worktree was left in place. All sessions were stopped; a fresh session has been started.");
+			StartReplacementRoot();
+			return;
+		}
 
 		SessionService.DeleteTree(sessionId);
 

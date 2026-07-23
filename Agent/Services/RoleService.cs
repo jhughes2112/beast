@@ -82,10 +82,9 @@ public class RoleService
 		else
 			ApplyRolesFromFile(_workDirRolesPath, fresh);
 
-		// Same dictionary instance throughout — callers hold references to Roles itself.
-		Roles.Clear();
-		foreach ((string name, Role role) in fresh)
-			Roles[name] = role;
+		// Published as a single reference swap: a reader racing a reload sees the complete old set
+		// or the complete new one, never a half-filled dictionary mid-rebuild.
+		Roles = fresh;
 	}
 
 	// Serializes the current role set into roles.json, splitting it into the Agents and Subagents blocks

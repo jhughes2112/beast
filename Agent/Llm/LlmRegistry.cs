@@ -18,7 +18,10 @@ public class ModelAvailability
 // Only availability (rate-limits, down-timers) is shared across sessions using the same model.
 public class LlmRegistry
 {
-	private readonly Dictionary<string, LlmModel> _models = new(StringComparer.OrdinalIgnoreCase);
+	// Replaced wholesale by LoadFromConfigs (a reference swap, so /reload never exposes a
+	// half-filled set to sessions that are reading concurrently); entries may be rewritten in
+	// place by ProbeEndpointsAsync's localhost fallback.
+	private Dictionary<string, LlmModel> _models = new(StringComparer.OrdinalIgnoreCase);
 
 	// Keyed by endpoint URL. Populated by ProbeEndpointsAsync; never cleared on reload so
 	// expensive probes survive /reload. Unknown entries mean the endpoint was unreachable.
@@ -36,7 +39,9 @@ public class LlmRegistry
 	// Models already in _availability keep their existing down/rate-limit state across reloads.
 	public void LoadFromConfigs(SettingsService settings, RoleService roles)
 	{
-		_models.Clear();
+		// Build aside and publish with one reference swap, so a session picking a model during a
+		// /reload sees the complete old set or the complete new one — never an empty dictionary.
+		Dictionary<string, LlmModel> fresh = new(StringComparer.OrdinalIgnoreCase);
 
 		foreach (ProviderConfig provider in settings.Settings.Providers)
 		{
@@ -47,12 +52,13 @@ public class LlmRegistry
 					continue;
 
 				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, modelConfig.Extras, modelConfig.Headers, modelConfig);
-				_models[modelConfig.Id] = model;
+				fresh[modelConfig.Id] = model;
 			}
 		}
+		_models = fresh;
 
 		// Expand '*' in role model lists to all enabled model IDs at that position.
-		List<string> allModelIds = new List<string>(_models.Keys);
+		List<string> allModelIds = new List<string>(fresh.Keys);
 		foreach (Role role in roles.Roles.Values)
 		{
 			int starIdx = role.Models.IndexOf("*");
@@ -242,6 +248,18 @@ public class LlmRegistry
 		return best;
 	}
 
+	// True when the model is registered, not permanently down, and not inside a rate-limit backoff
+	// — i.e. a request to it right now would actually be attempted. Used to decide when a session
+	// can return to its user-selected model after a fallback.
+	public bool IsAvailableNow(string configId)
+	{
+		if (!_models.ContainsKey(configId))
+			return false;
+		if (_availability.TryGetValue(configId, out ModelAvailability? avail))
+			return !avail.IsDown && avail.AvailableAt <= DateTimeOffset.UtcNow;
+		return true;
+	}
+
 	// Resets all availability state — call on /reload or /clear so transient failures are retried.
 	public void ResetAllAvailability()
 	{
@@ -267,10 +285,21 @@ public class LlmRegistry
 
 		// Try the preferred model first if it is in the role's list and not permanently down. A
 		// temporary backoff does NOT disqualify it: an explicitly chosen model waits out its rate
-		// limit rather than being silently swapped for a different one.
-		if (!string.IsNullOrEmpty(preferredModelId) && role.Models.Contains(preferredModelId))
+		// limit rather than being silently swapped for a different one. Membership is checked
+		// case-insensitively — ids come from two user-edited files (roles.json, settings.json)
+		// whose casing can disagree, and an ordinal mismatch here silently discarded the choice.
+		if (!string.IsNullOrEmpty(preferredModelId))
 		{
-			if (_models.TryGetValue(preferredModelId, out LlmModel? preferred))
+			bool inRole = false;
+			foreach (string id in role.Models)
+			{
+				if (string.Equals(id, preferredModelId, StringComparison.OrdinalIgnoreCase))
+				{
+					inRole = true;
+					break;
+				}
+			}
+			if (inRole && _models.TryGetValue(preferredModelId, out LlmModel? preferred))
 			{
 				bool down = _availability.TryGetValue(preferredModelId, out ModelAvailability? pa) && pa.IsDown;
 				if (!down && preferred.Config.ContextWindow > minContextRequired)
@@ -281,10 +310,11 @@ public class LlmRegistry
 		// Fall through to the role's ordered list: the first model that can serve RIGHT NOW. One
 		// still in a temporary backoff is remembered but passed over, so a fresh selection does not
 		// park behind another session's rate limit while a lower-ranked model sits idle. Only when
-		// every live model is backing off is the best-ranked one returned anyway — the caller then
-		// waits out the shortest backoff instead of the selection failing outright.
+		// every live model is backing off is the one that recovers SOONEST returned — the caller
+		// then waits out the shortest backoff instead of the selection failing outright.
 		DateTimeOffset now = DateTimeOffset.UtcNow;
 		LlmModel? backingOff = null;
+		DateTimeOffset backingOffAt = DateTimeOffset.MaxValue;
 		foreach (string modelId in role.Models)
 		{
 			if (!_models.TryGetValue(modelId, out LlmModel? model))
@@ -297,8 +327,11 @@ public class LlmRegistry
 					continue;
 				if (ma.AvailableAt > now)
 				{
-					if (backingOff == null)
+					if (ma.AvailableAt < backingOffAt)
+					{
 						backingOff = model;
+						backingOffAt = ma.AvailableAt;
+					}
 					continue;
 				}
 			}

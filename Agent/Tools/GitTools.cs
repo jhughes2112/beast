@@ -32,7 +32,11 @@ public static class GitTools
 			"main_wt=$(cd \"$common\" && cd .. && pwd)\n" +
 			"base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
 			"echo \"Committing work on '$branch'...\"\n" +
-			"echo '" + encoded + "' | base64 -d > /tmp/beast_commit_msg\n" +
+			// Unique per call: parallel Developers in the same container must not clobber each
+			// other's message through a shared fixed path. The trap removes it however we exit.
+			"msgfile=$(mktemp /tmp/beast_commit_msg.XXXXXX) || { echo 'mktemp failed.'; exit 1; }\n" +
+			"trap 'rm -f \"$msgfile\"' EXIT\n" +
+			"echo '" + encoded + "' | base64 -d > \"$msgfile\"\n" +
 			// An empty index is the only legitimate "nothing happened" case; any other add/commit
 			// failure (hooks, identity, index lock) must stop the flow, not read as success with the
 			// work still uncommitted.
@@ -40,7 +44,7 @@ public static class GitTools
 			"if git diff --cached --quiet; then\n" +
 			"  echo '(nothing to commit)'\n" +
 			"else\n" +
-			"  git commit -F /tmp/beast_commit_msg || { echo 'git commit failed.'; exit 1; }\n" +
+			"  git commit -F \"$msgfile\" || { echo 'git commit failed.'; exit 1; }\n" +
 			"fi\n" +
 			"if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Not running in a per-launch worktree (no distinct base branch); committed in place.\"; exit 0; fi\n" +
 			"echo \"Integrating '$branch' onto local '$base'...\"\n" +
