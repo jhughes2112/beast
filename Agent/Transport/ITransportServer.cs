@@ -26,7 +26,8 @@ public enum FrameType : byte
 	SessionAnnounce = 18,  // agent announces a session; content is JSON {id, name}
 	SessionReset = 19,     // agent reset its session set (e.g. active root deleted from F10); client forgets all sessions and adopts the named one
 	SessionStatus = 20,    // agent reports a session's termination status; content is a SessionStatus enum name
-	PendingQueue = 21      // agent sends the current pending-input queue snapshot; content is newline-delimited lines
+	PendingQueue = 21,     // agent sends the current pending-input queue snapshot; content is newline-delimited lines
+	Alert = 22             // human-actionable failure (credits exhausted, bad API key). Rendered as a loud persistent banner in the chat, never collapsed or hidden.
 }
 
 // Session termination status reported via SessionStatus frames.
@@ -56,6 +57,10 @@ public interface ITransportServer
 {
 	void Output(string sessionId, string text);
 	void Error(string sessionId, string text);
+
+	// Human-actionable failure: something only the user can fix (add provider credits, correct an
+	// API key, switch models). Persistently rendered as a loud banner in the chat transcript.
+	void Alert(string sessionId, string text);
 	void Status(string sessionId, string text);
 	void Thinking(string sessionId, string text);
 	void System(string sessionId, string text);

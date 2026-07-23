@@ -141,7 +141,7 @@ public class SessionHandler
 				// caller) and force a service re-check so the loop parks instead of spinning.
 				if (contextFull && !await CompactAsync(role, registry, roleService, transport, orchestrator, ct))
 				{
-					transport.Status(_activeSession.Id, "Context window full and compaction failed. Use /model to switch to a larger model.");
+					transport.Alert(_activeSession.Id, "The context window is full and compaction failed — this session cannot continue by itself. Use /model to switch to a larger model, or /compact to retry once one is available.");
 					_service = null;
 					if (_lastFailure == null)
 						_lastFailure = "the context window filled and compaction failed";
@@ -216,11 +216,17 @@ public class SessionHandler
 			if (contextFull)
 				break;
 
-			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, GetCompactionReserve(), outputCap, transport, _scope.Token);
+			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, GetCompactionReserve(), outputCap, true, transport, _scope.Token);
 
 			if (result.Outcome == ProtocolCallOutcome.ContextFull)
 			{
 				contextFull = true;
+			}
+			else if (result.Outcome == ProtocolCallOutcome.Yielded)
+			{
+				// A retry backoff was interrupted because input arrived. Drain it here so a queued
+				// /model applies at the loop top before the next attempt; not a failure, no fallback.
+				DrainInput(roleService, registry, transport);
 			}
 			else if (result.Outcome == ProtocolCallOutcome.Interrupted)
 			{
@@ -428,7 +434,11 @@ public class SessionHandler
 				? "Rate limited after too many retries, and no fallback model is available."
 				: string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage;
 			_activeSession.QueryLog.SessionFailure(_activeSession, service, detail, service.RoleModelIds.Count);
-			transport.Error(_activeSession.Id, detail);
+			// Every model in the role is exhausted — nothing the system can do; a human must add
+			// credits, fix keys/config, or wait out the provider. Raise it loudly and persistently.
+			transport.Alert(_activeSession.Id,
+				$"Every model available to the '{_activeSession.Role}' role has failed. Last error: {detail}\n"
+				+ "A human needs to intervene: add provider credits, fix API keys in settings.json, or wait out the rate limits — then /reload or /model to resume.");
 			failure = string.IsNullOrEmpty(result.ErrorMessage) ? "all models failed" : result.ErrorMessage;
 		}
 		return failure;

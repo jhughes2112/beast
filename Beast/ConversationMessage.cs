@@ -198,9 +198,10 @@ public class ConversationModel
 		if (type == FrameType.Debug)
 			return true;
 
-		// Quiet: hide everything except Output and User.
+		// Quiet: hide everything except Output, User, and the error/alert blocks — a
+		// human-actionable Alert must never be hidden by a display mode.
 		if (mode == CollapseMode.Quiet)
-			return type != FrameType.Output && type != FrameType.User && type != FrameType.Error;
+			return type != FrameType.Output && type != FrameType.User && type != FrameType.Error && type != FrameType.Alert;
 
 		return false;
 	}
@@ -210,8 +211,9 @@ public class ConversationModel
 		if (mode == CollapseMode.Verbose)
 			return false;
 
-		// Output and User are never collapsed in any mode.
-		if (type == FrameType.Output || type == FrameType.User)
+		// Output, User, and Alerts are never collapsed in any mode — an Alert exists precisely
+		// to stay in the user's face until the underlying problem is fixed.
+		if (type == FrameType.Output || type == FrameType.User || type == FrameType.Alert)
 			return false;
 
 		// Minimized: Tool/ToolCall/ToolResponse/Thinking/System shown collapsed.

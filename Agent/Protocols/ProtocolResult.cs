@@ -10,6 +10,7 @@ public enum ProtocolCallOutcome
 	Interrupted,  // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
 	TooManyRetries, // Rate-limited repeatedly; caller should try another model or abort.
 	ContextFull,  // Caller's context budget is exhausted before attempting a call; not a model failure.
+	Yielded,      // A retry backoff was interrupted because session input arrived. The caller drains the input (a /model or steering applies) and re-enters; not a failure.
 }
 
 // Normalised payload returned on ProviderCallOutcome.Success.
@@ -124,5 +125,10 @@ public class ProtocolResult
 	public static ProtocolResult ContextFull(string errorMessage)
 	{
 		return new ProtocolResult(ProtocolCallOutcome.ContextFull, null, null, errorMessage);
+	}
+
+	public static ProtocolResult Yielded()
+	{
+		return new ProtocolResult(ProtocolCallOutcome.Yielded, null, null, string.Empty);
 	}
 }

@@ -9,6 +9,7 @@ public class TransportConsoleDebug : ITransportServer
 {
 	public void Output(string sessionId, string text) => Console.WriteLine($"{sessionId} {text}");
 	public void Error(string sessionId, string text) => Console.WriteLine($"{sessionId} [error] {text}");
+	public void Alert(string sessionId, string text) => Console.WriteLine($"{sessionId} [ALERT] {text}");
 	public void Status(string sessionId, string text) => Console.WriteLine($"{sessionId} [status] {text}");
 	public void Thinking(string sessionId, string text) => Console.WriteLine($"{sessionId} [thinking] {text}");
 	public void System(string sessionId, string text) => Console.WriteLine($"{sessionId} [system] {text}");

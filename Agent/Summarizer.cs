@@ -29,7 +29,7 @@ transport, CancellationToken appToken)
 		session.AddUserMessage(prompt);
 		for (; ; )
 		{
-			ProtocolResult result = await service.RunToCompletionAsync(session, tools, null, 0, 0, transport, appToken);
+			ProtocolResult result = await service.RunToCompletionAsync(session, tools, null, 0, 0, false, transport, appToken);
 			if (result.Outcome == ProtocolCallOutcome.Success)
 			{
 				session.CommitAssistantTurn(result.Payload!);

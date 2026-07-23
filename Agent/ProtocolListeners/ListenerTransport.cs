@@ -30,6 +30,8 @@ public class ListenerTransport
 
 	public void Status(string text) => _transport.Status(_sessionId, text);
 
+	public void Alert(string text) => _transport.Alert(_sessionId, text);
+
 	public void OnStreamStart(string tag) => _transport.StreamStart(_sessionId, tag);
 
 	public void OnStreamChunk(string tag, string chunk) => _transport.StreamChunk(_sessionId, chunk);

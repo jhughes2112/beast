@@ -41,6 +41,8 @@ public class DisplayScreen : IDisplay
 		public static readonly Rgb CopyIconBg    = new Rgb(40, 40, 44);     // small contrasting chip behind the copy glyph
 		public static readonly Rgb PopupSelBg    = new Rgb(66, 68, 74);     // selected row in completion popup
 		public static readonly Rgb Red           = new Rgb(214, 102, 102);  // softened error red (was pure 255,0,0)
+		public static readonly Rgb AlertFg       = new Rgb(255, 235, 235);  // near-white on the alert band — maximum contrast
+		public static readonly Rgb AlertBg       = new Rgb(128, 26, 26);    // strong red band; nothing else on screen uses a full red background
 		public static readonly Rgb Blue          = new Rgb(98, 158, 204);   // softened accent blue
 		public static readonly Rgb Orange        = new Rgb(204, 140, 82);   // softened amber (system)
 		public static readonly Rgb Yellow        = new Rgb(206, 182, 112);  // softened gold

@@ -24,6 +24,15 @@ public class ProtocolChatCompletions
 	private bool _parallelToolCallsSupported = true;
 	private bool _streamingSupported = true;
 
+	// Server-stated affordable completion cap, learned from an OpenRouter 402 ("can only afford
+	// N tokens"). 0 = no cap known. Applied to every subsequent request of this instance so a
+	// low credit balance shrinks max_tokens instead of killing the model outright.
+	private int _affordableMaxTokens;
+
+	// The credit alert is raised once per protocol instance — the first clamp tells the human;
+	// subsequent shrinks only update the status line.
+	private bool _creditAlertSent;
+
 	// Backends disagree on how reasoning effort is requested, so it is advertised softly with adaptive
 	// fallback (see TryAdaptToError): 0 = the OpenAI-standard "reasoning_effort" string, 1 = a "reasoning":
 	// { "effort": ... } object (OpenRouter and several gateways), 2 = give up because the server accepts
@@ -322,6 +331,31 @@ public class ProtocolChatCompletions
 					continue;
 				}
 
+				// OpenRouter credit gating: a 402 naming the affordable completion size is a SIZING
+				// problem, not a dead model — treating it as permanent failure cascaded every paid
+				// model onto the free fallback the moment credits ran low. Adopt the server-stated
+				// cap (minus margin, since the balance keeps draining) and retry. Only a strictly
+				// smaller cap re-arms the retry, so the loop always converges.
+				if ((int)httpResponse.StatusCode == 402)
+				{
+					int affordable = ParseAffordableTokens(responseBody);
+					int capped = affordable - affordable / 10;
+					if (capped > 0 && (_affordableMaxTokens == 0 || capped < _affordableMaxTokens))
+					{
+						_affordableMaxTokens = capped;
+						if (!_creditAlertSent)
+						{
+							_creditAlertSent = true;
+							bundle.Transport?.Alert(
+								$"Provider credits are nearly exhausted: {model.Config.Name} can only afford ~{affordable} output tokens per request. "
+								+ "Work continues with clamped responses, but quality and length will suffer until a human adds credits "
+								+ "(for OpenRouter: https://openrouter.ai/settings/credits).");
+						}
+						bundle.Transport?.Status($"Provider credits limit completion size (~{affordable} tokens); retrying with max_tokens={capped}");
+						continue;
+					}
+				}
+
 				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
 				{
 					string rateLimitMessage = string.IsNullOrEmpty(responseBody)
@@ -443,8 +477,19 @@ httpResponse);
 		}
 
 		body["seed"] = Random.Shared.Next();
+		// The learned affordable cap (from a credit-gating 402) tightens whatever the caller asked
+		// for, and applies even when the caller left the size unbounded.
 		if (maxCompletionTokens.HasValue)
-			body["max_completion_tokens"] = maxCompletionTokens.Value;
+		{
+			int cap = maxCompletionTokens.Value;
+			if (_affordableMaxTokens > 0 && _affordableMaxTokens < cap)
+				cap = _affordableMaxTokens;
+			body["max_completion_tokens"] = cap;
+		}
+		else if (_affordableMaxTokens > 0)
+		{
+			body["max_completion_tokens"] = _affordableMaxTokens;
+		}
 
 		// Advertise the friendly reasoningEffort word in whichever form the backend currently accepts.
 		// _reasoningMode is advanced by TryAdaptToError as forms are rejected; mode 2 sends nothing.
@@ -464,6 +509,25 @@ httpResponse);
 		}
 
 		return body;
+	}
+
+	// Pulls the token count out of OpenRouter's credit-gating 402 message ("...but can only
+	// afford 6546. To increase..."). Returns 0 when the phrase is absent or malformed.
+	private static int ParseAffordableTokens(string responseBody)
+	{
+		const string marker = "can only afford ";
+		int result = 0;
+		int idx = responseBody.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+		if (idx >= 0)
+		{
+			int start = idx + marker.Length;
+			int end = start;
+			while (end < responseBody.Length && char.IsDigit(responseBody[end]))
+				end++;
+			if (end > start)
+				int.TryParse(responseBody.Substring(start, end - start), out result);
+		}
+		return result;
 	}
 
 	private async Task<HttpResponseMessage> PostAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, Dictionary<string, JsonNode?> extraPayload, CancellationToken cancellationToken)
@@ -562,7 +626,12 @@ httpResponse);
 			// any non-429 4xx here means streaming is not supported — the caller retries non-streaming.
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429)
 			{
-				_streamingSupported = false;
+				// Exception: a credit-gating 402 is a request-SIZING rejection, not a streaming
+				// capability signal. Keep streaming enabled; the non-streaming fallback surfaces
+				// the same 402 to the main loop's affordable-cap adaptation, and the resized
+				// retry streams again.
+				if (statusCode != 402 || ParseAffordableTokens(errorBody) == 0)
+					_streamingSupported = false;
 				logger.ProtocolFailure(
 					model, DetectedProtocol.ChatCompletions,
 					statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",

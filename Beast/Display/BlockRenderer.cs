@@ -226,6 +226,8 @@ internal static class BlockRenderer
 				return (DisplayScreen.Palette.BrightUser, DisplayScreen.Palette.UserBg);
 			case FrameType.Error:
 				return (DisplayScreen.Palette.Red, null);
+			case FrameType.Alert:
+				return (DisplayScreen.Palette.AlertFg, DisplayScreen.Palette.AlertBg);
 			case FrameType.Thinking:
 				return (DisplayScreen.Palette.ThinkingFg, null);
 			case FrameType.Tool:
@@ -261,6 +263,8 @@ internal static class BlockRenderer
 				return "# ";
 			case FrameType.Error:
 				return "! ";
+			case FrameType.Alert:
+				return "⚠ ACTION NEEDED: ";
 			case FrameType.User:
 				return "» ";
 			default:
@@ -279,7 +283,8 @@ internal static class BlockRenderer
 		bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.User
 						|| (msg.Type == FrameType.Thinking && MarkdownAnsi.LooksLikeMarkdown(msg.Content));
 		bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
-					 || msg.Type == FrameType.System || msg.Type == FrameType.Thinking;
+					 || msg.Type == FrameType.System || msg.Type == FrameType.Thinking
+					 || msg.Type == FrameType.Alert;
 
 		// Thinking and tool output nest under their headers: indent the whole block two spaces (wrapping
 		// to the narrower width first so the indent doesn't clip the trailing characters).

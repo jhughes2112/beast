@@ -91,7 +91,11 @@ public class LlmService
 	// guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
 	// Handles retry logic, rate limiting, and budget exhaustion. Returns ProtocolResult on each
 	// successful call. Context-full detection happens in CommitTurn when adding content.
-	public async Task<ProtocolResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, ITransportServer transport, CancellationToken cancellationToken)
+	// yieldOnInput: when true, a retry backoff is interrupted the moment session input arrives and
+	// the call returns Yielded so the caller can drain it (a queued /model applies) and re-enter.
+	// Callers whose sessions receive no interactive input (summarizer, web search, tests) pass
+	// false — their pending queue never drains mid-call, so yielding would spin.
+	public async Task<ProtocolResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, bool yieldOnInput, ITransportServer transport, CancellationToken cancellationToken)
 	{
 		ProtocolResult result = ProtocolResult.Failed($"LLM {_model.Config.Name} is permanently down");
 
@@ -124,9 +128,29 @@ public class LlmService
 					// Honor any backoff a prior attempt (or a prior turn) recorded — a rate-limit RetryAfter or
 					// a transient-error backoff — before making the next call. Both retry budgets are bounded, so
 					// an exhausted budget escalates to TooManyRetries below rather than parking here forever.
-					TimeSpan delay = _availability.AvailableAt - DateTimeOffset.UtcNow;
-					if (delay > TimeSpan.Zero)
-						await Task.Delay(delay, linked.Token);
+					// The wait is chunked so queued input can interrupt it: without this, a session waiting out
+					// minutes of rate-limit backoff was deaf to /model and steering until the backoff elapsed.
+					if (_availability.AvailableAt > DateTimeOffset.UtcNow)
+					{
+						bool inputArrived = false;
+						while (_availability.AvailableAt > DateTimeOffset.UtcNow)
+						{
+							if (yieldOnInput && conversation.HasPending)
+							{
+								inputArrived = true;
+								break;
+							}
+							TimeSpan remaining = _availability.AvailableAt - DateTimeOffset.UtcNow;
+							TimeSpan slice = remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250);
+							if (slice > TimeSpan.Zero)
+								await Task.Delay(slice, linked.Token);
+						}
+						if (inputArrived)
+						{
+							result = ProtocolResult.Yielded();
+							break;
+						}
+					}
 
 					if (budget.IsExhausted())
 					{
@@ -246,9 +270,14 @@ public class LlmService
 					}
 					else
 					{
-						// Unrecoverable (auth failure, unknown protocol): mark the model down so it is not retried.
+						// Unrecoverable (auth failure, unknown protocol): mark the model down so it is not
+						// retried, and tell the HUMAN loudly — this class of failure (bad API key, wrong
+						// endpoint, closed account) is never something the system can fix by itself.
 						conversation.QueryLog.ModelFailure(_model, _handler, "Failed", null, result.ErrorMessage ?? "Permanent failure", 0, 0, null, true);
 						_availability.ExtendBackoff(DateTimeOffset.MaxValue);
+						transport.Alert(conversation.Id,
+							$"Model '{_model.Config.Name}' has been marked unavailable: {result.ErrorMessage ?? "permanent failure"}\n"
+							+ "This needs a human fix — check the API key, endpoint, or provider account in settings.json, then /reload (or /model) to retry.");
 						break;
 					}
 				}

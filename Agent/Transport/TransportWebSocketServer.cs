@@ -130,6 +130,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 
 	public void Output(string sessionId, string text) => Send(FrameType.Output, sessionId, text);
 	public void Error(string sessionId, string text) => Send(FrameType.Error, sessionId, text);
+	public void Alert(string sessionId, string text) => Send(FrameType.Alert, sessionId, text);
 	public void Status(string sessionId, string text) => Send(FrameType.Status, sessionId, text);
 	public void Thinking(string sessionId, string text) => Send(FrameType.Thinking, sessionId, text);
 	public void System(string sessionId, string text) => Send(FrameType.System, sessionId, text);

@@ -80,7 +80,7 @@ public class WebSearchOpenrouter
 		{
 			// One bare call: no tools, no forced tool choice. The web plugin runs inside the model's turn and
 			// the assistant text it returns is the answer we hand straight back to the caller.
-			ProtocolResult result = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, transport, scope.Token);
+			ProtocolResult result = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, maxOutputTokens, false, transport, scope.Token);
 			if (result.Outcome != ProtocolCallOutcome.Success)
 			{
 				// A /cancel returns "cancelled by the user" so the caller is unblocked; anything else is a failure.
