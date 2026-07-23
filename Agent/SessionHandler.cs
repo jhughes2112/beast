@@ -72,10 +72,10 @@ public class SessionHandler
 
 		try
 		{
-			// Handlers run until shutdown: a session that exists is always serviced. Budgets never end
-			// the run — running out of turns while a reply is owed forces the answer out (step 7) and
-			// the session continues as a free-floating conversation.
-			while (!ct.IsCancellationRequested)
+			// Handlers run until shutdown or deletion: a session that exists is always serviced.
+			// Budgets never end the run — running out of turns while a reply is owed forces the
+			// answer out (step 7) and the session continues as a free-floating conversation.
+			while (!ct.IsCancellationRequested && !_activeSession.Deleted)
 			{
 				// Budgets live on the session (part of its reply obligation), so they survive reload,
 				// travel to compaction successors, and clear the moment the caller has been answered.
@@ -88,11 +88,15 @@ public class SessionHandler
 				RefreshService(role, registry);
 				_activeSession.UpdateCompletions(BuildCompletionCandidates(roleService, registry));
 
-				// 2. Compact when requested; the loop continues on the successor session.
+				// 2. Compact when requested; the loop continues on the successor session. On failure,
+				// drop the service so the next iteration rebuilds it and the protocol rehydrates from
+				// canonical — the summarize attempt routed its turns through its own protocol
+				// instance, which can leave this service's native state behind canonical.
 				if (_wantsCompact)
 				{
 					_wantsCompact = false;
-					await CompactAsync(role, registry, roleService, transport, orchestrator, ct);
+					if (!await CompactAsync(role, registry, roleService, transport, orchestrator, ct))
+						_service = null;
 				}
 
 				// 3. Wait if there is nothing to do.
@@ -144,7 +148,7 @@ public class SessionHandler
 				// to accept new user input.
 				if (_terminatorCalled || _lastFailure != null)
 				{
-					NotifyComplete(role.Name, orchestrator);
+					NotifyComplete(role.Name, orchestrator, true);
 					_lastFailure = null;
 					_terminatorCalled = false;
 				}
@@ -155,7 +159,7 @@ public class SessionHandler
 				// and with it every budget — is cleared; from here on this is just a session the user
 				// can chat with.
 				if (_activeSession.OwesReply && turn >= maxTotal)
-					NotifyComplete(role.Name, orchestrator);
+					NotifyComplete(role.Name, orchestrator, true);
 			}
 		}
 		catch (OperationCanceledException)
@@ -170,13 +174,13 @@ public class SessionHandler
 				SaveSession(_activeSession);
 			RollUpCost(orchestrator);
 			_activeSession.SendIdle();
-			NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator);
+			NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator, false);
 
-			// The loop only exits on shutdown or an unhandled failure. Release the session either way;
-			// after a failure with input already queued, hand it straight back to the orchestrator so
-			// a fresh handler processes that input rather than leaving it to sit.
+			// The loop only exits on shutdown, deletion, or an unhandled failure. Release the session
+			// either way; after a failure with input already queued, hand it straight back to the
+			// orchestrator so a fresh handler processes that input rather than leaving it to sit.
 			_activeSession.DetachHandler();
-			if (!ct.IsCancellationRequested && _activeSession.HasPending)
+			if (!ct.IsCancellationRequested && !_activeSession.Deleted && _activeSession.HasPending)
 				orchestrator.EnsureHandler(_activeSession);
 		}
 	}
@@ -194,7 +198,9 @@ public class SessionHandler
 		bool contextFull = false;
 		bool turnComplete = false;
 
-		while (!turnComplete && !contextFull && !ct.IsCancellationRequested)
+		// Deleted ends the cluster immediately: MarkDeleted wakes a parked handler through the
+		// input signal, and without this check the wake would read as steering and run more turns.
+		while (!turnComplete && !contextFull && !ct.IsCancellationRequested && !_activeSession.Deleted)
 		{
 			// Reconcile service with any deferred /model switch before each LLM call.
 			ApplyPendingModelSwitch(role, registry);
@@ -340,10 +346,18 @@ public class SessionHandler
 	{
 		bool full = false;
 		int threshold = _activeSession.ContextWindow - GetCompactionReserve();
+
+		// Only text appended since the last measurement counts: everything up to and including the
+		// last assistant turn is already inside ContextLength, and unmeasured tool outputs are
+		// covered by PendingReserve. Counting the whole history here made the estimate grow without
+		// bound and fire the tracer on every turn of a long conversation.
 		int pendingBytes = 0;
-		foreach (CanonicalMessage msg in _activeSession.Bundle.Canonical.Messages)
+		IReadOnlyList<CanonicalMessage> messages = _activeSession.Bundle.Canonical.Messages;
+		for (int i = messages.Count - 1; i >= 0; i--)
 		{
-			if (msg is UserMessage um)
+			if (messages[i] is AssistantMessage)
+				break;
+			if (messages[i] is UserMessage um)
 				pendingBytes += System.Text.Encoding.UTF8.GetByteCount(um.Text);
 		}
 		int estimate = _activeSession.ContextLength + (pendingBytes / 3) + _activeSession.Budget.PendingReserve;
@@ -353,8 +367,10 @@ public class SessionHandler
 			TracerResult tracer = await service.RunTracerAsync(_activeSession, tools, null, token);
 			if (tracer.Succeeded)
 			{
+				// TracerResult.InputTokens is the total prompt size (cached included) — adding
+				// CachedTokens on top double-counted the cache and compacted prematurely.
 				_activeSession.Budget.RecordMeasurement(tracer.InputTokens);
-				_lastInputTokens = tracer.InputTokens + tracer.CachedTokens;
+				_lastInputTokens = tracer.InputTokens;
 				transport.Stats(_activeSession.Id, _activeSession.Model + ReasoningEffort.DisplaySuffix(service.Model.Config.ReasoningEffort), _activeSession.Role,
 					_activeSession.CumulativeInputTokens, _activeSession.CumulativeOutputTokens,
 					_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens);
@@ -379,7 +395,9 @@ public class SessionHandler
 	{
 		string? failure = null;
 		bool rateLimited = result.Outcome == ProtocolCallOutcome.TooManyRetries;
-		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + GetCompactionReserve());
+		// PendingReserve covers tool outputs appended since the last measurement — without it a
+		// tool-heavy round can pick a fallback model the real conversation no longer fits in.
+		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve());
 		if (fallback != null)
 		{
 			_activeSession.QueryLog.FallbackTransition(service, fallback,
@@ -705,7 +723,8 @@ public class SessionHandler
 		try
 		{
 			await _activeSession.WaitForInputAsync(ct);
-			resumed = !ct.IsCancellationRequested;
+			// A deletion also releases this wait; it must read as "do not resume", not as steering.
+			resumed = !ct.IsCancellationRequested && !_activeSession.Deleted;
 		}
 		catch (OperationCanceledException)
 		{
@@ -775,6 +794,11 @@ public class SessionHandler
 
 	private void SaveSession(Session session)
 	{
+		// A deleted session must never be written again — its files were just removed, and a
+		// late save from a still-unwinding handler would silently resurrect them.
+		if (session.Deleted)
+			return;
+
 		if (session.InferDisplayName())
 			session.AnnounceToClient();
 		SessionService.Save(session.Data);
@@ -816,7 +840,12 @@ public class SessionHandler
 	// last assistant text, then clears the session's reply obligation — it remains viable for
 	// conversation but can no longer respond as a tool. A no-op when no reply is owed, which is
 	// what makes it safe to call from both the turn loop and the run's finally.
-	private void NotifyComplete(string roleName, ISessionOrchestrator orchestrator)
+	// markStatus stamps the persisted termination status (Success/Failure) at the moment the reply
+	// is delivered — this is the single place a struck-off session is labeled, so the caller moving
+	// on (even to a replacement subagent) always leaves the session's fate visible and serialized.
+	// The shutdown unwind passes false: a session unloaded mid-work is marked Incomplete by the
+	// restore pass instead, and must not read as a deliberate failure.
+	private void NotifyComplete(string roleName, ISessionOrchestrator orchestrator, bool markStatus)
 	{
 		if (_activeSession.OwesReply)
 		{
@@ -850,6 +879,16 @@ public class SessionHandler
 					output = salvaged;
 					tokens = _activeSession.LastTokenUsage?.CompletionTokens ?? _terminatorTokens;
 				}
+			}
+
+			// The session's duties are over one way or the other; persist how it ended so the F10
+			// tree and status bar show it, and a reload remembers it without re-deriving. Leave the
+			// delegation loop too — a struck-off session must not keep getting end-of-turn nudges
+			// to continue work its caller has already written off.
+			if (markStatus)
+			{
+				_activeSession.SetTerminationStatus(ok ? SessionStatus.Success : SessionStatus.Failure);
+				_activeSession.EndWork();
 			}
 
 			// Bill the parent before the caller resumes so its cost display is current at the

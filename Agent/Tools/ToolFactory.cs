@@ -343,7 +343,9 @@ public static class ToolFactory
 
 		// Terminators are mutually exclusive; the role declares at most one. task_complete and finish_review are
 		// checked by name; return_to_caller is the fallback for any subagent that declares neither. Each maps
-		// its own parameter names onto the shared (success, output) callback.
+		// its own parameter names onto the shared (success, output) callback. The termination status is NOT
+		// stamped here: the handler may reject the reply (over the output budget) and keep working, so
+		// SessionHandler.NotifyComplete stamps it once, when the reply is actually delivered.
 		if (role.Tools.Contains("task_complete") && onTerminate != null)
 		{
 			ToolConfig tc = settings.Tools["task_complete"];
@@ -365,7 +367,6 @@ public static class ToolFactory
 				{
 					string results = Str(args, "results_of_review_work");
 					bool success = BoolOpt(args, "success") ?? true;
-					session!.SetTerminationStatus(success ? SessionStatus.Success : SessionStatus.Failure);
 					onTerminate(success, results);
 					string ack = "Task marked complete.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
@@ -396,7 +397,6 @@ public static class ToolFactory
 						return Task.FromResult(new ToolResult(toolCallId, string.Empty, "Error: finish_review requires 'approved' to be the boolean true or false.", 1, 0));
 
 					string comments = Str(args, "comments");
-					session!.SetTerminationStatus(approved.Value ? SessionStatus.Success : SessionStatus.Failure);
 					onTerminate(approved.Value, comments);
 					string ack = approved.Value ? "Review approved." : "Review rejected.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
@@ -424,7 +424,6 @@ public static class ToolFactory
 				{
 					string output = Str(args, "output");
 					bool success = BoolOpt(args, "success") ?? true;
-					session!.SetTerminationStatus(success ? SessionStatus.Success : SessionStatus.Failure);
 					onTerminate(success, output);
 					string ack = "Returned to caller.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));

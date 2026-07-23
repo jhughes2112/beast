@@ -38,12 +38,21 @@ public class ProtocolAnthropic
 	private readonly List<Message> _native = new List<Message>();
 	private string _system = string.Empty;
 
+	// The live turn just produced by this protocol, held until the session commits it. The commit
+	// fan-out routes OnAssistantTurn back through this protocol, which consumes this verbatim SDK
+	// message (signed thinking and tool-use blocks intact) instead of reconstructing from semantics
+	// — reconstructing would append the same blocks a second time and duplicate tool_use ids.
+	// A turn the caller drops (unrepairable tool call, interrupt) is never committed, so the
+	// pending message is simply discarded when the next turn replaces it.
+	private Message? _pendingNative;
+
 	// Rebuilds the native SDK message chain from canonical, stripping thinking and enforcing
 	// user/assistant alternation. Called by ProtocolProxy right after creating or switching in.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
 		_native.Clear();
 		_system = string.Empty;
+		_pendingNative = null;
 
 		foreach (CanonicalMessage msg in messages)
 		{
@@ -93,25 +102,51 @@ public class ProtocolAnthropic
 		AppendContent(RoleType.User, new TextContent { Text = text });
 	}
 
-	// A completed assistant turn from replay or another protocol. We reconstruct a native
-	// assistant message without signature; thinking is intentionally dropped because an
-	// unsigned thinking block cannot be replayed to Anthropic.
+	// A completed assistant turn. When this protocol produced the turn live, the pending SDK
+	// message is appended verbatim so its signed thinking and tool-use blocks survive intact.
+	// Otherwise (replay or another protocol) the turn is reconstructed without signature;
+	// thinking is intentionally dropped because an unsigned thinking block cannot be replayed
+	// to Anthropic.
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
-		if (!string.IsNullOrEmpty(text))
+		if (_pendingNative != null)
 		{
-			AppendContent(RoleType.Assistant, new TextContent { Text = text });
-		}
-
-		foreach (SemanticToolCall tc in toolCalls)
-		{
-			ToolUseContent use = new ToolUseContent
+			// The committed calls may have been repaired in place (fuzzy name correction, argument
+			// fixups) after this message was captured. Write the repairs back into the matching
+			// tool-use blocks so the wire history matches canonical; signatures cover only the
+			// thinking blocks, which stay untouched.
+			foreach (SemanticToolCall tc in toolCalls)
 			{
-				Id = tc.Id,
-				Name = tc.Name,
-				Input = ParseInput(tc.ArgumentsJson)
-			};
-			AppendContent(RoleType.Assistant, use);
+				foreach (ContentBase block in _pendingNative.Content)
+				{
+					if (block is ToolUseContent use && use.Id == tc.Id)
+					{
+						use.Name = tc.Name;
+						use.Input = ParseInput(tc.ArgumentsJson);
+					}
+				}
+			}
+
+			_native.Add(_pendingNative);
+			_pendingNative = null;
+		}
+		else
+		{
+			if (!string.IsNullOrEmpty(text))
+			{
+				AppendContent(RoleType.Assistant, new TextContent { Text = text });
+			}
+
+			foreach (SemanticToolCall tc in toolCalls)
+			{
+				ToolUseContent use = new ToolUseContent
+				{
+					Id = tc.Id,
+					Name = tc.Name,
+					Input = ParseInput(tc.ArgumentsJson)
+				};
+				AppendContent(RoleType.Assistant, use);
+			}
 		}
 	}
 
@@ -397,8 +432,11 @@ public class ProtocolAnthropic
 	// from the message_start (input tokens) and the final message_delta (output tokens / stop).
 	private ProtocolResult CommitStreamedResponse(List<MessageResponse> outputs, LlmModel model, ListenerBundle bundle)
 	{
+		// Held as pending, NOT added to _native here: the session's commit fan-out delivers this
+		// turn back via OnAssistantTurn, which appends the pending message exactly once. Adding it
+		// here as well double-appended every live turn and produced duplicate tool_use ids.
 		Message assistant = new Message(outputs);
-		_native.Add(assistant);
+		_pendingNative = assistant;
 
 		(string assistantText, string thinking, List<SemanticToolCall> toolCalls) = ExtractSemanticFromContent(assistant.Content);
 
@@ -546,9 +584,20 @@ public class ProtocolAnthropic
 			}
 			else if (status >= 400 && status < 500)
 			{
-				result = logger.ProtocolFailure(
-					ProtocolResult.Transient($"HTTP {status}: {ex}", null),
-					model, DetectedProtocol.Anthropic, "ClientError", status, ex.Message, null, ex);
+				// A context overflow can never succeed on retry — surface it as ContextFull so the
+				// caller compacts instead of burning the transient budget on an impossible request.
+				if (ProtocolHelpers.IsContextOverflow(ex.Message))
+				{
+					result = logger.ProtocolFailure(
+						ProtocolResult.ContextFull($"HTTP {status}: {ex.Message}"),
+						model, DetectedProtocol.Anthropic, "ContextOverflow", status, ex.Message, null, ex);
+				}
+				else
+				{
+					result = logger.ProtocolFailure(
+						ProtocolResult.Transient($"HTTP {status}: {ex}", null),
+						model, DetectedProtocol.Anthropic, "ClientError", status, ex.Message, null, ex);
+				}
 			}
 			else
 			{
@@ -851,19 +900,20 @@ public class ProtocolAnthropic
 				if (usageNode == null)
 					return TracerResult.Failed("No usage info in tracer response");
 
+				// Anthropic's input_tokens EXCLUDES cache reads/writes; TracerResult.InputTokens is
+				// defined as the TOTAL prompt size, so fold the cache components in here.
 				int inputTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
-				int cacheReadTokens = usageNode["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
-				int cacheReadTokens2 = usageNode["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
-				int cachedTokens = cacheReadTokens + cacheReadTokens2;
+				int cacheWriteTokens = usageNode["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
+				int cacheReadTokens = usageNode["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+				int cachedTokens = cacheWriteTokens + cacheReadTokens;
 
-				return TracerResult.Success(inputTokens, cachedTokens);
+				return TracerResult.Success(inputTokens + cachedTokens, cachedTokens);
 			}
 
 			// 4xx (non-429, non-retryable) — distinguish actual context overflow from parameter errors
 			if (ProtocolHelpers.IsPermanentClientError(statusCode))
 			{
-				string lowerBody = responseBody.ToLowerInvariant();
-				if (lowerBody.Contains("context_length_exceeded") || lowerBody.Contains("maximum context length") || lowerBody.Contains("max_tokens"))
+				if (ProtocolHelpers.IsContextOverflow(responseBody) || responseBody.ToLowerInvariant().Contains("max_tokens"))
 				{
 					return TracerResult.ContextExceeded(statusCode);
 				}

@@ -18,8 +18,11 @@ transport, CancellationToken appToken)
 {
 	string? summary = null;
 
+	// The summary turn replays the ENTIRE conversation, so the model must actually hold it:
+	// require the measured context size, not 0 — a session that overflowed its model (or fell
+	// back onto a smaller one) must summarize on a role model whose window fits the history.
 	Role? role = roleService.GetRole(session.Role);
-	LlmService? service = registry.CreateService(role, session.Model, 0);
+	LlmService? service = registry.CreateService(role, session.Model, session.ContextLength);
 	if (service != null)
 	{
 		session.UpdateModel(service.Model);
@@ -38,7 +41,7 @@ transport, CancellationToken appToken)
 			// and retry. Any other failure, or an exhausted list, leaves the summary null.
 			if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
 			{
-				LlmService? fallback = registry.CreateFallbackService(service, 0);
+				LlmService? fallback = registry.CreateFallbackService(service, session.ContextLength);
 				if (fallback != null)
 				{
 					service = fallback;

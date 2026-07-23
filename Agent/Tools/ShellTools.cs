@@ -15,6 +15,11 @@ public static class ShellTools
 	// cannot flood the context.
 	private const int MaxLsEntries = 100;
 
+	// Upper bound on captured stdout/stderr per stream (chars, ~4 MB). Output past this is drained
+	// and discarded so a runaway command cannot exhaust container memory before the token-budget
+	// truncation ever sees the result.
+	private const int MaxCapturedChars = 4 * 1024 * 1024;
+
 	// PATH for readonly_bash: a directory of symlinks to a curated read-only command set, created in the
 	// Dockerfile. Restricted bash resolves only bare command names through PATH, so this directory is the
 	// entire universe of programs a locked-down role can run — everything else is simply unreachable.
@@ -86,6 +91,16 @@ public static class ShellTools
 		return RunBashAsync(toolcallid, command, timeoutSeconds, true, cancellationToken);
 	}
 
+	// Renders a captured stream, appending a truncation notice when the capture cap was hit so the
+	// model knows the tail is missing rather than the command having produced nothing further.
+	private static string CappedText(StringBuilder captured, bool capped, string streamName)
+	{
+		string text = captured.ToString().TrimEnd();
+		if (capped)
+			text = text + $"\n[{streamName} truncated: exceeded the {MaxCapturedChars / (1024 * 1024)} MB capture limit]";
+		return text;
+	}
+
 	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, CancellationToken cancellationToken)
 	{
 		ToolResult finalResult;
@@ -127,20 +142,37 @@ public static class ShellTools
 				{
 					StringBuilder output = new StringBuilder();
 					StringBuilder error = new StringBuilder();
+					bool outputCapped = false;
+					bool errorCapped = false;
 
+					// Completed when the reader delivers its EOF sentinel (a null Data). Process exit
+					// alone does not mean the readers are done: without waiting for these, the result
+					// could be read while a callback is still appending (a torn read, occasionally
+					// losing the tail of the output).
+					TaskCompletionSource<bool> outputEof = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+					TaskCompletionSource<bool> errorEof = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+					// Past the cap the pipes are still drained (so the child never blocks on a full
+					// pipe) but the data is discarded — a runaway command like `yes` must not grow
+					// the buffers until the container runs out of memory. The token-budget truncation
+					// downstream would clip the result anyway; this bounds what is ever held.
 					process.OutputDataReceived += (_, e) =>
 					{
-						if (e.Data != null)
-						{
+						if (e.Data == null)
+							outputEof.TrySetResult(true);
+						else if (output.Length < MaxCapturedChars)
 							output.AppendLine(e.Data);
-						}
+						else
+							outputCapped = true;
 					};
 					process.ErrorDataReceived += (_, e) =>
 					{
-						if (e.Data != null)
-						{
+						if (e.Data == null)
+							errorEof.TrySetResult(true);
+						else if (error.Length < MaxCapturedChars)
 							error.AppendLine(e.Data);
-						}
+						else
+							errorCapped = true;
 					};
 
 					process.Start();
@@ -181,10 +213,24 @@ public static class ShellTools
 							}
 						}
 
+						// Wait for the readers' EOF sentinels so the builders are complete before they are
+						// read. Bounded: a backgrounded grandchild can inherit the pipe and hold it open
+						// long after the command itself exited, and its future output is rightly lost.
+						// Cancelling the reads afterwards stops any still-open reader from appending.
+						await Task.WhenAny(Task.WhenAll(outputEof.Task, errorEof.Task), Task.Delay(500));
+						try
+						{
+							process.CancelOutputRead();
+							process.CancelErrorRead();
+						}
+						catch (InvalidOperationException)
+						{
+						}
+
 						if (processCompleted)
 						{
-							string result = output.ToString().TrimEnd();
-							string err = error.ToString().TrimEnd();
+							string result = CappedText(output, outputCapped, "stdout");
+							string err = CappedText(error, errorCapped, "stderr");
 
 							// Use string.Empty for no output to avoid nulls.
 							string stdOut = string.IsNullOrEmpty(result) ? string.Empty : result;
@@ -201,8 +247,8 @@ public static class ShellTools
 						}
 						else if (timedOut)
 						{
-							string result = output.ToString().TrimEnd();
-							string err = error.ToString().TrimEnd();
+							string result = CappedText(output, outputCapped, "stdout");
+							string err = CappedText(error, errorCapped, "stderr");
 							string stdOut = string.IsNullOrEmpty(result) ? string.Empty : result;
 							string stdErr = string.IsNullOrEmpty(err) ? string.Empty : err;
 

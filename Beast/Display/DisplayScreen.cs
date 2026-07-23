@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TextCopy;
@@ -1203,21 +1204,79 @@ public class DisplayScreen : IDisplay
 		return true;
 	}
 
-	// Returns the plain text to copy for a block. Tool-call blocks include the paired response body so the
-	// copy matches what is shown on screen; every other block copies its content verbatim.
+	// Returns the plain text to copy for a block. Tool-call blocks copy as readable text — the tool
+	// name, scalar arguments inline, string arguments and the paired response as plain text — never
+	// the raw JSON call, which would duplicate every text argument in escaped form.
 	private static string BlockCopyText(DisplayMessage msg)
 	{
+		string text;
 		if (msg.Type == FrameType.ToolCall)
 		{
 			StringBuilder sb = new StringBuilder();
-			sb.Append(msg.Content);
+			AppendToolCallCopyText(sb, msg.Content);
 			if (!string.IsNullOrEmpty(msg.PairedResponseContent))
-				sb.Append('\n').Append(msg.PairedResponseContent);
+			{
+				if (sb.Length > 0)
+					sb.Append('\n');
+				sb.Append(msg.PairedResponseContent);
+			}
 			if (!string.IsNullOrEmpty(msg.PairedResponseError))
-				sb.Append('\n').Append(msg.PairedResponseError);
-			return sb.ToString();
+			{
+				if (sb.Length > 0)
+					sb.Append('\n');
+				sb.Append(msg.PairedResponseError);
+			}
+			text = sb.ToString();
 		}
-		return msg.Content;
+		else
+		{
+			text = msg.Content;
+		}
+		return text;
+	}
+
+	// Renders a tool call as copy-friendly plain text. The stored content is "name({...json...})";
+	// emit the name with short scalar arguments on the header line, then each multi-line/long string
+	// argument's value as plain text (markdown formatting kept, JSON escaping gone). Unparseable
+	// arguments fall back to the raw text so nothing is silently dropped.
+	private static void AppendToolCallCopyText(StringBuilder sb, string content)
+	{
+		int paren = content.IndexOf('(');
+		string name = paren >= 0 ? content.Substring(0, paren).Trim() : content;
+		string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
+		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+			argsJson = argsJson.Substring(0, argsJson.Length - 1);
+
+		sb.Append(name);
+		if (!string.IsNullOrWhiteSpace(argsJson))
+		{
+			try
+			{
+				using JsonDocument doc = JsonDocument.Parse(argsJson);
+				List<string> inlineArgs = new List<string>();
+				List<string> blockArgs = new List<string>();
+				foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
+				{
+					// GetString() already decodes JSON escapes — no further unescaping, or a literal
+					// backslash-n in a regex/shell argument would be corrupted into a real newline.
+					string val = prop.Value.ValueKind == JsonValueKind.String
+						? prop.Value.GetString() ?? string.Empty
+						: prop.Value.ToString();
+					if (val.IndexOf('\n') >= 0 || val.Length > 120)
+						blockArgs.Add(val);
+					else
+						inlineArgs.Add($"{prop.Name}: {val}");
+				}
+				if (inlineArgs.Count > 0)
+					sb.Append("  ").Append(string.Join("  ", inlineArgs));
+				foreach (string block in blockArgs)
+					sb.Append('\n').Append(block);
+			}
+			catch (JsonException)
+			{
+				sb.Append(' ').Append(argsJson);
+			}
+		}
 	}
 
 	// ------------------------------------------------------------------------------------------------------

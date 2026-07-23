@@ -16,6 +16,21 @@ public static class SessionService
 	private static string SessionsDir => Path.Combine("/workspace", ".beast", "sessions");
 	private static string ManifestFile => Path.Combine(SessionsDir, ".manifest.json");
 
+	// Serializes every read-modify-write against the sessions directory. All persistence flows
+	// through this one static class in a single process, so one lock keeps concurrent subagent
+	// saves from tearing the manifest or overwriting each other's entries. Readers stay lock-free:
+	// atomic replacement below guarantees they always see a complete old or new file.
+	private static readonly object _ioLock = new object();
+
+	// Writes a file atomically: write to a sibling temp file, then move it over the target, so a
+	// crash mid-write leaves the previous version intact instead of a truncated file.
+	private static void WriteFileAtomic(string path, string content)
+	{
+		string temp = path + ".tmp";
+		File.WriteAllText(temp, content);
+		File.Move(temp, path, true);
+	}
+
 	// Manifest entry: maps friendly filename to internal session metadata
 	private class ManifestEntry
 	{
@@ -61,7 +76,7 @@ public static class SessionService
 	{
 		Directory.CreateDirectory(SessionsDir);
 		string json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-		File.WriteAllText(ManifestFile, json);
+		WriteFileAtomic(ManifestFile, json);
 	}
 
 	// Generate a friendly filename for a root session based on worktree branch name
@@ -108,8 +123,10 @@ public static class SessionService
 				UseShellExecute = false,
 				CreateNoWindow = true
 			});
-			process?.WaitForExit();
+			// Read before waiting: waiting first deadlocks if the output ever exceeds the pipe
+			// buffer, since nothing is draining it while the child blocks on a full pipe.
 			string result = process?.StandardOutput.ReadToEnd().Trim() ?? string.Empty;
+			process?.WaitForExit();
 			return string.IsNullOrEmpty(result) ? string.Empty : result;
 		}
 		catch
@@ -118,24 +135,14 @@ public static class SessionService
 		}
 	}
 
-	// Find the friendly filename for a given session ID, or null if not found
-	private static string? FindFriendlyName(string sessionId)
+	// Find the friendly filename for a given session ID in an already-loaded manifest, or null.
+	private static string? FindFriendlyName(SessionManifest manifest, string sessionId)
 	{
-		var manifest = LoadManifest();
 		foreach (var kvp in manifest.Entries)
 		{
 			if (kvp.Value.SessionId == sessionId)
 				return kvp.Key;
 		}
-		return null;
-	}
-
-	// Find the session ID for a given friendly filename, or null if not found
-	private static string? FindSessionId(string friendlyName)
-	{
-		var manifest = LoadManifest();
-		if (manifest.Entries.TryGetValue(friendlyName, out var entry))
-			return entry.SessionId;
 		return null;
 	}
 
@@ -147,6 +154,13 @@ public static class SessionService
 			return;
 		if (string.IsNullOrEmpty(data.DisplayName))
 			return;
+
+		lock (_ioLock)
+			SaveLocked(data);
+	}
+
+	private static void SaveLocked(BeastSession data)
+	{
 		try
 		{
 			Directory.CreateDirectory(SessionsDir);
@@ -155,7 +169,7 @@ public static class SessionService
 			string friendlyName;
 
 			// Check if this session already has a friendly name in the manifest
-			string? existingFriendly = FindFriendlyName(data.Id);
+			string? existingFriendly = FindFriendlyName(manifest, data.Id);
 			if (!string.IsNullOrEmpty(existingFriendly))
 			{
 				friendlyName = existingFriendly;
@@ -185,7 +199,7 @@ public static class SessionService
 				{
 					// Child session: extract parent ID and find parent's friendly name
 					string parentId = ExtractParentId(data.Id);
-					string? parentFriendly = FindFriendlyName(parentId);
+					string? parentFriendly = FindFriendlyName(manifest, parentId);
 					if (string.IsNullOrEmpty(parentFriendly))
 					{
 						// Fallback: use the root friendly name
@@ -212,7 +226,7 @@ public static class SessionService
 
 			string path = Path.Combine(SessionsDir, friendlyName + ".json");
 			string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-			File.WriteAllText(path, json);
+			WriteFileAtomic(path, json);
 			SaveManifest(manifest);
 		}
 		catch (Exception ex)
@@ -251,8 +265,7 @@ public static class SessionService
 	public static BeastSession? Load(string sessionId)
 	{
 		// First check the manifest for the friendly filename
-		var manifest = LoadManifest();
-		string? friendlyName = FindFriendlyName(sessionId);
+		string? friendlyName = FindFriendlyName(LoadManifest(), sessionId);
 
 		if (!string.IsNullOrEmpty(friendlyName))
 		{
@@ -360,6 +373,13 @@ public static class SessionService
 		if (!Directory.Exists(SessionsDir))
 			return results;
 
+		// Startup sweep: a crash between the temp write and the atomic move can leave stray .tmp
+		// files behind. They are never valid session data, so clear them here.
+		foreach (string tmp in Directory.GetFiles(SessionsDir, "*.tmp"))
+		{
+			try { File.Delete(tmp); } catch { }
+		}
+
 		foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
 		{
 			string fileName = Path.GetFileNameWithoutExtension(file);
@@ -450,6 +470,7 @@ public static class SessionService
 			return ids;
 
 		string childPrefix = rootId + "_";
+		var manifest = LoadManifest();
 		foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
 		{
 			string fileName = Path.GetFileNameWithoutExtension(file);
@@ -457,7 +478,6 @@ public static class SessionService
 				continue;
 
 			// Check both the filename and the session data
-			var manifest = LoadManifest();
 			string? sessionId = null;
 			if (manifest.Entries.TryGetValue(fileName, out var entry))
 				sessionId = entry.SessionId;
@@ -485,11 +505,17 @@ public static class SessionService
 	// Deletes exactly one session file by its internal session ID, and nothing else.
 	public static bool Delete(string sessionId)
 	{
+		lock (_ioLock)
+			return DeleteLocked(sessionId);
+	}
+
+	private static bool DeleteLocked(string sessionId)
+	{
 		if (string.IsNullOrWhiteSpace(sessionId) || !IsSafeSessionId(sessionId))
 			return false;
 
 		var manifest = LoadManifest();
-		string? friendlyName = FindFriendlyName(sessionId);
+		string? friendlyName = FindFriendlyName(manifest, sessionId);
 
 		if (string.IsNullOrEmpty(friendlyName))
 		{
@@ -535,6 +561,12 @@ public static class SessionService
 	// Deletes a session and every descendant session: its own file plus any child files.
 	// Returns the number of files removed.
 	public static int DeleteTree(string sessionId)
+	{
+		lock (_ioLock)
+			return DeleteTreeLocked(sessionId);
+	}
+
+	private static int DeleteTreeLocked(string sessionId)
 	{
 		int removed = 0;
 

@@ -265,7 +265,9 @@ public class LlmRegistry
 		if (role == null)
 			return null;
 
-		// Try the preferred model first if it is in the role's list and not permanently down.
+		// Try the preferred model first if it is in the role's list and not permanently down. A
+		// temporary backoff does NOT disqualify it: an explicitly chosen model waits out its rate
+		// limit rather than being silently swapped for a different one.
 		if (!string.IsNullOrEmpty(preferredModelId) && role.Models.Contains(preferredModelId))
 		{
 			if (_models.TryGetValue(preferredModelId, out LlmModel? preferred))
@@ -276,20 +278,34 @@ public class LlmRegistry
 			}
 		}
 
-		// Fall through to the role's ordered list.
+		// Fall through to the role's ordered list: the first model that can serve RIGHT NOW. One
+		// still in a temporary backoff is remembered but passed over, so a fresh selection does not
+		// park behind another session's rate limit while a lower-ranked model sits idle. Only when
+		// every live model is backing off is the best-ranked one returned anyway — the caller then
+		// waits out the shortest backoff instead of the selection failing outright.
+		DateTimeOffset now = DateTimeOffset.UtcNow;
+		LlmModel? backingOff = null;
 		foreach (string modelId in role.Models)
 		{
 			if (!_models.TryGetValue(modelId, out LlmModel? model))
 				continue;
-			bool down = _availability.TryGetValue(modelId, out ModelAvailability? ma) && ma.IsDown;
-			if (down)
-				continue;
 			if (model.Config.ContextWindow <= minContextRequired)
 				continue;
+			if (_availability.TryGetValue(modelId, out ModelAvailability? ma))
+			{
+				if (ma.IsDown)
+					continue;
+				if (ma.AvailableAt > now)
+				{
+					if (backingOff == null)
+						backingOff = model;
+					continue;
+				}
+			}
 			return model;
 		}
 
-		return null;
+		return backingOff;
 	}
 
 	private ModelAvailability GetOrCreateAvailability(string configId)

@@ -25,12 +25,16 @@ public class SettingsService
 
 	public void LoadSettings()
 	{
+		// Load BOTH files before touching Settings: a malformed file throws out of
+		// LoadSettingsFromFile, and the previous merged configuration must stay in effect rather
+		// than a half-swapped state (home settings applied, project overrides lost).
+
 		// 1. Load user profile settings first (base settings)
-		Settings = LoadSettingsFromFile(_homeDirSettingsPath)!;
-		if (Settings == null)
+		BeastSettings? home = LoadSettingsFromFile(_homeDirSettingsPath);
+		if (home == null)
 		{
-			Settings = CreateDefaultHomeSettings();
-			WriteSettings(_homeDirSettingsPath, Settings);
+			home = CreateDefaultHomeSettings();
+			WriteSettings(_homeDirSettingsPath, home);
 		}
 
 		// 2. Load local project settings (overrides)
@@ -41,7 +45,8 @@ public class SettingsService
 			WriteSettings(_workDirSettingsPath, localSettings);
 		}
 
-		// 3. Merge: local overrides user
+		// 3. Both parsed: swap in the base, then merge local overrides over it.
+		Settings = home;
 		MergeSettings(localSettings);
 	}
 

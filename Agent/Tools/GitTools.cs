@@ -33,8 +33,15 @@ public static class GitTools
 			"base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
 			"echo \"Committing work on '$branch'...\"\n" +
 			"echo '" + encoded + "' | base64 -d > /tmp/beast_commit_msg\n" +
-			"git add -A\n" +
-			"git commit -F /tmp/beast_commit_msg || echo '(nothing to commit)'\n" +
+			// An empty index is the only legitimate "nothing happened" case; any other add/commit
+			// failure (hooks, identity, index lock) must stop the flow, not read as success with the
+			// work still uncommitted.
+			"git add -A || { echo 'git add failed.'; exit 1; }\n" +
+			"if git diff --cached --quiet; then\n" +
+			"  echo '(nothing to commit)'\n" +
+			"else\n" +
+			"  git commit -F /tmp/beast_commit_msg || { echo 'git commit failed.'; exit 1; }\n" +
+			"fi\n" +
 			"if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Not running in a per-launch worktree (no distinct base branch); committed in place.\"; exit 0; fi\n" +
 			"echo \"Integrating '$branch' onto local '$base'...\"\n" +
 			"echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +

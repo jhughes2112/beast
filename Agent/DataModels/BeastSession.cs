@@ -84,9 +84,10 @@ public class BeastSession
 	[JsonPropertyName("childCounter")]
 	public int ChildCounter { get; internal set; }
 
-	// Persisted termination status: Ongoing, Success, Failure, or Incomplete. Set by the terminal
-	// tool handler (return_to_caller, task_complete, finish_review) so reloaded sessions remember
-	// how they finished without re-deriving it from code paths.
+	// Persisted termination status: Ongoing, Success, Failure, or Incomplete. Stamped when the
+	// session's reply (or failure report) is actually delivered to its caller — including callers
+	// that struck the session off after a failure — so reloaded sessions remember how they
+	// finished without re-deriving it from code paths.
 	[JsonInclude]
 	[JsonPropertyName("terminalStatus")]
 	public string TerminalStatus { get; internal set; }

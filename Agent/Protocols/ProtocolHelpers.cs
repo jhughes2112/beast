@@ -165,6 +165,32 @@ static class ProtocolHelpers
 		return statusCode >= 500;
 	}
 
+	// Provider-reported context overflow markers across the APIs we speak: Anthropic says
+	// "prompt is too long", OpenAI says "context_length_exceeded" / "maximum context length",
+	// and gateways phrase it as exceeding the context limit/window. Retrying such a request
+	// verbatim can never succeed — the caller must compact instead.
+	public static bool IsContextOverflow(string errorText)
+	{
+		if (string.IsNullOrEmpty(errorText))
+			return false;
+
+		string lower = errorText.ToLowerInvariant();
+		return lower.Contains("prompt is too long")
+			|| lower.Contains("context_length_exceeded")
+			|| lower.Contains("maximum context length")
+			|| lower.Contains("exceed context limit")
+			|| lower.Contains("exceeds the context window");
+	}
+
+	// Logs and returns a ContextFull result for a provider-reported context overflow (a 4xx whose
+	// body matches IsContextOverflow). ContextFull routes the caller into compaction rather than
+	// the retry/fallback paths, which can never fix an over-window request.
+	public static ProtocolResult ContextOverflowFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string modelId)
+	{
+		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, "ContextOverflow", statusCode, responseBody, responseBody, null);
+		return ProtocolResult.ContextFull($"HTTP {statusCode}: {responseBody}");
+	}
+
 	// Logs and returns a Failed result for permanent client errors (4xx excluding retryable).
 	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string 
 modelId)

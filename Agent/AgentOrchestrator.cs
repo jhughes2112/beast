@@ -513,12 +513,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			if (content.StartsWith("/", StringComparison.Ordinal) && IsGlobalCommand(content))
 			{
-				// Global commands are dispatched to every registered session.
-				List<string> sessionIds;
-				lock (_sessionLock)
-					sessionIds = new List<string>(_allSessions.Keys);
-				foreach (string sid in sessionIds)
-					await HandleGlobalCommandAsync(sid, content, ct);
+				// Global commands run exactly once; the session id only routes status output.
+				// Dispatching per registered session ran /test N times, reloaded N times, and made
+				// /finish delete every session tree instead of the one it was invoked from.
+				string targetId = pipe >= 0 ? line.Substring(0, pipe) : string.Empty;
+				if (targetId.Length == 0)
+				{
+					lock (_sessionLock)
+					{
+						foreach (string sid in _allSessions.Keys)
+						{
+							targetId = sid;
+							break;
+						}
+					}
+				}
+				await HandleGlobalCommandAsync(targetId, content, ct);
 				continue;
 			}
 
@@ -595,13 +605,28 @@ public class AgentOrchestrator : ISessionOrchestrator
 				}
 				else
 				{
-					SessionService.DeleteTree(target);
-					Session? targetSession;
+					// Stop and unregister the target AND every descendant before touching the files:
+					// a live handler anywhere in the subtree would otherwise save its session again
+					// and resurrect the files DeleteTree just removed.
+					string childPrefix = target + "_";
+					List<Session> doomed = new List<Session>();
 					lock (_sessionLock)
-						_allSessions.TryGetValue(target, out targetSession);
-					UnregisterSession(target);
-					if (targetSession != null)
-						targetSession.Interrupt();
+					{
+						foreach ((string id, Session s) in _allSessions)
+						{
+							if (string.Equals(id, target, StringComparison.Ordinal) || id.StartsWith(childPrefix, StringComparison.Ordinal))
+								doomed.Add(s);
+						}
+					}
+					foreach (Session s in doomed)
+					{
+						s.MarkDeleted();
+						UnregisterSession(s.Id);
+						// A caller still waiting on a deleted child gets a definitive failure
+						// instead of hanging on a session that will never answer.
+						CompleteSession(s.Id, false, "The session was deleted.", 0);
+					}
+					SessionService.DeleteTree(target);
 					_transport.Status(sessionId, $"Deleted session: {target}");
 				}
 				break;
@@ -609,7 +634,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 			case "test":
 			{
 				string? filter = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : null;
-				await RunTestsAsync(sessionId, filter, ct);
+				// Run in the background so the input loop keeps servicing commands (including
+				// /quit) while the suite executes.
+				_ = Task.Run(async () =>
+				{
+					try
+					{
+						await RunTestsAsync(sessionId, filter, ct);
+					}
+					catch (OperationCanceledException)
+					{
+					}
+					catch (Exception ex)
+					{
+						_transport.Error(sessionId, $"/test failed: {ex}");
+					}
+				}, ct);
 				break;
 			}
 		}

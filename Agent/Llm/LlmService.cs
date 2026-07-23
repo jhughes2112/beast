@@ -186,6 +186,16 @@ public class LlmService
 						result = ProtocolResult.Transient(unrepairable, null);
 					}
 
+					if (result.Outcome == ProtocolCallOutcome.ContextFull)
+					{
+						// The provider itself rejected the request as over the model's window — possible right
+						// after a cross-provider fallback, whose tokenizers count differently, so the measured
+						// size passed the gate but the real prompt did not fit. Retrying verbatim can never
+						// succeed and the model is healthy: hand ContextFull to the caller so it compacts.
+						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", null, result.ErrorMessage ?? "Provider reported context overflow", 0, 0, null, false);
+						break;
+					}
+
 					if (result.Outcome == ProtocolCallOutcome.RateLimited)
 					{
 						rateLimitRetries++;

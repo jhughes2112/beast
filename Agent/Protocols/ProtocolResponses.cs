@@ -221,6 +221,10 @@ public class ProtocolResponses
 			// 5xx and the retryable 4xx stay transient.
 			if (ProtocolHelpers.IsPermanentClientError(statusCode))
 			{
+				if (ProtocolHelpers.IsContextOverflow(responseBody))
+				{
+					return ProtocolHelpers.ContextOverflowFailure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+				}
 				return ProtocolHelpers.Failure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
 			}
 			return ProtocolHelpers.TransientFailure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, httpResponse);
@@ -885,8 +889,7 @@ public class ProtocolResponses
 			// 4xx (non-429, non-retryable) — distinguish actual context overflow from parameter errors
 			if (ProtocolHelpers.IsPermanentClientError(statusCode))
 			{
-				string lowerBody = responseBody.ToLowerInvariant();
-				if (lowerBody.Contains("context_length_exceeded") || lowerBody.Contains("maximum context length") || lowerBody.Contains("max_tokens"))
+				if (ProtocolHelpers.IsContextOverflow(responseBody) || responseBody.ToLowerInvariant().Contains("max_tokens"))
 				{
 					return TracerResult.ContextExceeded(statusCode);
 				}

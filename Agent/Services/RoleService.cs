@@ -56,7 +56,10 @@ public class RoleService
 
 	private void LoadRoles()
 	{
-		Roles.Clear();
+		// Build the new set aside and swap it in only when the whole load succeeds: a malformed
+		// roles.json throws out of ApplyRolesFromFile, leaving the PREVIOUS configuration active —
+		// not a half-cleared dictionary of built-in defaults.
+		Dictionary<string, Role> fresh = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
 
 		// Build the in-code defaults first; they are authoritative and versioned with the build. The
 		// Agents block holds the Agent-kind roles, the Subagents block the Subagent-kind ones.
@@ -70,14 +73,19 @@ public class RoleService
 			WebSearchRole()
 		};
 		foreach (Role role in defaults)
-			Roles[role.Name] = role;
+			fresh[role.Name] = role;
 
 		// Write the project's roles.json from the defaults when missing; otherwise load it and assign its
 		// roles over the defaults so edits take effect (and any extra roles are added).
 		if (!File.Exists(_workDirRolesPath))
 			WriteRolesFile(_workDirRolesPath, defaults);
 		else
-			ApplyRolesFromFile(_workDirRolesPath);
+			ApplyRolesFromFile(_workDirRolesPath, fresh);
+
+		// Same dictionary instance throughout — callers hold references to Roles itself.
+		Roles.Clear();
+		foreach ((string name, Role role) in fresh)
+			Roles[name] = role;
 	}
 
 	// Serializes the current role set into roles.json, splitting it into the Agents and Subagents blocks
@@ -110,9 +118,11 @@ public class RoleService
 		}
 	}
 
-	// Loads roles.json and assigns each block's roles over the in-code defaults in the dictionary. Each
-	// role's kind comes from the block it appears in, not the file, so it is reconstructed here.
-	private void ApplyRolesFromFile(string path)
+	// Loads roles.json and assigns each block's roles over the in-code defaults in the target
+	// dictionary. Each role's kind comes from the block it appears in, not the file, so it is
+	// reconstructed here. Throws ConfigException on a malformed file, leaving the target incomplete
+	// — which is why LoadRoles builds into a scratch set and swaps only on success.
+	private static void ApplyRolesFromFile(string path, Dictionary<string, Role> target)
 	{
 		RolesFile? file;
 		try
@@ -146,20 +156,20 @@ public class RoleService
 			return;
 
 		foreach (Role role in file.Agents)
-			AssignRole(role, RoleKind.Agent);
+			AssignRole(target, role, RoleKind.Agent);
 		foreach (Role role in file.Subagents)
-			AssignRole(role, RoleKind.Subagent);
+			AssignRole(target, role, RoleKind.Subagent);
 	}
 
 	// Rebuilds a file-loaded role with the kind from its block (kind is not serialized) and assigns it
 	// over any default of the same name. Skips nameless entries.
-	private void AssignRole(Role role, RoleKind kind)
+	private static void AssignRole(Dictionary<string, Role> target, Role role, RoleKind kind)
 	{
 		if (string.IsNullOrEmpty(role.Name))
 			return;
 
 		Role kinded = new Role(role.Name, role.Description, kind, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
-		Roles[kinded.Name] = kinded;
+		target[kinded.Name] = kinded;
 	}
 
 	// ---- Role definitions ----

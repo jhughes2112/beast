@@ -143,16 +143,24 @@ public class Session
 
 	// ---- Child ID allocation ----
 
+	// Guards allocation so the persisted counter only ever moves forward: with a bare interlocked
+	// increment, two parallel allocations could write ChildCounter back in reverse order (2 then 1),
+	// and a reload would re-issue an ID already given out.
+	private readonly object _childIdLock = new object();
+
 	// Allocates a unique child session ID rooted at this session's ID.
 	// IDs form a path: "parentId_N" where N increments from 1.
 	public string AllocateChildId()
 	{
-		// Seed from the persisted counter so a reloaded session continues past any IDs already issued.
-		int persisted = _data.ChildCounter;
-		if (persisted > _childCounter)
-			_childCounter = persisted;
-		int n = Interlocked.Increment(ref _childCounter);
-		_data.ChildCounter = n;
+		int n;
+		lock (_childIdLock)
+		{
+			// Seed from the persisted counter so a reloaded session continues past any IDs already issued.
+			if (_data.ChildCounter > _childCounter)
+				_childCounter = _data.ChildCounter;
+			n = ++_childCounter;
+			_data.ChildCounter = n;
+		}
 		return $"{_data.Id}_{n}";
 	}
 
@@ -196,7 +204,8 @@ public class Session
 	}
 
 	// Reports the session's termination status to the client and persists it so reloaded sessions
-	// reflect how they finished. Called only from terminal tool handlers.
+	// reflect how they finished. Called by SessionHandler.NotifyComplete when the caller's reply is
+	// delivered (terminator, failure report, or salvage), and by the restore pass (Incomplete).
 	public void SetTerminationStatus(SessionStatus status)
 	{
 		_status = status;
@@ -659,6 +668,22 @@ public class Session
 	public void MarkInterrupted()
 	{
 		_interruptedAndWaiting = true;
+	}
+
+	// Set once by MarkDeleted when the user deletes this session; never cleared. The handler loop
+	// exits on it, and SaveSession refuses to write — a late save would resurrect the files
+	// delete-session just removed.
+	private volatile bool _deleted;
+
+	public bool Deleted => _deleted;
+
+	// Marks the session deleted and wakes whatever its handler is doing — an in-flight turn is
+	// interrupted, and the input wait is released — so the handler observes the flag and exits.
+	public void MarkDeleted()
+	{
+		_deleted = true;
+		Interrupt();
+		Signal();
 	}
 
 	// ---- Private logic ----
