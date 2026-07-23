@@ -21,11 +21,6 @@ using System.Threading.Tasks;
 // intentionally stripped because the server should not see unsigned thinking blocks.
 public class ProtocolChatCompletions
 {
-	private static readonly JsonSerializerOptions JsonOptions = new()
-	{
-		WriteIndented = false
-	};
-
 	private bool _parallelToolCallsSupported = true;
 	private bool _streamingSupported = true;
 
@@ -56,7 +51,7 @@ public class ProtocolChatCompletions
 		{
 			JsonObject? native = ToNativeMessage(msg);
 			if (native != null)
-				_native.Add(native);
+				_native.Add((JsonNode)native);
 		}
 	}
 
@@ -95,7 +90,7 @@ public class ProtocolChatCompletions
 					fn["name"] = tc.Name;
 					fn["arguments"] = tc.ArgumentsJson;
 					tcObj["function"] = fn;
-					tcArr.Add(tcObj);
+					tcArr.Add((JsonNode)tcObj);
 				}
 				obj["tool_calls"] = tcArr;
 			}
@@ -145,7 +140,7 @@ public class ProtocolChatCompletions
 		JsonObject msg = new JsonObject();
 		msg["role"] = "user";
 		msg["content"] = text;
-		_native.Add(msg);
+		_native.Add((JsonNode)msg);
 	}
 
 	// A completed assistant turn from replay or another protocol. Thinking is dropped because
@@ -168,12 +163,12 @@ public class ProtocolChatCompletions
 				fn["name"] = tc.Name;
 				fn["arguments"] = tc.ArgumentsJson;
 				tcObj["function"] = fn;
-				tcArr.Add(tcObj);
+				tcArr.Add((JsonNode)tcObj);
 			}
 			msg["tool_calls"] = tcArr;
 		}
 
-		_native.Add(msg);
+		_native.Add((JsonNode)msg);
 	}
 
 	public void OnToolResult(ToolResult result)
@@ -187,7 +182,7 @@ public class ProtocolChatCompletions
 		}
 		msg["content"] = content;
 		msg["tool_call_id"] = result.Id;
-		_native.Add(msg);
+		_native.Add((JsonNode)msg);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
@@ -388,7 +383,7 @@ httpResponse);
 				JsonObject filler = new JsonObject();
 				filler["role"] = "user";
 				filler["content"] = string.Empty;
-				messages.Add(filler);
+				messages.Add((JsonNode)filler);
 			}
 		}
 
@@ -396,10 +391,19 @@ httpResponse);
 
 		if (tools.Count > 0)
 		{
+			// Hand-built nodes (no reflection serialization) so the path stays Native-AOT clean.
 			JsonArray toolsArr = new JsonArray();
 			foreach (ToolDefinition td in tools)
 			{
-				toolsArr.Add(JsonNode.Parse(JsonSerializer.Serialize(td, JsonOptions)));
+				JsonObject fn = new JsonObject();
+				fn["name"] = td.Function.Name;
+				fn["description"] = td.Function.Description;
+				fn["parameters"] = td.Function.Parameters.DeepClone();
+
+				JsonObject toolObj = new JsonObject();
+				toolObj["type"] = td.Type;
+				toolObj["function"] = fn;
+				toolsArr.Add((JsonNode)toolObj);
 			}
 			body["tools"] = toolsArr;
 

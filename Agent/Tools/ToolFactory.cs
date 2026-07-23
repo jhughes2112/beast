@@ -466,7 +466,7 @@ public static class ToolFactory
 			prop.Remove("_required");
 			properties[name] = prop;
 			if (isRequired)
-				required.Add(name);
+				required.Add((JsonNode)name);
 		}
 
 		JsonObject schema = new()

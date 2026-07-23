@@ -56,16 +56,16 @@ public class ProtocolResponses
 		{
 			if (msg is SystemMessage sm)
 			{
-				input.Add(BuildMessageItem("system", "input_text", sm.Text));
+				input.Add((JsonNode)BuildMessageItem("system", "input_text", sm.Text));
 			}
 			else if (msg is UserMessage um)
 			{
-				input.Add(BuildMessageItem("user", "input_text", um.Text));
+				input.Add((JsonNode)BuildMessageItem("user", "input_text", um.Text));
 			}
 			else if (msg is AssistantMessage am)
 			{
 				if (!string.IsNullOrEmpty(am.Text))
-					input.Add(BuildMessageItem("assistant", "output_text", am.Text));
+					input.Add((JsonNode)BuildMessageItem("assistant", "output_text", am.Text));
 
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
@@ -76,7 +76,7 @@ public class ProtocolResponses
 					item["call_id"] = id;
 					item["name"] = tc.Name;
 					item["arguments"] = tc.ArgumentsJson;
-					input.Add(item);
+					input.Add((JsonNode)item);
 				}
 			}
 			else if (msg is ToolResultMessage tr)
@@ -85,7 +85,7 @@ public class ProtocolResponses
 				item["type"] = "function_call_output";
 				item["call_id"] = ProtocolHelpers.NormalizeToolCallId(tr.ToolCallId);
 				item["output"] = tr.Content;
-				input.Add(item);
+				input.Add((JsonNode)item);
 			}
 		}
 		_rehydratedInput = input;
@@ -94,19 +94,19 @@ public class ProtocolResponses
 	// Track incremental changes to build deltas for chaining mode.
 	public void OnSystemMessage(string text)
 	{
-		_deltaInput.Add(BuildMessageItem("system", "input_text", text));
+		_deltaInput.Add((JsonNode)BuildMessageItem("system", "input_text", text));
 	}
 
 	public void OnUserMessage(string text)
 	{
-		_deltaInput.Add(BuildMessageItem("user", "input_text", text));
+		_deltaInput.Add((JsonNode)BuildMessageItem("user", "input_text", text));
 	}
 
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
 		if (!string.IsNullOrEmpty(text))
 		{
-			_deltaInput.Add(BuildMessageItem("assistant", "output_text", text));
+			_deltaInput.Add((JsonNode)BuildMessageItem("assistant", "output_text", text));
 		}
 
 		foreach (SemanticToolCall tc in toolCalls)
@@ -118,7 +118,7 @@ public class ProtocolResponses
 			item["call_id"] = normalizedId;
 			item["name"] = tc.Name;
 			item["arguments"] = tc.ArgumentsJson;
-			_deltaInput.Add(item);
+			_deltaInput.Add((JsonNode)item);
 		}
 	}
 
@@ -133,7 +133,7 @@ public class ProtocolResponses
 			output = output + "\nstderr: " + result.StdErr;
 		}
 		item["output"] = output;
-		_deltaInput.Add(item);
+		_deltaInput.Add((JsonNode)item);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
@@ -266,7 +266,7 @@ public class ProtocolResponses
 			JsonArray toolsArr = new JsonArray();
 			JsonObject twebsearch = new JsonObject();  // the allows web search to happen internally on any OpenAI model, about a penny a search
 			twebsearch["type"] = "web_search";
-			toolsArr.Add(twebsearch);
+			toolsArr.Add((JsonNode)twebsearch);
 
 			foreach (ToolDefinition td in tools)
 			{
@@ -277,7 +277,7 @@ public class ProtocolResponses
 					t["description"] = td.Function.Description;
 				if (td.Function.Parameters != null)
 					t["parameters"] = td.Function.Parameters.DeepClone();
-				toolsArr.Add(t);
+				toolsArr.Add((JsonNode)t);
 			}
 			body["tools"] = toolsArr;
 
@@ -327,7 +327,7 @@ public class ProtocolResponses
 		JsonObject block = new JsonObject();
 		block["type"] = blockType;
 		block["text"] = text;
-		content.Add(block);
+		content.Add((JsonNode)block);
 		item["content"] = content;
 		return item;
 	}
@@ -780,7 +780,7 @@ public class ProtocolResponses
 			JsonArray toolsArr = new JsonArray();
 			JsonObject twebsearch = new JsonObject();
 			twebsearch["type"] = "web_search";
-			toolsArr.Add(twebsearch);
+			toolsArr.Add((JsonNode)twebsearch);
 
 			foreach (ToolDefinition td in tools)
 			{
@@ -791,7 +791,7 @@ public class ProtocolResponses
 					t["description"] = td.Function.Description;
 				if (td.Function.Parameters != null)
 					t["parameters"] = td.Function.Parameters.DeepClone();
-				toolsArr.Add(t);
+				toolsArr.Add((JsonNode)t);
 			}
 			body["tools"] = toolsArr;
 			// tool_choice is intentionally omitted for count endpoint

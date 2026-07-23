@@ -21,7 +21,8 @@ public class RoleService
 	}
 
 	// The on-disk shape of roles.json: two blocks whose membership determines each role's kind.
-	private sealed class RolesFile
+	// Internal (not private) so BeastJsonContext can register it for source-generated serialization.
+	internal sealed class RolesFile
 	{
 		[JsonPropertyName("agents")]
 		public List<Role> Agents { get; set; } = new List<Role>();
@@ -137,8 +138,7 @@ public class RoleService
 
 		try
 		{
-			JsonSerializerOptions options = new JsonSerializerOptions { WriteIndented = true };
-			string json = JsonSerializer.Serialize(file, options);
+			string json = JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile);
 
 			string? dir = Path.GetDirectoryName(path);
 			if (dir != null)
@@ -164,7 +164,7 @@ public class RoleService
 			string json = File.ReadAllText(path);
 			if (string.IsNullOrWhiteSpace(json))
 				return;
-			file = JsonSerializer.Deserialize<RolesFile>(json, ConfigJson.Options);
+			file = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
 		}
 		catch (JsonException ex)
 		{

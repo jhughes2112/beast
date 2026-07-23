@@ -6,6 +6,10 @@
     <Nullable>enable</Nullable>
     <PackageId>Beast</PackageId>
     <PublishSingleFile>true</PublishSingleFile>
+    <!-- Halves the self-contained single-file size (~79 MB to ~40 MB) for a small one-time
+         decompression cost at startup. Full Native AOT is blocked by reflection-based
+         dependencies (Docker.DotNet, Anthropic.SDK, CommandLineParser) — see docs/notes. -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <ApplicationIcon Condition="Exists('beast.ico')">beast.ico</ApplicationIcon>
   </PropertyGroup>
 

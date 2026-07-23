@@ -58,34 +58,37 @@ public class TestContext
 	}
 }
 
-// Reflection helper to invoke private methods without modifying the target classes.
+// Reflection helper to invoke private methods without modifying the target classes. The generic
+// parameters carry DynamicallyAccessedMembers(All) so Native AOT keeps full reflection metadata
+// for every concrete type the tests reflect over — call sites name the type statically through
+// inference, which is exactly what the AOT compiler needs to root the members.
 public static class Reflect
 {
-	public static object? Instance(object target, string methodName, Type[] parameterTypes, object[] arguments)
+	public static object? Instance<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] T>(T target, string methodName, Type[] parameterTypes, object[] arguments) where T : notnull
 	{
-		MethodInfo method = target.GetType().GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Instance, null, parameterTypes, null)
-			?? throw new InvalidOperationException($"Instance method '{methodName}' not found on {target.GetType().Name}");
+		MethodInfo method = typeof(T).GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Instance, null, parameterTypes, null)
+			?? throw new InvalidOperationException($"Instance method '{methodName}' not found on {typeof(T).Name}");
 		return method.Invoke(target, arguments);
 	}
 
-	public static object? Static(Type type, string methodName, Type[] parameterTypes, object[] arguments)
+	public static object? Static([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] Type type, string methodName, Type[] parameterTypes, object[] arguments)
 	{
 		MethodInfo method = type.GetMethod(methodName, BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static, null, parameterTypes, null)
 			?? throw new InvalidOperationException($"Static method '{methodName}' not found on {type.Name}");
 		return method.Invoke(null, arguments);
 	}
 
-	public static void SetField(object target, string fieldName, object? value)
+	public static void SetField<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] T>(T target, string fieldName, object? value) where T : notnull
 	{
-		FieldInfo field = target.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
-			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}");
+		FieldInfo field = typeof(T).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {typeof(T).Name}");
 		field.SetValue(target, value);
 	}
 
-	public static object? GetField(object target, string fieldName)
+	public static object? GetField<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] T>(T target, string fieldName) where T : notnull
 	{
-		FieldInfo field = target.GetType().GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
-			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {target.GetType().Name}");
+		FieldInfo field = typeof(T).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+			?? throw new InvalidOperationException($"Field '{fieldName}' not found on {typeof(T).Name}");
 		return field.GetValue(target);
 	}
 }

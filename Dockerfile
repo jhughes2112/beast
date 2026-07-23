@@ -4,6 +4,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+# Native AOT cross-compilation toolchain: the Agent publishes as a native linux-x64 binary.
+RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy project file and restore
 COPY ["Agent/Agent.csproj", "Agent/"]
 RUN dotnet restore "Agent/Agent.csproj"
@@ -27,15 +31,22 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core tools
     bash curl wget git ca-certificates gnupg lsb-release \
-    # C / C++
-    build-essential gcc g++ gdb cmake ninja-build \
+    # C / C++ — both compiler families (many projects require clang for sanitizers or format
+    # with clang-format) and both build universes (cmake/ninja plus the autotools chain)
+    build-essential gcc g++ gdb cmake ninja-build clang clang-format autoconf automake libtool pkg-config \
     # Python (python-is-python3 provides a `python` -> python3 alias so the many tools/scripts
-    # that invoke `python` rather than `python3` resolve correctly)
-    python3 python3-pip python3-venv python-is-python3 \
+    # that invoke `python` rather than `python3` resolve correctly; python3-dev supplies the
+    # headers without which pip installs of native-extension packages fail)
+    python3 python3-pip python3-venv python-is-python3 python3-dev \
     # Ruby
     ruby ruby-dev \
-    # JVM
-    openjdk-21-jdk-headless \
+    # JVM — Maven from apt; Gradle is installed from the official dist below (apt's is ancient)
+    openjdk-21-jdk-headless maven \
+    # Process/system debugging: the bare Ubuntu base has no `ps`; lsof answers "who holds this
+    # port/file"; strace is the last-resort syscall tracer
+    procps lsof strace \
+    # Git LFS so cloning LFS-using repos fetches real content instead of pointer files
+    git-lfs \
     # Shell / scripting utilities (ripgrep gives the agents fast `rg` search)
     jq sqlite3 zip unzip bc file tree ripgrep \
     # Networking diagnostics: ping (iputils-ping), dig/nslookup/host (dnsutils), ip/ss (iproute2),
@@ -47,9 +58,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # these to inspect/extract fetched files: 7z + extra (de)compressors, xmllint, document->text via
     # pandoc, line-ending fixups. (tar/gzip ship with the base image; no heavy media tools by design.)
     xz-utils bzip2 p7zip-full libxml2-utils pandoc dos2unix \
-    # .NET runtime deps (required for self-contained .NET 10 binary)
+    # ICU/SSL/zlib: the AOT Agent itself needs only libssl3/zlib1g (it is InvariantGlobalization);
+    # libicu74 stays for the .NET SDK below and any user projects that need globalization
     libicu74 libssl3 zlib1g \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Register the LFS filters system-wide so every clone/pull smudges LFS content automatically
+    && git lfs install --system
 
 # .NET 10 SDK — installed via the official Microsoft package feed so the agent can build
 # and run .NET projects, not just host its own binary.
@@ -91,6 +105,16 @@ RUN curl -fsSL https://go.dev/dl/go1.24.3.linux-amd64.tar.gz \
     && rm /tmp/go.tar.gz
 ENV PATH=/usr/local/go/bin:$PATH
 
+# Gradle — official distribution (Ubuntu's apt package is years out of date). Wrapper-based
+# projects download their own pinned Gradle; this serves repos without a wrapper.
+RUN curl -fsSL https://services.gradle.org/distributions/gradle-8.14-bin.zip -o /tmp/gradle.zip \
+    && unzip -q /tmp/gradle.zip -d /opt \
+    && ln -s /opt/gradle-8.14/bin/gradle /usr/local/bin/gradle \
+    && rm /tmp/gradle.zip
+
+# uv — fast Python package/environment manager; increasingly what project READMEs assume.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
 # Read-only command allowlist for readonly_bash. The tool launches `bash -r` (restricted) with PATH set to
 # only this directory, so a locked-down role can run just these curated, read-only programs and nothing else
 # on the image resolves. Deliberately excludes anything that can spawn an unrestricted shell by absolute path
@@ -112,6 +136,7 @@ RUN mkdir -p /opt/agent-bins/readonly \
          sha256sum sha1sum md5sum b2sum cksum base64 base32 \
          git jq xmllint pdftotext \
          ping traceroute dig nslookup host ss netstat \
+         ps lsof \
          date uname whoami id which printenv ; do \
          target="$(command -v "$cmd" || true)" ; \
          if [ -n "$target" ]; then ln -sf "$target" "/opt/agent-bins/readonly/$cmd" ; fi ; \

@@ -5,12 +5,16 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>Agent</AssemblyName>
-    <PublishSingleFile>true</PublishSingleFile>
+    <!-- Native AOT: the Agent publishes as a single native linux-x64 binary inside the Docker
+         build stage (which supplies clang). Local dev builds and test runs stay JIT; AOT applies
+         only at publish. All JSON goes through source-generated contexts (BeastJsonContext)
+         because the reflection serializer does not exist under AOT. -->
+    <PublishAot>true</PublishAot>
+    <!-- No ICU dependency in the runtime image; the Agent only does ordinal/invariant text work. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Anthropic.SDK" Version="5.10.0" />
-    <PackageReference Include="CommandLineParser" Version="2.9.1" />
     <PackageReference Include="Nito.AsyncEx.Coordination" Version="5.1.2" />
   </ItemGroup>
 </Project>

@@ -482,7 +482,7 @@ public static class FixJsonTests
 		{
 			JsonArray req = new JsonArray();
 			foreach (string r in required)
-				req.Add(r);
+				req.Add((JsonNode)r);
 			parameters["required"] = req;
 		}
 

@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -134,9 +135,20 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 	public void System(string sessionId, string text) => Send(FrameType.System, sessionId, text);
 	public void User(string sessionId, string text) => Send(FrameType.User, sessionId, text);
 	public void Debug(string sessionId, string text) => Send(FrameType.Debug, sessionId, text);
+	// Hand-built node instead of an anonymous type: anonymous types have no source-generated
+	// metadata and would need the reflection serializer, which Native AOT does not have.
 	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
-		=> Send(FrameType.Stats, sessionId, JsonSerializer.Serialize(new
-		{ model, role, promptTokens, completionTokens, totalCost, maxContext, contextTokens, cachedTokens }));
+		=> Send(FrameType.Stats, sessionId, new JsonObject
+		{
+			["model"] = model,
+			["role"] = role,
+			["promptTokens"] = promptTokens,
+			["completionTokens"] = completionTokens,
+			["totalCost"] = totalCost,
+			["maxContext"] = maxContext,
+			["contextTokens"] = contextTokens,
+			["cachedTokens"] = cachedTokens
+		}.ToJsonString());
 	public void Completions(string sessionId, string json) => Send(FrameType.Completions, sessionId, json);
 	public void Idle(string sessionId, bool subagent) => Send(FrameType.Idle, sessionId, subagent ? "subagent" : string.Empty);
 	public void Busy(string sessionId) => Send(FrameType.Busy, sessionId, string.Empty);

@@ -68,7 +68,7 @@ public class SettingsService
 			if (string.IsNullOrWhiteSpace(json))
 				return null;
 
-			BeastSettings? result = JsonSerializer.Deserialize<BeastSettings>(json, ConfigJson.Options);
+			BeastSettings? result = JsonSerializer.Deserialize(json, BeastJson.Config.BeastSettings);
 			return result; // may be null if JSON was empty or only null
 		}
 		catch (JsonException ex)
@@ -117,8 +117,7 @@ public class SettingsService
 	{
 		try
 		{
-			JsonSerializerOptions options = new JsonSerializerOptions() { WriteIndented = true };
-			string json = JsonSerializer.Serialize(settings, options);
+			string json = JsonSerializer.Serialize(settings, BeastJson.Persist.BeastSettings);
 
 			string? dir = Path.GetDirectoryName(path);
 			if (dir != null)

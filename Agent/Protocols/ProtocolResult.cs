@@ -15,9 +15,9 @@ public enum ProtocolCallOutcome
 // Normalised payload returned on ProviderCallOutcome.Success.
 // Holds the explicit outcomes from a single turn: thinking, assistant text, tool call requests,
 // tool results, and token counts for this exchange. Also carries protocol-specific native objects
-// (ChatCompletions messages, Anthropic SDK messages, Responses blocks) so downstream code can
-// inspect raw provider data without committing it directly to canonical state. The protocol itself
-// controls what gets committed via its own Rehydrate/On* methods.
+// (wire-format JSON message/response nodes) so downstream code can inspect raw provider data
+// without committing it directly to canonical state. The protocol itself controls what gets
+// committed via its own Rehydrate/On* methods.
 public class ProtocolCallPayload
 {
 	// Plain assistant text from the turn (empty string if none).
@@ -40,7 +40,7 @@ public class ProtocolCallPayload
 	public decimal Cost { get; }
 
 	// Protocol-specific native objects for raw inspection (not committed to canonical state).
-	// ChatCompletions: JsonArray of message objects. Anthropic: List<Message> from SDK.
+	// ChatCompletions: JsonArray of message objects. Anthropic: wire-format JsonObject message.
 	// Responses: JsonObject representing the response block. Null when not applicable.
 	public object? NativeAnthropic { get; }
 	public object? NativeResponses { get; }

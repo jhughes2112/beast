@@ -82,11 +82,12 @@ public static class ProtocolSwitchTests
 		return new ProtocolProxy(model);
 	}
 
-	// Returns the Count of the named collection field via reflection.
-	// Works for both JsonArray (ICollection<T> only) and List<T> (ICollection + ICollection<T>).
-	private static int NativeCount(object target, string fieldName)
+	// Returns the Count of the named native-state field. Every protocol's native chain is a
+	// JsonArray now; the direct cast avoids reflecting over framework property metadata, which
+	// Native AOT may not preserve.
+	private static int NativeCount<[System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.All)] T>(T target, string fieldName) where T : notnull
 	{
-		object native = Reflect.GetField(target, fieldName)!;
-		return (int)native.GetType().GetProperty("Count")!.GetValue(native)!;
+		JsonArray native = (JsonArray)Reflect.GetField(target, fieldName)!;
+		return native.Count;
 	}
 }

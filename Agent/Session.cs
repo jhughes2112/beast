@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -107,7 +108,7 @@ public class Session
 	// the candidate list has changed since the last call.
 	public void UpdateCompletions(List<string> candidates)
 	{
-		string json = System.Text.Json.JsonSerializer.Serialize(candidates);
+		string json = System.Text.Json.JsonSerializer.Serialize(candidates, BeastJson.Compact.ListString);
 		if (string.Equals(json, _completionsJson, StringComparison.Ordinal))
 			return;
 		_completionsJson = json;
@@ -200,8 +201,12 @@ public class Session
 		InferDisplayName();
 		if (string.IsNullOrEmpty(_data.DisplayName))
 			return;
-		string json = JsonSerializer.Serialize(new { id = _data.Id, name = _data.DisplayName });
-		_transport.SessionAnnounce(_data.Id, json);
+		// Hand-built node instead of an anonymous type: anonymous types have no source-generated
+		// metadata and would need the reflection serializer, which Native AOT does not have.
+		JsonObject announce = new JsonObject();
+		announce["id"] = _data.Id;
+		announce["name"] = _data.DisplayName;
+		_transport.SessionAnnounce(_data.Id, announce.ToJsonString());
 	}
 
 	// Reports the session's termination status to the client and persists it so reloaded sessions

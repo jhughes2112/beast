@@ -31,8 +31,9 @@ public static class SessionService
 		File.Move(temp, path, true);
 	}
 
-	// Manifest entry: maps friendly filename to internal session metadata
-	private class ManifestEntry
+	// Manifest entry: maps friendly filename to internal session metadata. Internal (not private)
+	// so BeastJsonContext can register it for source-generated serialization.
+	internal sealed class ManifestEntry
 	{
 		[System.Text.Json.Serialization.JsonPropertyName("sessionId")]
 		public string SessionId { get; set; } = string.Empty;
@@ -44,8 +45,8 @@ public static class SessionService
 		public string DisplayName { get; set; } = string.Empty;
 	}
 
-	// Full manifest on disk
-	private class SessionManifest
+	// Full manifest on disk. Internal (not private) so BeastJsonContext can register it.
+	internal sealed class SessionManifest
 	{
 		[System.Text.Json.Serialization.JsonPropertyName("entries")]
 		public Dictionary<string, ManifestEntry> Entries { get; set; } = new Dictionary<string, ManifestEntry>();
@@ -62,7 +63,7 @@ public static class SessionService
 		try
 		{
 			string json = File.ReadAllText(ManifestFile);
-			var result = JsonSerializer.Deserialize<SessionManifest>(json);
+			var result = JsonSerializer.Deserialize(json, BeastJson.Persist.SessionManifest);
 			return result ?? new SessionManifest();
 		}
 		catch
@@ -75,7 +76,7 @@ public static class SessionService
 	private static void SaveManifest(SessionManifest manifest)
 	{
 		Directory.CreateDirectory(SessionsDir);
-		string json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+		string json = JsonSerializer.Serialize(manifest, BeastJson.Persist.SessionManifest);
 		WriteFileAtomic(ManifestFile, json);
 	}
 
@@ -225,7 +226,7 @@ public static class SessionService
 			}
 
 			string path = Path.Combine(SessionsDir, friendlyName + ".json");
-			string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+			string json = JsonSerializer.Serialize(data, BeastJson.Persist.BeastSession);
 			WriteFileAtomic(path, json);
 			SaveManifest(manifest);
 		}
@@ -275,7 +276,7 @@ public static class SessionService
 				try
 				{
 					string json = File.ReadAllText(path);
-					return JsonSerializer.Deserialize<BeastSession>(json);
+					return JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				}
 				catch (Exception ex)
 				{
@@ -291,7 +292,7 @@ public static class SessionService
 			try
 			{
 				string json = File.ReadAllText(oldPath);
-				return JsonSerializer.Deserialize<BeastSession>(json);
+				return JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 			}
 			catch (Exception ex)
 			{
@@ -328,7 +329,7 @@ public static class SessionService
 			try
 			{
 				string json = File.ReadAllText(file);
-				BeastSession? data = JsonSerializer.Deserialize<BeastSession>(json);
+				BeastSession? data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				if (data == null)
 					continue;
 
@@ -390,7 +391,7 @@ public static class SessionService
 			try
 			{
 				string json = File.ReadAllText(file);
-				BeastSession? data = JsonSerializer.Deserialize<BeastSession>(json);
+				BeastSession? data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				if (data != null)
 				{
 					results.Add(new SessionFileInfo { Session = data, CreationOrder = data.CreationOrder });
@@ -427,7 +428,7 @@ public static class SessionService
 			try
 			{
 				string json = File.ReadAllText(file);
-				BeastSession? data = JsonSerializer.Deserialize<BeastSession>(json);
+				BeastSession? data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				if (data == null)
 					continue;
 
@@ -488,7 +489,7 @@ public static class SessionService
 				try
 				{
 					string json = File.ReadAllText(file);
-					var data = JsonSerializer.Deserialize<BeastSession>(json);
+					var data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 					if (data != null)
 						sessionId = data.Id;
 				}
@@ -593,7 +594,7 @@ public static class SessionService
 				try
 				{
 					string json = File.ReadAllText(file);
-					var data = JsonSerializer.Deserialize<BeastSession>(json);
+					var data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 					if (data != null)
 						fileSessionId = data.Id;
 				}
