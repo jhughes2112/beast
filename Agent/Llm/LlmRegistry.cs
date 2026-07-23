@@ -8,10 +8,36 @@ using System.Threading.Tasks;
 // Tracks availability (rate-limit, down-timer) for a single model config ID.
 // Shared across all per-session LlmService instances for the same model so that a
 // rate-limit discovered by one session is immediately visible to others.
+//
+// Stored as UTC ticks accessed through Interlocked: DateTimeOffset is a multiword struct, and a
+// bare field read racing a write can tear. ExtendBackoff is the only way failure paths push the
+// time FORWARD — monotonic, so competing responses can never replace a long backoff with a
+// shorter one — while the setter remains a raw write for the deliberate shortenings (reset).
 public class ModelAvailability
 {
-	public DateTimeOffset AvailableAt = DateTimeOffset.MinValue;
-	public bool IsDown => AvailableAt == DateTimeOffset.MaxValue;
+	private long _availableAtUtcTicks;
+
+	public DateTimeOffset AvailableAt
+	{
+		get => new DateTimeOffset(Interlocked.Read(ref _availableAtUtcTicks), TimeSpan.Zero);
+		set => Interlocked.Exchange(ref _availableAtUtcTicks, value.UtcTicks);
+	}
+
+	public bool IsDown => Interlocked.Read(ref _availableAtUtcTicks) == DateTimeOffset.MaxValue.UtcTicks;
+
+	// Moves the backoff deadline forward to `until` unless it is already later.
+	public void ExtendBackoff(DateTimeOffset until)
+	{
+		long target = until.UtcTicks;
+		for (; ; )
+		{
+			long current = Interlocked.Read(ref _availableAtUtcTicks);
+			if (current >= target)
+				return;
+			if (Interlocked.CompareExchange(ref _availableAtUtcTicks, target, current) == current)
+				return;
+		}
+	}
 }
 
 // Registry of model configs, per-endpoint protocol detection, and per-model availability.
@@ -67,22 +93,10 @@ public class LlmRegistry
 		}
 		_models = fresh;
 
-		// Expand '*' in role model lists to all enabled model IDs at that position.
-		List<string> allModelIds = new List<string>(fresh.Keys);
-		foreach (Role role in roles.Roles.Values)
-		{
-			int starIdx = role.Models.IndexOf("*");
-			if (starIdx >= 0)
-			{
-				role.Models.RemoveAt(starIdx);
-				foreach (string id in allModelIds)
-				{
-					if (!role.Models.Contains(id))
-						role.Models.Insert(starIdx++, id);
-				}
-			}
-		}
-
+		// Expand '*' in role model lists to all enabled model IDs at that position. RoleService
+		// republishes replacement Role objects, so no published list is ever mutated in place
+		// under a handler that is enumerating it.
+		roles.ExpandModelWildcards(new List<string>(fresh.Keys));
 	}
 
 	// Probes any endpoint not yet in _probeCache to detect its protocol.
@@ -262,19 +276,7 @@ public class LlmRegistry
 		return best;
 	}
 
-	// True when the model is registered, not permanently down, and not inside a rate-limit backoff
-	// — i.e. a request to it right now would actually be attempted. Used to decide when a session
-	// can return to its user-selected model after a fallback.
-	public bool IsAvailableNow(string configId)
-	{
-		if (!_models.ContainsKey(configId))
-			return false;
-		if (_availability.TryGetValue(configId, out ModelAvailability? avail))
-			return !avail.IsDown && avail.AvailableAt <= DateTimeOffset.UtcNow;
-		return true;
-	}
-
-	// Resets all availability state — call on /reload or /clear so transient failures are retried.
+	// Resets all availability state — called on /reload so transient failures are retried.
 	public void ResetAllAvailability()
 	{
 		foreach (ModelAvailability avail in _availability.Values)
@@ -385,10 +387,30 @@ public class LlmRegistry
 		return _availability.GetOrAdd(configId, _ => new ModelAvailability());
 	}
 
-	// Records the user's explicit /model pick for a role so later sessions of that role reuse it.
+	// The role preference has three asymmetric writers so an explicit choice can never be
+	// clobbered by a turn that was already in flight when the user made it:
+	//   /model            → SetRolePreferredModel: unconditional overwrite (user intent wins).
+	//   successful turn   → RecordWorkingModel: fills the slot only when EMPTY.
+	//   failed model      → ClearRolePreferredModel: empties the slot only when it still names
+	//                       the model that failed; selection then reverts to the ranked pecking
+	//                       order by availability until the next working model claims the slot.
 	public void SetRolePreferredModel(string roleName, string modelId)
 	{
 		_rolePreferredModel[roleName] = modelId;
+	}
+
+	public void RecordWorkingModel(string roleName, string modelId)
+	{
+		_rolePreferredModel.TryAdd(roleName, modelId);
+	}
+
+	public void ClearRolePreferredModel(string roleName, string failedModelId)
+	{
+		if (_rolePreferredModel.TryGetValue(roleName, out string? current)
+			&& string.Equals(current, failedModelId, StringComparison.OrdinalIgnoreCase))
+		{
+			_rolePreferredModel.TryRemove(new KeyValuePair<string, string>(roleName, current));
+		}
 	}
 
 	// Reload rollback support: models are published by reference, so the orchestrator snapshots

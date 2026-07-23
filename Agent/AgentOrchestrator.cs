@@ -77,14 +77,28 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 	public void RegisterSession(Session session)
 	{
-		// A registration during a /finish quiesce would revive activity underneath the teardown;
-		// refuse it and mark the session deleted so its handler (if any) exits immediately.
-		if (_quiescing)
+		// Both refusal checks live UNDER the lock so they cannot race the quiesce snapshot or a
+		// subtree deletion sweep (which mark and remove their sets under this same lock): a
+		// /finish teardown must not gain new sessions after its snapshot, and a child must not
+		// slip in after its parent's tree was swept — its handler would resurrect deleted files.
+		bool refused = false;
+		lock (_sessionLock)
 		{
-			session.MarkDeleted();
-			return;
+			string? parentId = GetParentId(session.Id);
+			bool parentGone = parentId != null && (!_allSessions.TryGetValue(parentId, out Session? parent) || parent.Deleted);
+			if (_quiescing || parentGone)
+				refused = true;
+			else
+				_allSessions[session.Id] = session;
 		}
+		if (refused)
+			session.MarkDeleted();
+	}
 
+	// Registration for the restore pass only: bypasses the parent-alive rule so an orphaned child
+	// file (its parent deleted out-of-band) still restores as a standalone session.
+	private void RegisterRestoredSession(Session session)
+	{
 		lock (_sessionLock)
 			_allSessions[session.Id] = session;
 	}
@@ -267,11 +281,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// after a premature cleanliness check. Returns false when a handler failed to stop in time.
 	private async Task<bool> QuiesceAllSessionsAsync(string reason, CancellationToken ct)
 	{
-		_quiescing = true;
-
+		// Flag and snapshot under one lock hold: a concurrent registration either lands before
+		// the snapshot (and is quiesced with the rest) or sees the flag and is refused.
 		List<Session> live;
 		lock (_sessionLock)
+		{
+			_quiescing = true;
 			live = new List<Session>(_allSessions.Values);
+		}
 		foreach (Session s in live)
 		{
 			s.MarkDeleted();
@@ -530,8 +547,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			session.MarkInterrupted();
 
 			// Every session that exists is serviced: register it and start its handler immediately.
-			// The handler sits in the idle wait until the user talks to it.
-			RegisterSession(session);
+			// The handler sits in the idle wait until the user talks to it. The restore-only
+			// registration skips the parent-alive rule so orphaned child files still come back.
+			RegisterRestoredSession(session);
 			EnsureHandler(session);
 		}
 	}
@@ -704,7 +722,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 				{
 					// Stop and unregister the target AND every descendant before touching the files:
 					// a live handler anywhere in the subtree would otherwise save its session again
-					// and resurrect the files DeleteTree just removed.
+					// and resurrect the files DeleteTree just removed. Collect, mark, and remove
+					// under ONE lock hold so a concurrently spawning child either lands in the sweep
+					// or is refused by RegisterSession's parent-alive rule — never orphaned between.
 					string childPrefix = target + "_";
 					List<Session> doomed = new List<Session>();
 					lock (_sessionLock)
@@ -714,11 +734,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 							if (string.Equals(id, target, StringComparison.Ordinal) || id.StartsWith(childPrefix, StringComparison.Ordinal))
 								doomed.Add(s);
 						}
+						foreach (Session s in doomed)
+						{
+							s.MarkDeleted();
+							_allSessions.Remove(s.Id);
+						}
 					}
 					foreach (Session s in doomed)
 					{
-						s.MarkDeleted();
-						UnregisterSession(s.Id);
 						// A caller still waiting on a deleted child gets a definitive failure
 						// instead of hanging on a session that will never answer.
 						CompleteSession(s.Id, false, "The session was deleted.", 0);

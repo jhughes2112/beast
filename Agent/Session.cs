@@ -43,7 +43,9 @@ public class Session
 	// Set by UpdateModel each turn; empty until the first turn or when thinking is off.
 	private string _modelDisplaySuffix = string.Empty;
 
-	private readonly Dictionary<string, Session> _children = new Dictionary<string, Session>(StringComparer.Ordinal);
+	// Concurrent: parallel assign_work tool calls add children from different threads while the
+	// transport delivery path enumerates the set to route messages into the subtree.
+	private readonly ConcurrentDictionary<string, Session> _children = new ConcurrentDictionary<string, Session>(StringComparer.Ordinal);
 
 	public SessionLogger QueryLog { get; }
 
@@ -56,11 +58,6 @@ public class Session
 	// to delegate more or stop) and exposes the stop_work tool. Runtime-only state, not persisted; a resumed
 	// or switched-in session starts out of the loop, and compaction carries it forward explicitly.
 	private bool _workInProgress = false;
-
-	// Tracks the model the user explicitly selected via /model. Null means "use whatever the
-	// system picks" (fresh session, resume, or after /clear). While set, system paths (fallback,
-	// refresh) must not overwrite it — only a new /model command or session rehydration can change it.
-	private string? _userSelectedModel;
 
 	// Set by the orchestrator's /reload command to signal the handler to re-fetch its role and
 	// recreate its LlmService on the next loop iteration. Checked in DrainInput, cleared after
@@ -290,22 +287,6 @@ public class Session
 	// Sets the active model name. Call InvalidateProtocol() separately if the model switch
 	// requires discarding the in-progress protocol (e.g. via the /model command).
 	public void UpdateModel(LlmModel model) { _data.Model = model.ConfigId; _data.ContextWindow = model.Config.ContextWindow; _modelDisplaySuffix = ReasoningEffort.DisplaySuffix(model.Config.ReasoningEffort); }
-
-	// Tracks the model the user explicitly selected via /model. Null means "use whatever the
-	// system picks" (fresh session, resume, or after /clear). While set, system paths (fallback,
-	// refresh) must not overwrite it — only a new /model command or session rehydration can change it.
-	public string? UserSelectedModel => _userSelectedModel;
-
-	// Marks the model as user-selected via /model command. System paths (fallback, refresh) respect
-	// this and will not overwrite session.Model while it is set. Cleared on /clear, session reset,
-	// or when a new /model is issued.
-	public void MarkModelUserSelected(string modelId) => _userSelectedModel = modelId;
-
-	// Clears the user-selected model marker. Called on /clear, session reset, or when loading from disk.
-	public void ClearUserSelectedModel() => _userSelectedModel = null;
-
-	// Resets all mutable session state. Called when a session is cleared or rehydrated.
-	public void Reset() => _userSelectedModel = null;
 
 	// Set by the orchestrator's /reload command to signal the handler to re-fetch its role and
 	// recreate its LlmService on the next loop iteration. The handler checks this at the top of
@@ -580,8 +561,10 @@ public class Session
 		// turn, ahead of any newly queued user text.
 		CompleteDanglingToolCalls();
 		FlushPendingMessages();
-		_turnCts = new CancellationTokenSource();
-		return _turnCts.Token;
+		CancellationTokenSource fresh = new CancellationTokenSource();
+		lock (_ctsLock)
+			_turnCts = fresh;
+		return fresh.Token;
 	}
 
 	// Synthesizes an error result for any assistant tool call that never received one — the turn
@@ -616,11 +599,18 @@ public class Session
 	}
 
 	// Cleans up after a turn. If interrupted, sets the wait state so NeedsAttention() stays
-	// false until new user text arrives via AddUserMessage.
+	// false until new user text arrives via AddUserMessage. The source is detached under the
+	// CTS lock and disposed outside it: once detached, no Interrupt can reach it, and an
+	// Interrupt already inside the lock finishes cancelling before the detach proceeds.
 	public void EndTurn(bool interrupted)
 	{
-		_turnCts?.Dispose();
-		_turnCts = null;
+		CancellationTokenSource? finished;
+		lock (_ctsLock)
+		{
+			finished = _turnCts;
+			_turnCts = null;
+		}
+		finished?.Dispose();
 		if (interrupted)
 			_interruptedAndWaiting = true;
 	}
@@ -652,19 +642,42 @@ public class Session
 		return fork;
 	}
 
+	// Serializes cancellation against source disposal. Interrupt runs on the transport thread
+	// while EndTurn/ResetScope dispose on the handler thread; without the lock, Cancel() could
+	// land on a just-disposed source and the ObjectDisposedException would kill the input loop.
+	private readonly object _ctsLock = new object();
+
 	// Cancels the in-progress turn, if any. Both scopes are cancelled: _turnCts catches an LLM call that is
 	// streaming right now, and _dispatchCts catches a tool that is running between LLM calls (when _turnCts is
 	// null). Either may be null; cancelling both makes /cancel take effect immediately whatever is in flight.
 	public void Interrupt()
 	{
-		_turnCts?.Cancel();
-		_dispatchCts?.Cancel();
+		lock (_ctsLock)
+		{
+			try
+			{
+				_turnCts?.Cancel();
+			}
+			catch (ObjectDisposedException)
+			{
+			}
+			try
+			{
+				_dispatchCts?.Cancel();
+			}
+			catch (ObjectDisposedException)
+			{
+			}
+		}
 	}
 
-	// Registers (or clears) the runner's whole-turn cancellation scope so Interrupt can reach a running tool.
+	// Registers (or clears) the runner's whole-turn cancellation scope so Interrupt can reach a
+	// running tool. Under the CTS lock so the handler's clear-then-dispose sequence can never
+	// dispose a source an in-flight Interrupt is about to cancel.
 	public void SetDispatchScope(CancellationTokenSource? cts)
 	{
-		_dispatchCts = cts;
+		lock (_ctsLock)
+			_dispatchCts = cts;
 	}
 
 	// Marks the turn interrupted so the loop idles until new user text arrives. Used when a /cancel lands

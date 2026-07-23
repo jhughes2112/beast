@@ -207,7 +207,7 @@ public class LlmService
 							result = ProtocolResult.TooManyRetries();
 							break;
 						}
-						_availability.AvailableAt = result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5);
+						_availability.ExtendBackoff(result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5));
 						int waitSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, $"Rate limited {waitSeconds}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
 						conversation.QueryLog.ModelFailure(_model, _handler, "RateLimited", 429, result.ErrorMessage ?? "Rate limited by provider", rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, false);
@@ -236,9 +236,9 @@ public class LlmService
 						// Prefer the server-stated retry time when the response carried one (the helper already
 						// folds in a one-second margin); otherwise fall back to exponential backoff capped at 60s.
 						if (result.RetryAfter.HasValue)
-							_availability.AvailableAt = result.RetryAfter.Value;
+							_availability.ExtendBackoff(result.RetryAfter.Value);
 						else
-							_availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1)));
+							_availability.ExtendBackoff(DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1))));
 						int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{kMaxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
 						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, kMaxTransientRetries, result.RetryAfter, false);
@@ -248,7 +248,7 @@ public class LlmService
 					{
 						// Unrecoverable (auth failure, unknown protocol): mark the model down so it is not retried.
 						conversation.QueryLog.ModelFailure(_model, _handler, "Failed", null, result.ErrorMessage ?? "Permanent failure", 0, 0, null, true);
-						_availability.AvailableAt = DateTimeOffset.MaxValue;
+						_availability.ExtendBackoff(DateTimeOffset.MaxValue);
 						break;
 					}
 				}

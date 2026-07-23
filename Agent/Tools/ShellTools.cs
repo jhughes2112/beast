@@ -123,6 +123,10 @@ public static class ShellTools
 		{
 			// Pipe torn down by a process kill: keep what was captured.
 		}
+		catch (ObjectDisposedException)
+		{
+			// An abandoned drain (user cancel unwound the tool) can race process disposal.
+		}
 		return capped;
 	}
 

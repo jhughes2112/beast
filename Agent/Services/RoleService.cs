@@ -48,6 +48,34 @@ public class RoleService
 
 	public void RestoreRoles(Dictionary<string, Role> roles) => Roles = roles;
 
+	// Expands the '*' entry in role model lists to all enabled model IDs at that position (order
+	// preserved, duplicates skipped). Called by the registry once the model set is known. Each
+	// affected role is REPLACED with a new object and the whole set republished by reference —
+	// mutating the published lists in place would race handlers that are enumerating them.
+	public void ExpandModelWildcards(List<string> allModelIds)
+	{
+		Dictionary<string, Role> updated = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
+		foreach ((string name, Role role) in Roles)
+		{
+			int starIdx = role.Models.IndexOf("*");
+			if (starIdx < 0)
+			{
+				updated[name] = role;
+				continue;
+			}
+
+			List<string> expanded = new List<string>(role.Models);
+			expanded.RemoveAt(starIdx);
+			foreach (string id in allModelIds)
+			{
+				if (!expanded.Contains(id))
+					expanded.Insert(starIdx++, id);
+			}
+			updated[name] = new Role(role.Name, role.Description, role.Kind, expanded, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
+		}
+		Roles = updated;
+	}
+
 	// Names of the Subagent-kind roles — the only roles the subagent tool may target and the only
 	// roles a SubagentSession may run.
 	public List<Role> SubagentRoles()

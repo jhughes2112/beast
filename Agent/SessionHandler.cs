@@ -241,6 +241,11 @@ public class SessionHandler
 				if (result.Payload!.Usage.PromptTokens > 0)
 					_lastInputTokens = result.Payload.Usage.PromptTokens;
 
+				// WORKING fills the vacancy: a model that just served a turn becomes the role's
+				// sticky preference only when none is set. A turn already in flight when the user
+				// typed /model must not clobber that explicit choice before it ever dispatches.
+				registry.RecordWorkingModel(role.Name, service.Model.ConfigId);
+
 				bool hasToolCalls;
 				try
 				{
@@ -399,6 +404,11 @@ public class SessionHandler
 	{
 		string? failure = null;
 		bool rateLimited = result.Outcome == ProtocolCallOutcome.TooManyRetries;
+
+		// The model failed this session: if it is still the role's sticky preference, clear it so
+		// selection reverts to the ranked pecking order (a failure never wipes a NEWER choice).
+		registry.ClearRolePreferredModel(_activeSession.Role, service.Model.ConfigId);
+
 		// PendingReserve covers tool outputs appended since the last measurement — without it a
 		// tool-heavy round can pick a fallback model the real conversation no longer fits in.
 		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve());
@@ -486,10 +496,6 @@ public class SessionHandler
 				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
 				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.UpdateModel(service.Model);
-				// The explicit /model choice travels with the conversation: compacting while the
-				// chosen model is backing off must not silently discard the preference.
-				if (predecessor.UserSelectedModel != null)
-					successor.MarkModelUserSelected(predecessor.UserSelectedModel);
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
 				successor.SetDispatchScope(_scope);
@@ -661,8 +667,10 @@ public class SessionHandler
 			// down model is to force a retry.
 			registry.ResetAvailability(target.ConfigId);
 			_nextModel = target.ConfigId;
-			_activeSession.MarkModelUserSelected(target.ConfigId);
-			// Sticky for the whole run: new sessions of this role prefer the user's last pick.
+			// Explicit user pick: overwrites the role preference unconditionally. It holds until
+			// this model FAILS a dispatch (which clears it back to the pecking order) — an
+			// in-flight turn on the old model cannot clobber it (RecordWorkingModel only fills
+			// an empty slot).
 			registry.SetRolePreferredModel(_activeSession.Role, target.ConfigId);
 			_lastInputTokens = 0;
 			transport.Status(_activeSession.Id, $"Model queued: {target.ConfigId}");
@@ -824,25 +832,10 @@ public class SessionHandler
 
 	// Ensures _service matches the session's model and is healthy; creates a replacement when it
 	// is missing, down, or pointing at a different model. Keeps the old service when creation fails.
+	// There is no switch-back to an earlier explicit choice: WORKING is preferred — whatever model
+	// is currently serving stays, and each successful turn records it as the role's preference.
 	private void RefreshService(Role? role, LlmRegistry registry)
 	{
-		// Return to the user's explicit /model choice as soon as it can actually serve again: a
-		// rate-limit fallback is a temporary substitute, not a silent permanent switch. Guarded by
-		// IsAvailableNow so a still-limited choice is not flapped back to just to park on its
-		// backoff, and by the ConfigId check so a fallback that landed elsewhere is what's replaced.
-		string? userChoice = _activeSession.UserSelectedModel;
-		if (userChoice != null && _service != null && _service.Model.ConfigId != userChoice && registry.IsAvailableNow(userChoice))
-		{
-			int minRequired = _activeSession.ContextLength + GetCompactionReserve();
-			LlmService? preferred = registry.CreateService(role, userChoice, minRequired);
-			if (preferred != null && preferred.Model.ConfigId == userChoice)
-			{
-				_activeSession.UpdateModel(preferred.Model);
-				_service = preferred;
-				_activeSession.SendStats();
-			}
-		}
-
 		if (_service == null || _service.IsDown || _service.Model.ConfigId != _activeSession.Model)
 		{
 			int minCtx = _activeSession.ContextLength + GetCompactionReserve();
