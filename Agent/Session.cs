@@ -176,6 +176,10 @@ public class Session
 
 	public void DetachHandler() => Interlocked.Exchange(ref _handlerAttached, 0);
 
+	// True while a handler is driving this session. The quiesce path polls this after MarkDeleted
+	// to know the handler has actually unwound (its finally detaches) before touching the disk.
+	public bool HasAttachedHandler => _handlerAttached != 0;
+
 	// ---- Busy/Idle signaling ----
 
 	// Reference count: Busy fires on 0→1, Idle fires on 1→0.

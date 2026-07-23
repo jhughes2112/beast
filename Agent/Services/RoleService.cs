@@ -41,6 +41,13 @@ public class RoleService
 		LoadRoles();
 	}
 
+	// Reload rollback support: the role set is published by reference, so the orchestrator
+	// snapshots it before a /reload and restores it if a LATER stage of the reload fails —
+	// keeping "the previous config was kept" true across the whole reload, not per component.
+	public Dictionary<string, Role> SnapshotRoles() => Roles;
+
+	public void RestoreRoles(Dictionary<string, Role> roles) => Roles = roles;
+
 	// Names of the Subagent-kind roles — the only roles the subagent tool may target and the only
 	// roles a SubagentSession may run.
 	public List<Role> SubagentRoles()

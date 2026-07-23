@@ -125,7 +125,6 @@ beast [/command1 /command2 ...] [-p <prompt text>]
 | Command | Description |
 |---------|-------------|
 | `/compact` | Run context compaction now |
-| `/clear` | Clear the conversation |
 | `/reload` | Reload the config files (settings + roles) |
 | `/model <id>` | Switch the active model for the current role |
 | `/finish` | Integrate the worktree and exit. See [Worktrees](#worktrees) |

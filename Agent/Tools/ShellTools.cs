@@ -91,28 +91,39 @@ public static class ShellTools
 		return RunBashAsync(toolcallid, command, timeoutSeconds, true, cancellationToken);
 	}
 
-	// Appends a line to a capped capture buffer. Returns false once the cap is reached — including
-	// when a SINGLE oversized line would blow past it, in which case only the room that remains is
-	// kept, so the buffer never exceeds the cap by more than a newline.
-	private static bool AppendCapped(StringBuilder captured, string line)
+	// Drains a redirected stream into a capped builder in fixed-size chunks; returns true when the
+	// cap was hit and later output discarded. Chunking (not line events) bounds peak memory even
+	// for a stream with no newlines — a line reader materializes the entire line before any cap
+	// can apply — and makes the cap exact. Draining always continues to EOF or cancellation so the
+	// child never blocks on a full pipe. Cancellation is swallowed: it is the bounded stop after
+	// process exit, and whatever was captured up to that point is the result.
+	private static async Task<bool> DrainCappedAsync(StreamReader reader, StringBuilder sink, CancellationToken ct)
 	{
-		bool appended;
-		int room = MaxCapturedChars - captured.Length;
-		if (room <= 0)
+		bool capped = false;
+		char[] buffer = new char[8192];
+		try
 		{
-			appended = false;
+			for (; ; )
+			{
+				int count = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+				if (count <= 0)
+					break;
+
+				int room = MaxCapturedChars - sink.Length;
+				if (room > 0)
+					sink.Append(buffer, 0, Math.Min(count, room));
+				if (count > room)
+					capped = true;
+			}
 		}
-		else if (line.Length > room)
+		catch (OperationCanceledException)
 		{
-			captured.Append(line, 0, room).AppendLine();
-			appended = false;
 		}
-		else
+		catch (IOException)
 		{
-			captured.AppendLine(line);
-			appended = true;
+			// Pipe torn down by a process kill: keep what was captured.
 		}
-		return appended;
+		return capped;
 	}
 
 	// Renders a captured stream, appending a truncation notice when the capture cap was hit so the
@@ -166,38 +177,14 @@ public static class ShellTools
 				{
 					StringBuilder output = new StringBuilder();
 					StringBuilder error = new StringBuilder();
-					bool outputCapped = false;
-					bool errorCapped = false;
-
-					// Completed when the reader delivers its EOF sentinel (a null Data). Process exit
-					// alone does not mean the readers are done: without waiting for these, the result
-					// could be read while a callback is still appending (a torn read, occasionally
-					// losing the tail of the output).
-					TaskCompletionSource<bool> outputEof = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-					TaskCompletionSource<bool> errorEof = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-					// Past the cap the pipes are still drained (so the child never blocks on a full
-					// pipe) but the data is discarded — a runaway command like `yes` must not grow
-					// the buffers until the container runs out of memory. The token-budget truncation
-					// downstream would clip the result anyway; this bounds what is ever held.
-					process.OutputDataReceived += (_, e) =>
-					{
-						if (e.Data == null)
-							outputEof.TrySetResult(true);
-						else if (!AppendCapped(output, e.Data))
-							outputCapped = true;
-					};
-					process.ErrorDataReceived += (_, e) =>
-					{
-						if (e.Data == null)
-							errorEof.TrySetResult(true);
-						else if (!AppendCapped(error, e.Data))
-							errorCapped = true;
-					};
 
 					process.Start();
-					process.BeginOutputReadLine();
-					process.BeginErrorReadLine();
+
+					// Each stream gets its own chunked drain task; a builder is written only by its
+					// own task, and both tasks are awaited before the builders are read.
+					using CancellationTokenSource drainCts = new CancellationTokenSource();
+					Task<bool> outputDrain = DrainCappedAsync(process.StandardOutput, output, drainCts.Token);
+					Task<bool> errorDrain = DrainCappedAsync(process.StandardError, error, drainCts.Token);
 
 					using (CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
 					{
@@ -225,6 +212,7 @@ public static class ShellTools
 
 							if (cancellationToken.IsCancellationRequested)
 							{
+								drainCts.Cancel();
 								throw;
 							}
 							else
@@ -233,19 +221,15 @@ public static class ShellTools
 							}
 						}
 
-						// Wait for the readers' EOF sentinels so the builders are complete before they are
-						// read. Bounded: a backgrounded grandchild can inherit the pipe and hold it open
+						// Give the readers a moment to reach EOF after exit/kill, then stop and await
+						// them. Bounded: a backgrounded grandchild can inherit the pipe and hold it open
 						// long after the command itself exited, and its future output is rightly lost.
-						// Cancelling the reads afterwards stops any still-open reader from appending.
-						await Task.WhenAny(Task.WhenAll(outputEof.Task, errorEof.Task), Task.Delay(500));
-						try
-						{
-							process.CancelOutputRead();
-							process.CancelErrorRead();
-						}
-						catch (InvalidOperationException)
-						{
-						}
+						// Awaiting the drain tasks guarantees nothing is appending to the builders when
+						// they are read below.
+						await Task.WhenAny(Task.WhenAll(outputDrain, errorDrain), Task.Delay(500));
+						drainCts.Cancel();
+						bool outputCapped = await outputDrain;
+						bool errorCapped = await errorDrain;
 
 						if (processCompleted)
 						{

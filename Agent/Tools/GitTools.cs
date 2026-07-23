@@ -6,6 +6,12 @@ using System.Threading.Tasks;
 
 public static class GitTools
 {
+	// Serializes every commit/rebase/fast-forward flow in this process. Parallel Developers share
+	// one repository: without this, one call's `git add -A` can sweep up another's in-progress
+	// changes, or land mid-rebase and see a half-rewritten branch. Unique message files fixed the
+	// message clobbering; this fixes the index and branch races.
+	private static readonly SemaphoreSlim _gitGate = new SemaphoreSlim(1, 1);
+
 	// Commits the current worktree and integrates it with a strictly linear, rebase-based flow — never a merge
 	// commit. It commits everything onto the feature branch B, finds the base branch A (the branch checked out in
 	// the primary worktree, reached with git -C since B's worktree cannot check A out). B
@@ -58,7 +64,16 @@ public static class GitTools
 			"echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
 			"git -C \"$main_wt\" merge --ff-only \"$branch\" || { echo \"Could not fast-forward '$base' (its worktree may have uncommitted changes).\"; exit 1; }\n";
 
-		ToolResult result = await ShellTools.BashAsync("commit_and_rebase", script, null, ct);
+		ToolResult result;
+		await _gitGate.WaitAsync(ct);
+		try
+		{
+			result = await ShellTools.BashAsync("commit_and_rebase", script, null, ct);
+		}
+		finally
+		{
+			_gitGate.Release();
+		}
 
 		StringBuilder sb = new StringBuilder();
 		if (!string.IsNullOrEmpty(result.StdOut))

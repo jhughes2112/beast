@@ -23,6 +23,12 @@ public class SettingsService
 		LoadSettings();
 	}
 
+	// Reload rollback support: settings are published by reference, so the orchestrator snapshots
+	// them before a /reload and restores them if a later stage of the reload fails.
+	public BeastSettings SnapshotSettings() => Settings;
+
+	public void RestoreSettings(BeastSettings settings) => Settings = settings;
+
 	public void LoadSettings()
 	{
 		// Load BOTH files before touching Settings: a malformed file throws out of

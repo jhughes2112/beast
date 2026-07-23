@@ -17,12 +17,12 @@ using TextCopy;
 // Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
-	private const string HelpText     = "Commands: /compact, /clear, /reload, /model <id>, /finish, /verbose, /test, /quit";
+	private const string HelpText     = "Commands: /compact, /reload, /model <id>, /finish, /verbose, /test, /quit";
 	private const int    MaxInputRows = 10;
 
 	private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
-		"compact", "clear", "reload", "model", "finish", "test", "quit", "cancel"
+		"compact", "reload", "model", "finish", "test", "quit", "cancel"
 	};
 
 	internal static class Palette

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,11 +26,20 @@ public class LlmRegistry
 
 	// Keyed by endpoint URL. Populated by ProbeEndpointsAsync; never cleared on reload so
 	// expensive probes survive /reload. Unknown entries mean the endpoint was unreachable.
-	private readonly Dictionary<string, DetectedProtocol> _probeCache = new(StringComparer.OrdinalIgnoreCase);
+	// Concurrent: read by every session handler while startup/reload probes write.
+	private readonly ConcurrentDictionary<string, DetectedProtocol> _probeCache = new(StringComparer.OrdinalIgnoreCase);
 
 	// Keyed by model config ID. Populated on demand; never cleared so availability state
 	// (rate-limit timers, permanently-down flags) survives /reload and session restarts.
-	private readonly Dictionary<string, ModelAvailability> _availability = new(StringComparer.OrdinalIgnoreCase);
+	// Concurrent: parallel handlers race GetOrCreateAvailability, and a plain dictionary could
+	// hand two of them DIFFERENT availability objects for the same model.
+	private readonly ConcurrentDictionary<string, ModelAvailability> _availability = new(StringComparer.OrdinalIgnoreCase);
+
+	// Last model the user explicitly picked (via /model) per role, in-memory for this run. New
+	// sessions and services for the role prefer it — but only while it can actually serve; a
+	// down or backing-off sticky choice falls through to the ranked list rather than blocking
+	// fresh work on a model the system already routed around.
+	private readonly ConcurrentDictionary<string, string> _rolePreferredModel = new(StringComparer.OrdinalIgnoreCase);
 
 	public LlmRegistry()
 	{
@@ -109,13 +119,17 @@ public class LlmRegistry
 			if (effectiveEndpoint != originalEndpoint)
 			{
 				// Localhost fallback fired: rewrite stored models to the effective endpoint and
-				// cache it separately so future models at the same URL match immediately.
+				// cache it separately so future models at the same URL match immediately. The
+				// rewrite goes through a copy-and-swap so concurrent readers of _models never see
+				// a dictionary being mutated.
 				_probeCache[effectiveEndpoint] = detected;
+				Dictionary<string, LlmModel> updated = new(_models, StringComparer.OrdinalIgnoreCase);
 				foreach (string modelId in modelIds)
 				{
-					if (_models.TryGetValue(modelId, out LlmModel? old))
-						_models[modelId] = new LlmModel(old.ConfigId, effectiveEndpoint, old.ApiKey, old.Extras, old.Headers, old.Config);
+					if (updated.TryGetValue(modelId, out LlmModel? old))
+						updated[modelId] = new LlmModel(old.ConfigId, effectiveEndpoint, old.ApiKey, old.Extras, old.Headers, old.Config);
 				}
+				_models = updated;
 			}
 		}
 	}
@@ -307,12 +321,37 @@ public class LlmRegistry
 			}
 		}
 
+		DateTimeOffset now = DateTimeOffset.UtcNow;
+
+		// Sticky per-role preference: the model the user last picked (via /model) for this role is
+		// tried before the ranked list — but only while it is in the role, fits, and can serve
+		// right now. A busy or failed sticky choice falls through instead of blocking new work.
+		if (string.IsNullOrEmpty(preferredModelId) && _rolePreferredModel.TryGetValue(role.Name, out string? sticky))
+		{
+			bool stickyInRole = false;
+			foreach (string id in role.Models)
+			{
+				if (string.Equals(id, sticky, StringComparison.OrdinalIgnoreCase))
+				{
+					stickyInRole = true;
+					break;
+				}
+			}
+			if (stickyInRole && _models.TryGetValue(sticky, out LlmModel? stickyModel) && stickyModel.Config.ContextWindow > minContextRequired)
+			{
+				bool serviceable = true;
+				if (_availability.TryGetValue(stickyModel.ConfigId, out ModelAvailability? sa))
+					serviceable = !sa.IsDown && sa.AvailableAt <= now;
+				if (serviceable)
+					return stickyModel;
+			}
+		}
+
 		// Fall through to the role's ordered list: the first model that can serve RIGHT NOW. One
 		// still in a temporary backoff is remembered but passed over, so a fresh selection does not
 		// park behind another session's rate limit while a lower-ranked model sits idle. Only when
 		// every live model is backing off is the one that recovers SOONEST returned — the caller
 		// then waits out the shortest backoff instead of the selection failing outright.
-		DateTimeOffset now = DateTimeOffset.UtcNow;
 		LlmModel? backingOff = null;
 		DateTimeOffset backingOffAt = DateTimeOffset.MaxValue;
 		foreach (string modelId in role.Models)
@@ -343,12 +382,20 @@ public class LlmRegistry
 
 	private ModelAvailability GetOrCreateAvailability(string configId)
 	{
-		if (!_availability.TryGetValue(configId, out ModelAvailability? avail))
-		{
-			avail = new ModelAvailability();
-			_availability[configId] = avail;
-		}
-		return avail;
+		return _availability.GetOrAdd(configId, _ => new ModelAvailability());
 	}
+
+	// Records the user's explicit /model pick for a role so later sessions of that role reuse it.
+	public void SetRolePreferredModel(string roleName, string modelId)
+	{
+		_rolePreferredModel[roleName] = modelId;
+	}
+
+	// Reload rollback support: models are published by reference, so the orchestrator snapshots
+	// before a /reload and restores if a later stage of the reload fails — keeping "the previous
+	// config was kept" true across the whole reload, not per component.
+	public Dictionary<string, LlmModel> SnapshotModels() => _models;
+
+	public void RestoreModels(Dictionary<string, LlmModel> models) => _models = models;
 
 }

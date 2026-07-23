@@ -486,6 +486,10 @@ public class SessionHandler
 				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
 				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.UpdateModel(service.Model);
+				// The explicit /model choice travels with the conversation: compacting while the
+				// chosen model is backing off must not silently discard the preference.
+				if (predecessor.UserSelectedModel != null)
+					successor.MarkModelUserSelected(predecessor.UserSelectedModel);
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
 				successor.SetDispatchScope(_scope);
@@ -658,6 +662,8 @@ public class SessionHandler
 			registry.ResetAvailability(target.ConfigId);
 			_nextModel = target.ConfigId;
 			_activeSession.MarkModelUserSelected(target.ConfigId);
+			// Sticky for the whole run: new sessions of this role prefer the user's last pick.
+			registry.SetRolePreferredModel(_activeSession.Role, target.ConfigId);
 			_lastInputTokens = 0;
 			transport.Status(_activeSession.Id, $"Model queued: {target.ConfigId}");
 			if (_activeSession.Status != SessionStatus.Ongoing)

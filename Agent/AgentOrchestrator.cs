@@ -30,6 +30,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// Compaction re-keys an entry to the successor that inherited the obligation. Guarded by _sessionLock.
 	private readonly Dictionary<string, Action<bool, string, int>> _completions = new Dictionary<string, Action<bool, string, int>>(StringComparer.Ordinal);
 
+	// The in-flight /test run, if any. Single-flight: overlapping suite runs would share the
+	// registry and live sessions and interleave their output.
+	private Task? _testTask;
+
 	public AgentOrchestrator(
 		LlmRegistry registry,
 		RoleService roleService,
@@ -73,6 +77,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 	public void RegisterSession(Session session)
 	{
+		// A registration during a /finish quiesce would revive activity underneath the teardown;
+		// refuse it and mark the session deleted so its handler (if any) exits immediately.
+		if (_quiescing)
+		{
+			session.MarkDeleted();
+			return;
+		}
+
 		lock (_sessionLock)
 			_allSessions[session.Id] = session;
 	}
@@ -98,6 +110,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		if (outputBudgetTokens <= 0)
 			return (false, "No output budget remaining for a subagent.", 0);
+
+		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
+		// user deleted this tree — either way new work would race the teardown.
+		if (parent.Deleted || _quiescing)
+			return (false, "The calling session is shutting down; no new subagents may start.", 0);
 
 		Role? role = _roleService.GetRole(roleName);
 		if (role == null)
@@ -240,11 +257,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 	}
 
+	// Set while /finish is quiescing so no new session can register underneath the teardown; a
+	// registration attempted during the window is refused and marked deleted immediately.
+	private volatile bool _quiescing;
+
 	// Marks every registered session deleted (stopping its handler and blocking further saves),
-	// unregisters it, and fails any caller still waiting on one. Used when the worktree is about
-	// to be finished and removed — nothing may keep writing while it is torn down.
-	private void QuiesceAllSessions(string reason)
+	// unregisters it, fails any caller still waiting on one, and then WAITS for the handlers to
+	// actually unwind — signalling alone is not quiescence: a handler mid-tool could still write
+	// after a premature cleanliness check. Returns false when a handler failed to stop in time.
+	private async Task<bool> QuiesceAllSessionsAsync(string reason, CancellationToken ct)
 	{
+		_quiescing = true;
+
 		List<Session> live;
 		lock (_sessionLock)
 			live = new List<Session>(_allSessions.Values);
@@ -253,6 +277,27 @@ public class AgentOrchestrator : ISessionOrchestrator
 			s.MarkDeleted();
 			UnregisterSession(s.Id);
 			CompleteSession(s.Id, false, reason, 0);
+		}
+
+		// Handlers detach in their finally; tool kills are prompt, so a healthy handler unwinds in
+		// well under this bound. A stuck one fails the quiesce rather than being written off.
+		DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+		for (; ; )
+		{
+			bool anyAttached = false;
+			foreach (Session s in live)
+			{
+				if (s.HasAttachedHandler)
+				{
+					anyAttached = true;
+					break;
+				}
+			}
+			if (!anyAttached)
+				return true;
+			if (DateTimeOffset.UtcNow >= deadline)
+				return false;
+			await Task.Delay(100, ct);
 		}
 	}
 
@@ -610,6 +655,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 				await FinishAsync(sessionId, ct);
 				break;
 			case "reload":
+			{
+				// Snapshot every published reference first: each component swaps atomically, but a
+				// failure partway (bad roles.json after settings already loaded, probe error) would
+				// otherwise leave a MIX of old and new config. Restoring the snapshots makes
+				// "keeping the previous config" true across the whole reload.
+				Dictionary<string, Role> priorRoles = _roleService.SnapshotRoles();
+				BeastSettings priorSettings = _settings.SnapshotSettings();
+				Dictionary<string, LlmModel> priorModels = _registry.SnapshotModels();
 				try
 				{
 					_roleService.Reload();
@@ -630,9 +683,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 				}
 				catch (Exception ex)
 				{
+					_roleService.RestoreRoles(priorRoles);
+					_settings.RestoreSettings(priorSettings);
+					_registry.RestoreModels(priorModels);
 					_transport.Error(sessionId, $"Reload failed: {ex}. Keeping the previous config.");
 				}
 				break;
+			}
 			case "help":
 				_transport.Output(sessionId, "Commands: /compact, /reload, /model <id>, /finish, /test, /quit");
 				break;
@@ -679,10 +736,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 			case "test":
 			{
+				if (_testTask != null && !_testTask.IsCompleted)
+				{
+					_transport.Status(sessionId, "A /test run is already in progress.");
+					break;
+				}
+
 				string? filter = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : null;
 				// Run in the background so the input loop keeps servicing commands (including
-				// /quit) while the suite executes.
-				_ = Task.Run(async () =>
+				// /quit) while the suite executes. Tracked so a second /test cannot overlap it.
+				_testTask = Task.Run(async () =>
 				{
 					try
 					{
@@ -734,6 +797,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 		}
 
+		if (_testTask != null && !_testTask.IsCompleted)
+		{
+			_transport.Error(sessionId, "/finish refused: a /test run is still in progress. Wait for it to complete.");
+			return;
+		}
+
 		ToolResult check = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
 		string[] lines = check.StdOut.Trim().Length == 0
 			? Array.Empty<string>()
@@ -754,10 +823,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string baseBranch = lines.Length > 2 ? lines[2].Trim() : string.Empty;
 
 		// The check said clean — but a still-running handler could land new commits or edits
-		// between that check and the forced worktree removal below. Quiesce every session first,
-		// then re-check: anything that slipped in while the handlers wound down keeps the worktree
-		// alive instead of being destroyed with it.
-		QuiesceAllSessions("The worktree is being finished.");
+		// between that check and the forced worktree removal below. Quiesce every session (and
+		// WAIT for the handlers to unwind), then re-check: anything that slipped in while they
+		// wound down keeps the worktree alive instead of being destroyed with it.
+		if (!await QuiesceAllSessionsAsync("The worktree is being finished.", ct))
+		{
+			_quiescing = false;
+			_transport.Error(sessionId,
+				"Aborting /finish: a session did not stop in time. The worktree was left in place; a fresh session has been started.");
+			StartReplacementRoot();
+			return;
+		}
 
 		ToolResult recheck = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
 		string[] recheckLines = recheck.StdOut.Trim().Length == 0
@@ -768,6 +844,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			string changed = recheckLines.Length > 1
 				? string.Join("\n", recheckLines, 1, recheckLines.Length - 1)
 				: "Could not determine worktree status.";
+			_quiescing = false;
 			_transport.Error(sessionId,
 				"Aborting /finish: the worktree changed while sessions were being stopped:\n" + changed +
 				"\nThe worktree was left in place. All sessions were stopped; a fresh session has been started.");
@@ -775,16 +852,20 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 		}
 
-		SessionService.DeleteTree(sessionId);
-
+		// No session-file deletion here: the worktree removal below deletes /workspace (sessions
+		// included) wholesale, and deleting them early meant a FAILED removal had already lost
+		// every conversation.
 		ToolResult remove = await ShellTools.BashAsync("finish_remove", FinishRemoveScript, null, ct);
 		if (!remove.StdOut.Contains("REMOVED"))
 		{
 			string detail = remove.StdErr;
 			if (!string.IsNullOrEmpty(remove.StdOut))
 				detail = string.IsNullOrEmpty(detail) ? remove.StdOut : detail + "\n" + remove.StdOut;
+			_quiescing = false;
 			_transport.Error(sessionId, "Failed to remove the worktree:\n" +
-				(string.IsNullOrWhiteSpace(detail) ? "(no output)" : detail));
+				(string.IsNullOrWhiteSpace(detail) ? "(no output)" : detail) +
+				"\nAll sessions were stopped; a fresh session has been started.");
+			StartReplacementRoot();
 			return;
 		}
 
