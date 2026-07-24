@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 public enum ProtocolCallOutcome
@@ -84,51 +84,64 @@ public class ProtocolResult
 	// Human-readable detail for non-success outcomes.
 	public string ErrorMessage { get; }
 
-	private ProtocolResult(ProtocolCallOutcome outcome, ProtocolCallPayload? payload, DateTimeOffset? retryAfter, string errorMessage)
+	// HTTP status of the provider response that produced a Failed outcome; 0 when the failure did
+	// not come from an HTTP response. Carried so the caller can weigh structural evidence — a
+	// client rejection landing on a near-full context is overflow whatever the body text says.
+	public int HttpStatus { get; }
+
+	private ProtocolResult(ProtocolCallOutcome outcome, ProtocolCallPayload? payload, DateTimeOffset? retryAfter, string errorMessage, int httpStatus)
 	{
 		Outcome = outcome;
 		Payload = payload;
 		RetryAfter = retryAfter;
 		ErrorMessage = errorMessage;
+		HttpStatus = httpStatus;
 	}
 
 	public static ProtocolResult Succeeded(ProtocolCallPayload payload)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.Success, payload, null, "");
+		return new ProtocolResult(ProtocolCallOutcome.Success, payload, null, "", 0);
 	}
 
 	public static ProtocolResult RateLimited(DateTimeOffset? retryAfter)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "");
+		return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "", 0);
 	}
 
 	public static ProtocolResult Transient(string errorMessage, DateTimeOffset? retryAfter)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.Transient, null, retryAfter, errorMessage);
+		return new ProtocolResult(ProtocolCallOutcome.Transient, null, retryAfter, errorMessage, 0);
 	}
 
 	public static ProtocolResult Failed(string errorMessage)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage);
+		return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage, 0);
+	}
+
+	// Failed with the HTTP status that produced it, so the caller can reclassify a client
+	// rejection on a near-full context as overflow even when the body text is unrecognized.
+	public static ProtocolResult FailedHttp(string errorMessage, int httpStatus)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.Failed, null, null, errorMessage, httpStatus);
 	}
 
 	public static ProtocolResult Interrupted(string errorMessage, ProtocolCallPayload? payload)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage);
+		return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage, 0);
 	}
 
 	public static ProtocolResult TooManyRetries()
 	{
-		return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, null, "");
+		return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, null, "", 0);
 	}
 
 	public static ProtocolResult ContextFull(string errorMessage)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.ContextFull, null, null, errorMessage);
+		return new ProtocolResult(ProtocolCallOutcome.ContextFull, null, null, errorMessage, 0);
 	}
 
 	public static ProtocolResult Yielded()
 	{
-		return new ProtocolResult(ProtocolCallOutcome.Yielded, null, null, string.Empty);
+		return new ProtocolResult(ProtocolCallOutcome.Yielded, null, null, string.Empty, 0);
 	}
 }

@@ -93,9 +93,9 @@ public class SessionHandler
 				_activeSession.UpdateCompletions(BuildCompletionCandidates(roleService, registry));
 
 				// 2. Compact when requested; the loop continues on the successor session. On failure,
-				// drop the service so the next iteration rebuilds it and the protocol rehydrates from
-				// canonical — the summarize attempt routed its turns through its own protocol
-				// instance, which can leave this service's native state behind canonical.
+				// drop the service so the next iteration re-selects a model that still fits the
+				// conversation — the summarizer runs on throwaway stage sessions and leaves this
+				// session's state untouched.
 				if (_wantsCompact)
 				{
 					_wantsCompact = false;
@@ -395,8 +395,12 @@ public class SessionHandler
 					full = true;
 				}
 			}
-			else if (tracer.ContextBlown)
+			else if (tracer.ContextBlown || ProtocolHelpers.IsOverflowStatusCandidate(tracer.HttpStatus))
 			{
+				// ContextBlown means the body text matched a known overflow phrasing. The status
+				// check is the structural fallback: this tracer only ran because the estimate is
+				// already at the compaction threshold, so a client rejection here is overflow
+				// evidence regardless of how the server worded it.
 				transport.Status(_activeSession.Id, $"Context exceeds limit ({tracer.ErrorMessage}), compacting...");
 				full = true;
 			}
@@ -461,7 +465,7 @@ public class SessionHandler
 		else
 		{
 			transport.Status(_activeSession.Id, "[Compaction] Started.");
-			string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, Array.Empty<Tool>(), registry, roleService, transport, ct);
+			string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, registry, roleService, transport, ct);
 			LlmService? service = string.IsNullOrWhiteSpace(summary) ? null : registry.CreateService(role, _activeSession.Model, 0);
 			if (summary == null || service == null)
 			{

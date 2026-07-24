@@ -268,6 +268,20 @@ public class LlmService
 						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, kMaxTransientRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}
+					else if (result.Outcome == ProtocolCallOutcome.Failed
+						&& ProtocolHelpers.IsOverflowStatusCandidate(result.HttpStatus)
+						&& budget.OverflowPlausible())
+					{
+						// Structural overflow evidence: the body text was not a recognized overflow
+						// phrasing (IsContextOverflow already routed those to ContextFull upstream),
+						// but a client rejection landing while the measured context fills half the
+						// window is overflow whatever the server chose to say — local servers word
+						// it every which way. Reclassify so the caller compacts instead of marking
+						// a healthy model down and silently switching to another one.
+						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", result.HttpStatus, $"Client rejection on a near-full context, treated as overflow: {result.ErrorMessage}", 0, 0, null, false);
+						result = ProtocolResult.ContextFull(result.ErrorMessage);
+						break;
+					}
 					else
 					{
 						// Unrecoverable (auth failure, unknown protocol): mark the model down so it is not

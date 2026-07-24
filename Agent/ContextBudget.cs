@@ -59,6 +59,17 @@ public class ContextBudget
 		return _measured + _pendingReserve + _compactionReserve >= _windowSize;
 	}
 
+	// Structural overflow evidence: the measured conversation plus outstanding reservations fill
+	// at least half the window. When a provider rejects a request with a client error in this
+	// state, overflow is the dominant explanation — tokenizers disagree across providers and a
+	// local server's real window (e.g. llama-server's -c) can be smaller than the configured one —
+	// whereas a genuinely malformed request would have failed at low occupancy from the first
+	// turn. Both figures are provider-measured or reserved, never estimated.
+	public bool OverflowPlausible()
+	{
+		return _measured + _pendingReserve >= _windowSize / 2;
+	}
+
 	// Max output tokens to request next: whatever the window has left after the measured conversation,
 	// any pending tool outputs, AND the compaction reserve, tightened by the model's output ceiling and
 	// the sub-session cap. Subtracting the compaction reserve is what keeps it genuinely free, so input

@@ -12,6 +12,31 @@ public static class ContextBudgetTests
 		TestReserveHoldsFullReservation(ctx);
 		TestRecordMeasurement(ctx);
 		TestPendingReserve(ctx);
+		TestOverflowPlausible(ctx);
+	}
+
+	private static void TestOverflowPlausible(TestContext ctx)
+	{
+		// At half occupancy a client rejection reads as overflow; below it, it does not.
+		ContextBudget half = new ContextBudget();
+		half.Configure(32000, 0, 0, 0, 16000);
+		ctx.Assert(half.OverflowPlausible(), "OverflowPlausible: true at half the window");
+
+		ContextBudget low = new ContextBudget();
+		low.Configure(32000, 0, 0, 0, 1000);
+		ctx.Assert(!low.OverflowPlausible(), "OverflowPlausible: false at low occupancy");
+
+		// Pending tool reservations count as occupancy — they are real appended content the
+		// provider has not measured yet.
+		ContextBudget pending = new ContextBudget();
+		pending.Configure(32000, 4096, 0, 0, 12000);
+		pending.ReserveToolResponses(1);
+		ctx.Assert(pending.OverflowPlausible(), "OverflowPlausible: pending reservations count toward occupancy");
+
+		// A fresh, never-measured conversation offers no structural evidence.
+		ContextBudget fresh = new ContextBudget();
+		fresh.Configure(32000, 0, 0, 0, 0);
+		ctx.Assert(!fresh.OverflowPlausible(), "OverflowPlausible: false with no measurement");
 	}
 
 	private static void TestMaxCompletionTokens(TestContext ctx)

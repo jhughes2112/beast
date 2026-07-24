@@ -167,8 +167,23 @@ static class ProtocolHelpers
 
 	// Provider-reported context overflow markers across the APIs we speak: Anthropic says
 	// "prompt is too long", OpenAI says "context_length_exceeded" / "maximum context length",
-	// and gateways phrase it as exceeding the context limit/window. Retrying such a request
-	// verbatim can never succeed — the caller must compact instead.
+	// gateways phrase it as exceeding the context limit/window, llama-server says "the request
+	// exceeds the available context size" (with a "context shift" suggestion), Bedrock says
+	// "input is too long", and other local servers report the prompt as "greater than the
+	// context length". Retrying such a request verbatim can never succeed — the caller must
+	// compact instead. Missing a phrasing here misroutes the overflow into the model-fallback
+	// path, which silently switches models instead of compacting.
+	// The 4xx statuses providers use to reject an over-window request: 400 (OpenAI, Anthropic,
+	// llama-server), 413 (payload too large), 422 (some gateways). Text matching alone is brittle
+	// — every server words its overflow differently and wording changes across versions — so the
+	// caller combines this with what it already knows structurally: one of these statuses landing
+	// while the measured context is a large fraction of the window is overflow whatever the body
+	// says. Auth (401/403) and not-found (404) are deliberately excluded; those are never overflow.
+	public static bool IsOverflowStatusCandidate(int statusCode)
+	{
+		return statusCode == 400 || statusCode == 413 || statusCode == 422;
+	}
+
 	public static bool IsContextOverflow(string errorText)
 	{
 		if (string.IsNullOrEmpty(errorText))
@@ -179,7 +194,11 @@ static class ProtocolHelpers
 			|| lower.Contains("context_length_exceeded")
 			|| lower.Contains("maximum context length")
 			|| lower.Contains("exceed context limit")
-			|| lower.Contains("exceeds the context window");
+			|| lower.Contains("exceeds the context window")
+			|| lower.Contains("exceeds the available context")
+			|| lower.Contains("greater than the context length")
+			|| lower.Contains("context length exceeded")
+			|| lower.Contains("input is too long");
 	}
 
 	// Logs and returns a ContextFull result for a provider-reported context overflow (a 4xx whose
@@ -200,7 +219,7 @@ modelId)
 			? $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}"
 			: responseBody;
 		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, message, responseBody, null);
-		return ProtocolResult.Failed($"HTTP {statusCode}: {responseBody}");
+		return ProtocolResult.FailedHttp($"HTTP {statusCode}: {responseBody}", statusCode);
 	}
 
 	// Logs and returns a Transient result for server errors or retryable 4xx (408/425).

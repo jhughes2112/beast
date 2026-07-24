@@ -893,7 +893,7 @@ public class ProtocolResponses
 				{
 					return TracerResult.ContextExceeded(statusCode);
 				}
-				return TracerResult.Failed($"HTTP {statusCode}: {responseBody}");
+				return TracerResult.FailedHttp(statusCode, $"HTTP {statusCode}: {responseBody}");
 			}
 
 			if (statusCode == 429 || ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
