@@ -278,10 +278,12 @@ internal static class BlockRenderer
 		string prefix = PrefixTextForType(msg.Type);
 		// The system prompt is plain instructional text, not markdown: rendering it through Markdig drops
 		// angle-bracket tokens (parsed as HTML) and collapses single newlines, so it is rendered verbatim.
-		// Thinking is markdown only when it actually reads as markdown; plain reasoning prose stays on the
-		// verbatim path so its newlines and indentation survive (the markdown parser would collapse them).
+		// Thinking renders as markdown unconditionally, exactly like assistant output, so a completed block
+		// always renders the same as its streamed preview — a content-sniffing gate here made formatting
+		// vanish whenever the full text scored differently than the partial stream. Newlines survive the
+		// markdown path: the renderer emits every LineBreakInline as a real line break.
 		bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.User
-						|| (msg.Type == FrameType.Thinking && MarkdownAnsi.LooksLikeMarkdown(msg.Content));
+						|| msg.Type == FrameType.Thinking;
 		bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
 					 || msg.Type == FrameType.System || msg.Type == FrameType.Thinking
 					 || msg.Type == FrameType.Alert;
