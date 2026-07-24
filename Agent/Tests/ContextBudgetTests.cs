@@ -90,6 +90,18 @@ public static class ContextBudgetTests
 		ctx.AssertEqual(89904, perTool2, "ReserveToolResponses: compaction reserve shrinks the tool round");
 		// available = 100000 - 1000 - 89904 - 5000 = 4096.
 		ctx.AssertEqual<int?>(4096, reserved.MaxCompletionTokens(), "ReserveToolResponses: completion room excludes the compaction reserve");
+
+		// An output ceiling large relative to the window (local-model shape: 30k output on a 32k
+		// window) must NOT zero the tool round — the response reserve is soft, so the remaining
+		// space splits between the round and the next response instead of starving the tools.
+		ContextBudget local = new ContextBudget();
+		local.Configure(32768, 30000, 3276, 0, 4000);
+		// available = 32768 - 4000 - 3276 = 25492; full reserve would make the round negative,
+		// so the round takes half: 25492 / 2 = 12746.
+		int perTool3 = local.ReserveToolResponses(1);
+		ctx.AssertEqual(12746, perTool3, "ReserveToolResponses: soft response reserve keeps the tool round alive");
+		// Response sizing sees what is genuinely left: 32768 - 4000 - 12746 - 3276 = 12746.
+		ctx.AssertEqual<int?>(12746, local.MaxCompletionTokens(), "ReserveToolResponses: response sized from the remaining half");
 	}
 
 	private static void TestRecordMeasurement(TestContext ctx)

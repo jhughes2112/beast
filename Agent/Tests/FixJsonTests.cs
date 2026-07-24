@@ -20,6 +20,58 @@ public static class FixJsonTests
 		TestExtraArgsStripped(ctx);
 		TestMissingRequiredArgs(ctx);
 		TestFullPipeline(ctx);
+		TestXmlToolCallExtraction(ctx);
+	}
+
+	// ─── <tool_call> text salvage (template-mismatched local models) ─────────
+
+	private static void TestXmlToolCallExtraction(TestContext ctx)
+	{
+		List<ToolDefinition> offered = new List<ToolDefinition>
+		{
+			new ToolDefinition { Function = new FunctionDefinition { Name = "read_file" } },
+			new ToolDefinition { Function = new FunctionDefinition { Name = "ls" } }
+		};
+		Type[] signature = new[] { typeof(string), typeof(List<ToolDefinition>), typeof(List<SemanticToolCall>) };
+
+		// A well-formed literal <tool_call> block naming an offered tool becomes a real call.
+		List<SemanticToolCall> calls = new List<SemanticToolCall>();
+		string text = "I will read the file now.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"a.cs\"}}\n</tool_call>";
+		string cleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+			signature, new object[] { text, offered, calls })!;
+		ctx.AssertEqual(1, calls.Count, "XmlToolCall: extracted one call");
+		ctx.AssertEqual("read_file", calls.Count > 0 ? calls[0].Name : "", "XmlToolCall: name recovered");
+		if (calls.Count > 0)
+			ctx.AssertContains(calls[0].ArgumentsJson, "a.cs", "XmlToolCall: arguments recovered");
+		ctx.AssertEqual("I will read the file now.", cleaned, "XmlToolCall: block stripped, prose preserved");
+
+		// The Qwen-Coder function dialect: <function=name> with <parameter=key> blocks whose raw
+		// multi-line values must survive verbatim (minus the template's framing newlines).
+		List<SemanticToolCall> qwen = new List<SemanticToolCall>();
+		string qwenText = "Listing now.\n<tool_call>  <function=ls>\n<parameter=folder>\n/workspace/Design\n</parameter>\n</function></tool_call>";
+		string qwenCleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+			signature, new object[] { qwenText, offered, qwen })!;
+		ctx.AssertEqual(1, qwen.Count, "XmlToolCall: qwen function form extracted");
+		ctx.AssertEqual("ls", qwen.Count > 0 ? qwen[0].Name : "", "XmlToolCall: qwen function name");
+		if (qwen.Count > 0)
+			ctx.AssertContains(qwen[0].ArgumentsJson, "/workspace/Design", "XmlToolCall: qwen parameter value");
+		ctx.AssertEqual("Listing now.", qwenCleaned, "XmlToolCall: qwen block stripped");
+
+		// A well-formed block naming a tool that is NOT offered this turn stays as prose — no
+		// call, no error; a quoted example or hallucinated tool must never round-trip to dispatch.
+		List<SemanticToolCall> unknown = new List<SemanticToolCall>();
+		string unknownText = "<tool_call>{\"name\": \"rm_rf_everything\", \"arguments\": {}}</tool_call>";
+		string unknownKept = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+			signature, new object[] { unknownText, offered, unknown })!;
+		ctx.AssertEqual(0, unknown.Count, "XmlToolCall: unknown tool produces no call");
+		ctx.AssertContains(unknownKept, "rm_rf_everything", "XmlToolCall: unknown-tool block kept as text");
+
+		// A malformed block produces no call and stays visible in the text.
+		List<SemanticToolCall> none = new List<SemanticToolCall>();
+		string kept = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+			signature, new object[] { "<tool_call>not json</tool_call>", offered, none })!;
+		ctx.AssertEqual(0, none.Count, "XmlToolCall: malformed block produces no call");
+		ctx.AssertContains(kept, "<tool_call>", "XmlToolCall: malformed block kept visible");
 	}
 
 	// ─── Argument-name reconciliation ────────────────────────────────────────

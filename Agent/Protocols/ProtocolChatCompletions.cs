@@ -228,7 +228,7 @@ public class ProtocolChatCompletions
 
 				if (_streamingSupported)
 				{
-					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, extraPayload, bundle, onProgress, logger, cancellationToken);
+					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, tools, extraHeaders, extraPayload, bundle, onProgress, logger, cancellationToken);
 					if (streamResult != null)
 					{
 						if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
@@ -300,7 +300,11 @@ public class ProtocolChatCompletions
 					(string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
 					string thinking = ExtractThinking(messageObj);
 
-
+					// Salvage tool calls a template-mismatched local model emitted as literal
+					// <tool_call> text instead of the native tool_calls array. Only blocks naming
+					// a tool offered this turn are extracted; the rest remain prose.
+					if (toolCalls.Count == 0)
+						assistantText = ExtractXmlToolCalls(assistantText, tools, toolCalls);
 
 					string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
 					if (toolCalls.Count > 0)
@@ -557,6 +561,7 @@ httpResponse);
 	private async Task<ProtocolResult?> ExecuteStreamingAsync(
 		LlmModel model,
 		JsonObject body,
+		List<ToolDefinition> tools,
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
 		ListenerBundle bundle,
@@ -816,6 +821,17 @@ httpResponse);
 			finishReason = "tool_calls";
 		}
 
+		// Salvage tool calls a template-mismatched local model emitted as literal <tool_call>
+		// text instead of the native tool_calls array. Only blocks naming a tool offered this
+		// turn are extracted; the rest remain prose. (The raw text already streamed to the
+		// display; the committed turn carries the cleaned text and the real calls.)
+		if (semanticToolCalls.Count == 0)
+		{
+			assistantText = ExtractXmlToolCalls(assistantText, tools, semanticToolCalls);
+			if (semanticToolCalls.Count > 0)
+				finishReason = "tool_calls";
+		}
+
 
 
 		(TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(usageNodeFinal, model);
@@ -869,6 +885,164 @@ httpResponse);
 	}
 
 	// Pulls semantic content and tool calls out of a non-streaming message object.
+	// Some local models (llama-server with a mismatched chat template, Hermes/Qwen formats) print
+	// their tool calls as literal text — <tool_call>{"name":"x","arguments":{...}}</tool_call> —
+	// instead of populating the native tool_calls array. Extracts a block into toolCalls (with a
+	// synthesized id) ONLY when it is well-formed AND names a tool actually offered this turn;
+	// everything else — malformed blocks, unknown tool names, quoted examples — stays in the text
+	// verbatim. Never optimistically extract and then error: a block that doesn't match a real
+	// tool is treated as prose, not as a failed call.
+	private static string ExtractXmlToolCalls(string text, List<ToolDefinition> tools, List<SemanticToolCall> toolCalls)
+	{
+		const string open = "<tool_call>";
+		const string close = "</tool_call>";
+
+		string remaining = text;
+		if (remaining.Contains(open, StringComparison.Ordinal))
+		{
+			StringBuilder cleaned = new StringBuilder();
+			int pos = 0;
+			for (; ; )
+			{
+				int start = remaining.IndexOf(open, pos, StringComparison.Ordinal);
+				if (start < 0)
+				{
+					cleaned.Append(remaining, pos, remaining.Length - pos);
+					break;
+				}
+				int end = remaining.IndexOf(close, start + open.Length, StringComparison.Ordinal);
+				if (end < 0)
+				{
+					cleaned.Append(remaining, pos, remaining.Length - pos);
+					break;
+				}
+
+				string inner = remaining.Substring(start + open.Length, end - start - open.Length).Trim();
+				SemanticToolCall? call = ParseXmlToolCall(inner);
+				if (call != null && IsOfferedTool(tools, call.Name))
+				{
+					toolCalls.Add(call);
+					cleaned.Append(remaining, pos, start - pos);
+				}
+				else
+				{
+					// Unparseable or not a real tool: keep the block verbatim as ordinary text.
+					cleaned.Append(remaining, pos, end + close.Length - pos);
+				}
+				pos = end + close.Length;
+			}
+			remaining = cleaned.ToString().Trim();
+		}
+		return remaining;
+	}
+
+	// Exact-name membership in this turn's advertised tool set — salvage never fuzzy-matches.
+	private static bool IsOfferedTool(List<ToolDefinition> tools, string name)
+	{
+		foreach (ToolDefinition td in tools)
+		{
+			if (string.Equals(td.Function.Name, name, StringComparison.Ordinal))
+				return true;
+		}
+		return false;
+	}
+
+	// Parses one <tool_call> body in either dialect local templates emit:
+	//   Hermes/JSON:  {"name": "x", "arguments": {...}}
+	//   Qwen-Coder:   <function=x> <parameter=key>\nvalue\n</parameter> ... </function>
+	// Returns null when neither shape matches.
+	private static SemanticToolCall? ParseXmlToolCall(string inner)
+	{
+		SemanticToolCall? call = null;
+		if (inner.StartsWith("{", StringComparison.Ordinal))
+		{
+			try
+			{
+				JsonNode? node = JsonNode.Parse(inner);
+				string? name = node?["name"]?.GetValue<string>();
+				if (node is JsonObject && !string.IsNullOrEmpty(name))
+				{
+					JsonNode? args = node["arguments"];
+					string argsJson;
+					if (args is JsonObject argsObj)
+						argsJson = argsObj.ToJsonString();
+					else if (args is JsonValue value && value.TryGetValue(out string? argsText))
+						argsJson = argsText ?? "{}";
+					else
+						argsJson = "{}";
+
+					call = MakeXmlCall(name!, argsJson);
+				}
+			}
+			catch (JsonException)
+			{
+			}
+		}
+		else
+		{
+			call = ParseFunctionXmlToolCall(inner);
+		}
+		return call;
+	}
+
+	// The Qwen-Coder function form: <function=NAME> then <parameter=KEY> blocks whose value is the
+	// raw text up to </parameter>. Exactly one leading and trailing newline is stripped from each
+	// value (the template's framing) so multi-line content like file bodies survives verbatim.
+	private static SemanticToolCall? ParseFunctionXmlToolCall(string inner)
+	{
+		const string functionOpen = "<function=";
+		const string parameterOpen = "<parameter=";
+		const string parameterClose = "</parameter>";
+
+		SemanticToolCall? call = null;
+		int fnStart = inner.IndexOf(functionOpen, StringComparison.Ordinal);
+		int fnNameEnd = fnStart >= 0 ? inner.IndexOf('>', fnStart + functionOpen.Length) : -1;
+		if (fnNameEnd > 0)
+		{
+			string name = inner.Substring(fnStart + functionOpen.Length, fnNameEnd - fnStart - functionOpen.Length).Trim();
+			if (name.Length > 0)
+			{
+				JsonObject args = new JsonObject();
+				int pos = fnNameEnd + 1;
+				for (; ; )
+				{
+					int pStart = inner.IndexOf(parameterOpen, pos, StringComparison.Ordinal);
+					if (pStart < 0)
+						break;
+					int pNameEnd = inner.IndexOf('>', pStart + parameterOpen.Length);
+					if (pNameEnd < 0)
+						break;
+					int pClose = inner.IndexOf(parameterClose, pNameEnd + 1, StringComparison.Ordinal);
+					if (pClose < 0)
+						break;
+
+					string key = inner.Substring(pStart + parameterOpen.Length, pNameEnd - pStart - parameterOpen.Length).Trim();
+					string value = inner.Substring(pNameEnd + 1, pClose - pNameEnd - 1);
+					if (value.StartsWith("\n", StringComparison.Ordinal))
+						value = value.Substring(1);
+					if (value.EndsWith("\n", StringComparison.Ordinal))
+						value = value.Substring(0, value.Length - 1);
+					if (key.Length > 0)
+						args[key] = value;
+
+					pos = pClose + parameterClose.Length;
+				}
+				call = MakeXmlCall(name, args.ToJsonString());
+			}
+		}
+		return call;
+	}
+
+	private static SemanticToolCall MakeXmlCall(string name, string argsJson)
+	{
+		return new SemanticToolCall
+		{
+			Id = $"xmltc_{Guid.NewGuid():N}".Substring(0, 24),
+			Name = name,
+			ArgumentsJson = argsJson
+		};
+	}
+
 	private static (string assistantText, List<SemanticToolCall> toolCalls) ExtractSemantic(JsonObject messageObj)
 	{
 		string text = messageObj["content"]?.GetValue<string>() ?? string.Empty;

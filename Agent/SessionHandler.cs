@@ -509,14 +509,26 @@ public class SessionHandler
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
 				successor.SetDispatchScope(_scope);
-				successor.AnnounceToClient();
+				successor.Bundle.Canonical.OnUserMessage(summary);
+
+				// SessionReset FIRST for a root: it wipes the client's whole session view, so
+				// anything announced or replayed before it is lost. The old order (announce, then
+				// reset, then never replay a root successor) left the compacted chat displaying as
+				// a raw GUID over an empty transcript, beside a named-but-empty predecessor.
 				if (parent == null)
 					transport.SessionReset(successor.Id);
-				successor.Bundle.Canonical.OnUserMessage(summary);
+				successor.AnnounceToClient();
+				successor.ReplayToTransport();
 				if (parent != null)
-				{
-					successor.ReplayToTransport();
 					parent.AddChild(successor);
+
+				// The reset also erased the predecessor from the client; re-announce and replay it
+				// so its full history remains browsable from the F10 tree.
+				if (parent == null)
+				{
+					predecessor.AnnounceToClient();
+					predecessor.SendStats();
+					predecessor.ReplayToTransport();
 				}
 				if (!successor.Ephemeral)
 					SaveSession(successor);

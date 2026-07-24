@@ -79,6 +79,10 @@ public class ContextBudget
 		return result;
 	}
 
+	// Floor for a useful per-tool budget. When honoring the full response reserve would leave the
+	// round below this, the reserve is treated as soft (see below) rather than starving the tools.
+	private const int kMinPerToolBudget = 1024;
+
 	// Allocates the round's tool-response budget out of the room left after the response reserve and
 	// the compaction reserve, split evenly across the calls so the combined outputs always fit. Returns
 	// the per-tool budget (which each tool output is truncated to fit) and records the WHOLE round as
@@ -90,8 +94,19 @@ public class ContextBudget
 		if (count <= 0)
 			return 0;
 
-		int round = Math.Max(0, _windowSize - _measured - ResponseReserve - _compactionReserve);
-		int perTool = round / count;
+		int available = Math.Max(0, _windowSize - _measured - _compactionReserve);
+		int round = available - ResponseReserve;
+
+		// The response reserve is a SOFT claim. A model whose configured output ceiling is large
+		// relative to its window (common for local models: e.g. 30k output on a 32k window) would
+		// otherwise zero the round and every tool — including subagent spawns — would refuse with
+		// "no output budget" while plain chat kept working. Split the remaining space evenly
+		// between the tool round and the next response instead; MaxCompletionTokens sizes the
+		// response from what is genuinely left, so input + output still fits the window.
+		if (round < count * kMinPerToolBudget && available > 0)
+			round = available / 2;
+
+		int perTool = Math.Max(0, round) / count;
 		_pendingReserve += perTool * count;
 		return perTool;
 	}

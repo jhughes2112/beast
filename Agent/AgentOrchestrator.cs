@@ -123,7 +123,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		CancellationToken ct)
 	{
 		if (outputBudgetTokens <= 0)
-			return (false, "No output budget remaining for a subagent.", 0);
+			return (false, "No context space remains for a subagent's reply — the caller's context window is effectively full. Compact (/compact) or switch to a larger model, then retry.", 0);
 
 		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
 		// user deleted this tree — either way new work would race the teardown.
