@@ -154,8 +154,6 @@ public class SettingsService
 				home.Auto[existing] = entry;
 			else
 				home.Auto.Add(entry);
-
-			InjectWebSearchKey(home, entry.BaseUrl, entry.ApiKey);
 		}
 
 		WriteSettings(_homeDirSettingsPath, home);
@@ -172,24 +170,35 @@ public class SettingsService
 		LoadSettings();
 	}
 
-	// Seeds the web-search block with a freshly configured OpenRouter key. Only a missing or
-	// placeholder key is replaced — a deliberate different key is never overwritten — and the
-	// block is enabled alongside, since its default model is the free router.
-	private static void InjectWebSearchKey(BeastSettings home, string baseUrl, string apiKey)
+	// Persists the /config web-search provider selection into the USER settings file, alongside the
+	// endpoints — one setup, every project. No API keys are written: each provider resolves its key
+	// at load time from the endpoint sharing its domain.
+	public void SaveWebSearchProviders(List<WebSearchProviderConfig> providers)
 	{
-		if (!baseUrl.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(apiKey))
-			return;
+		BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
 
-		OpenrouterSearchConfig? search = home.WebSearch?.Openrouter;
-		if (search == null)
+		if (home.WebSearch == null)
+			home.WebSearch = new WebSearchConfig();
+		home.WebSearch.Providers = providers;
+
+		// The legacy single-provider block is superseded the moment the new list is written; leave
+		// its key in place (it is still a valid OpenRouter key source) but stop it from acting as
+		// an implicit second OpenRouter entry.
+		if (home.WebSearch.Openrouter != null)
+			home.WebSearch.Openrouter.Enabled = false;
+
+		WriteSettings(_homeDirSettingsPath, home);
+
+		// A project-level webSearch block would replace the home one wholesale on load and shadow
+		// this selection; strip it so the user-level choice is authoritative.
+		BeastSettings? local = LoadSettingsFromFile(_workDirSettingsPath);
+		if (local != null && local.WebSearch != null)
 		{
-			home.WebSearch = CreateDefaultWebSearch(apiKey, true);
+			local.WebSearch = null;
+			WriteSettings(_workDirSettingsPath, local);
 		}
-		else if (string.IsNullOrEmpty(search.ApiKey) || search.ApiKey.StartsWith("YOUR_", StringComparison.Ordinal))
-		{
-			search.ApiKey = apiKey;
-			search.Enabled = true;
-		}
+
+		LoadSettings();
 	}
 
 	private void WriteSettings(string path, BeastSettings settings)
@@ -297,7 +306,7 @@ public class SettingsService
 				  },
 			  } },
 			{ "internet_search", new ToolConfig() {
-				  Description = "Search the internet using a natural language query. This costs real money, so only use when it is necessary to discover documentation or current information that cannot be gained through local file accesses. Up to five links and summaries will be returned.",
+				  Description = "Search the live internet. THIS COSTS REAL MONEY on every call — treat it as a last resort, not a lookup. Search the repository FIRST: ls, read_file, find_relevant_file_sections, and readonly_bash (grep) answer almost every question about this codebase, and a library's name, version, and API are already in the source, lock files, imports, or vendored docs you can read for free. Do NOT use this to find a file, recall a library name, check what a dependency does, or re-derive something you read earlier in this conversation. Use it ONLY for information that genuinely lives outside this machine and that you cannot proceed without: upstream documentation you do not have, a recent release or breaking change, or an error message from a third-party service. Up to five links and summaries will be returned.",
 				  Parameters = new Dictionary<string,string>() {
 					  { "query", "Use clear natural language to describe what should be retrieved from Google" },
 					  { "goal", "Provide a clear prompt to an agent so that it can appropriately filter down the results to what is relevant, not the complete content of the page. If you know exactly what you're looking for ask for it here." },
@@ -349,32 +358,9 @@ public class SettingsService
 				  },
 			  } },
 			},
-			WebSearch = CreateDefaultWebSearch("YOUR_OPENROUTER_KEY_HERE", false)
-		};
-	}
-
-	// The web-search block template: OpenRouter's web plugin on the free-model router. Used for
-	// the generated defaults (placeholder key, disabled) and by the /config OpenRouter-key
-	// injection (real key, enabled).
-	private static WebSearchConfig CreateDefaultWebSearch(string apiKey, bool enabled)
-	{
-		return new WebSearchConfig
-		{
-			Openrouter = new OpenrouterSearchConfig
-			{
-				Endpoint = "https://openrouter.ai/api/v1/chat/completions",
-				ApiKey = apiKey,
-				Enabled = enabled,
-				// The free-model router: always resolves to SOME zero-cost model, so the
-				// default never rots when an individual free model is renamed or retired.
-				Model = "openrouter/free",
-				Extras = new List<JsonObject>
-				{
-					new JsonObject { ["plugins"] = new JsonArray(new JsonObject { ["id"] = "web" }) },
-					new JsonObject { ["temperature"] = JsonValue.Create(0) },
-					new JsonObject { ["max_tokens"] = JsonValue.Create(4096) }
-				}
-			}
+			// No placeholder web-search block: providers are added in /config, and each borrows
+			// its API key from the endpoint sharing its domain, so there is nothing to pre-fill.
+			WebSearch = new WebSearchConfig()
 		};
 	}
 }

@@ -20,14 +20,23 @@ public class DisplayScreen : IDisplay
 	private const string HelpText     = "Commands: /compact, /config, /reload, /model <id>, /finish, /verbose, /test, /quit";
 	private const int    MaxInputRows = 10;
 
-	// Slash verbs forwarded to the agent; anything else is refused locally. The config-* verbs
-	// are the /config overlay's wire commands — the overlay routes them through SendAsync too,
-	// so leaving them out of this list silently drops them before they ever reach the agent.
-	private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+	// Slash verbs forwarded to the agent; anything else is refused locally. The orchestrator's own
+	// global-command set is folded in rather than copied, so a command added there can never be
+	// silently dropped here — that mistake bit the /config wire commands twice, and it presents as
+	// an unexplained hang because the request never leaves this process.
+	private static readonly HashSet<string> AgentVerbs = BuildAgentVerbs();
+
+	private static HashSet<string> BuildAgentVerbs()
 	{
-		"compact", "reload", "model", "finish", "test", "quit", "cancel",
-		"config-endpoints", "config-catalog", "config-apply"
-	};
+		// Per-session verbs, handled by the session's own command loop rather than the orchestrator.
+		HashSet<string> verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			"compact", "model", "cancel"
+		};
+		foreach (string verb in AgentOrchestrator.GlobalCommands)
+			verbs.Add(verb);
+		return verbs;
+	}
 
 	internal static class Palette
 	{

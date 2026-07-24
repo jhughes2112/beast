@@ -588,10 +588,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 	// ---- Input routing ----
 
-	private static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+	// Public so the client can build its own send-allowlist from it instead of maintaining a
+	// parallel copy: a global command added here but forgotten there is refused inside the client
+	// and never reaches the agent, which presents as a silent hang.
+	public static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
 		"quit", "finish", "reload", "help", "delete-session", "test",
-		"config-endpoints", "config-catalog", "config-apply"
+		"config-endpoints", "config-catalog", "config-apply", "config-search-apply"
 	};
 
 	private static bool IsGlobalCommand(string text)
@@ -741,7 +744,60 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 			payload.Endpoints.Add(new ConfigEndpointInfo { BaseUrl = manual.BaseUrl, Source = "manual", EnabledCount = enabled });
 		}
+
+		// The whole web-search roster rides along: the picker lists every provider Beast supports
+		// so one can be added, and shows each one's live key resolution so a provider that cannot
+		// run says why (no endpoint carries its domain) instead of silently doing nothing.
+		List<WebSearchProviderConfig> entries = WebSearchRegistry.EffectiveEntries(_settings.Settings);
+		foreach (WebSearchProvider provider in WebSearchRegistry.All)
+		{
+			WebSearchProviderConfig? entry = null;
+			foreach (WebSearchProviderConfig candidate in entries)
+			{
+				if (string.Equals(candidate.Provider, provider.Id, StringComparison.OrdinalIgnoreCase))
+				{
+					entry = candidate;
+					break;
+				}
+			}
+
+			payload.Search.Add(new ConfigSearchInfo
+			{
+				Id = provider.Id,
+				Name = provider.DisplayName,
+				Domain = provider.Domain,
+				PricePerThousand = provider.PricePerThousand,
+				Configured = entry != null,
+				Enabled = entry != null && entry.Enabled,
+				HasKey = WebSearchRegistry.ResolveApiKey(_settings.Settings, provider).Length > 0,
+				Model = entry != null && !string.IsNullOrEmpty(entry.Model) ? entry.Model : provider.DefaultModel
+			});
+		}
+
 		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigEndpointsPayload));
+	}
+
+	// Persists the web-search provider list from the picker, then reloads so the tool set rebuilds
+	// with the new selection. No API keys travel here — each provider borrows its key from the
+	// endpoint sharing its domain, resolved fresh at every load.
+	private async Task HandleConfigSearchApplyAsync(string sessionId, string args, CancellationToken ct)
+	{
+		ConfigSearchApplyPayload? payload = null;
+		try
+		{
+			payload = JsonSerializer.Deserialize(args, BeastJson.Compact.ConfigSearchApplyPayload);
+		}
+		catch (Exception ex)
+		{
+			_transport.Error(sessionId, $"config-search-apply: unusable payload: {ex.Message}");
+		}
+
+		if (payload != null)
+		{
+			_settings.SaveWebSearchProviders(payload.Providers);
+			bool reloaded = await ReloadConfigurationAsync(sessionId, ct);
+			_transport.Config(sessionId, reloaded ? "{\"kind\":\"search-applied\"}" : "{\"kind\":\"apply-failed\"}");
+		}
 	}
 
 	// Fetches an endpoint's catalog and sends it merged with the current enabled state and any
@@ -998,6 +1054,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			case "config-apply":
 				await HandleConfigApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
+			case "config-search-apply":
+				await HandleConfigSearchApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
+				break;
 			case "help":
 				_transport.Output(sessionId, "Commands: /compact, /reload, /model <id>, /finish, /test, /quit");
 				break;
@@ -1212,7 +1271,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 		}
 		if (any != null)
-			await WebToolsTests.TestAsync(ctx, _settings.Settings.WebSearch, _roleService, _transport, any, ct);
+			await WebToolsTests.TestAsync(ctx, _settings.Settings, _roleService, _transport, any, ct);
 
 		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, ct);
 		ProtocolSwitchTests.Test(ctx);

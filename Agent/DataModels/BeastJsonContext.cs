@@ -19,6 +19,7 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(ConfigEndpointsPayload))]
 [JsonSerializable(typeof(ConfigCatalogPayload))]
 [JsonSerializable(typeof(ConfigApplyPayload))]
+[JsonSerializable(typeof(ConfigSearchApplyPayload))]
 internal partial class BeastJsonContext : JsonSerializerContext
 {
 }

@@ -169,8 +169,34 @@ public class CostConfig
 // Top-level web search config; contains one entry per supported provider.
 public class WebSearchConfig
 {
+	// Legacy single-provider block. Still honored as a source of the OpenRouter API key (and its
+	// enabled flag seeds the OpenRouter provider), so existing settings files keep working, but
+	// new configuration goes through Providers.
 	[JsonPropertyName("openrouter")]
 	public OpenrouterSearchConfig? Openrouter { get; set; }
+
+	// The web-search providers the user turned on in /config. No API key lives here: each
+	// provider's key is resolved at load time from the configured endpoint sharing its domain,
+	// so a key is entered exactly once no matter how many things use it.
+	[JsonPropertyName("providers")]
+	public List<WebSearchProviderConfig> Providers { get; set; } = new();
+}
+
+// One configured web-search provider. Enabled is the user's intent; a provider whose key cannot
+// be resolved is disabled in memory for that run WITHOUT touching this flag — the user may be
+// mid-setup, and their stated intent is not ours to rewrite.
+public class WebSearchProviderConfig
+{
+	// Provider id: openrouter, perplexity, xai, anthropic, openai, gemini.
+	[JsonPropertyName("provider")]
+	public string Provider { get; set; } = string.Empty;
+
+	[JsonPropertyName("enabled")]
+	public bool Enabled { get; set; } = true;
+
+	// Overrides the provider's built-in default search model; empty means use the default.
+	[JsonPropertyName("model")]
+	public string Model { get; set; } = string.Empty;
 }
 
 // Configuration for web search via the OpenRouter plugin API.

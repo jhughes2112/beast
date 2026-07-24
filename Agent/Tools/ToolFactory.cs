@@ -235,31 +235,38 @@ public static class ToolFactory
 			}
 		}
 
-		if (role.Tools.Contains("internet_search") && settings.WebSearch?.Openrouter != null && settings.WebSearch.Openrouter.Enabled && webSearchRole != null && session != null)
+		// Web search is available when at least one configured provider resolved an API key from a
+		// configured endpoint. The tool spends the cheapest one first; a provider whose key is
+		// missing simply is not in the list, so the tool disappears rather than failing at call time.
+		if (role.Tools.Contains("internet_search") && session != null)
 		{
-			ToolConfig tc = settings.Tools["internet_search"];
-			WebSearchOpenrouter webSearch = new WebSearchOpenrouter(settings.WebSearch.Openrouter.BuildModel());
-			tools.Add(new Tool
+			List<(WebSearchProvider Provider, string ApiKey, string Model)> searchProviders = WebSearchRegistry.ResolveUsable(settings);
+			if (searchProviders.Count > 0)
 			{
-				Definition = new ToolDefinition
+				ToolConfig tc = settings.Tools["internet_search"];
+				WebSearchTool webSearch = new WebSearchTool(searchProviders, webSearchRole != null ? webSearchRole.SystemPrompt : string.Empty);
+				tools.Add(new Tool
 				{
-					Type = "function",
-					Function = new FunctionDefinition
+					Definition = new ToolDefinition
 					{
-						Name = "internet_search",
-						Description = tc.Description,
-						Parameters = Params(
-							Req("query", "string", tc.Parameters["query"]),
-							Req("goal", "string", tc.Parameters["goal"]))
+						Type = "function",
+						Function = new FunctionDefinition
+						{
+							Name = "internet_search",
+							Description = tc.Description,
+							Parameters = Params(
+								Req("query", "string", tc.Parameters["query"]),
+								Req("goal", "string", tc.Parameters["goal"]))
+						}
+					},
+					Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+					{
+						string query = Str(args, "query");
+						string goal = Str(args, "goal");
+						return await webSearch.SearchAsync(toolCallId, query, goal, session, transport, sessionId, maxOutputTokens, ct);
 					}
-				},
-				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
-				{
-					string query = Str(args, "query");
-					string goal = Str(args, "goal");
-					return await webSearch.InternetSearchAsync(toolCallId, query, goal, webSearchRole, transport, session, maxOutputTokens, ct);
-				}
-			});
+				});
+			}
 		}
 
 		if (role.Tools.Contains("assign_work") && spawnSubagent != null && onWorkAssigned != null)

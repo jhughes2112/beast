@@ -11,7 +11,26 @@ using System.Text.Json.Nodes;
 // keys while open, composites Build() over the frame, and feeds Config frames in.
 internal class ConfigOverlay
 {
-	private enum Mode { Closed, Endpoints, AddPreset, AddUrl, AddKey, Loading, Models, Details, Applying }
+	private enum Mode { Closed, Endpoints, AddPreset, AddUrl, AddKey, Loading, Models, Details, Applying, SearchModel }
+
+	// One web-search provider as reported by the agent.
+	private class SearchRow
+	{
+		public string Id = string.Empty;
+		public string Name = string.Empty;
+		public string Domain = string.Empty;
+		public decimal Price;
+		public bool Configured;
+		public bool Enabled;
+		// False when no configured endpoint carries the provider's domain: the provider cannot
+		// run regardless of Enabled, and the row says so rather than pretending to work.
+		public bool HasKey;
+		public string Model = string.Empty;
+	}
+
+	// The home screen is one navigable list with two sections; the header row is skipped by
+	// navigation so arrow keys never land on something that cannot be actioned.
+	private enum HomeRowKind { Endpoint, AddEndpoint, Spacer, SearchHeader, Search }
 
 	// Well-known endpoints offered by "+ Add endpoint": local servers first, then the cloud
 	// providers. URLs are FULL request endpoints (the form NormalizeRequestEndpoint passes
@@ -93,7 +112,13 @@ internal class ConfigOverlay
 
 	private Mode _mode = Mode.Closed;
 	private readonly List<(string BaseUrl, string Source, int EnabledCount)> _endpoints = new();
-	private int _endpointSelected;
+	// Every provider the agent supports, in the order it sent them (cheapest first).
+	private readonly List<SearchRow> _search = new();
+	private readonly List<(HomeRowKind Kind, int Index)> _homeRows = new();
+	private int _homeSelected;
+	private int _homeScroll;
+	// The provider whose model is being edited (SearchModel mode).
+	private SearchRow? _searchModelRow;
 	private string _baseUrl = string.Empty;
 	private string _apiKey = string.Empty;
 	// Shared text-entry buffer for the AddUrl/AddKey/Details modes.
@@ -130,7 +155,10 @@ internal class ConfigOverlay
 	{
 		_mode = Mode.Endpoints;
 		_endpoints.Clear();
-		_endpointSelected = 0;
+		_search.Clear();
+		_homeRows.Clear();
+		_homeSelected = 0;
+		_homeScroll = 0;
 		_models.Clear();
 		_filter = string.Empty;
 		_status = "Loading endpoints…";
@@ -168,6 +196,29 @@ internal class ConfigOverlay
 							e["enabledCount"]?.GetValue<int>() ?? 0));
 					}
 				}
+
+				_search.Clear();
+				JsonArray? searchList = root?["search"] as JsonArray;
+				if (searchList != null)
+				{
+					foreach (JsonNode? entry in searchList)
+					{
+						if (entry == null)
+							continue;
+						_search.Add(new SearchRow
+						{
+							Id = entry["id"]?.GetValue<string>() ?? string.Empty,
+							Name = entry["name"]?.GetValue<string>() ?? string.Empty,
+							Domain = entry["domain"]?.GetValue<string>() ?? string.Empty,
+							Price = entry["price"]?.GetValue<decimal>() ?? 0m,
+							Configured = entry["configured"]?.GetValue<bool>() ?? false,
+							Enabled = entry["enabled"]?.GetValue<bool>() ?? false,
+							HasKey = entry["hasKey"]?.GetValue<bool>() ?? false,
+							Model = entry["model"]?.GetValue<string>() ?? string.Empty
+						});
+					}
+				}
+				RebuildHomeRows();
 				// Only clear the loading placeholder — a "Saved …" notice from an apply that
 				// triggered this refresh stays visible on the endpoint screen.
 				if (_status.StartsWith("Loading endpoints", StringComparison.Ordinal))
@@ -239,8 +290,13 @@ internal class ConfigOverlay
 				// Back to a refreshed endpoint list rather than closing: configuring several
 				// endpoints in one sitting is the common case, and Esc leaves when done.
 				_status = $"Saved {_baseUrl}.";
-				_endpointSelected = 0;
+				_homeSelected = 0;
 				_mode = Mode.Endpoints;
+				_sendCommand("/config-endpoints");
+			}
+			else if (kind == "search-applied")
+			{
+				// Refresh in place: the reload may have changed which providers resolve a key.
 				_sendCommand("/config-endpoints");
 			}
 			else if (kind == "apply-failed")
@@ -299,7 +355,7 @@ internal class ConfigOverlay
 		string clean = text.Replace("\r", string.Empty).Replace("\n", string.Empty).Trim();
 		if (clean.Length > 0)
 		{
-			if (_mode == Mode.AddUrl || _mode == Mode.AddKey || _mode == Mode.Details)
+			if (_mode == Mode.AddUrl || _mode == Mode.AddKey || _mode == Mode.Details || _mode == Mode.SearchModel)
 			{
 				_entry += clean;
 			}
@@ -324,6 +380,9 @@ internal class ConfigOverlay
 			case Mode.AddPreset:
 				HandlePresetKey(key);
 				break;
+			case Mode.SearchModel:
+				HandleSearchModelKey(key);
+				break;
 			case Mode.AddUrl:
 			case Mode.AddKey:
 				HandleEntryKey(key);
@@ -343,36 +402,174 @@ internal class ConfigOverlay
 		return true;
 	}
 
+	// Rebuilds the home list: endpoints, the add-endpoint row, then EVERY supported web-search
+	// provider. Listing them all — dimmed when no endpoint supplies their key — makes enabling one
+	// a single spacebar rather than a trip through a chooser, and makes the roster (and what each
+	// one costs) visible without going looking for it.
+	private void RebuildHomeRows()
+	{
+		_homeRows.Clear();
+		for (int i = 0; i < _endpoints.Count; i++)
+			_homeRows.Add((HomeRowKind.Endpoint, i));
+		_homeRows.Add((HomeRowKind.AddEndpoint, 0));
+
+		_homeRows.Add((HomeRowKind.Spacer, 0));
+		_homeRows.Add((HomeRowKind.SearchHeader, 0));
+		for (int i = 0; i < _search.Count; i++)
+			_homeRows.Add((HomeRowKind.Search, i));
+
+		if (_homeSelected >= _homeRows.Count)
+			_homeSelected = _homeRows.Count - 1;
+		if (_homeSelected < 0)
+			_homeSelected = 0;
+		if (_homeRows.Count > 0 && !IsSelectable(_homeRows[_homeSelected].Kind))
+			MoveHome(1);
+	}
+
+	// The section header and the blank separator are decoration, never selection targets.
+	private static bool IsSelectable(HomeRowKind kind)
+	{
+		return kind != HomeRowKind.SearchHeader && kind != HomeRowKind.Spacer;
+	}
+
+	// Moves the selection by step, skipping the non-actionable decoration rows.
+	private void MoveHome(int step)
+	{
+		int next = _homeSelected;
+		while (true)
+		{
+			next += step;
+			if (next < 0 || next >= _homeRows.Count)
+				return;
+			if (IsSelectable(_homeRows[next].Kind))
+			{
+				_homeSelected = next;
+				return;
+			}
+		}
+	}
+
 	private void HandleEndpointsKey(ConsoleKeyInfo key)
 	{
-		int rowCount = _endpoints.Count + 1; // trailing "+ Add endpoint"
-		if (key.Key == ConsoleKey.UpArrow && _endpointSelected > 0)
+		if (_homeRows.Count == 0)
 		{
-			_endpointSelected--;
+			if (key.Key == ConsoleKey.Escape)
+				Close();
+			return;
 		}
-		else if (key.Key == ConsoleKey.DownArrow && _endpointSelected < rowCount - 1)
+
+		(HomeRowKind kind, int index) = _homeRows[_homeSelected];
+
+		if (key.Key == ConsoleKey.UpArrow)
 		{
-			_endpointSelected++;
+			MoveHome(-1);
+		}
+		else if (key.Key == ConsoleKey.DownArrow)
+		{
+			MoveHome(1);
+		}
+		else if (key.Key == ConsoleKey.Spacebar || key.KeyChar == ' ')
+		{
+			// Space toggles a search provider on or off, configuring it on first enable. Disabling
+			// keeps the entry and any model override, as it does for models — disabling is not
+			// forgetting. Allowed without a key too: adding the endpoint afterwards then just works.
+			if (kind == HomeRowKind.Search)
+			{
+				SearchRow provider = _search[index];
+				provider.Enabled = !provider.Enabled;
+				if (provider.Enabled)
+					provider.Configured = true;
+				if (provider.Enabled && !provider.HasKey)
+					_status = $"{provider.Name} needs an endpoint at {provider.Domain} carrying an API key.";
+				ApplySearch();
+			}
+		}
+		else if (key.Key == ConsoleKey.Delete)
+		{
+			// Delete forgets a provider's settings entry outright, model override and all.
+			if (kind == HomeRowKind.Search)
+			{
+				_search[index].Configured = false;
+				_search[index].Enabled = false;
+				_search[index].Model = string.Empty;
+				ApplySearch();
+			}
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
-			if (_endpointSelected >= _endpoints.Count)
+			if (kind == HomeRowKind.AddEndpoint)
 			{
 				_presetSelected = 0;
 				_presetScroll = 0;
 				_mode = Mode.AddPreset;
 			}
-			else
+			else if (kind == HomeRowKind.Endpoint)
 			{
-				_baseUrl = _endpoints[_endpointSelected].BaseUrl;
+				_baseUrl = _endpoints[index].BaseUrl;
 				_apiKey = string.Empty;
 				RequestCatalog();
+			}
+			else if (kind == HomeRowKind.Search)
+			{
+				// Enter edits the search model, matching Enter-edits-values on the model list.
+				_searchModelRow = _search[index];
+				_entry = _searchModelRow.Model;
+				_mode = Mode.SearchModel;
 			}
 		}
 		else if (key.Key == ConsoleKey.Escape)
 		{
 			Close();
 		}
+	}
+
+	private void HandleSearchModelKey(ConsoleKeyInfo key)
+	{
+		if (key.Key == ConsoleKey.Escape)
+		{
+			_searchModelRow = null;
+			_mode = Mode.Endpoints;
+		}
+		else if (key.Key == ConsoleKey.Backspace)
+		{
+			if (_entry.Length > 0)
+				_entry = _entry.Substring(0, _entry.Length - 1);
+		}
+		else if (key.Key == ConsoleKey.Enter)
+		{
+			if (_searchModelRow != null)
+			{
+				// Blank restores the provider's built-in default, matching blank-means-auto on the
+				// model editor; the agent resolves the default and echoes it back.
+				_searchModelRow.Model = _entry.Trim();
+				_searchModelRow = null;
+				_mode = Mode.Endpoints;
+				ApplySearch();
+			}
+		}
+		else if (key.KeyChar != '\0' && !char.IsControl(key.KeyChar))
+		{
+			_entry += key.KeyChar;
+		}
+	}
+
+	// Sends the whole desired provider list. Toggles are cheap and instantly persisted, so there
+	// is no dirty state to lose track of on this screen.
+	private void ApplySearch()
+	{
+		JsonArray providers = new JsonArray();
+		foreach (SearchRow row in _search)
+		{
+			if (!row.Configured)
+				continue;
+			providers.Add((JsonNode)new JsonObject
+			{
+				["provider"] = row.Id,
+				["enabled"] = row.Enabled,
+				["model"] = row.Model
+			});
+		}
+		_sendCommand("/config-search-apply " + new JsonObject { ["providers"] = providers }.ToJsonString());
 	}
 
 	private void HandlePresetKey(ConsoleKeyInfo key)
@@ -851,21 +1048,72 @@ internal class ConfigOverlay
 		{
 			case Mode.Endpoints:
 			{
-				AnsiToScreen.WriteLine(s, 2, 1, "Endpoints  (↑↓ move · Enter open · Esc close)", dimFg, bg);
-				int row = 3;
-				for (int i = 0; i < _endpoints.Count && row < bh - 3; i++, row++)
+				AnsiToScreen.WriteLine(s, 2, 1, "↑↓ move · Enter open/edit · space toggle · Del remove · Esc close", dimFg, bg);
+
+				int visRows = bh - 4;
+				if (_homeSelected < _homeScroll)
+					_homeScroll = _homeSelected;
+				if (_homeSelected >= _homeScroll + visRows)
+					_homeScroll = _homeSelected - visRows + 1;
+
+				for (int r = 0; r < visRows; r++)
 				{
-					bool sel = i == _endpointSelected;
+					int idx = _homeScroll + r;
+					if (idx >= _homeRows.Count)
+						break;
+
+					(HomeRowKind kind, int index) = _homeRows[idx];
+					int row = r + 3;
+					bool sel = idx == _homeSelected;
 					Rgb rowBg = sel ? selBg : bg;
-					s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', textFg, rowBg, CellStyle.None));
-					string tag = _endpoints[i].Source == "manual" ? " [manual]" : string.Empty;
-					string line = Truncate($"{_endpoints[i].BaseUrl}{tag}  ({_endpoints[i].EnabledCount} enabled)", innerW);
-					AnsiToScreen.WriteLine(s, 2, row, line, _endpoints[i].Source == "manual" ? dimFg : textFg, rowBg);
+
+					if (kind == HomeRowKind.Spacer)
+						continue;
+
+					if (kind == HomeRowKind.SearchHeader)
+					{
+						AnsiToScreen.WriteLine(s, 2, row, Truncate("Web search  (the cheapest enabled provider is used)", innerW), dimFg, bg);
+						continue;
+					}
+
+					Rgb rowFg = kind == HomeRowKind.AddEndpoint ? onFg : textFg;
+					if (kind == HomeRowKind.Endpoint && _endpoints[index].Source == "manual")
+						rowFg = dimFg;
+					s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
+
+					string line;
+					if (kind == HomeRowKind.Endpoint)
+					{
+						string tag = _endpoints[index].Source == "manual" ? " [manual]" : string.Empty;
+						line = $"{_endpoints[index].BaseUrl}{tag}  ({_endpoints[index].EnabledCount} enabled)";
+					}
+					else if (kind == HomeRowKind.AddEndpoint)
+					{
+						line = "+ Add endpoint";
+					}
+					else
+					{
+						SearchRow provider = _search[index];
+						// Brightness tracks whether the provider CAN run: a row with no resolvable
+						// key is dimmed whatever its flag says, so the ones ready to use stand out
+						// and the rest still show what they would cost and what they are waiting on.
+						bool live = provider.Enabled && provider.HasKey;
+						string mark = live ? "[x]" : provider.Enabled ? "[!]" : "[ ]";
+						string note = provider.HasKey ? provider.Model : $"needs an api key on {provider.Domain}";
+						line = $"{mark} {provider.Name,-16} {$"${provider.Price:0.00}/1k",11}  {note}";
+						rowFg = !provider.HasKey ? dimFg : live ? onFg : textFg;
+					}
+
+					AnsiToScreen.WriteLine(s, 2, row, Truncate(line, innerW), rowFg, rowBg);
 				}
-				bool addSel = _endpointSelected >= _endpoints.Count;
-				Rgb addBg = addSel ? selBg : bg;
-				s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', onFg, addBg, CellStyle.None));
-				AnsiToScreen.WriteLine(s, 2, row, "+ Add endpoint", onFg, addBg);
+				break;
+			}
+			case Mode.SearchModel:
+			{
+				AnsiToScreen.WriteLine(s, 2, 1, Truncate($"Search model for {_searchModelRow?.Name}", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 3, Truncate("Model id  [blank = the provider's default]", innerW), textFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2, "Enter accept · Esc cancel", dimFg, bg);
 				break;
 			}
 			case Mode.AddPreset:

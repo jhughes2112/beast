@@ -97,12 +97,27 @@ public class WebFetch
 		}
 		catch (HttpRequestException ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Network error fetching URL " + url + ": " + ex, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, "Error: Network error fetching URL " + url + ": " + Describe(ex), 1, 0);
 		}
 		catch (Exception ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + ex, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + Describe(ex), 1, 0);
 		}
+	}
+
+	// A one-line reason for a failed fetch. The full exception carries a dozen frames of HttpClient
+	// plumbing that say nothing about why the URL failed — a DNS miss or a refused connection reads
+	// identically in the stack — so the innermost message is reported instead. It costs the model a
+	// line of context rather than a screenful, and reads as a fact about the URL, not a crash.
+	private static string Describe(Exception ex)
+	{
+		Exception innermost = ex;
+		while (innermost.InnerException != null)
+			innermost = innermost.InnerException;
+
+		if (ReferenceEquals(innermost, ex) || string.Equals(innermost.Message, ex.Message, StringComparison.Ordinal))
+			return ex.Message;
+		return $"{ex.Message} ({innermost.Message})";
 	}
 
 	// Reads the response body into memory, abandoning it the moment it crosses MaxAutoDownloadBytes so an

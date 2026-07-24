@@ -24,6 +24,7 @@ public class Program
 			ContextBudgetTests.Test(ctx);
 			SummarizerTests.Test(ctx);
 			ModelCatalogTests.Test(ctx);
+			WebToolsTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);
 			ShellToolsTests.Test(ctx);

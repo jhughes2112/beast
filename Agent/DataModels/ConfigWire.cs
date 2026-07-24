@@ -12,6 +12,51 @@ public class ConfigEndpointsPayload
 
 	[JsonPropertyName("endpoints")]
 	public List<ConfigEndpointInfo> Endpoints { get; set; } = new();
+
+	// Every web-search provider Beast supports, with its live key resolution — the picker shows
+	// the whole roster so an unconfigured one can be added and a keyless one explains itself.
+	[JsonPropertyName("search")]
+	public List<ConfigSearchInfo> Search { get; set; } = new();
+}
+
+// One web-search provider row for the picker.
+public class ConfigSearchInfo
+{
+	[JsonPropertyName("id")]
+	public string Id { get; set; } = string.Empty;
+
+	[JsonPropertyName("name")]
+	public string Name { get; set; } = string.Empty;
+
+	// The endpoint host whose API key this provider borrows.
+	[JsonPropertyName("domain")]
+	public string Domain { get; set; } = string.Empty;
+
+	[JsonPropertyName("price")]
+	public decimal PricePerThousand { get; set; } = 0m;
+
+	// True when a settings entry exists at all; Enabled is that entry's flag.
+	[JsonPropertyName("configured")]
+	public bool Configured { get; set; } = false;
+
+	[JsonPropertyName("enabled")]
+	public bool Enabled { get; set; } = false;
+
+	// False when no configured endpoint carries the provider's domain — the provider is then
+	// disabled in memory for this run no matter what Enabled says.
+	[JsonPropertyName("hasKey")]
+	public bool HasKey { get; set; } = false;
+
+	// The search model in effect (the override, or the provider's default).
+	[JsonPropertyName("model")]
+	public string Model { get; set; } = string.Empty;
+}
+
+// Beast → Agent: the full desired state of the web-search provider list.
+public class ConfigSearchApplyPayload
+{
+	[JsonPropertyName("providers")]
+	public List<WebSearchProviderConfig> Providers { get; set; } = new();
 }
 
 public class ConfigEndpointInfo
