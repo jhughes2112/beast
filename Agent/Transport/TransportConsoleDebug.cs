@@ -18,6 +18,7 @@ public class TransportConsoleDebug : ITransportServer
 	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
 		=> Console.WriteLine($"{sessionId} [stats] model={model}, role={role}, prompt={promptTokens}, completion={completionTokens}, cost={totalCost}, maxCtx={maxContext}, ctx={contextTokens}, cached={cachedTokens}");
 	public void Completions(string sessionId, string json) => Console.WriteLine($"{sessionId} [completions] {json}");
+	public void Config(string sessionId, string json) => Console.WriteLine($"{sessionId} [config] {json}");
 	public void Idle(string sessionId, bool subagent) => Console.WriteLine($"{sessionId} [idle]{(subagent ? " (subagent)" : "")}");
 	public void Busy(string sessionId) => Console.WriteLine($"{sessionId} [busy]");
 	public void ToolCallWithId(string sessionId, string callId, string text) => Console.WriteLine($"{sessionId} [tool-call] {text}");

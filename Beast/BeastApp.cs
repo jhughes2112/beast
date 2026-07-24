@@ -332,6 +332,12 @@ state.StatsContextTokens, state.StatsCachedTokens);
 	{
 		bool isActive = string.IsNullOrEmpty(sessionId) || string.Equals(sessionId, _activeSessionId, StringComparison.Ordinal);
 
+		// Errors also surface inside the /config overlay while it is open (no-op otherwise):
+		// a rejected /config command would otherwise render into the transcript hidden behind
+		// the modal, leaving the picker waiting forever with no visible reason.
+		if (type == FrameType.Error)
+			_display.OnConfigError(content);
+
 		// Global frames that don't route to a specific session model.
 		switch (type)
 		{
@@ -539,6 +545,11 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 			case FrameType.ToolCall:
 				session.Model.Update(session.NextIndex++, FrameType.ToolCall, content);
+				break;
+
+			case FrameType.Config:
+				// /config flow payload for the picker overlay; never rendered in the transcript.
+				_display.OnConfigFrame(content);
 				break;
 
 			case FrameType.SessionAnnounce:

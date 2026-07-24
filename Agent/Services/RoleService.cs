@@ -106,7 +106,8 @@ public class RoleService
 			ReviewerRole(),
 			ExplorerRole(),
 			WebFetchRole(),
-			WebSearchRole()
+			WebSearchRole(),
+			MediaReaderRole()
 		};
 		foreach (Role role in defaults)
 			fresh[role.Name] = role;
@@ -241,7 +242,7 @@ public class RoleService
 		const string endOfTurnPrompt = """
             Is all the delegated work complete? If everything the user asked for is done, call stop_work with a brief summary of what was accomplished. If work remains, call assign_work to hand the Developer the next unit of work.
             """;
-		List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "internet_search", "readonly_bash" };
+		List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "internet_search", "readonly_bash", "inspect_media" };
 		return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
@@ -285,7 +286,7 @@ public class RoleService
 		// review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
 		// injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
 		// work; task_complete is this role's terminator).
-		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "review_work", "commit_and_rebase", "task_complete" };
+		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "inspect_media", "review_work", "commit_and_rebase", "task_complete" };
 		return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
@@ -358,6 +359,24 @@ public class RoleService
 		// read_file is the raw line-numbered reader (no Explorer round-trip); bash is plain bash.
 		List<string> tools = new List<string> { "read_file", "bash" };
 		return new Role("WebFetch", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
+	}
+
+	// Used internally by the inspect_media tool (MediaInspector.InspectAsync). It receives a goal
+	// plus the media file as a real attachment and answers with only what the goal asks for. The
+	// tool picks the first model in this role's list whose declared input modalities cover the
+	// file (declarations come from /config discovery), so this role's list can safely be '*'.
+	private static Role MediaReaderRole()
+	{
+		const string description = "Interprets an attached image or audio file against a goal";
+		const string systemPrompt =
+			"""
+			You are a media inspection agent. You are given a goal and a media file (image or audio) attached to the message.
+			Examine the attachment carefully and respond with exactly what the goal asks for: precise, complete, and minimal.
+			Include concrete details (text visible in an image, words spoken in audio, positions, colors, counts) when the goal calls for them.
+			If you cannot perceive the attachment, say so plainly instead of guessing.
+			""";
+		List<string> tools = new List<string>();
+		return new Role("MediaReader", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, string.Empty);
 	}
 
 	// Used internally by the internet_search tool (WebSearchOpenrouter.InternetSearchAsync). It runs on the dedicated

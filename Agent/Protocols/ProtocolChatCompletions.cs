@@ -79,7 +79,38 @@ public class ProtocolChatCompletions
 		{
 			JsonObject obj = new JsonObject();
 			obj["role"] = "user";
-			obj["content"] = um.Text;
+			if (um.Attachments != null && um.Attachments.Count > 0)
+			{
+				// Multimodal turn: content becomes a typed part array — text first, then each
+				// attachment as the OpenAI-compatible image_url / input_audio part.
+				JsonArray parts = new JsonArray();
+				if (!string.IsNullOrEmpty(um.Text))
+					parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = um.Text });
+				foreach (MediaAttachment att in um.Attachments)
+				{
+					if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+					{
+						parts.Add((JsonNode)new JsonObject
+						{
+							["type"] = "input_audio",
+							["input_audio"] = new JsonObject { ["data"] = att.Base64Data, ["format"] = att.MimeType.Substring(6) }
+						});
+					}
+					else
+					{
+						parts.Add((JsonNode)new JsonObject
+						{
+							["type"] = "image_url",
+							["image_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
+						});
+					}
+				}
+				obj["content"] = parts;
+			}
+			else
+			{
+				obj["content"] = um.Text;
+			}
 			return obj;
 		}
 		if (msg is AssistantMessage am)

@@ -71,8 +71,14 @@ public class LlmRegistry
 	{
 	}
 
-	// Loads model configs from settings. Call this first, then ProbeEndpointsAsync.
-	// Models already in _availability keep their existing down/rate-limit state across reloads.
+	// Last successfully fetched catalog per auto endpoint (keyed by configured baseUrl). Never
+	// cleared: an endpoint that is down during a reload keeps serving its last-known catalog so
+	// its models stay usable instead of vanishing because of a transient outage.
+	private readonly ConcurrentDictionary<string, List<DiscoveredModel>> _catalogCache = new(StringComparer.OrdinalIgnoreCase);
+
+	// Loads manually-configured models from settings. Call this first, then LoadAutoProvidersAsync,
+	// then ExpandRoleWildcards, then ProbeEndpointsAsync. Models already in _availability keep
+	// their existing down/rate-limit state across reloads.
 	public void LoadFromConfigs(SettingsService settings, RoleService roles)
 	{
 		// Build aside and publish with one reference swap, so a session picking a model during a
@@ -92,11 +98,126 @@ public class LlmRegistry
 			}
 		}
 		_models = fresh;
+	}
 
-		// Expand '*' in role model lists to all enabled model IDs at that position. RoleService
-		// republishes replacement Role objects, so no published list is ever mutated in place
-		// under a handler that is enumerating it.
-		roles.ExpandModelWildcards(new List<string>(fresh.Keys));
+	// Discovers each auto endpoint's catalog and registers the settings-enabled models from it.
+	// Settings values always beat discovered ones; discovery fills everything else. An enabled
+	// model missing from a live catalog (and absent from the cache) is temporarily disabled for
+	// this run — logged, skipped, and never rewritten on disk, because a vanished model may be a
+	// transient server state the user did not intend as "disabled".
+	public async Task LoadAutoProvidersAsync(SettingsService settings, CancellationToken ct)
+	{
+		foreach (AutoProviderConfig provider in settings.Settings.Auto)
+		{
+			if (string.IsNullOrWhiteSpace(provider.BaseUrl) || provider.Models.Count == 0)
+				continue;
+
+			(List<DiscoveredModel> discovered, string error) = await ModelCatalog.FetchAsync(provider.BaseUrl, provider.ApiKey, ct);
+			if (error.Length == 0 && discovered.Count > 0)
+			{
+				_catalogCache[provider.BaseUrl] = discovered;
+			}
+			else if (_catalogCache.TryGetValue(provider.BaseUrl, out List<DiscoveredModel>? cached))
+			{
+				Console.Error.WriteLine($"[LlmRegistry] {provider.BaseUrl}: catalog fetch failed ({error}); using last-known catalog.");
+				discovered = cached;
+			}
+			else
+			{
+				Console.Error.WriteLine($"[LlmRegistry] {provider.BaseUrl}: catalog fetch failed ({error}); its models are temporarily disabled.");
+				continue;
+			}
+
+			string endpoint = ModelCatalog.NormalizeRequestEndpoint(provider.BaseUrl);
+			Dictionary<string, LlmModel> updated = new(_models, StringComparer.OrdinalIgnoreCase);
+			foreach (AutoModelConfig enabled in provider.Models)
+			{
+				// A disabled entry keeps its overrides on disk but registers nothing.
+				if (!enabled.Enabled)
+					continue;
+
+				DiscoveredModel? found = null;
+				foreach (DiscoveredModel d in discovered)
+				{
+					if (string.Equals(d.Id, enabled.Id, StringComparison.OrdinalIgnoreCase))
+					{
+						found = d;
+						break;
+					}
+				}
+
+				if (found == null)
+				{
+					Console.Error.WriteLine($"[LlmRegistry] {provider.BaseUrl}: enabled model '{enabled.Id}' is not in the catalog; temporarily disabled.");
+					continue;
+				}
+
+				// Manual providers win an id collision: they are the deliberate, fully-specified tier.
+				if (updated.ContainsKey(enabled.Id))
+					continue;
+
+				updated[enabled.Id] = new LlmModel(enabled.Id, endpoint, provider.ApiKey,
+					new List<System.Text.Json.Nodes.JsonObject>(), new List<System.Text.Json.Nodes.JsonObject>(),
+					BuildModelConfig(enabled, found));
+			}
+			_models = updated;
+		}
+	}
+
+	// Merges one enabled model's persisted overrides over its discovered catalog entry. The rule
+	// is absolute: any value present in settings wins; discovery fills the rest; genuinely unknown
+	// fields fall to conservative defaults (window 32768, cost 0, text-only).
+	private static ModelConfig BuildModelConfig(AutoModelConfig enabled, DiscoveredModel found)
+	{
+		int window = enabled.ContextWindow > 0 ? enabled.ContextWindow : found.ContextWindow;
+		if (window <= 0)
+		{
+			window = 32768;
+			Console.Error.WriteLine($"[LlmRegistry] '{enabled.Id}': context window unknown; defaulting to {window}. Set it in /config or settings.json.");
+		}
+
+		CostConfig cost = enabled.Cost ?? new CostConfig
+		{
+			Input = found.CostInput > 0 ? found.CostInput : 0m,
+			Output = found.CostOutput > 0 ? found.CostOutput : 0m,
+			CacheRead = found.CostCacheRead > 0 ? found.CostCacheRead : 0m,
+			CacheWrite = 0m
+		};
+
+		List<string> input = enabled.Modalities ?? found.Modalities ?? new List<string> { "text" };
+
+		return new ModelConfig
+		{
+			Id = enabled.Id,
+			Name = string.IsNullOrEmpty(found.Name) ? enabled.Id : found.Name,
+			Enabled = true,
+			ContextWindow = window,
+			MaxOutputTokens = enabled.MaxOutputTokens > 0 ? enabled.MaxOutputTokens : found.MaxOutputTokens,
+			ReasoningEffort = enabled.ReasoningEffort,
+			Cost = cost,
+			Input = input
+		};
+	}
+
+	// Expand '*' in role model lists to all registered model IDs at that position. Called once
+	// after BOTH the manual and auto tiers are loaded — expansion consumes the '*' marker, so
+	// running it between the tiers would leave auto models out of every wildcard role.
+	// RoleService republishes replacement Role objects, so no published list is ever mutated in
+	// place under a handler that is enumerating it.
+	public void ExpandRoleWildcards(RoleService roles)
+	{
+		roles.ExpandModelWildcards(new List<string>(_models.Keys));
+	}
+
+	// True when at least one model is registered (manual or auto). Read at startup to decide
+	// whether to prompt the client's /config picker — with zero models nothing can run.
+	public bool HasModels => _models.Count > 0;
+
+	// The last-known catalog for an endpoint, or null when it has never been fetched this run.
+	public List<DiscoveredModel>? CachedCatalog(string baseUrl)
+	{
+		_catalogCache.TryGetValue(baseUrl, out List<DiscoveredModel>? cached);
+		return cached;
 	}
 
 	// Probes any endpoint not yet in _probeCache to detect its protocol.

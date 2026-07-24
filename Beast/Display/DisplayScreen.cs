@@ -17,12 +17,16 @@ using TextCopy;
 // Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
-	private const string HelpText     = "Commands: /compact, /reload, /model <id>, /finish, /verbose, /test, /quit";
+	private const string HelpText     = "Commands: /compact, /config, /reload, /model <id>, /finish, /verbose, /test, /quit";
 	private const int    MaxInputRows = 10;
 
+	// Slash verbs forwarded to the agent; anything else is refused locally. The config-* verbs
+	// are the /config overlay's wire commands — the overlay routes them through SendAsync too,
+	// so leaving them out of this list silently drops them before they ever reach the agent.
 	private static readonly HashSet<string> AgentVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
-		"compact", "reload", "model", "finish", "test", "quit", "cancel"
+		"compact", "reload", "model", "finish", "test", "quit", "cancel",
+		"config-endpoints", "config-catalog", "config-apply"
 	};
 
 	internal static class Palette
@@ -99,6 +103,9 @@ public class DisplayScreen : IDisplay
 
 	// Session tree overlay state.
 	private bool _sessionTreeOpen = false;
+
+	// /config modal overlay; created on first open so it can capture SendAsync.
+	private ConfigOverlay? _configOverlay;
 	private int  _sessionTreeSelected = 0;
 	private int  _sessionTreeScroll = 0;
 	private int  _sessionActive = 0;
@@ -337,6 +344,47 @@ public class DisplayScreen : IDisplay
 	}
 
 	public void SetSendAsync(Func<string, Task> sendAsync) { _sendAsync = sendAsync; }
+
+	// Opens the /config picker (invoked when the user submits "/config").
+	private void OpenConfigOverlay()
+	{
+		lock (_consoleLock)
+		{
+			if (_configOverlay == null)
+				_configOverlay = new ConfigOverlay(cmd => { _ = SendAsync(cmd); });
+			_configOverlay.Open();
+		}
+		Redraw();
+	}
+
+	// Feeds a Config frame from the transport into the overlay (no-op when it is closed).
+	public void OnConfigFrame(string json)
+	{
+		// The agent's startup no-models notice opens the picker proactively: with nothing
+		// configured, no other part of the UI can do anything useful yet.
+		if (json.Contains("\"kind\":\"no-models\"", StringComparison.Ordinal))
+		{
+			SetStatus("No models configured — pick an endpoint and enable some models.");
+			OpenConfigOverlay();
+			return;
+		}
+
+		bool consumed;
+		lock (_consoleLock)
+			consumed = _configOverlay != null && _configOverlay.OnConfigFrame(json);
+		if (consumed)
+			Redraw();
+	}
+
+	// Shows an agent error in the overlay's status line while it is open (no-op otherwise).
+	public void OnConfigError(string text)
+	{
+		bool consumed;
+		lock (_consoleLock)
+			consumed = _configOverlay != null && _configOverlay.ShowAgentError(text);
+		if (consumed)
+			Redraw();
+	}
 	public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
 	public void SetFrameDrain(Action drain) { _frameDrain = drain; }
 	public void SetSessionSwitchCallback(Action<string> switchTo) { _sessionSwitchCallback = switchTo; }
@@ -767,6 +815,13 @@ public class DisplayScreen : IDisplay
 			Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId);
 			// Replace (opaque) so underline/italic in the content behind the panel does not bleed through.
 			frame.Blit(treeOverlay, historyW, 0, BlendMode.Replace, null);
+		}
+
+		// /config overlay: centered modal above everything except the cursor glow.
+		if (_configOverlay != null && _configOverlay.IsOpen)
+		{
+			Screen cfg = _configOverlay.Build(w, h);
+			frame.Blit(cfg, Math.Max(0, (w - cfg.W) / 2), Math.Max(0, (h - cfg.H) / 2), BlendMode.Replace, null);
 		}
 
 		// Cursor glow layer (applied last so it lifts all underlying layers).
@@ -1495,6 +1550,17 @@ public class DisplayScreen : IDisplay
 
 			if (inputEv.Type == InputEventType.Paste)
 			{
+				// While the /config overlay is open it owns the paste: an API key pasted into the
+				// key prompt must land there, never in the chat input hidden behind the modal.
+				bool configPaste;
+				lock (_consoleLock)
+					configPaste = _configOverlay != null && _configOverlay.IsOpen && _configOverlay.HandlePaste(inputEv.Text);
+				if (configPaste)
+				{
+					Redraw();
+					continue;
+				}
+
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
@@ -1511,6 +1577,18 @@ public class DisplayScreen : IDisplay
 			bool ctrl  = key.Modifiers.HasFlag(ConsoleModifiers.Control);
 			bool alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
 			bool shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
+
+			// The /config overlay is modal: while open it consumes every key.
+			bool configOpen;
+			lock (_consoleLock)
+				configOpen = _configOverlay != null && _configOverlay.IsOpen;
+			if (configOpen)
+			{
+				lock (_consoleLock)
+					_configOverlay!.HandleKey(key);
+				Redraw();
+				continue;
+			}
 
 			// The session-tree panel is non-modal: it stays open beside the input line without blocking
 			// typing. It borrows only the bare Up/Down arrows for tree navigation when the input line is
@@ -1610,6 +1688,14 @@ public class DisplayScreen : IDisplay
 				inCompletion = false;
 				historyIndex = -1;
 				historySavedDraft = "";
+
+				// /config never goes to the chat: it opens the local picker overlay.
+				if (string.Equals(text, "/config", StringComparison.OrdinalIgnoreCase))
+				{
+					SetInput("", 0);
+					OpenConfigOverlay();
+					continue;
+				}
 
 				if (text.Length > 0)
 				{
@@ -2045,7 +2131,10 @@ public class DisplayScreen : IDisplay
 
 			if (!AgentVerbs.Contains(verb))
 			{
+				// If the /config overlay sent this, it is now waiting on a reply that will never
+				// come — surface the refusal inside the modal too, never only in the status bar.
 				SetStatus($"Unknown command: /{verb}  —  {HelpText}");
+				OnConfigError($"Unknown command: /{verb} (refused locally, never sent)");
 				return;
 			}
 

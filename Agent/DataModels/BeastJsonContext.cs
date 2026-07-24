@@ -16,6 +16,9 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(SessionService.SessionManifest))]
 [JsonSerializable(typeof(RoleService.RolesFile))]
 [JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(ConfigEndpointsPayload))]
+[JsonSerializable(typeof(ConfigCatalogPayload))]
+[JsonSerializable(typeof(ConfigApplyPayload))]
 internal partial class BeastJsonContext : JsonSerializerContext
 {
 }

@@ -57,6 +57,28 @@ public class ProtocolAnthropic
 			else if (msg is UserMessage um)
 			{
 				AppendContent("user", TextBlock(um.Text));
+
+				// Attachments become image source blocks. Anthropic has no audio input; an audio
+				// attachment degrades to a text note so the model reports it instead of guessing.
+				if (um.Attachments != null)
+				{
+					foreach (MediaAttachment att in um.Attachments)
+					{
+						if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+						{
+							AppendContent("user", TextBlock("[An audio attachment was supplied, but this provider does not accept audio input.]"));
+						}
+						else
+						{
+							JsonObject image = new JsonObject
+							{
+								["type"] = "image",
+								["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = att.MimeType, ["data"] = att.Base64Data }
+							};
+							AppendContent("user", image);
+						}
+					}
+				}
 			}
 			else if (msg is ToolResultMessage tr)
 			{

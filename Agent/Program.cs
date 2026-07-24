@@ -23,6 +23,7 @@ public class Program
 			LlmServiceTests.Test(ctx);
 			ContextBudgetTests.Test(ctx);
 			SummarizerTests.Test(ctx);
+			ModelCatalogTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);
 			ShellToolsTests.Test(ctx);

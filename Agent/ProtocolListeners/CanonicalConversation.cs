@@ -32,12 +32,20 @@ public class CanonicalConversation
 	public void OnUserMessage(string text)
 	{
 		// Merge into a trailing user message to collapse rapid multi-line input into one turn.
+		// A merge must carry the earlier message's attachments forward, never drop them.
 		if (_messages.Count > 0 && _messages[_messages.Count - 1] is UserMessage last)
 		{
-			_messages[_messages.Count - 1] = new UserMessage(last.Text + "\n" + text);
+			_messages[_messages.Count - 1] = new UserMessage(last.Text + "\n" + text, last.Attachments);
 			return;
 		}
 		_messages.Add(new UserMessage(text));
+	}
+
+	// Appends a user message carrying media parts. Never merged — an attachment-bearing turn is
+	// authored deliberately (media inspection seed) and must stay its own message.
+	public void OnUserMessageWithAttachments(string text, IReadOnlyList<MediaAttachment> attachments)
+	{
+		_messages.Add(new UserMessage(text, attachments));
 	}
 
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)

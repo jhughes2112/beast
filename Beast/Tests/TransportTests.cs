@@ -27,6 +27,8 @@ file sealed class NullDisplay : IDisplay
 	public void SetSessionDeleteCallback(Action<string> deleteSession) { }
 	public void ClearPendingGhost(string sessionId) { }
 	public void SetPendingGhost(string sessionId, string[] lines) { }
+	public void OnConfigFrame(string json) { }
+	public void OnConfigError(string text) { }
 	public bool IsAutoTrackSuppressed() => false;
 	public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 	public void RestoreTerminal() { }

@@ -111,6 +111,8 @@ public class DisplayConsole : IDisplay
 	public void SetSessionDeleteCallback(Action<string> deleteSession) { }
 	public void ClearPendingGhost(string sessionId) { }
 	public void SetPendingGhost(string sessionId, string[] lines) { }
+	public void OnConfigFrame(string json) { }
+	public void OnConfigError(string text) { }
 	public bool IsAutoTrackSuppressed() { return false; }
 	public void RestoreTerminal() { }  // non-interactive display does not own the alt screen
 

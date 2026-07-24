@@ -22,14 +22,40 @@ public sealed class SystemMessage : CanonicalMessage
 	}
 }
 
+// A media part (image or audio) carried by a user message, stored as base64 so the canonical
+// record is self-contained across save/load. Protocols convert it to their wire format.
+public sealed class MediaAttachment
+{
+	public string MimeType { get; }
+	public string Base64Data { get; }
+
+	[JsonConstructor]
+	public MediaAttachment(string mimeType, string base64Data)
+	{
+		MimeType = mimeType;
+		Base64Data = base64Data;
+	}
+}
+
 public sealed class UserMessage : CanonicalMessage
 {
 	public string Text { get; }
 
+	// Media parts sent with this message; null for plain text (the overwhelmingly common case,
+	// and what every session file written before attachments existed deserializes to).
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public IReadOnlyList<MediaAttachment>? Attachments { get; }
+
 	[JsonConstructor]
-	public UserMessage(string text)
+	public UserMessage(string text, IReadOnlyList<MediaAttachment>? attachments)
 	{
 		Text = text;
+		Attachments = attachments;
+	}
+
+	public UserMessage(string text)
+		: this(text, null)
+	{
 	}
 }
 

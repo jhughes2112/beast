@@ -35,6 +35,13 @@ public interface IDisplay
 	// Replaces the given session's pending-input ghost with the provided lines. Called whenever the
 	// agent sends a PendingQueue snapshot so the ghost reflects exactly what is still queued.
 	void SetPendingGhost(string sessionId, string[] lines);
+
+	// Feeds a /config flow payload (endpoint list, catalog, apply ack) to the picker overlay.
+	void OnConfigFrame(string json);
+
+	// Surfaces an agent error inside the /config overlay while it is open (no-op otherwise), so
+	// a failure that means "no reply is coming" is visible in the modal, not hidden behind it.
+	void OnConfigError(string text);
 	// True when auto-tracking of incoming messages should be suppressed: the session overlay
 	// is open or the user has scrolled away from the bottom of the conversation.
 	bool IsAutoTrackSuppressed();

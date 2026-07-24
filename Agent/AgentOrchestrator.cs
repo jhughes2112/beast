@@ -57,10 +57,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 		_roleService.Reload();
 		_settings.LoadSettings();
 		_registry.LoadFromConfigs(_settings, _roleService);
+		await _registry.LoadAutoProvidersAsync(_settings, ct);
+		_registry.ExpandRoleWildcards(_roleService);
 		await _registry.ProbeEndpointsAsync(ct);
 
 		Session initial = LoadOrCreateSession();
 		RegisterSession(initial);
+
+		// Nothing configured at all: proactively open the client's /config picker — a fresh
+		// install can do nothing until at least one model is enabled, so don't make the user
+		// discover the command on their own.
+		if (!_registry.HasModels)
+			_transport.Config(initial.Id, "{\"kind\":\"no-models\"}");
 
 		// Restore all saved sessions to the client before the first handler starts so the F10 session
 		// tree shows the complete worktree history. The resumed root is replayed last inside
@@ -582,7 +590,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 	private static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
-		"quit", "finish", "reload", "help", "delete-session", "test"
+		"quit", "finish", "reload", "help", "delete-session", "test",
+		"config-endpoints", "config-catalog", "config-apply"
 	};
 
 	private static bool IsGlobalCommand(string text)
@@ -631,7 +640,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 						}
 					}
 				}
-				await HandleGlobalCommandAsync(targetId, content, ct);
+				// A faulting command handler must NEVER kill this loop: it is the agent's only
+				// ear, and an unhandled throw here leaves the whole process deaf — every later
+				// command silently ignored, which presents as a total hang.
+				try
+				{
+					await HandleGlobalCommandAsync(targetId, content, ct);
+				}
+				catch (OperationCanceledException) when (ct.IsCancellationRequested)
+				{
+					throw;
+				}
+				catch (Exception ex)
+				{
+					Console.Error.WriteLine($"[AgentOrchestrator] Global command '{content}' threw: {ex}");
+					_transport.Error(targetId, $"Command failed: {ex.Message}");
+				}
 				continue;
 			}
 
@@ -654,6 +678,279 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 	}
 
+	// Reloads every configuration component atomically. Snapshot every published reference first:
+	// each component swaps atomically, but a failure partway (bad roles.json after settings
+	// already loaded, probe error) would otherwise leave a MIX of old and new config. Restoring
+	// the snapshots makes "keeping the previous config" true across the whole reload. Returns
+	// true when the new configuration is live.
+	private async Task<bool> ReloadConfigurationAsync(string sessionId, CancellationToken ct)
+	{
+		bool reloaded = false;
+		Dictionary<string, Role> priorRoles = _roleService.SnapshotRoles();
+		BeastSettings priorSettings = _settings.SnapshotSettings();
+		Dictionary<string, LlmModel> priorModels = _registry.SnapshotModels();
+		try
+		{
+			_roleService.Reload();
+			_settings.LoadSettings();
+			_registry.LoadFromConfigs(_settings, _roleService);
+			await _registry.LoadAutoProvidersAsync(_settings, ct);
+			_registry.ExpandRoleWildcards(_roleService);
+			await _registry.ProbeEndpointsAsync(ct);
+			_registry.ResetAllAvailability();
+			_transport.Status(sessionId, "Config files reloaded.");
+
+			// Signal every active session to refresh its role and LlmService so
+			// changes to roles.json (roles added/removed/modified) and settings.json
+			// (models/endpoints) propagate immediately to running sessions.
+			List<Session> allSessions;
+			lock (_sessionLock)
+				allSessions = new List<Session>(_allSessions.Values);
+			foreach (Session s in allSessions)
+				s.RequestRefresh();
+			reloaded = true;
+		}
+		catch (Exception ex)
+		{
+			_roleService.RestoreRoles(priorRoles);
+			_settings.RestoreSettings(priorSettings);
+			_registry.RestoreModels(priorModels);
+			_transport.Error(sessionId, $"Reload failed: {ex}. Keeping the previous config.");
+		}
+		return reloaded;
+	}
+
+	// ---- /config flow ----
+
+	// Sends the known endpoints (auto first, then the manual providers for reference) so the
+	// picker's first screen can list them without Beast ever holding API keys.
+	private void HandleConfigEndpoints(string sessionId)
+	{
+		ConfigEndpointsPayload payload = new ConfigEndpointsPayload();
+		foreach (AutoProviderConfig auto in _settings.Settings.Auto)
+		{
+			payload.Endpoints.Add(new ConfigEndpointInfo { BaseUrl = auto.BaseUrl, Source = "auto", EnabledCount = auto.Models.Count });
+		}
+		foreach (ProviderConfig manual in _settings.Settings.Providers)
+		{
+			int enabled = 0;
+			foreach (ModelConfig m in manual.Models)
+			{
+				if (m.Enabled)
+					enabled++;
+			}
+			payload.Endpoints.Add(new ConfigEndpointInfo { BaseUrl = manual.BaseUrl, Source = "manual", EnabledCount = enabled });
+		}
+		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigEndpointsPayload));
+	}
+
+	// Fetches an endpoint's catalog and sends it merged with the current enabled state and any
+	// persisted overrides. args is JSON: {"baseUrl": "...", "apiKey": "..."} — the key may be
+	// empty for an already-configured endpoint, whose stored key is used.
+	private async Task HandleConfigCatalogAsync(string sessionId, string args, CancellationToken ct)
+	{
+		string baseUrl = string.Empty;
+		string apiKey = string.Empty;
+		try
+		{
+			System.Text.Json.Nodes.JsonNode? node = System.Text.Json.Nodes.JsonNode.Parse(args);
+			baseUrl = node?["baseUrl"]?.GetValue<string>() ?? string.Empty;
+			apiKey = node?["apiKey"]?.GetValue<string>() ?? string.Empty;
+		}
+		catch (Exception)
+		{
+		}
+
+		ConfigCatalogPayload payload = new ConfigCatalogPayload { BaseUrl = baseUrl };
+		if (string.IsNullOrWhiteSpace(baseUrl))
+		{
+			payload.Error = "No baseUrl supplied.";
+		}
+		else
+		{
+			AutoProviderConfig? existing = FindAutoEndpoint(baseUrl);
+			if (string.IsNullOrEmpty(apiKey) && existing != null)
+				apiKey = existing.ApiKey;
+
+			// A manually-configured provider at the same URL can lend its key too, so browsing a
+			// manual endpoint's catalog in the picker just works.
+			if (string.IsNullOrEmpty(apiKey))
+			{
+				foreach (ProviderConfig manual in _settings.Settings.Providers)
+				{
+					if (string.Equals(manual.BaseUrl, baseUrl, StringComparison.OrdinalIgnoreCase))
+					{
+						apiKey = manual.ApiKey;
+						break;
+					}
+				}
+			}
+
+			// Progress lands in the status bar, which stays visible under the picker modal — the
+			// user can see exactly which step is in flight instead of a silent wait.
+			_transport.Status(sessionId, $"[config] Fetching catalog from {baseUrl} ...");
+			(List<DiscoveredModel> discovered, string error) = await ModelCatalog.FetchAsync(baseUrl, apiKey, ct);
+
+			// Docker/native host mismatch: the picker runs on the host where "localhost" is the
+			// natural spelling, but this fetch runs wherever the Agent runs — inside Docker that
+			// host is host.docker.internal (and the reverse on a native run). Retry with the
+			// swapped host and, when it works, adopt the swapped URL as the endpoint so the
+			// WORKING form is what the picker carries forward and persists.
+			if (error.Length > 0)
+			{
+				string swapped = SwapDockerHost(baseUrl);
+				if (swapped.Length > 0)
+				{
+					_transport.Status(sessionId, $"[config] {baseUrl} unreachable; trying {swapped} ...");
+					(List<DiscoveredModel> retried, string retryError) = await ModelCatalog.FetchAsync(swapped, apiKey, ct);
+					if (retryError.Length == 0)
+					{
+						baseUrl = swapped;
+						payload.BaseUrl = swapped;
+						discovered = retried;
+						error = string.Empty;
+						AutoProviderConfig? swappedExisting = FindAutoEndpoint(baseUrl);
+						if (swappedExisting != null)
+							existing = swappedExisting;
+					}
+				}
+			}
+
+			if (error.Length > 0)
+			{
+				List<DiscoveredModel>? cached = _registry.CachedCatalog(baseUrl);
+				if (cached != null)
+				{
+					discovered = cached;
+					error = string.Empty;
+				}
+			}
+			payload.Error = error;
+
+			foreach (DiscoveredModel d in discovered)
+			{
+				AutoModelConfig? entry = FindAutoModel(existing, d.Id);
+				payload.Models.Add(new ConfigModelInfo
+				{
+					Id = d.Id,
+					Name = d.Name,
+					ContextWindow = d.ContextWindow,
+					MaxOutputTokens = d.MaxOutputTokens,
+					CostInput = d.CostInput,
+					CostOutput = d.CostOutput,
+					Modalities = d.Modalities,
+					Configured = entry != null,
+					Enabled = entry != null && entry.Enabled,
+					Created = d.Created,
+					Override = entry
+				});
+			}
+
+			// Configured models the catalog no longer lists still appear (temporarily disabled at
+			// runtime), so the user can see them and deliberately drop them if the removal is real.
+			if (existing != null)
+			{
+				foreach (AutoModelConfig entry in existing.Models)
+				{
+					bool inCatalog = false;
+					foreach (DiscoveredModel d in discovered)
+					{
+						if (string.Equals(d.Id, entry.Id, StringComparison.OrdinalIgnoreCase))
+						{
+							inCatalog = true;
+							break;
+						}
+					}
+					if (!inCatalog)
+					{
+						payload.Models.Add(new ConfigModelInfo
+						{
+							Id = entry.Id,
+							Name = $"{entry.Id} (not in catalog)",
+							Configured = true,
+							Enabled = entry.Enabled,
+							Override = entry
+						});
+					}
+				}
+			}
+		}
+
+		_transport.Status(sessionId, payload.Error.Length > 0
+			? $"[config] Catalog fetch failed: {payload.Error}"
+			: $"[config] {payload.Models.Count} models from {payload.BaseUrl}");
+		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigCatalogPayload));
+	}
+
+	// Applies one endpoint's desired state from the picker: persists it to the project
+	// settings.json, then runs the full reload so the new models are live immediately.
+	private async Task HandleConfigApplyAsync(string sessionId, string args, CancellationToken ct)
+	{
+		ConfigApplyPayload? payload = null;
+		try
+		{
+			payload = JsonSerializer.Deserialize(args, BeastJson.Compact.ConfigApplyPayload);
+		}
+		catch (Exception ex)
+		{
+			_transport.Error(sessionId, $"config-apply: unusable payload: {ex.Message}");
+		}
+
+		if (payload != null && !string.IsNullOrWhiteSpace(payload.BaseUrl))
+		{
+			_settings.SaveAutoEndpoint(payload.BaseUrl, payload.ApiKey, payload.Models);
+			bool reloaded = await ReloadConfigurationAsync(sessionId, ct);
+			_transport.Config(sessionId, reloaded ? "{\"kind\":\"applied\"}" : "{\"kind\":\"apply-failed\"}");
+			if (reloaded)
+				_transport.Status(sessionId, $"Saved {payload.Models.Count} enabled model(s) for {payload.BaseUrl}.");
+		}
+		else if (payload != null)
+		{
+			_transport.Error(sessionId, "config-apply: no baseUrl supplied.");
+		}
+	}
+
+	// Swaps localhost ↔ host.docker.internal in a URL; empty when the host is neither (no swap
+	// to try). Mirrors ProtocolProxy's probe fallback, in the opposite direction.
+	private static string SwapDockerHost(string url)
+	{
+		if (!Uri.TryCreate(url.TrimEnd('/'), UriKind.Absolute, out Uri? uri))
+			return string.Empty;
+
+		string replacement;
+		if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "127.0.0.1")
+			replacement = "host.docker.internal";
+		else if (string.Equals(uri.Host, "host.docker.internal", StringComparison.OrdinalIgnoreCase))
+			replacement = "localhost";
+		else
+			return string.Empty;
+
+		UriBuilder builder = new UriBuilder(uri) { Host = replacement };
+		return builder.Uri.ToString().TrimEnd('/');
+	}
+
+	private AutoProviderConfig? FindAutoEndpoint(string baseUrl)
+	{
+		foreach (AutoProviderConfig auto in _settings.Settings.Auto)
+		{
+			if (string.Equals(auto.BaseUrl, baseUrl, StringComparison.OrdinalIgnoreCase))
+				return auto;
+		}
+		return null;
+	}
+
+	private static AutoModelConfig? FindAutoModel(AutoProviderConfig? endpoint, string id)
+	{
+		if (endpoint == null)
+			return null;
+		foreach (AutoModelConfig model in endpoint.Models)
+		{
+			if (string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+				return model;
+		}
+		return null;
+	}
+
 	private async Task HandleGlobalCommandAsync(string sessionId, string text, CancellationToken ct)
 	{
 		string trimmed = text.Substring(1).Trim();
@@ -673,41 +970,34 @@ public class AgentOrchestrator : ISessionOrchestrator
 				await FinishAsync(sessionId, ct);
 				break;
 			case "reload":
+				await ReloadConfigurationAsync(sessionId, ct);
+				break;
+			case "config-endpoints":
+				HandleConfigEndpoints(sessionId);
+				break;
+			case "config-catalog":
 			{
-				// Snapshot every published reference first: each component swaps atomically, but a
-				// failure partway (bad roles.json after settings already loaded, probe error) would
-				// otherwise leave a MIX of old and new config. Restoring the snapshots makes
-				// "keeping the previous config" true across the whole reload.
-				Dictionary<string, Role> priorRoles = _roleService.SnapshotRoles();
-				BeastSettings priorSettings = _settings.SnapshotSettings();
-				Dictionary<string, LlmModel> priorModels = _registry.SnapshotModels();
-				try
+				// Runs in the background: an unreachable endpoint can eat the full HTTP timeout
+				// twice (host-swap retry), and the input loop must keep servicing commands —
+				// including the /quit or Esc-driven traffic of a user giving up on the fetch.
+				string catalogArgs = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty;
+				_ = Task.Run(async () =>
 				{
-					_roleService.Reload();
-					_settings.LoadSettings();
-					_registry.LoadFromConfigs(_settings, _roleService);
-					await _registry.ProbeEndpointsAsync(ct);
-					_registry.ResetAllAvailability();
-					_transport.Status(sessionId, "Config files reloaded.");
-
-					// Signal every active session to refresh its role and LlmService so
-					// changes to roles.json (roles added/removed/modified) and settings.json
-					// (models/endpoints) propagate immediately to running sessions.
-					List<Session> allSessions;
-					lock (_sessionLock)
-						allSessions = new List<Session>(_allSessions.Values);
-					foreach (Session s in allSessions)
-						s.RequestRefresh();
-				}
-				catch (Exception ex)
-				{
-					_roleService.RestoreRoles(priorRoles);
-					_settings.RestoreSettings(priorSettings);
-					_registry.RestoreModels(priorModels);
-					_transport.Error(sessionId, $"Reload failed: {ex}. Keeping the previous config.");
-				}
+					try
+					{
+						await HandleConfigCatalogAsync(sessionId, catalogArgs, ct);
+					}
+					catch (Exception ex)
+					{
+						Console.Error.WriteLine($"[AgentOrchestrator] config-catalog threw: {ex}");
+						_transport.Error(sessionId, $"Catalog fetch failed: {ex.Message}");
+					}
+				}, ct);
 				break;
 			}
+			case "config-apply":
+				await HandleConfigApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
+				break;
 			case "help":
 				_transport.Output(sessionId, "Commands: /compact, /reload, /model <id>, /finish, /test, /quit");
 				break;

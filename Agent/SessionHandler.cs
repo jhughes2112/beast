@@ -893,7 +893,7 @@ public class SessionHandler
 
 	private List<string> BuildCompletionCandidates(RoleService roleService, LlmRegistry registry)
 	{
-		List<string> candidates = new List<string> { "/compact", "/reload", "/model", "/finish", "/help" };
+		List<string> candidates = new List<string> { "/compact", "/config", "/reload", "/model", "/finish", "/help" };
 		Role? activeRole = roleService.GetRole(_activeSession.Role);
 		LlmModel? activeModel = activeRole != null
 			? registry.GetModelForRole(activeRole, _activeSession.Model, _activeSession.ContextLength + GetCompactionReserve())

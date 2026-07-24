@@ -105,12 +105,91 @@ public class SettingsService
 		if (local.Providers != null && local.Providers.Count > 0)
 			target.Providers = local.Providers;
 
+		// Same wholesale-replacement rule for the auto-configured endpoints.
+		if (local.Auto != null && local.Auto.Count > 0)
+			target.Auto = local.Auto;
+
 		// If the local settings file defines web search, it replaces the existing config.
 		if (local.WebSearch != null)
 			target.WebSearch = local.WebSearch;
 
 		if (local.CompactionReserveTokens > 0)
 			target.CompactionReserveTokens = local.CompactionReserveTokens;
+	}
+
+	// Persists the auto section as edited by /config: replaces (or adds) the entry for one
+	// endpoint in the USER settings file — model/endpoint configuration is user-level, set up
+	// once and serving every project and worktree (Docker runs mount ~/.beast at /root/.beast,
+	// so the home file is the same one true file either way). An endpoint whose model list is
+	// emptied is removed outright. Configuring an OpenRouter key also seeds the web-search
+	// block, so internet_search works without a second setup step.
+	public void SaveAutoEndpoint(string baseUrl, string apiKey, List<AutoModelConfig> models)
+	{
+		BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+
+		int existing = -1;
+		for (int i = 0; i < home.Auto.Count; i++)
+		{
+			if (string.Equals(home.Auto[i].BaseUrl, baseUrl, StringComparison.OrdinalIgnoreCase))
+			{
+				existing = i;
+				break;
+			}
+		}
+
+		if (models.Count == 0)
+		{
+			if (existing >= 0)
+				home.Auto.RemoveAt(existing);
+		}
+		else
+		{
+			AutoProviderConfig entry = new AutoProviderConfig { BaseUrl = baseUrl, ApiKey = apiKey, Models = models };
+
+			// An apply that did not re-enter the key keeps the one already on disk.
+			if (string.IsNullOrEmpty(entry.ApiKey) && existing >= 0)
+				entry.ApiKey = home.Auto[existing].ApiKey;
+
+			if (existing >= 0)
+				home.Auto[existing] = entry;
+			else
+				home.Auto.Add(entry);
+
+			InjectWebSearchKey(home, entry.BaseUrl, entry.ApiKey);
+		}
+
+		WriteSettings(_homeDirSettingsPath, home);
+
+		// A leftover auto section in the PROJECT file would shadow the home one (local settings
+		// replace the list wholesale) and make picker saves look like no-ops. Strip it.
+		BeastSettings? local = LoadSettingsFromFile(_workDirSettingsPath);
+		if (local != null && local.Auto.Count > 0)
+		{
+			local.Auto = new List<AutoProviderConfig>();
+			WriteSettings(_workDirSettingsPath, local);
+		}
+
+		LoadSettings();
+	}
+
+	// Seeds the web-search block with a freshly configured OpenRouter key. Only a missing or
+	// placeholder key is replaced — a deliberate different key is never overwritten — and the
+	// block is enabled alongside, since its default model is the free router.
+	private static void InjectWebSearchKey(BeastSettings home, string baseUrl, string apiKey)
+	{
+		if (!baseUrl.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(apiKey))
+			return;
+
+		OpenrouterSearchConfig? search = home.WebSearch?.Openrouter;
+		if (search == null)
+		{
+			home.WebSearch = CreateDefaultWebSearch(apiKey, true);
+		}
+		else if (string.IsNullOrEmpty(search.ApiKey) || search.ApiKey.StartsWith("YOUR_", StringComparison.Ordinal))
+		{
+			search.ApiKey = apiKey;
+			search.Enabled = true;
+		}
 	}
 
 	private void WriteSettings(string path, BeastSettings settings)
@@ -145,114 +224,11 @@ public class SettingsService
 			IdleSoundFile = "C:/Windows/media/Windows Background.wav",
 			SubagentSoundFile = "C:/Windows/media/Windows Hardware Fail.wav",
 			CompactionReserveTokens = 4096,
-			Providers = new List<ProviderConfig>
-			{
-                // OpenRouter — multi-model gateway
-                new ProviderConfig
-				{
-					BaseUrl = "https://openrouter.ai/api/v1/chat/completions",
-					ApiKey = "YOUR_OPENROUTER_KEY_HERE",
-					Models = new List<ModelConfig>
-					{
-						new ModelConfig
-						{
-							Id = "openrouter/free",
-							Name = "Random Free Model",
-							Enabled = false,
-							ContextWindow = 131078,
-							Cost = new CostConfig { Input = 0.0m, Output = 0.0m, CacheRead = 0.0m, CacheWrite = 0.0m },
-                            // Reasoning level as a word (none/minimal/low/medium/high/max). For chat-completions
-                            // backends it is sent as reasoning_effort and softly falls back to a reasoning object
-                            // if the server rejects it, so the same word works across Gemini, vLLM, OpenRouter, etc.
-                            ReasoningEffort = "",
-                            // Steer OpenRouter routing by declaring a "provider" object here, e.g.
-                            // { "provider": { "order": ["Anthropic"], "allow_fallbacks": false } }.
-                            Extras = new List<JsonObject>
-							{
-								new JsonObject { ["temperature"] = null },
-								new JsonObject { ["top_p"] = null },
-								new JsonObject { ["frequency_penalty"] = null }
-							}
-						}
-					}
-				},
-                // Anthropic — direct API
-                new ProviderConfig
-				{
-					BaseUrl = "https://api.anthropic.com/v1/messages",
-					ApiKey = "YOUR_ANTHROPIC_KEY_HERE",
-					Models = new List<ModelConfig>
-					{
-						new ModelConfig
-						{
-							Id = "claude-3-5-sonnet-20241022",
-							Name = "Claude 3.5 Sonnet",
-							Enabled = false,
-							ContextWindow = 200000,
-							Cost = new CostConfig { Input = 3.0m, Output = 15.0m, CacheRead = 0.3m, CacheWrite = 3.75m },
-                            // Extended thinking: set reasoningEffort to none/minimal/low/medium/high/max and the
-                            // right thinking budget is chosen automatically. A raw "thinking" object in extras
-                            // still overrides it.
-                            ReasoningEffort = "medium",
-							Extras = new List<JsonObject>
-							{
-								new JsonObject { ["temperature"] = null },
-								new JsonObject { ["top_p"] = null }
-							}
-						}
-					}
-				},
-                // OpenAI — direct API
-                new ProviderConfig
-				{
-					BaseUrl = "https://api.openai.com/v1/responses",
-					ApiKey = "YOUR_OPENAI_KEY_HERE",
-					Models = new List<ModelConfig>
-					{
-						new ModelConfig
-						{
-							Id = "gpt-5-nano",
-							Name = "GPT-5 Nano",
-							Enabled = false,
-							ContextWindow = 400000,
-							Cost = new CostConfig { Input = 0.05m, Output = 0.40m, CacheRead = 0.005m, CacheWrite = 0.0m },
-                            // Reasoning level as a word; translated to the API's reasoning.effort automatically.
-                            ReasoningEffort = "medium",
-							Extras = new List<JsonObject>
-							{
-								new JsonObject { ["temperature"] = null },
-								new JsonObject { ["top_p"] = null },
-								new JsonObject { ["frequency_penalty"] = null },
-								new JsonObject { ["store"] = "" },
-								new JsonObject { ["metadata"] = "" }
-							},
-							Headers = new List<JsonObject>
-							{
-								new JsonObject { ["OpenAI-Organization"] = "" },
-								new JsonObject { ["OpenAI-Project"] = "" }
-							}
-						}
-					}
-				},
-                // Ollama — local models
-                new ProviderConfig
-				{
-					BaseUrl = "http://localhost:11434/v1/chat/completions",
-					ApiKey = "ollama",
-					Models = new List<ModelConfig>
-					{
-						new ModelConfig
-						{
-							Id = "qwen3:4b",
-							Name = "Qwen3 4B",
-							Enabled = false,
-							ContextWindow = 32768,
-							Cost = new CostConfig { Input = 0.0m, Output = 0.0m },
-							Extras = new List<JsonObject>()
-						}
-					}
-				}
-			},
+			// No example providers: /config is the onboarding path now (endpoint presets, catalog
+			// discovery, spacebar enablement). The manual section still works for hand-tuned
+			// configs — full ModelConfig with extras/headers/reasoning — it just starts empty
+			// instead of shipping placeholder stubs that showed up as phantom endpoints.
+			Providers = new List<ProviderConfig>(),
 			Tools = new Dictionary<string, ToolConfig>()
 			{
 				{ "bash", new ToolConfig() {
@@ -304,6 +280,13 @@ public class SettingsService
 					  { "file_path", "File path" },
 					{ "goal", "What kind of content is relevant to you in this file. Used to focus the citations returned." },
 					{ "offset", "Starting line number (1 based) for the window to digest. Omit for the beginning of the file." },
+				  },
+			  } },
+				{ "inspect_media", new ToolConfig() {
+				  Description = "Interpret an image or audio file with a media-capable model and get back only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. CWD is the repo root at /workspace/.",
+				  Parameters = new Dictionary<string,string>() {
+					  { "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac)." },
+					  { "goal", "Exactly what to extract or answer from the media; only this is returned." },
 				  },
 			  } },
 				{ "fetch_url", new ToolConfig() {
@@ -366,20 +349,30 @@ public class SettingsService
 				  },
 			  } },
 			},
-			WebSearch = new WebSearchConfig
+			WebSearch = CreateDefaultWebSearch("YOUR_OPENROUTER_KEY_HERE", false)
+		};
+	}
+
+	// The web-search block template: OpenRouter's web plugin on the free-model router. Used for
+	// the generated defaults (placeholder key, disabled) and by the /config OpenRouter-key
+	// injection (real key, enabled).
+	private static WebSearchConfig CreateDefaultWebSearch(string apiKey, bool enabled)
+	{
+		return new WebSearchConfig
+		{
+			Openrouter = new OpenrouterSearchConfig
 			{
-				Openrouter = new OpenrouterSearchConfig
+				Endpoint = "https://openrouter.ai/api/v1/chat/completions",
+				ApiKey = apiKey,
+				Enabled = enabled,
+				// The free-model router: always resolves to SOME zero-cost model, so the
+				// default never rots when an individual free model is renamed or retired.
+				Model = "openrouter/free",
+				Extras = new List<JsonObject>
 				{
-					Endpoint = "https://openrouter.ai/api/v1/chat/completions",
-					ApiKey = "YOUR_OPENROUTER_KEY_HERE",
-					Enabled = false,
-					Model = "baidu/cobuddy:free",
-					Extras = new List<JsonObject>
-					{
-						new JsonObject { ["plugins"] = new JsonArray(new JsonObject { ["id"] = "web" }) },
-						new JsonObject { ["temperature"] = JsonValue.Create(0) },
-						new JsonObject { ["max_tokens"] = JsonValue.Create(4096) }
-					}
+					new JsonObject { ["plugins"] = new JsonArray(new JsonObject { ["id"] = "web" }) },
+					new JsonObject { ["temperature"] = JsonValue.Create(0) },
+					new JsonObject { ["max_tokens"] = JsonValue.Create(4096) }
 				}
 			}
 		};

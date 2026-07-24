@@ -151,6 +151,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 			["cachedTokens"] = cachedTokens
 		}.ToJsonString());
 	public void Completions(string sessionId, string json) => Send(FrameType.Completions, sessionId, json);
+	public void Config(string sessionId, string json) => Send(FrameType.Config, sessionId, json);
 	public void Idle(string sessionId, bool subagent) => Send(FrameType.Idle, sessionId, subagent ? "subagent" : string.Empty);
 	public void Busy(string sessionId) => Send(FrameType.Busy, sessionId, string.Empty);
 	public void ToolCallWithId(string sessionId, string callId, string text) => Send(FrameType.ToolCall, sessionId, callId + "\x01" + text);

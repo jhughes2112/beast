@@ -27,7 +27,8 @@ public enum FrameType : byte
 	SessionReset = 19,     // agent reset its session set (e.g. active root deleted from F10); client forgets all sessions and adopts the named one
 	SessionStatus = 20,    // agent reports a session's termination status; content is a SessionStatus enum name
 	PendingQueue = 21,     // agent sends the current pending-input queue snapshot; content is newline-delimited lines
-	Alert = 22             // human-actionable failure (credits exhausted, bad API key). Rendered as a loud persistent banner in the chat, never collapsed or hidden.
+	Alert = 22,            // human-actionable failure (credits exhausted, bad API key). Rendered as a loud persistent banner in the chat, never collapsed or hidden.
+	Config = 23            // /config flow payload (JSON with a "kind" discriminator: endpoints, catalog, applied)
 }
 
 // Session termination status reported via SessionStatus frames.
@@ -86,6 +87,8 @@ public interface ITransportServer
 	void PendingQueue(string sessionId, string[] lines);
 	// Reports a session's termination status (Success / Failure / Incomplete) so the F10 overlay can color it.
 	void SessionStatus(string sessionId, string status);
+	// Sends a /config flow payload (endpoint list, catalog, or apply acknowledgment) as JSON.
+	void Config(string sessionId, string json);
 	// Streaming: bracket a sequence of incremental chunks with start/end frames.
 	// Use StreamTag constants for the tag argument.
 	void StreamStart(string sessionId, string tag);

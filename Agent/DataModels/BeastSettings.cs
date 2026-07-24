@@ -12,6 +12,14 @@ public class BeastSettings
 	[JsonPropertyName("providers")]
 	public List<ProviderConfig> Providers { get; set; } = new();
 
+	// Auto-configured endpoints: each carries only the endpoint, its key, and the models the user
+	// explicitly enabled through /config. Everything discoverable from the endpoint's catalog
+	// (context window, pricing, modalities) is NOT persisted here — it is re-discovered at every
+	// load; a model entry carries a value only when discovery cannot determine it (the /config
+	// picker asks at enable time) and that value then always wins over discovery.
+	[JsonPropertyName("auto")]
+	public List<AutoProviderConfig> Auto { get; set; } = new();
+
 	[JsonPropertyName("tools")]
 	public Dictionary<string, ToolConfig> Tools { get; set; } = new();
 
@@ -39,6 +47,53 @@ public class ProviderConfig
 
 	[JsonPropertyName("models")]
 	public List<ModelConfig> Models { get; set; } = new();
+}
+
+// One auto-configured endpoint. Models listed here are the ENABLED set — disabling a model in
+// /config removes its entry. A model that vanishes from the endpoint's catalog is temporarily
+// disabled in memory for that run; its entry is never rewritten or flagged on disk, because the
+// user's intent (temporary outage vs. permanent removal) cannot be known here.
+public class AutoProviderConfig
+{
+	[JsonPropertyName("baseUrl")]
+	public string BaseUrl { get; set; } = string.Empty;
+
+	[JsonPropertyName("apiKey")]
+	public string ApiKey { get; set; } = string.Empty;
+
+	[JsonPropertyName("models")]
+	public List<AutoModelConfig> Models { get; set; } = new();
+}
+
+// One configured model under an auto endpoint. Every field except Id/Enabled is a sparse
+// override: the zero value (0, null, empty) means "use what discovery reports"; anything else was
+// either supplied by the user in the /config details prompt or is a legitimate unknown the user
+// chose to fill. Disabling a model keeps its entry (and its overrides) with enabled=false —
+// disabling is not forgetting.
+public class AutoModelConfig
+{
+	[JsonPropertyName("id")]
+	public string Id { get; set; } = string.Empty;
+
+	[JsonPropertyName("enabled")]
+	public bool Enabled { get; set; } = true;
+
+	[JsonPropertyName("contextWindow")]
+	public int ContextWindow { get; set; } = 0;
+
+	[JsonPropertyName("maxOutputTokens")]
+	public int MaxOutputTokens { get; set; } = 0;
+
+	// Null = discovery determines pricing (or it is genuinely free/unknown and the user accepted 0).
+	[JsonPropertyName("cost")]
+	public CostConfig? Cost { get; set; } = null;
+
+	// Null = discovery determines modalities; ["text"] etc. when the user set them explicitly.
+	[JsonPropertyName("modalities")]
+	public List<string>? Modalities { get; set; } = null;
+
+	[JsonPropertyName("reasoningEffort")]
+	public string ReasoningEffort { get; set; } = string.Empty;
 }
 
 public class ToolConfig
@@ -75,6 +130,11 @@ public class ModelConfig
 
 	[JsonPropertyName("cost")]
 	public CostConfig Cost { get; set; } = new();
+
+	// Input modalities the model accepts ("text", "image", "audio"). Empty means text-only.
+	// Populated from catalog discovery for auto models; declarable manually for others.
+	[JsonPropertyName("input")]
+	public List<string> Input { get; set; } = new();
 
 	// Extra top-level fields merged verbatim into the outgoing request body. Each entry is a
 	// JSON object whose properties are copied into the payload as-is (strings, arrays, objects,

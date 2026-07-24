@@ -60,7 +60,22 @@ public class ProtocolResponses
 			}
 			else if (msg is UserMessage um)
 			{
-				input.Add((JsonNode)BuildMessageItem("user", "input_text", um.Text));
+				JsonObject item = BuildMessageItem("user", "input_text", um.Text);
+
+				// Attachments join the same content array as input_image parts. The Responses API
+				// has no audio input part; audio degrades to a text note so the model reports it.
+				if (um.Attachments != null && um.Attachments.Count > 0)
+				{
+					JsonArray content = (JsonArray)item["content"]!;
+					foreach (MediaAttachment att in um.Attachments)
+					{
+						if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+							content.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = "[An audio attachment was supplied, but this provider does not accept audio input.]" });
+						else
+							content.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
+					}
+				}
+				input.Add((JsonNode)item);
 			}
 			else if (msg is AssistantMessage am)
 			{
