@@ -17,7 +17,7 @@ using TextCopy;
 // Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
-	private const string HelpText     = "Commands: /compact, /config, /reload, /model <id>, /finish, /verbose, /test, /quit  ·  Alt+V pastes a clipboard image";
+	private const string HelpText     = "Commands: /compact, /config, /role, /reload, /model <id>, /finish, /verbose, /test, /quit  ·  Alt+V pastes images and files";
 	private const int    MaxInputRows = 10;
 
 	// Slash verbs forwarded to the agent; anything else is refused locally. The orchestrator's own
@@ -42,56 +42,56 @@ public class DisplayScreen : IDisplay
 	{
 		// A restrained dark theme: accents are desaturated rather than primary, and the "colored"
 		// backgrounds are dark neutral slates with only a hint of hue so text stays legible on them.
-		public static readonly Rgb InputFg       = new Rgb(232, 232, 234);  // crisp text on the input line
-		public static readonly Rgb InputBg       = new Rgb(34, 34, 38);     // near-neutral dark input strip
-		public static readonly Rgb Silver        = new Rgb(206, 206, 210);  // primary body text (lifted for legibility)
-		public static readonly Rgb BrightUser    = new Rgb(244, 244, 246);  // user message text — bright but not pure white
-		public static readonly Rgb UserBg        = new Rgb(48, 50, 56);     // dark slate behind user messages (was a too-bright grey)
-		public static readonly Rgb MedGrey       = new Rgb(146, 146, 150);  // secondary/muted text
-		public static readonly Rgb ThinkingFg    = new Rgb(128, 128, 132);  // dim, but a touch brighter than before
-		public static readonly Rgb GhostFg       = new Rgb(116, 116, 120);  // ghost-text dim version of InputFg
-		public static readonly Rgb CopyIconFg    = new Rgb(130, 184, 222);  // floating "copy block" affordance glyph
-		public static readonly Rgb CopyIconBg    = new Rgb(40, 40, 44);     // small contrasting chip behind the copy glyph
-		public static readonly Rgb PopupSelBg    = new Rgb(66, 68, 74);     // selected row in completion popup
-		public static readonly Rgb Red           = new Rgb(214, 102, 102);  // softened error red (was pure 255,0,0)
-		public static readonly Rgb AlertFg       = new Rgb(255, 235, 235);  // near-white on the alert band — maximum contrast
-		public static readonly Rgb AlertBg       = new Rgb(128, 26, 26);    // strong red band; nothing else on screen uses a full red background
-		public static readonly Rgb Blue          = new Rgb(98, 158, 204);   // softened accent blue
-		public static readonly Rgb Orange        = new Rgb(204, 140, 82);   // softened amber (system)
-		public static readonly Rgb Yellow        = new Rgb(206, 182, 112);  // softened gold
+		public static readonly Rgb InputFg       = new Rgb(232, 232, 234); // crisp text on the input line
+		public static readonly Rgb InputBg       = new Rgb( 34,  34,  38); // near-neutral dark input strip
+		public static readonly Rgb Silver        = new Rgb(206, 206, 210); // primary body text (lifted for legibility)
+		public static readonly Rgb BrightUser    = new Rgb(244, 244, 246); // user message text — bright but not pure white
+		public static readonly Rgb UserBg        = new Rgb( 48,  50,  56); // dark slate behind user messages (was a too-bright grey)
+		public static readonly Rgb MedGrey       = new Rgb(146, 146, 150); // secondary/muted text
+		public static readonly Rgb ThinkingFg    = new Rgb(128, 128, 132); // dim, but a touch brighter than before
+		public static readonly Rgb GhostFg       = new Rgb(116, 116, 120); // ghost-text dim version of InputFg
+		public static readonly Rgb CopyIconFg    = new Rgb(130, 184, 222); // floating "copy block" affordance glyph
+		public static readonly Rgb CopyIconBg    = new Rgb( 40,  40,  44); // small contrasting chip behind the copy glyph
+		public static readonly Rgb PopupSelBg    = new Rgb( 66,  68,  74); // selected row in completion popup
+		public static readonly Rgb Red           = new Rgb(214, 102, 102); // softened error red (was pure 255,0,0)
+		public static readonly Rgb AlertFg       = new Rgb(255, 235, 235); // near-white on the alert band — maximum contrast
+		public static readonly Rgb AlertBg       = new Rgb(128,  26,  26); // strong red band; nothing else on screen uses a full red background
+		public static readonly Rgb Blue          = new Rgb( 98, 158, 204); // softened accent blue
+		public static readonly Rgb Orange        = new Rgb(204, 140,  82); // softened amber (system)
+		public static readonly Rgb Yellow        = new Rgb(206, 182, 112); // softened gold
 		public static readonly Rgb BrightWhite   = new Rgb(232, 232, 234);
-		public static readonly Rgb ToolCallFg    = new Rgb(126, 192, 196);  // calm teal header (was harsh cyan)
-		public static readonly Rgb ToolCallBg    = new Rgb(40, 48, 72);     // dark blue-slate tool block; kept brighter than the response body so the call header reads as distinct
-		public static readonly Rgb ToolCallErrFg = new Rgb(240, 208, 208);  // pale red text on the error first line
-		public static readonly Rgb ToolCallErrBg = new Rgb(94, 50, 50);     // muted red background for the error first line
-		public static readonly Rgb ToolRespFg    = new Rgb(128, 174, 176);  // muted teal
-		public static readonly Rgb ToolRespBg    = new Rgb(22, 30, 44);     // same dark slate as FileBodyBg
-		public static readonly Rgb FileBodyBg    = new Rgb(22, 30, 44);     // dark neutral slate (faint blue) for read/write file content
-		public static readonly Rgb FileBodyFg    = new Rgb(206, 212, 222);  // soft off-white text on the file body
-		public static readonly Rgb FileErrBodyBg = new Rgb(52, 32, 32);     // muted dark red for the body of an errored tool call
+		public static readonly Rgb ToolCallFg    = new Rgb(126, 192, 196); // calm teal header (was harsh cyan)
+		public static readonly Rgb ToolCallBg    = new Rgb( 40,  48,  72); // dark blue-slate tool block; kept brighter than the response body so the call header reads as distinct
+		public static readonly Rgb ToolCallErrFg = new Rgb(240, 208, 208); // pale red text on the error first line
+		public static readonly Rgb ToolCallErrBg = new Rgb( 94,  50,  50); // muted red background for the error first line
+		public static readonly Rgb ToolRespFg    = new Rgb(128, 174, 176); // muted teal
+		public static readonly Rgb ToolRespBg    = new Rgb( 22,  30,  44); // same dark slate as FileBodyBg
+		public static readonly Rgb FileBodyBg    = new Rgb( 22,  30,  44); // dark neutral slate (faint blue) for read/write file content
+		public static readonly Rgb FileBodyFg    = new Rgb(206, 212, 222); // soft off-white text on the file body
+		public static readonly Rgb FileErrBodyBg = new Rgb( 52,  32,  32); // muted dark red for the body of an errored tool call
 		public static readonly Rgb FileErrBodyFg = new Rgb(238, 198, 198);
-		public static readonly Rgb ScrollThumb   = new Rgb(84, 84, 88);     // 240
-		public static readonly Rgb ScrollTrack   = new Rgb(20, 20, 22);     // 233
-		public static readonly Rgb HoverBar      = new Rgb(124, 124, 128);  // 244
-		public static readonly Rgb Background    = new Rgb(0, 0, 0);
+		public static readonly Rgb ScrollThumb   = new Rgb( 84,  84,  88); // 240
+		public static readonly Rgb ScrollTrack   = new Rgb( 20,  20,  22); // 233
+		public static readonly Rgb HoverBar      = new Rgb(124, 124, 128); // 244
+		public static readonly Rgb Background    = new Rgb(  0,   0,   0);
 
 		// Pre-built SGR strings derived from the palette above.
 		public static readonly string BodyAnsi      = $"\x1b[38;2;{FileBodyFg.R};{FileBodyFg.G};{FileBodyFg.B}m\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
 		public static readonly string ErrBodyAnsi   = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
 		public static readonly string BodyBgAnsi    = $"\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
 		public static readonly string ErrBodyBgAnsi = $"\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
-		public static readonly string FileNameAnsi  = "\x1b[38;2;212;182;120m";  // soft gold filename highlight
-		public static readonly string ResetAnsi     = "\x1b[39m";         // reset foreground only
+		public static readonly string FileNameAnsi  = "\x1b[38;2;212;182;120m"; // soft gold filename highlight
+		public static readonly string ResetAnsi     = "\x1b[39m";               // reset foreground only
 
 		// Diff rows for the edit_file echo. Added lines use a soft dark blue (no green); removed lines a
 		// muted dark red. The *HiBg variants are the slightly brighter background marking the intra-line
 		// changed span. Each *Ansi sets both fg and the tinted row bg.
-		public static readonly Rgb DiffAddFg   = new Rgb(198, 212, 232);  // soft light text on the blue add row
-		public static readonly Rgb DiffAddBg   = new Rgb(30, 46, 76);     // soft dark blue add row (a step up from the slate body)
-		public static readonly Rgb DiffAddHiBg = new Rgb(46, 74, 116);    // brighter blue for the changed span
-		public static readonly Rgb DiffDelFg   = new Rgb(216, 188, 188);  // muted text on the red remove row
-		public static readonly Rgb DiffDelBg   = new Rgb(54, 32, 32);     // muted dark red remove row background
-		public static readonly Rgb DiffDelHiBg = new Rgb(94, 54, 54);     // brighter red for the changed span
+		public static readonly Rgb DiffAddFg   = new Rgb(198, 212, 232); // soft light text on the blue add row
+		public static readonly Rgb DiffAddBg   = new Rgb( 30,  46,  76); // soft dark blue add row (a step up from the slate body)
+		public static readonly Rgb DiffAddHiBg = new Rgb( 46,  74, 116); // brighter blue for the changed span
+		public static readonly Rgb DiffDelFg   = new Rgb(216, 188, 188); // muted text on the red remove row
+		public static readonly Rgb DiffDelBg   = new Rgb( 54,  32,  32); // muted dark red remove row background
+		public static readonly Rgb DiffDelHiBg = new Rgb( 94,  54,  54); // brighter red for the changed span
 
 		public static readonly string DiffAddAnsi   = $"\x1b[38;2;{DiffAddFg.R};{DiffAddFg.G};{DiffAddFg.B}m\x1b[48;2;{DiffAddBg.R};{DiffAddBg.G};{DiffAddBg.B}m";
 		public static readonly string DiffAddHiAnsi = $"\x1b[48;2;{DiffAddHiBg.R};{DiffAddHiBg.G};{DiffAddHiBg.B}m";
@@ -101,14 +101,14 @@ public class DisplayScreen : IDisplay
 
 	// Collapse mode applied to each attached model; starts at the launch mode and follows Ctrl+O
 	// cycling so session switches don't reset the user's chosen verbosity.
-	private CollapseMode               _currentMode;
-	private ConversationModel?         _model;
-	private Func<string, Task>?        _sendAsync;
-	private Action?                    _requestExit;
-	private CancellationTokenSource?   _runCts;
-	private Action?                    _frameDrain;
-	private Action<string>?            _sessionSwitchCallback;
-	private Action<string>?            _sessionDeleteCallback;
+	private CollapseMode             _currentMode;
+	private ConversationModel?       _model;
+	private Func<string, Task>?      _sendAsync;
+	private Action?                  _requestExit;
+	private CancellationTokenSource? _runCts;
+	private Action?                  _frameDrain;
+	private Action<string>?          _sessionSwitchCallback;
+	private Action<string>?          _sessionDeleteCallback;
 
 	// Session tree overlay state.
 	private bool _sessionTreeOpen = false;
@@ -116,15 +116,18 @@ public class DisplayScreen : IDisplay
 	// /config modal overlay; created on first open so it can capture SendAsync.
 	private ConfigOverlay? _configOverlay;
 
+	// /role modal overlay: model preference order per role.
+	private RoleOverlay? _roleOverlay;
+
 	// Host path of the folder bound to /workspace: dropped files are staged inside it so the agent
 	// can read them and so they die with the worktree. Empty until the launcher supplies it.
-	private string _attachmentRoot = string.Empty;
-	private int  _sessionTreeSelected = 0;
-	private int  _sessionTreeScroll = 0;
-	private int  _sessionActive = 0;
-	private int  _sessionTotal = 0;
-	private readonly List<SessionDisplayInfo> _sessionList = new List<SessionDisplayInfo>();
-	private string _sessionActiveId = "";
+	private          string                   _attachmentRoot      = string.Empty;
+	private          int                      _sessionTreeSelected = 0;
+	private          int                      _sessionTreeScroll   = 0;
+	private          int                      _sessionActive       = 0;
+	private          int                      _sessionTotal        = 0;
+	private readonly List<SessionDisplayInfo> _sessionList         = new List<SessionDisplayInfo>();
+	private          string                   _sessionActiveId     = "";
 
 	private readonly List<string> _completions = new List<string> { "/verbose" };
 	private readonly object       _consoleLock = new object();
@@ -139,24 +142,24 @@ public class DisplayScreen : IDisplay
 	// (ClearPendingGhost). They are unmodifiable and uncancelable once sent (only /cancel, which tears
 	// down the whole turn, removes them). Guarded by _consoleLock.
 	private readonly Dictionary<string, List<string>> _pendingGhost = new Dictionary<string, List<string>>();
-	private string _statusText         = "";
+	private          string _statusText = "";
 	// Status bar is laid out as three segments: left (path + mode), center (token/cost metrics),
 	// right (model name). They're stored separately so each can be positioned independently.
-	private string _statsMetrics       = "";
-	private string _statsModelName     = "";
+	private string _statsMetrics   = "";
+	private string _statsModelName = "";
 	// Role of the most recent stats frame; shown in yellow at the right end of the separator line.
-	private string _currentRole        = "";
+	private string _currentRole = "";
 
 	// Bottom-left of the status bar is normally the rooted client path Beast was launched from.
 	// SetStatus messages are transient: they replace the path for TransientStatusMs then revert.
-	private string _baseStatusText        = "";
-	private long   _transientStatusUntil  = 0;
-	private const int TransientStatusMs   = 4000;
+	private       string _baseStatusText       = "";
+	private       long   _transientStatusUntil = 0;
+	private const int    TransientStatusMs     = 4000;
 
 	// Optimistic override for the model name shown on the right side of the status bar. When the user
 	// submits /model <id>, we set this immediately so the change is visible before the agent's next Stats
 	// frame arrives. Cleared whenever a real Stats frame is received.
-	private string _modelOverride         = "";
+	private string _modelOverride = "";
 
 	private float _historyScrollOffset = 0f;
 	private float _scrollTarget        = 0f;
@@ -170,14 +173,14 @@ public class DisplayScreen : IDisplay
 	// _followReadyTick holds the tick when that stable state began (0 = not stable). Output in the
 	// viewed session, leaving the bottom, or any scroll/click gesture resets it. The F10 overlay
 	// being open does not block it.
-	private long _followReadyTick = 0;
-	private const int FollowDelayMs = 5000;
+	private       long _followReadyTick = 0;
+	private const int  FollowDelayMs    = 5000;
 
 	private int _streamingSlot = -1;
 
 	// Per-slot cached BlockLayer (collapsed + expanded Screens). Invalidated on width change or message update.
-	private readonly Dictionary<int, BlockLayer> _blockCache = new Dictionary<int, BlockLayer>();
-	private int _renderedWidth = 0;
+	private readonly Dictionary<int, BlockLayer> _blockCache    = new Dictionary<int, BlockLayer>();
+	private          int                         _renderedWidth = 0;
 
 	// Effective width of the history area (full terminal width, minus the session-tree panel when open).
 	// Set every Redraw; used by mouse hit-testing so column math matches the reflowed layout.
@@ -189,16 +192,16 @@ public class DisplayScreen : IDisplay
 	// block appears, disappears, or changes height (or the width reflows, signaled by nulling this).
 	// Mouse handlers also use it to map row→slot. _lastViewTop is the last rendered window offset (rows
 	// from the top of the stack); anchoring and hit-testing are valid only while _stack is non-null.
-	private StackLayout? _stack;
-	private readonly HashSet<int> _dirtySlots = new HashSet<int>();
-	private int          _lastViewTop = 0;
-	private int          _lastHistoryHeight = 0;
+	private          StackLayout? _stack;
+	private readonly HashSet<int> _dirtySlots        = new HashSet<int>();
+	private          int          _lastViewTop       = 0;
+	private          int          _lastHistoryHeight = 0;
 
-	private int  _scrollbarTopRow    = 0;
-	private int  _scrollbarHeight    = 0;
-	private int  _scrollbarMaxOffset = 0;
+	private int _scrollbarTopRow    = 0;
+	private int _scrollbarHeight    = 0;
+	private int _scrollbarMaxOffset = 0;
 
-	private int  _hoverSlot         = -1;
+	private int  _hoverSlot          = -1;
 	private long _scrollbarShowUntil = 0;
 
 	// A click-toggle (collapse/expand) requests that the toggled block stay pinned under the cursor through
@@ -210,9 +213,9 @@ public class DisplayScreen : IDisplay
 	// Per-slot horizontal scroll offset (columns), for blocks whose wide code/tables extend past the viewport.
 	// Absent / zero means the block sits at its left edge. Driven by horizontal wheel, Shift+wheel and
 	// Alt/Shift+arrows over the hovered block.
-	private readonly Dictionary<int, int> _blockHScroll = new Dictionary<int, int>();
-	private const int HScrollWheelStep = 8;
-	private const int HScrollKeyStep   = 6;
+	private readonly Dictionary<int, int> _blockHScroll    = new Dictionary<int, int>();
+	private const    int                  HScrollWheelStep = 8;
+	private const    int                  HScrollKeyStep   = 6;
 
 	// Last known mouse position in terminal cell coordinates. -1 means "no mouse event seen yet" and
 	// suppresses the cursor glow until the user actually moves the mouse over the window.
@@ -225,16 +228,16 @@ public class DisplayScreen : IDisplay
 	private const float CursorGlowStrength = 0.45f;
 
 	// Completion popup state. Active whenever the input begins with '/' and at least one completion matches.
-	private readonly List<string> _completionMatches = new List<string>();
-	private int  _completionIndex   = 0;
-	private bool _completionActive  = false;
-	private const int CompletionPopupMaxRows = 5;
-	private const int ScrollbarShowMs = 1000;
-	private const int ScrollbarFadeMs = 350;
+	private readonly List<string> _completionMatches     = new List<string>();
+	private          int          _completionIndex       = 0;
+	private          bool         _completionActive      = false;
+	private const    int          CompletionPopupMaxRows = 5;
+	private const    int          ScrollbarShowMs        = 1000;
+	private const    int          ScrollbarFadeMs        = 350;
 
 	private readonly StringBuilder _drawBuf = new StringBuilder(65536);
-	private StreamWriter? _bufferedOut;
-	private bool _needsErase = true;
+	private          StreamWriter? _bufferedOut;
+	private          bool          _needsErase = true;
 
 	// The previously emitted frame — what the terminal currently shows. Redraw diffs the new frame against
 	// it and emits only the changed cells, which is what makes per-tick redraws (busy spinner, elapsed time,
@@ -242,7 +245,7 @@ public class DisplayScreen : IDisplay
 	private Screen? _lastFrame;
 
 	// Agent busy animation: driven by SeparatorLayer. State fields wired up here; arrays live in SeparatorLayer.
-	private bool _agentBusy = false;
+	private bool _agentBusy     = false;
 	private long _busyStartTick = 0;
 	// Incremented each time a new block type arrives (StreamStart or ToolCall) so the word changes per activity, not per clock tick.
 	private int _busyWordIndex = 0;
@@ -258,17 +261,17 @@ public class DisplayScreen : IDisplay
 	{
 		if (_model != null)
 			_model.MessageUpdated -= OnMessageUpdated;
-		_model = model;
-		_model.Mode = _currentMode;
+		_model                 = model;
+		_model.Mode            = _currentMode;
 		_model.MessageUpdated += OnMessageUpdated;
 		lock (_consoleLock)
 		{
 			_blockCache.Clear();
 			_historyScrollOffset = 0f;
-			_scrollTarget = 0f;
+			_scrollTarget        = 0f;
 			// Viewing a new session restarts the follow timer from scratch.
 			_followReadyTick = 0;
-			_needsErase = true;
+			_needsErase      = true;
 			// New conversation model — the previous composition and anchoring basis are invalid.
 			_stack = null;
 			_dirtySlots.Clear();
@@ -281,7 +284,7 @@ public class DisplayScreen : IDisplay
 	{
 		lock (_consoleLock)
 		{
-			_statusText = text;
+			_statusText           = text;
 			_transientStatusUntil = Environment.TickCount64 + TransientStatusMs;
 			Redraw();
 		}
@@ -297,9 +300,9 @@ public class DisplayScreen : IDisplay
 			: "";
 		lock (_consoleLock)
 		{
-			_statsMetrics = metrics;
+			_statsMetrics   = metrics;
 			_statsModelName = model;
-			_currentRole = role;
+			_currentRole    = role;
 			// A real stats frame supersedes any optimistic /model override.
 			_modelOverride = "";
 			Redraw();
@@ -321,8 +324,8 @@ public class DisplayScreen : IDisplay
 	// Entering/leaving the streaming state changes the slot's forced-expanded rendering even when its
 	// content hasn't changed, so the slot is marked dirty here as well as on content updates.
 	public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _dirtySlots.Add(streamIndex); _busyWordIndex++; _followReadyTick = 0; } }
-	public void OnStreamChunk(string chunk) { lock (_consoleLock) _followReadyTick = 0; }
-	public void OnStreamEnd() { lock (_consoleLock) { if (_streamingSlot >= 0) _dirtySlots.Add(_streamingSlot); _streamingSlot = -1; } }
+	public void OnStreamChunk(string chunk)                    { lock (_consoleLock) _followReadyTick = 0; }
+	public void OnStreamEnd  ()                                { lock (_consoleLock) { if (_streamingSlot >= 0) _dirtySlots.Add(_streamingSlot); _streamingSlot = -1; } }
 
 	public void SetAgentBusy(bool busy, long startTick)
 	{
@@ -373,7 +376,19 @@ public class DisplayScreen : IDisplay
 		Redraw();
 	}
 
-	// Feeds a Config frame from the transport into the overlay (no-op when it is closed).
+	// Opens the /role editor (invoked when the user submits "/role").
+	private void OpenRoleOverlay()
+	{
+		lock (_consoleLock)
+		{
+			if (_roleOverlay == null)
+				_roleOverlay = new RoleOverlay(cmd => { _ = SendAsync(cmd); });
+			_roleOverlay.Open();
+		}
+		Redraw();
+	}
+
+	// Feeds a Config frame from the transport into whichever overlay it belongs to.
 	public void OnConfigFrame(string json)
 	{
 		// The agent's startup no-models notice opens the picker proactively: with nothing
@@ -387,7 +402,13 @@ public class DisplayScreen : IDisplay
 
 		bool consumed;
 		lock (_consoleLock)
-			consumed = _configOverlay != null && _configOverlay.OnConfigFrame(json);
+		{
+			// The role editor claims only its own payload and declines everything else, so both
+			// overlays can share the one frame type.
+			consumed = _roleOverlay != null && _roleOverlay.OnConfigFrame(json);
+			if (!consumed)
+				consumed = _configOverlay != null && _configOverlay.OnConfigFrame(json);
+		}
 		if (consumed)
 			Redraw();
 	}
@@ -401,9 +422,9 @@ public class DisplayScreen : IDisplay
 		if (consumed)
 			Redraw();
 	}
-	public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
-	public void SetFrameDrain(Action drain) { _frameDrain = drain; }
-	public void SetSessionSwitchCallback(Action<string> switchTo) { _sessionSwitchCallback = switchTo; }
+	public void SetRequestExit          (Action requestExit)           { _requestExit = requestExit; }
+	public void SetFrameDrain           (Action drain)                 { _frameDrain = drain; }
+	public void SetSessionSwitchCallback(Action<string> switchTo)      { _sessionSwitchCallback = switchTo; }
 	public void SetSessionDeleteCallback(Action<string> deleteSession) { _sessionDeleteCallback = deleteSession; }
 
 	public void ClearPendingGhost(string sessionId)
@@ -472,7 +493,7 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 		{
 			_sessionActive = active;
-			_sessionTotal = total;
+			_sessionTotal  = total;
 			Redraw();
 		}
 	}
@@ -516,12 +537,12 @@ public class DisplayScreen : IDisplay
 
 	public Task RunAsync(CancellationToken cancellationToken)
 	{
-		_runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		_runCts         = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		_baseStatusText = Path.GetFullPath(Directory.GetCurrentDirectory());
-		_statusText = _baseStatusText;
+		_statusText     = _baseStatusText;
 
 		Console.OutputEncoding = new UTF8Encoding(false);
-		Console.InputEncoding = new UTF8Encoding(false);
+		Console.InputEncoding  = new UTF8Encoding(false);
 		WindowsConsole.EnableVirtualTerminal();
 		WindowsConsole.ReapplyModes();
 
@@ -533,11 +554,11 @@ public class DisplayScreen : IDisplay
 		_bufferedOut.AutoFlush = false;
 		Console.SetOut(_bufferedOut);
 
-		_lastWidth = Console.WindowWidth;
+		_lastWidth  = Console.WindowWidth;
 		_lastHeight = Console.WindowHeight;
 
-		Console.Write("\x1b[?1049h");                           // EnterAltScreen
-		Console.Write("\x1b[?7l");                              // DisableWrap
+		Console.Write("\x1b[?1049h"); // EnterAltScreen
+		Console.Write("\x1b[?7l");    // DisableWrap
 		Console.CursorVisible = false;
 
 		// Measure real glyph widths on the live terminal now, while the probe owns the input stream:
@@ -546,7 +567,7 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 			CharWidth.InitialProbe();
 
-		Console.Write("\x1b[?1000h\x1b[?1003h\x1b[?1006h");     // EnableMouse
+		Console.Write("\x1b[?1000h\x1b[?1003h\x1b[?1006h"); // EnableMouse
 
 		lock (_consoleLock)
 			Redraw();
@@ -575,9 +596,9 @@ public class DisplayScreen : IDisplay
 	// screen up to show "Launching Sandbox…" and the sandbox then failed to start).
 	public void RestoreTerminal()
 	{
-		Console.Write("\x1b[?1006l\x1b[?1003l\x1b[?1000l");     // DisableMouse
-		Console.Write("\x1b[?7h");                              // EnableWrap
-		Console.Write("\x1b[?1049l");                           // ExitAltScreen
+		Console.Write("\x1b[?1006l\x1b[?1003l\x1b[?1000l"); // DisableMouse
+		Console.Write("\x1b[?7h");    // EnableWrap
+		Console.Write("\x1b[?1049l"); // ExitAltScreen
 		Console.Out.Flush();
 		Console.CursorVisible = true;
 	}
@@ -609,8 +630,8 @@ public class DisplayScreen : IDisplay
 		// When the session tree panel is open it claims the right edge, so the history reflows into the
 		// remaining width rather than being painted over. Every width-dependent step below (block layout,
 		// the rendered window, the scrollbar, hover/copy hit-testing) works in historyW, not the full w.
-		int panelW   = _sessionTreeOpen ? Math.Min(52, Math.Max(36, w / 3)) : 0;
-		int historyW = w - panelW;
+		int panelW    = _sessionTreeOpen ? Math.Min(52, Math.Max(36, w / 3)) : 0;
+		int historyW  = w - panelW;
 		_historyWidth = historyW;
 
 		if (historyW != _renderedWidth)
@@ -625,7 +646,7 @@ public class DisplayScreen : IDisplay
 
 		if (w != _lastWidth || h != _lastHeight)
 		{
-			_lastWidth = w;
+			_lastWidth  = w;
 			_lastHeight = h;
 			_needsErase = true;
 		}
@@ -651,9 +672,9 @@ public class DisplayScreen : IDisplay
 			if (_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued) && queued.Count > 0)
 			{
 				const string marker = "⧗ ";
-				int textWidth = Math.Max(1, historyW - marker.Length);
-				List<string> wrapped = new List<string>();
-				bool first = true;
+				int          textWidth = Math.Max(1, historyW - marker.Length);
+				List<string> wrapped   = new List<string>();
+				bool         first     = true;
 				foreach (string entry in queued)
 				{
 					foreach (string raw in entry.Split('\n'))
@@ -663,7 +684,7 @@ public class DisplayScreen : IDisplay
 						{
 							string slice = remaining.Length > textWidth ? remaining.Substring(0, textWidth) : remaining;
 							wrapped.Add((first ? marker : "  ") + slice);
-							first = false;
+							first     = false;
 							remaining = remaining.Length > textWidth ? remaining.Substring(textWidth) : string.Empty;
 						}
 						while (remaining.Length > 0);
@@ -682,10 +703,10 @@ public class DisplayScreen : IDisplay
 		// no full-history Screen is ever built. SpacerRows=1 gives every block one row of breathing room
 		// beneath it without making the spacer part of the block (so toggle/hover math stays clean).
 		StackLayout? oldStack = _stack;
-		bool rebuilt = false;
+		bool         rebuilt  = false;
 		if (_stack == null || (_dirtySlots.Count > 0 && !PatchDirtyBlocks(_stack, historyW)))
 		{
-			_stack = BuildStack(historyW);
+			_stack  = BuildStack(historyW);
 			rebuilt = true;
 		}
 		_dirtySlots.Clear();
@@ -720,8 +741,8 @@ public class DisplayScreen : IDisplay
 		if (_historyScrollOffset < 0f)
 			_historyScrollOffset = 0f;
 
-		_scrollbarTopRow = 0;
-		_scrollbarHeight = historyH;
+		_scrollbarTopRow    = 0;
+		_scrollbarHeight    = historyH;
 		_scrollbarMaxOffset = maxOffset;
 
 		// Scroll offset is "rows from the bottom"; convert to "rows from the top" of the stack.
@@ -734,7 +755,7 @@ public class DisplayScreen : IDisplay
 		// scrollbar, glow) apply to this copy, never to the cached content itself.
 		Screen historyView = stack.RenderWindow(historyH, viewOffsetFromTop, bgCell, _blockHScroll);
 
-		_lastViewTop = viewOffsetFromTop;
+		_lastViewTop       = viewOffsetFromTop;
 		_lastHistoryHeight = historyH;
 
 		// 3. Hover effect: brightens the whole hovered-block rectangle.
@@ -743,11 +764,11 @@ public class DisplayScreen : IDisplay
 			BlockPlacement? p = stack.PlacementOfSlot(_hoverSlot);
 			if (p.HasValue)
 			{
-				BlockPlacement bp = p.Value;
-				int topInView    = bp.Top    - viewOffsetFromTop;
-				int bottomInView = bp.Bottom - viewOffsetFromTop;
-				int clipTop      = Math.Max(0, topInView);
-				int clipBottom   = Math.Min(historyH, bottomInView);
+				BlockPlacement bp           = p.Value;
+				int            topInView    = bp.Top - viewOffsetFromTop;
+				int            bottomInView = bp.Bottom - viewOffsetFromTop;
+				int            clipTop      = Math.Max(       0,    topInView);
+				int            clipBottom   = Math.Min(historyH, bottomInView);
 				if (clipBottom > clipTop)
 				{
 					Rect hoverRect = new Rect(0, clipTop, historyW, clipBottom - clipTop);
@@ -762,11 +783,11 @@ public class DisplayScreen : IDisplay
 		// 4. Scrollbar overlay (last two columns). Time-based opacity fades in/out.
 		const float ScrollbarMaxOpacity = 0.5f;
 		float scrollbarOpacity = ComputeScrollbarOpacity() * ScrollbarMaxOpacity;
-		int thumbH = 0;
-		int thumbTop = 0;
+		int   thumbH           = 0;
+		int   thumbTop         = 0;
 		if (maxOffset > 0 && scrollbarOpacity > 0.01f)
 		{
-			thumbH = Math.Max(1, (int)Math.Round((double)historyH * historyH / Math.Max(1, totalRows)));
+			thumbH   = Math.Max(1, (int)Math.Round((double)historyH * historyH / Math.Max(1, totalRows)));
 			thumbTop = (int)Math.Round((double)(maxOffset - _historyScrollOffset) / maxOffset * (historyH - thumbH));
 			thumbTop = Math.Max(0, Math.Min(historyH - thumbH, thumbTop));
 
@@ -814,12 +835,12 @@ public class DisplayScreen : IDisplay
 		if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
 		{
 			_transientStatusUntil = 0;
-			_statusText = _baseStatusText;
+			_statusText           = _baseStatusText;
 		}
-		string modeName = _model != null ? _model.Mode.ToString() : "";
-		string left = string.IsNullOrEmpty(modeName) ? _statusText : $"{_statusText}  {modeName}";
-		string right = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
-		string center = _statsMetrics;
+		string modeName     = _model != null ? _model.Mode.ToString() : "";
+		string left         = string.IsNullOrEmpty(modeName) ? _statusText : $"{_statusText}  {modeName}";
+		string right        = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
+		string center       = _statsMetrics;
 		Screen statusScreen = StatusBarLayer.Build(left, center, right, w);
 		frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
 
@@ -833,17 +854,22 @@ public class DisplayScreen : IDisplay
 			frame.Blit(treeOverlay, historyW, 0, BlendMode.Replace, null);
 		}
 
-		// /config overlay: centered modal above everything except the cursor glow.
+		// /config and /role overlays: centered modals above everything except the cursor glow.
 		if (_configOverlay != null && _configOverlay.IsOpen)
 		{
 			Screen cfg = _configOverlay.Build(w, h);
 			frame.Blit(cfg, Math.Max(0, (w - cfg.W) / 2), Math.Max(0, (h - cfg.H) / 2), BlendMode.Replace, null);
 		}
+		if (_roleOverlay != null && _roleOverlay.IsOpen)
+		{
+			Screen roleScreen = _roleOverlay.Build(w, h);
+			frame.Blit(roleScreen, Math.Max(0, (w - roleScreen.W) / 2), Math.Max(0, (h - roleScreen.H) / 2), BlendMode.Replace, null);
+		}
 
 		// Cursor glow layer (applied last so it lifts all underlying layers).
 		if (_mouseRow >= 0 && _mouseCol >= 0)
 		{
-			int rad = (int)Math.Ceiling(CursorGlowRadius);
+			int  rad      = (int)Math.Ceiling(CursorGlowRadius);
 			Rect glowRect = new Rect(_mouseCol - rad, _mouseRow - rad, rad * 2 + 1, rad * 2 + 1);
 			new CursorGlowEffect(_mouseCol, _mouseRow, CursorGlowRadius, CursorGlowStrength).Apply(frame, glowRect);
 		}
@@ -930,7 +956,7 @@ public class DisplayScreen : IDisplay
 			}
 			else
 			{
-				layer = new BlockLayer(msg.Index, cached.Collapsed, cached.Expanded, !msg.Collapsed);
+				layer                  = new BlockLayer(msg.Index, cached.Collapsed, cached.Expanded, !msg.Collapsed);
 				_blockCache[msg.Index] = layer;
 			}
 		}
@@ -950,9 +976,9 @@ public class DisplayScreen : IDisplay
 			{
 				if (slot < 0 || slot >= _model.Messages.Count)
 					continue;
-				DisplayMessage msg = _model.Messages[slot];
-				bool visible = !ConversationModel.ShouldHide(msg.Type, _model.Mode) && !string.IsNullOrEmpty(msg.Content);
-				bool present = stack.PlacementOfSlot(slot).HasValue;
+				DisplayMessage msg     = _model.Messages[slot];
+				bool           visible = !ConversationModel.ShouldHide(msg.Type, _model.Mode) && !string.IsNullOrEmpty(msg.Content);
+				bool           present = stack.PlacementOfSlot(slot).HasValue;
 				if (visible != present)
 				{
 					patched = false;
@@ -982,15 +1008,15 @@ public class DisplayScreen : IDisplay
 		if (!tp.HasValue)
 			return;
 
-		int desiredViewTop = tp.Value.Top - _pendingToggleRow;
-		float offset = totalRows - historyH - desiredViewTop;
+		int   desiredViewTop = tp.Value.Top - _pendingToggleRow;
+		float offset         = totalRows - historyH - desiredViewTop;
 		if (offset < 0f)
 			offset = 0f;
 		if (offset > maxOffset)
 			offset = maxOffset;
 
 		_historyScrollOffset = offset;
-		_scrollTarget = offset;
+		_scrollTarget        = offset;
 	}
 
 	// Pans the block currently under the cursor by delta columns (positive = right). Clamped so it never
@@ -1004,7 +1030,7 @@ public class DisplayScreen : IDisplay
 		int blockW = _stack.BlockWidthOfSlot(_hoverSlot);
 		int maxOff = blockW - _historyWidth;
 		if (maxOff <= 0)
-			return false;   // nothing hidden to the side
+			return false; // nothing hidden to the side
 
 		int cur  = _blockHScroll.TryGetValue(_hoverSlot, out int v) ? v : 0;
 		int next = cur + delta;
@@ -1035,10 +1061,10 @@ public class DisplayScreen : IDisplay
 		IReadOnlyList<BlockPlacement> newP = stack.Placements;
 		int spacer = stack.SpacerRows;
 
-		int shift = 0;     // correction to apply to the from-bottom offsets
-		int cumDelta = 0;  // total height delta walked so far, for mapping new coordinates to old
-		int iOld = 0;
-		int iNew = 0;
+		int shift    = 0; // correction to apply to the from-bottom offsets
+		int cumDelta = 0; // total height delta walked so far, for mapping new coordinates to old
+		int iOld     = 0;
+		int iNew     = 0;
 		while (iOld < oldP.Count || iNew < newP.Count)
 		{
 			bool haveOld = iOld < oldP.Count;
@@ -1051,10 +1077,10 @@ public class DisplayScreen : IDisplay
 				// Slot present in both frames: a plain height change.
 				BlockPlacement op = oldP[iOld++];
 				BlockPlacement np = newP[iNew++];
-				int d = np.Height - op.Height;
+				int            d  = np.Height - op.Height;
 				if (d != 0)
 				{
-					shift += ClassifyShift(op.Top, op.Bottom, oldViewTop, d);
+					shift    += ClassifyShift(op.Top, op.Bottom, oldViewTop, d);
 					cumDelta += d;
 				}
 			}
@@ -1062,26 +1088,26 @@ public class DisplayScreen : IDisplay
 			{
 				// Block disappeared (hidden or cleared); its spacer row goes with it.
 				BlockPlacement op = oldP[iOld++];
-				int d = -(op.Height + spacer);
-				shift += ClassifyShift(op.Top, op.Bottom, oldViewTop, d);
-				cumDelta += d;
+				int            d  = -(op.Height + spacer);
+				shift            += ClassifyShift(op.Top, op.Bottom, oldViewTop, d);
+				cumDelta         += d;
 			}
 			else
 			{
 				// Block appeared. Map its new top back into the previous frame's coordinates so it
 				// can be classified against the old view top like everything else.
-				BlockPlacement np = newP[iNew++];
-				int d = np.Height + spacer;
-				int effTop = np.Top - cumDelta;
-				shift += ClassifyShift(effTop, effTop + d, oldViewTop, d);
-				cumDelta += d;
+				BlockPlacement np     = newP[iNew++];
+				int            d      = np.Height + spacer;
+				int            effTop = np.Top - cumDelta;
+				shift                += ClassifyShift(effTop, effTop + d, oldViewTop, d);
+				cumDelta             += d;
 			}
 		}
 
 		if (shift != 0)
 		{
 			_historyScrollOffset += shift;
-			_scrollTarget += shift;
+			_scrollTarget        += shift;
 		}
 	}
 
@@ -1109,7 +1135,7 @@ public class DisplayScreen : IDisplay
 	private (int Row, int Col) GetCursorScreenPos(int inputStartRow, int skip, int w)
 	{
 		(int lineIdx, int col) = InputLayer.CursorInInputLines(_currentInputText, _currentInputCursor, w);
-		int visibleLine = Math.Max(0, lineIdx - skip);
+		int visibleLine        = Math.Max(0, lineIdx - skip);
 		return (inputStartRow + visibleLine, col);
 	}
 
@@ -1132,7 +1158,7 @@ public class DisplayScreen : IDisplay
 		if (string.IsNullOrEmpty(_currentInputText) || _currentInputText[0] != '/')
 		{
 			_completionActive = false;
-			_completionIndex = 0;
+			_completionIndex  = 0;
 			return;
 		}
 		foreach (string c in _completions)
@@ -1143,7 +1169,7 @@ public class DisplayScreen : IDisplay
 		if (_completionMatches.Count == 0)
 		{
 			_completionActive = false;
-			_completionIndex = 0;
+			_completionIndex  = 0;
 			return;
 		}
 		_completionActive = true;
@@ -1189,7 +1215,7 @@ public class DisplayScreen : IDisplay
 		// Flatten every submission to raw lines, then hard-wrap each to the available width. The very
 		// first row carries the queued marker; all others are indented to align beneath it.
 		List<string> wrapped = new List<string>();
-		bool first = true;
+		bool         first   = true;
 		foreach (string entry in entries)
 		{
 			foreach (string raw in entry.Split('\n'))
@@ -1199,7 +1225,7 @@ public class DisplayScreen : IDisplay
 				{
 					string slice = remaining.Length > textWidth ? remaining.Substring(0, textWidth) : remaining;
 					wrapped.Add((first ? marker : indent) + slice);
-					first = false;
+					first     = false;
 					remaining = remaining.Length > textWidth ? remaining.Substring(textWidth) : string.Empty;
 				}
 				while (remaining.Length > 0);
@@ -1210,12 +1236,12 @@ public class DisplayScreen : IDisplay
 			return;
 
 		// Keep the most recent rows when the queue is taller than the cap.
-		int show = Math.Min(ghostRows, wrapped.Count);
+		int show       = Math.Min(ghostRows, wrapped.Count);
 		int firstIndex = wrapped.Count - show;
 
 		for (int i = 0; i < show; i++)
 		{
-			int row = ghostTop + i;
+			int    row  = ghostTop + i;
 			string line = wrapped[firstIndex + i];
 			// Full-width strip so it reads as a floating object over the history beneath it.
 			frame.WriteText(0, row, line.PadRight(w), Palette.GhostFg, Palette.InputBg, CellStyle.None);
@@ -1226,7 +1252,7 @@ public class DisplayScreen : IDisplay
 	{
 		lock (_consoleLock)
 		{
-			_currentInputText = text;
+			_currentInputText   = text;
 			_currentInputCursor = cursor;
 			Redraw();
 		}
@@ -1314,8 +1340,8 @@ public class DisplayScreen : IDisplay
 	// arguments fall back to the raw text so nothing is silently dropped.
 	private static void AppendToolCallCopyText(StringBuilder sb, string content)
 	{
-		int paren = content.IndexOf('(');
-		string name = paren >= 0 ? content.Substring(0, paren).Trim() : content;
+		int    paren    = content.IndexOf('(');
+		string name     = paren >= 0 ? content.Substring(0, paren).Trim() : content;
 		string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
@@ -1334,7 +1360,7 @@ public class DisplayScreen : IDisplay
 					return;
 				}
 				List<string> inlineArgs = new List<string>();
-				List<string> blockArgs = new List<string>();
+				List<string> blockArgs  = new List<string>();
 				foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
 				{
 					// GetString() already decodes JSON escapes — no further unescaping, or a literal
@@ -1365,19 +1391,19 @@ public class DisplayScreen : IDisplay
 
 	private void InputLoop(CancellationToken token)
 	{
-		StringBuilder inputBuffer = new StringBuilder();
-		int cursorPos = 0;
-		int matchIndex = 0;
-		List<string> matches = new List<string>();
-		bool inCompletion = false;
-		List<string> history = new List<string>();
-		int historyIndex = -1;
-		string historySavedDraft = "";
+		StringBuilder inputBuffer       = new StringBuilder();
+		int           cursorPos         = 0;
+		int           matchIndex        = 0;
+		List<string>  matches           = new List<string>();
+		bool          inCompletion      = false;
+		List<string>  history           = new List<string>();
+		int           historyIndex      = -1;
+		string        historySavedDraft = "";
 
 		// Large clipboard pastes are replaced in the input line with a short placeholder key;
 		// the full content is held here and substituted back in when the line is committed.
 		Dictionary<string, string> pasteBuffers = new Dictionary<string, string>();
-		int pasteSeq = 0;
+		int                        pasteSeq     = 0;
 
 		SetInput("", 0);
 
@@ -1404,19 +1430,19 @@ public class DisplayScreen : IDisplay
 					if (Math.Abs(remaining) >= 0.5f)
 					{
 						_historyScrollOffset += remaining * ScrollAlpha;
-						needRedraw = true;
+						needRedraw            = true;
 					}
 					else if (_historyScrollOffset != _scrollTarget)
 					{
 						_historyScrollOffset = Math.Max(0f, _scrollTarget);
-						needRedraw = true;
+						needRedraw           = true;
 					}
 					if (_scrollbarShowUntil > 0)
 					{
 						if (Environment.TickCount64 >= _scrollbarShowUntil)
 						{
 							_scrollbarShowUntil = 0;
-							needRedraw = true;
+							needRedraw          = true;
 						}
 						else
 						{
@@ -1447,7 +1473,7 @@ public class DisplayScreen : IDisplay
 			lock (_consoleLock)
 			{
 				bool animating = _agentBusy || _scrollbarShowUntil > 0 || _transientStatusUntil > 0 || _historyScrollOffset != _scrollTarget;
-				pollTimeout = animating ? 16 : 32;
+				pollTimeout    = animating ? 16 : 32;
 			}
 
 			ConsoleInputEvent? evOpt = WindowsConsole.ReadInputWithTimeout(pollTimeout);
@@ -1460,12 +1486,12 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					_mouseRow = inputEv.Row;
-					_mouseCol = inputEv.Col;
+					_mouseRow        = inputEv.Row;
+					_mouseCol        = inputEv.Col;
 					// Over the session-tree panel there is no history block to highlight.
 					bool overPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
-					int? slot = overPanel ? null : SlotAtTerminalRow(inputEv.Row);
-					_hoverSlot = slot ?? -1;
+					int? slot      = overPanel ? null : SlotAtTerminalRow(inputEv.Row);
+					_hoverSlot     = slot ?? -1;
 					// The cursor glow and copy affordance track the mouse cell-by-cell, so every move
 					// redraws; frame diffing keeps the emit to the small region around the cursor.
 					Redraw();
@@ -1482,7 +1508,7 @@ public class DisplayScreen : IDisplay
 					// Re-resolve the block under the cursor: it's the wheel target, and on a vertical scroll the
 					// content moves under a stationary mouse so the highlight should track it.
 					bool wheelOverPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
-					_hoverSlot = wheelOverPanel ? -1 : (SlotAtTerminalRow(inputEv.Row) ?? -1);
+					_hoverSlot          = wheelOverPanel ? -1 : (SlotAtTerminalRow(inputEv.Row) ?? -1);
 
 					// A horizontal wheel (tilt / trackpad) or Shift+wheel pans the hovered block sideways;
 					// positive delta scrolls right. If the block has nothing hidden to the side, fall through
@@ -1497,8 +1523,18 @@ public class DisplayScreen : IDisplay
 					_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
 					// Any scroll gesture resets the follow timer, even one that lands back at the bottom.
 					_followReadyTick = 0;
-					_scrollTarget = Math.Max(0, _scrollTarget + (inputEv.WheelDelta > 0 ? 3 : -3));
+					_scrollTarget    = Math.Max(0, _scrollTarget + (inputEv.WheelDelta > 0 ? 3 : -3));
 				}
+				continue;
+			}
+
+			// Right-click pastes, the way it does in most terminals. Handled before the left-click
+			// logic so it never toggles a block or moves the selection.
+			if (inputEv.Type == InputEventType.MouseClick && inputEv.Right)
+			{
+				string pasted = PasteFromClipboard(inputBuffer, ref cursorPos, pasteBuffers, ref pasteSeq);
+				if (pasted.Length > 0)
+					inCompletion = false;
 				continue;
 			}
 
@@ -1506,8 +1542,8 @@ public class DisplayScreen : IDisplay
 			{
 				lock (_consoleLock)
 				{
-					_mouseRow = inputEv.Row;
-					_mouseCol = inputEv.Col;
+					_mouseRow     = inputEv.Row;
+					_mouseCol     = inputEv.Col;
 					int scrollCol = _historyWidth - 2;
 
 					// A click inside the session-tree panel is the panel's, not the history's — never toggle a
@@ -1527,10 +1563,10 @@ public class DisplayScreen : IDisplay
 						&& inputEv.Row < _scrollbarTopRow + _scrollbarHeight)
 					{
 						_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
-						_followReadyTick = 0;
-						float fraction = (float)(inputEv.Row - _scrollbarTopRow) / Math.Max(1, _scrollbarHeight - 1);
-						_scrollTarget = (1f - fraction) * _scrollbarMaxOffset;
-						_scrollTarget = Math.Max(0f, Math.Min(_scrollbarMaxOffset, _scrollTarget));
+						_followReadyTick    = 0;
+						float fraction      = (float)(inputEv.Row - _scrollbarTopRow) / Math.Max(1, _scrollbarHeight - 1);
+						_scrollTarget       = (1f - fraction) * _scrollbarMaxOffset;
+						_scrollTarget       = Math.Max(0f, Math.Min(_scrollbarMaxOffset, _scrollTarget));
 					}
 					else
 					{
@@ -1542,8 +1578,8 @@ public class DisplayScreen : IDisplay
 							// keep it on the same row; otherwise (a block taller than the viewport, whose top
 							// is scrolled off above) drop its top to the clicked row so the collapsed block
 							// sits directly under the mouse and can be toggled back open.
-							int desiredRow = inputEv.Row;
-							BlockPlacement? op = _stack?.PlacementOfSlot(slot.Value);
+							int             desiredRow = inputEv.Row;
+							BlockPlacement? op         = _stack?.PlacementOfSlot(slot.Value);
 							if (op.HasValue)
 							{
 								int topRow = op.Value.Top - _lastViewTop;
@@ -1551,12 +1587,12 @@ public class DisplayScreen : IDisplay
 									desiredRow = topRow;
 							}
 							_pendingToggleSlot = slot.Value;
-							_pendingToggleRow = desiredRow;
+							_pendingToggleRow  = desiredRow;
 
 							// Redraw's pending-toggle anchoring keeps the block stable through the height change.
 							_model?.ToggleCollapsed(slot.Value);
 							// Keep hover indicator after the click — mouse is still over the block.
-							_hoverSlot = slot.Value;
+							_hoverSlot       = slot.Value;
 							_followReadyTick = 0;
 						}
 					}
@@ -1577,11 +1613,15 @@ public class DisplayScreen : IDisplay
 					continue;
 				}
 
+				// The pasted TEXT is the whole truth here and the clipboard must not be consulted:
+				// dragging a file onto the terminal arrives as exactly this event, carrying the
+				// dropped path, while the clipboard may still hold something else entirely from an
+				// earlier copy. Preferring the clipboard attached the wrong file.
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					inCompletion = false;
-					string insert = InputLayer.BuildPasteInsert(inputEv.Text, pasteBuffers, ref pasteSeq);
+					inCompletion     = false;
+					string insert    = InputLayer.BuildPasteInsert(inputEv.Text, pasteBuffers, ref pasteSeq);
 					inputBuffer.Insert(cursorPos, insert);
 					cursorPos += insert.Length;
 					SetInput(inputBuffer.ToString(), cursorPos);
@@ -1589,15 +1629,26 @@ public class DisplayScreen : IDisplay
 				continue;
 			}
 
-			ConsoleKeyInfo key = inputEv.Key;
-			bool ctrl  = key.Modifiers.HasFlag(ConsoleModifiers.Control);
-			bool alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
-			bool shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
+			ConsoleKeyInfo key   = inputEv.Key;
+			bool           ctrl  = key.Modifiers.HasFlag(ConsoleModifiers.Control);
+			bool           alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
+			bool           shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
 
-			// The /config overlay is modal: while open it consumes every key.
+			// The /config and /role overlays are modal: while one is open it consumes every key.
 			bool configOpen;
+			bool roleOpen;
 			lock (_consoleLock)
+			{
 				configOpen = _configOverlay != null && _configOverlay.IsOpen;
+				roleOpen   = _roleOverlay != null && _roleOverlay.IsOpen;
+			}
+			if (roleOpen)
+			{
+				lock (_consoleLock)
+					_roleOverlay!.HandleKey(key);
+				Redraw();
+				continue;
+			}
 			if (configOpen)
 			{
 				lock (_consoleLock)
@@ -1674,12 +1725,12 @@ public class DisplayScreen : IDisplay
 			if (key.Key == ConsoleKey.Enter && !shift && !alt)
 			{
 				// If a completion popup is active, accept the highlighted entry first.
-				bool popupActive;
+				bool    popupActive;
 				string? accept = null;
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					popupActive = _completionActive && _completionMatches.Count > 0;
+					popupActive      = _completionActive && _completionMatches.Count > 0;
 					if (popupActive)
 						accept = _completionMatches[_completionIndex];
 				}
@@ -1687,7 +1738,7 @@ public class DisplayScreen : IDisplay
 				{
 					inputBuffer.Clear();
 					inputBuffer.Append(accept);
-					cursorPos = inputBuffer.Length;
+					cursorPos    = inputBuffer.Length;
 					inCompletion = false;
 				}
 
@@ -1698,18 +1749,24 @@ public class DisplayScreen : IDisplay
 				}
 				pasteBuffers.Clear();
 				inputBuffer.Clear();
-				cursorPos = 0;
+				cursorPos  = 0;
 				matchIndex = 0;
 				matches.Clear();
-				inCompletion = false;
-				historyIndex = -1;
+				inCompletion      = false;
+				historyIndex      = -1;
 				historySavedDraft = "";
 
-				// /config never goes to the chat: it opens the local picker overlay.
+				// /config and /role never go to the chat: they open local overlays.
 				if (string.Equals(text, "/config", StringComparison.OrdinalIgnoreCase))
 				{
 					SetInput("", 0);
 					OpenConfigOverlay();
+					continue;
+				}
+				if (string.Equals(text, "/role", StringComparison.OrdinalIgnoreCase))
+				{
+					SetInput("", 0);
+					OpenRoleOverlay();
 					continue;
 				}
 
@@ -1748,12 +1805,12 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.Tab)
 			{
 				// If the completion popup is up, Tab accepts the highlighted entry; otherwise cycle inline.
-				bool popupActive;
+				bool    popupActive;
 				string? accept = null;
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					popupActive = _completionActive && _completionMatches.Count > 0;
+					popupActive      = _completionActive && _completionMatches.Count > 0;
 					if (popupActive)
 						accept = _completionMatches[_completionIndex];
 				}
@@ -1762,7 +1819,7 @@ public class DisplayScreen : IDisplay
 				{
 					inputBuffer.Clear();
 					inputBuffer.Append(accept);
-					cursorPos = inputBuffer.Length;
+					cursorPos    = inputBuffer.Length;
 					inCompletion = false;
 					SetInput(inputBuffer.ToString(), cursorPos);
 				}
@@ -1775,8 +1832,8 @@ public class DisplayScreen : IDisplay
 					InputLayer.UpdateMatches(inputBuffer.ToString(), matches, completionsCopy);
 					if (matches.Count > 0)
 					{
-						matchIndex = inCompletion ? (matchIndex + 1) % matches.Count : 0;
-						inCompletion = true;
+						matchIndex        = inCompletion ? (matchIndex + 1) % matches.Count : 0;
+						inCompletion      = true;
 						string completion = matches[matchIndex];
 						inputBuffer.Clear();
 						inputBuffer.Append(completion);
@@ -1790,7 +1847,7 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 					_followReadyTick = 0;
 				inCompletion = false;
-				int newPos = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
+				int newPos   = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
 				inputBuffer.Remove(newPos, cursorPos - newPos);
 				cursorPos = newPos;
 				SetInput(inputBuffer.ToString(), cursorPos);
@@ -1812,7 +1869,7 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 					_followReadyTick = 0;
 				inCompletion = false;
-				int newPos = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
+				int newPos   = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
 				inputBuffer.Remove(cursorPos, newPos - cursorPos);
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
@@ -1846,7 +1903,7 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
-					_followReadyTick = 0;
+					_followReadyTick    = 0;
 					if (key.Key == ConsoleKey.UpArrow)
 						_scrollTarget += 1;
 					else
@@ -1901,7 +1958,7 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					popupActive = _completionActive && _completionMatches.Count > 0;
+					popupActive      = _completionActive && _completionMatches.Count > 0;
 				}
 				if (popupActive)
 				{
@@ -1920,7 +1977,7 @@ public class DisplayScreen : IDisplay
 					if (upW < 1)
 						upW = 80;
 					(int upLine, int upCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
-					cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
+					cursorPos               = InputLayer.CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
 					SetInput(inputBuffer.ToString(), cursorPos);
 				}
 				else if (history.Count > 0)
@@ -1942,7 +1999,7 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					popupActive = _completionActive && _completionMatches.Count > 0;
+					popupActive      = _completionActive && _completionMatches.Count > 0;
 				}
 				if (popupActive)
 				{
@@ -1961,7 +2018,7 @@ public class DisplayScreen : IDisplay
 					if (downW < 1)
 						downW = 80;
 					(int downLine, int downCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
-					int totalLines = InputLayer.WrapInput(inputBuffer.ToString(), downW).Count;
+					int totalLines              = InputLayer.WrapInput(inputBuffer.ToString(), downW).Count;
 					if (downLine < totalLines - 1)
 					{
 						cursorPos = InputLayer.CharFromInputLines(inputBuffer.ToString(), downLine + 1, downCol, downW);
@@ -1987,9 +2044,9 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
-					_followReadyTick = 0;
-					int pageH = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
-					_scrollTarget += Math.Max(1, pageH - 1);
+					_followReadyTick    = 0;
+					int pageH           = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
+					_scrollTarget      += Math.Max(1, pageH - 1);
 				}
 				continue;
 			}
@@ -1998,9 +2055,9 @@ public class DisplayScreen : IDisplay
 				lock (_consoleLock)
 				{
 					_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
-					_followReadyTick = 0;
-					int pageH = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
-					_scrollTarget = Math.Max(0f, _scrollTarget - Math.Max(1, pageH - 1));
+					_followReadyTick    = 0;
+					int pageH           = Math.Max(1, Console.WindowHeight - 3 - InputLayer.ComputeInputRows(_currentInputText, Console.WindowWidth));
+					_scrollTarget       = Math.Max(0f, _scrollTarget - Math.Max(1, pageH - 1));
 				}
 				continue;
 			}
@@ -2011,10 +2068,10 @@ public class DisplayScreen : IDisplay
 				if (inputBuffer.Length > 0)
 				{
 					inputBuffer.Clear();
-					cursorPos = 0;
+					cursorPos    = 0;
 					inCompletion = false;
 					matches.Clear();
-					historyIndex = -1;
+					historyIndex      = -1;
 					historySavedDraft = "";
 					SetInput("", 0);
 				}
@@ -2046,7 +2103,7 @@ public class DisplayScreen : IDisplay
 							}
 							// Scroll the pre-selected row into view.
 							_sessionTreeScroll = 0;
-							int visRows = Math.Max(1, _lastHeight - 5);
+							int visRows        = Math.Max(1, _lastHeight - 5);
 							if (_sessionTreeSelected >= visRows)
 								_sessionTreeScroll = _sessionTreeSelected - visRows + 1;
 						}
@@ -2074,32 +2131,8 @@ public class DisplayScreen : IDisplay
 			// reaches us, making it the reliable way to paste a screenshot.
 			else if (key.Key == ConsoleKey.V && (ctrl || alt))
 			{
-				lock (_consoleLock)
-					_followReadyTick = 0;
-
-				// Non-text clipboard contents first: copied files and screenshot bitmaps both
-				// become path markers, so a pasted image travels the same route as a dropped one.
-				(string insert, string report) = PasteMediaMarkers();
-				if (insert.Length == 0)
-				{
-					string? clip = ClipboardService.GetText();
-					if (!string.IsNullOrEmpty(clip))
-						insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
-					else
-						SetStatus(report.Length > 0 ? report : "Clipboard is empty.");
-				}
-				else if (report.Length > 0)
-				{
-					SetStatus(report);
-				}
-
-				if (insert.Length > 0)
-				{
+				if (PasteFromClipboard(inputBuffer, ref cursorPos, pasteBuffers, ref pasteSeq).Length > 0)
 					inCompletion = false;
-					inputBuffer.Insert(cursorPos, insert);
-					cursorPos += insert.Length;
-					SetInput(inputBuffer.ToString(), cursorPos);
-				}
 			}
 			else if (key.Key == ConsoleKey.X && ctrl)
 			{
@@ -2109,7 +2142,7 @@ public class DisplayScreen : IDisplay
 				{
 					ClipboardService.SetText(inputBuffer.ToString());
 					inputBuffer.Clear();
-					cursorPos = 0;
+					cursorPos    = 0;
 					inCompletion = false;
 					SetInput("", 0);
 				}
@@ -2167,13 +2200,44 @@ public class DisplayScreen : IDisplay
 	// raw bitmap data from a screenshot. A screenshot has no file of its own, so it is written into
 	// the staging folder here and the marker points at that copy. Empty when the clipboard holds
 	// neither, which sends the caller to the text path.
+	// The one paste implementation behind every trigger — right-click, Ctrl+V, and Alt+V. Media on
+	// the clipboard wins over text, so a screenshot and a copied file both become path markers.
+	// Returns what was inserted (empty when the clipboard had nothing usable).
+	private string PasteFromClipboard(StringBuilder inputBuffer, ref int cursorPos, Dictionary<string, string> pasteBuffers, ref int pasteSeq)
+	{
+		lock (_consoleLock)
+			_followReadyTick = 0;
+
+		(string insert, string report) = PasteMediaMarkers();
+		if (insert.Length == 0)
+		{
+			string? clip = ClipboardService.GetText();
+			if (!string.IsNullOrEmpty(clip))
+				insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
+			else
+				SetStatus(report.Length > 0 ? report : "Clipboard is empty.");
+		}
+		else if (report.Length > 0)
+		{
+			SetStatus(report);
+		}
+
+		if (insert.Length > 0)
+		{
+			inputBuffer.Insert(cursorPos, insert);
+			cursorPos += insert.Length;
+			SetInput(inputBuffer.ToString(), cursorPos);
+		}
+		return insert;
+	}
+
 	private (string Markers, string Report) PasteMediaMarkers()
 	{
 		if (_attachmentRoot.Length == 0)
 			return (string.Empty, string.Empty);
 
-		StringBuilder markers = new StringBuilder();
-		int fileCount = 0;
+		StringBuilder markers   = new StringBuilder();
+		int           fileCount = 0;
 		foreach (string file in ClipboardMedia.GetFiles())
 		{
 			markers.Append($"[ path {file} ] ");
@@ -2189,7 +2253,7 @@ public class DisplayScreen : IDisplay
 		// Nothing usable. Say so rather than doing nothing visible — a silent no-op here reads as
 		// a broken feature, and the most common cause (an image-only clipboard swallowed by the
 		// terminal's own Ctrl+V) is invisible from the user's side.
-		return (string.Empty, "Clipboard holds no image or files (for a screenshot, try Alt+V).");
+		return (string.Empty, "Clipboard holds no image or files.");
 	}
 
 	// Copies one dropped file into the workspace staging folder under a collision-proof name, and
@@ -2203,7 +2267,7 @@ public class DisplayScreen : IDisplay
 
 		try
 		{
-			string folder = MediaIntake.EnsureStagingFolder(_attachmentRoot);
+			string  folder = MediaIntake.EnsureStagingFolder(_attachmentRoot);
 			string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
 			if (parent != null && string.Equals(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar), parent.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
 				return Path.GetFileName(path);
@@ -2222,9 +2286,9 @@ public class DisplayScreen : IDisplay
 	{
 		if (text.StartsWith("/", StringComparison.Ordinal))
 		{
-			string trimmed = text.Substring(1).Trim();
-			int spaceIdx = trimmed.IndexOf(' ');
-			string verb = spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed;
+			string trimmed  = text.Substring(1).Trim();
+			int    spaceIdx = trimmed.IndexOf(' ');
+			string verb     = spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed;
 
 			if (verb.Equals("verbose", StringComparison.OrdinalIgnoreCase))
 			{

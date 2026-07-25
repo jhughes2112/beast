@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,21 +39,21 @@ public static class Summarizer
 
 		// Any model in the role can compact: no minimum context is required because the
 		// transcript is chunked to whatever window the chosen model actually has.
-		Role? role = roleService.GetRole(session.Role);
-		LlmService? service = registry.CreateService(role, session.Model, 0);
+		Role?       role    = roleService.GetRole(session.Role);
+		LlmService? service = registry.CreateService(role, session.Model, 0, true);
 		if (service != null)
 		{
-			List<string> blocks = RenderTranscript(session.Data.Messages);
-			string running = string.Empty;
-			int index = 0;
-			int offset = 0;
-			int stage = 0;
-			bool failed = false;
+			List<string> blocks  = RenderTranscript(session.Data.Messages);
+			string       running = string.Empty;
+			int          index   = 0;
+			int          offset  = 0;
+			int          stage   = 0;
+			bool         failed  = false;
 
 			while (!failed && (index < blocks.Count || stage == 0))
 			{
-				int attemptBudget = ChunkCharBudget(service, prompt.Length + running.Length);
-				bool stageDone = false;
+				int  attemptBudget = ChunkCharBudget(service, prompt.Length + running.Length);
+				bool stageDone     = false;
 				while (!stageDone && !failed)
 				{
 					if (attemptBudget < kMinChunkChars)
@@ -64,7 +64,7 @@ public static class Summarizer
 					}
 
 					(string chunk, int nextIndex, int nextOffset) = BuildChunk(blocks, index, offset, attemptBudget);
-					bool isFinal = nextIndex >= blocks.Count;
+					bool   isFinal     = nextIndex >= blocks.Count;
 					string stagePrompt = BuildStagePrompt(running, chunk, prompt, isFinal, isFinal && stage == 0);
 
 					if (!isFinal || stage > 0)
@@ -73,15 +73,15 @@ public static class Summarizer
 					// Each attempt gets a fresh throwaway session so a failed or oversized attempt
 					// leaves no state behind; its provider-reported cost still rolls into the real
 					// session so compaction spend is billed where it belongs.
-					Session stageSession = BuildStageSession(session, service, stagePrompt, transport);
-					ProtocolResult result = await service.RunToCompletionAsync(stageSession, System.Array.Empty<Tool>(), null, 0, SummaryOutputTokens(service), false, transport, appToken);
+					Session        stageSession = BuildStageSession(session, service, stagePrompt, transport);
+					ProtocolResult result       = await service.RunToCompletionAsync(stageSession, System.Array.Empty<Tool>(), null, 0, SummaryOutputTokens(service), false, transport, appToken);
 					session.RecordCost(stageSession.TotalCost);
 
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{
 						running = result.Payload!.AssistantText;
-						index = nextIndex;
-						offset = nextOffset;
+						index   = nextIndex;
+						offset  = nextOffset;
 						stage++;
 						stageDone = true;
 						if (isFinal)
@@ -176,9 +176,9 @@ public static class Summarizer
 		StringBuilder sb = new StringBuilder();
 		while (index < blocks.Count && sb.Length < charBudget)
 		{
-			string block = blocks[index];
-			int remaining = charBudget - sb.Length;
-			int available = block.Length - offset;
+			string block     = blocks[index];
+			int    remaining = charBudget - sb.Length;
+			int    available = block.Length - offset;
 			if (available <= remaining)
 			{
 				sb.Append(block, offset, available);
@@ -240,7 +240,7 @@ public static class Summarizer
 	private static int ChunkCharBudget(LlmService service, int overheadChars)
 	{
 		long inputChars = (long)(service.Model.Config.ContextWindow - SummaryOutputTokens(service)) * kCharsPerToken;
-		long budget = inputChars - overheadChars - kScaffoldChars;
+		long budget     = inputChars - overheadChars - kScaffoldChars;
 		return budget > int.MaxValue ? int.MaxValue : (int)budget;
 	}
 
