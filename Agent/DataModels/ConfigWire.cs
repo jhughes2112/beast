@@ -52,6 +52,58 @@ public class ConfigSearchInfo
 	public string Model { get; set; } = string.Empty;
 }
 
+// Agent → Beast: every role and the model order it currently uses, for the /role editor.
+public class ConfigRolesPayload
+{
+	[JsonPropertyName("kind")]
+	public string Kind { get; set; } = "roles";
+
+	[JsonPropertyName("roles")]
+	public List<ConfigRoleInfo> Roles { get; set; } = new();
+
+	// The role the active session is running, so the editor can open on it.
+	[JsonPropertyName("active")]
+	public string Active { get; set; } = string.Empty;
+}
+
+public class ConfigRoleInfo
+{
+	[JsonPropertyName("name")]
+	public string Name { get; set; } = string.Empty;
+
+	[JsonPropertyName("kind")]
+	public string Kind { get; set; } = string.Empty;
+
+	// The role's models in preference order, each already resolved to a display label.
+	[JsonPropertyName("models")]
+	public List<ConfigRoleModel> Models { get; set; } = new();
+}
+
+public class ConfigRoleModel
+{
+	[JsonPropertyName("id")]
+	public string Id { get; set; } = string.Empty;
+
+	// Cost and modalities, so the ordering decision can be made without leaving the editor.
+	[JsonPropertyName("label")]
+	public string Label { get; set; } = string.Empty;
+
+	// False when the id is configured for the role but not currently registered (endpoint down,
+	// model disabled). Kept in the order so saving cannot silently drop it.
+	[JsonPropertyName("available")]
+	public bool Available { get; set; } = true;
+}
+
+// Beast → Agent: one role's new model order.
+public class ConfigRoleApplyPayload
+{
+	[JsonPropertyName("role")]
+	public string Role { get; set; } = string.Empty;
+
+	[JsonPropertyName("models")]
+	public List<string> Models { get; set; } = new();
+}
+
 // Beast → Agent: the full desired state of the web-search provider list.
 public class ConfigSearchApplyPayload
 {

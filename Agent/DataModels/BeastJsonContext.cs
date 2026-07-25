@@ -20,6 +20,8 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(ConfigCatalogPayload))]
 [JsonSerializable(typeof(ConfigApplyPayload))]
 [JsonSerializable(typeof(ConfigSearchApplyPayload))]
+[JsonSerializable(typeof(ConfigRolesPayload))]
+[JsonSerializable(typeof(ConfigRoleApplyPayload))]
 internal partial class BeastJsonContext : JsonSerializerContext
 {
 }
@@ -35,7 +37,7 @@ internal static class BeastJson
 	public static readonly BeastJsonContext Persist = new BeastJsonContext(new JsonSerializerOptions
 	{
 		WriteIndented = true,
-		Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+		Encoder       = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
 	});
 
 	// Compact wire frames (transport payloads).

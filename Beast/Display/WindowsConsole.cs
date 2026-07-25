@@ -10,12 +10,13 @@ internal struct ConsoleInputEvent
 {
 	internal InputEventType Type;
 	internal ConsoleKeyInfo Key;
-	internal int    Col;
-	internal int    Row;
-	internal short  WheelDelta;  // wheel: positive = up / right, negative = down / left
-	internal bool   Shift;       // Shift held during a MouseClick or wheel (shift-click = add-to-clipboard; shift+wheel = pan)
-	internal bool   Horizontal;  // a horizontal wheel (tilt / trackpad) rather than the vertical wheel
-	internal string Text;        // full text for a coalesced paste burst (newlines preserved)
+	internal int            Col;
+	internal int            Row;
+	internal short          WheelDelta; // wheel: positive = up / right, negative = down / left
+	internal bool           Shift;      // Shift held during a MouseClick or wheel (shift-click = add-to-clipboard; shift+wheel = pan)
+	internal bool           Horizontal; // a horizontal wheel (tilt / trackpad) rather than the vertical wheel
+	internal bool           Right;      // MouseClick: the right button rather than the left (right-click = paste)
+	internal string         Text;       // full text for a coalesced paste burst (newlines preserved)
 }
 
 // Manages Windows console mode and provides a unified ReadInputWithTimeout that surfaces
@@ -31,12 +32,13 @@ internal static class WindowsConsole
 	private const uint DisableQuickEditMode            = 0x0040;
 	private const uint EnableExtendedFlags             = 0x0080;
 
-	private const uint   WAIT_OBJECT_0  = 0x00000000;
+	private const uint   WAIT_OBJECT_0    = 0x00000000;
 	private const ushort KEY_EVENT_TYPE   = 0x0001;
 	private const ushort MOUSE_EVENT_TYPE = 0x0002;
-	private const uint   MOUSE_WHEELED  = 0x0004;
-	private const uint   MOUSE_HWHEELED = 0x0008;
-	private const uint   LEFT_BUTTON    = 0x0001;
+	private const uint   MOUSE_WHEELED    = 0x0004;
+	private const uint   MOUSE_HWHEELED   = 0x0008;
+	private const uint   LEFT_BUTTON      = 0x0001;
+	private const uint   RIGHT_BUTTON     = 0x0002;
 
 	// Bracketed paste: when enabled, the terminal wraps any paste in ESC[200~ ... ESC[201~ and hands
 	// the content to us as data instead of cooking it. This is what suppresses the console host's
@@ -51,9 +53,9 @@ internal static class WindowsConsole
 	// every VT mouse-reporting mode OFF: X10/normal (1000), button-event (1002), any-event (1003),
 	// and SGR extended (1006). With these off the terminal stops emitting mouse VT sequences and
 	// Windows keeps delivering MOUSE_EVENT records.
-	private const string DisableVtMouseModes = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
-	private static readonly char[] PasteStartMarker = new char[] { '[', '2', '0', '0', '~' };
-	private static readonly char[] PasteEndMarker   = new char[] { '\x1b', '[', '2', '0', '1', '~' };
+	private const           string DisableVtMouseModes = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
+	private static readonly char[] PasteStartMarker    = new char[] { '[', '2', '0', '0', '~' };
+	private static readonly char[] PasteEndMarker      = new char[] { '\x1b', '[', '2', '0', '1', '~' };
 
 	[DllImport("kernel32.dll", SetLastError = true)]
 	private static extern IntPtr GetStdHandle(int nStdHandle);
@@ -76,8 +78,8 @@ internal static class WindowsConsole
 	[StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
 	private struct INPUT_RECORD
 	{
-		[FieldOffset(0)] public ushort           EventType;
-		[FieldOffset(4)] public KEY_EVENT_RECORD  KeyEvent;
+		[FieldOffset(0)] public ushort EventType;
+		[FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent;
 		[FieldOffset(4)] public MOUSE_EVENT_RECORD MouseEvent;
 	}
 
@@ -122,8 +124,8 @@ internal static class WindowsConsole
 		if (!_saved)
 		{
 			_originalOutputMode = outMode;
-			_originalInputMode = inMode;
-			_saved = true;
+			_originalInputMode  = inMode;
+			_saved              = true;
 		}
 
 		SetConsoleMode(hOut, outMode | EnableVirtualTerminalProcessing);
@@ -223,7 +225,7 @@ internal static class WindowsConsole
 			if (ctl != null)
 				return ctl;
 
-			ConsoleKey ck = (ConsoleKey)k.wVirtualKeyCode;
+			ConsoleKey     ck = (ConsoleKey)k.wVirtualKeyCode;
 			ConsoleKeyInfo ki = new ConsoleKeyInfo(k.UnicodeChar, ck, shift, alt, ctrl);
 
 			return new ConsoleInputEvent { Type = InputEventType.Key, Key = ki };
@@ -235,19 +237,23 @@ internal static class WindowsConsole
 
 			if ((m.dwEventFlags & MOUSE_WHEELED) != 0 || (m.dwEventFlags & MOUSE_HWHEELED) != 0)
 			{
-				bool horizontal = (m.dwEventFlags & MOUSE_HWHEELED) != 0;
-				short delta = (short)(m.dwButtonState >> 16);
-				bool wheelShift = (m.dwControlKeyState & 0x0010u) != 0;
+				bool  horizontal = (m.dwEventFlags & MOUSE_HWHEELED) != 0;
+				short delta      = (short)(m.dwButtonState >> 16);
+				bool  wheelShift = (m.dwControlKeyState & 0x0010u) != 0;
 				return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = m.MouseX, Row = m.MouseY, WheelDelta = delta, Shift = wheelShift, Horizontal = horizontal };
 			}
 
-			if (m.dwEventFlags == 0 && (m.dwButtonState & LEFT_BUTTON) != 0)
+			// Button presses only: the matching release arrives with no button bits set and is
+			// ignored, so one physical click produces one event. Quick Edit is off, so the right
+			// button is ours rather than the console host's own paste.
+			if (m.dwEventFlags == 0 && (m.dwButtonState & (LEFT_BUTTON | RIGHT_BUTTON)) != 0)
 			{
 				bool clickShift = (m.dwControlKeyState & 0x0010u) != 0;
-				return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = m.MouseX, Row = m.MouseY, Shift = clickShift };
+				bool right      = (m.dwButtonState & RIGHT_BUTTON) != 0;
+				return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = m.MouseX, Row = m.MouseY, Shift = clickShift, Right = right };
 			}
 
-			if ((m.dwEventFlags & 0x0001u) != 0)  // MOUSE_MOVED
+			if ((m.dwEventFlags & 0x0001u) != 0) // MOUSE_MOVED
 			{
 				return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = m.MouseX, Row = m.MouseY };
 			}
@@ -312,7 +318,7 @@ internal static class WindowsConsole
 	// and non-key events inside the block are ignored; carriage returns are normalized to '\n'.
 	private static string ReadBracketedPasteBody(IntPtr hIn)
 	{
-		StringBuilder sb = new StringBuilder();
+		StringBuilder  sb  = new StringBuilder();
 		INPUT_RECORD[] one = new INPUT_RECORD[1];
 
 		while (true)
@@ -379,8 +385,8 @@ internal static class WindowsConsole
 	// SS3: ESC O <final>. Used for arrows/Home/End in application cursor mode and for F1-F4.
 	private static ConsoleInputEvent? TryReadSs3(IntPtr hIn)
 	{
-		char final = PeekCharAt(hIn, 1);
-		ConsoleKey key = FinalToKey(final);
+		char       final = PeekCharAt(hIn, 1);
+		ConsoleKey key   = FinalToKey(final);
 		if (key == (ConsoleKey)0)
 			return null;
 
@@ -404,15 +410,15 @@ internal static class WindowsConsole
 			return ConsumeNormalMouse(hIn);
 
 		StringBuilder param = new StringBuilder();
-		int idx = 1;
-		char final = '\0';
+		int           idx   = 1;
+		char          final = '\0';
 		const int maxLen = 16;
 
 		while (idx < maxLen)
 		{
 			char c = PeekCharAt(hIn, idx);
 			if (c == '\0')
-				return null;  // sequence not fully present yet — leave it, treat ESC as Escape
+				return null; // sequence not fully present yet — leave it, treat ESC as Escape
 			if (c >= '@' && c <= '~' && !(c >= '0' && c <= '9') && c != ';')
 			{
 				final = c;
@@ -428,13 +434,13 @@ internal static class WindowsConsole
 		string paramStr = param.ToString();
 
 		bool shift = false, alt = false, ctrl = false;
-		int semi = paramStr.IndexOf(';');
+		int  semi  = paramStr.IndexOf(';');
 		if (semi >= 0 && int.TryParse(paramStr.Substring(semi + 1), out int mod))
 		{
 			int m = mod - 1;
 			shift = (m & 1) != 0;
-			alt = (m & 2) != 0;
-			ctrl = (m & 4) != 0;
+			alt   = (m & 2) != 0;
+			ctrl  = (m & 4) != 0;
 		}
 
 		ConsoleKey key;
@@ -446,7 +452,7 @@ internal static class WindowsConsole
 		if (key == (ConsoleKey)0)
 			return null;
 
-		DrainChars(hIn, idx + 1);  // params plus the final byte (idx is the final's offset)
+		DrainChars(hIn, idx + 1); // params plus the final byte (idx is the final's offset)
 		return KeyEvent('\0', key, shift, alt, ctrl);
 	}
 
@@ -455,16 +461,16 @@ internal static class WindowsConsole
 	// MouseMove. Returns null (consuming nothing) if the sequence is not yet fully present.
 	private static ConsoleInputEvent? ConsumeSgrMouse(IntPtr hIn)
 	{
-		StringBuilder body = new StringBuilder();
-		int idx = 2;  // skip '[' and '<'
-		char terminator = '\0';
+		StringBuilder body       = new StringBuilder();
+		int           idx        = 2; // skip '[' and '<'
+		char          terminator = '\0';
 		const int maxLen = 24;
 
 		while (idx < maxLen)
 		{
 			char c = PeekCharAt(hIn, idx);
 			if (c == '\0')
-				return null;  // not fully present yet
+				return null; // not fully present yet
 			if (c == 'M' || c == 'm')
 			{
 				terminator = c;
@@ -477,36 +483,36 @@ internal static class WindowsConsole
 		if (terminator == '\0')
 			return null;
 
-		DrainChars(hIn, idx + 1);  // '[' '<' params and the M/m terminator
+		DrainChars(hIn, idx + 1); // '[' '<' params and the M/m terminator
 
 		string[] parts = body.ToString().Split(';');
 		if (parts.Length != 3
 			|| !int.TryParse(parts[0], out int cb)
 			|| !int.TryParse(parts[1], out int cx)
 			|| !int.TryParse(parts[2], out int cy))
-			return null;  // malformed but consumed — swallow it
+			return null; // malformed but consumed — swallow it
 
-		int col = cx - 1;
-		int row = cy - 1;
+		int  col   = cx - 1;
+		int  row   = cy - 1;
 		bool press = terminator == 'M';
 
-		if ((cb & 0x40) != 0)  // wheel
+		if ((cb & 0x40) != 0) // wheel
 		{
 			// Low two bits select the wheel axis/direction: 0=up, 1=down, 2=left, 3=right. Without this the
 			// horizontal (trackpad/tilt) deltas fold onto the vertical axis and scroll the view up/down.
-			int btn = cb & 0x03;
-			bool horizontal = btn == 2 || btn == 3;
-			short delta = horizontal
-				? (short)(btn == 3 ? 120 : -120)   // right vs left
-                : (short)(btn == 0 ? 120 : -120);  // up vs down
+			int   btn        = cb & 0x03;
+			bool  horizontal = btn == 2 || btn == 3;
+			short delta      = horizontal
+				? (short)(btn == 3 ? 120 : -120)  // right vs left
+				: (short)(btn == 0 ? 120 : -120); // up vs down
 			bool wheelShift = (cb & 0x04) != 0;
 			return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta, Horizontal = horizontal, Shift = wheelShift };
 		}
 
-		if ((cb & 0x20) != 0)  // motion
+		if ((cb & 0x20) != 0) // motion
 			return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
 
-		if (press && (cb & 0x03) == 0)  // left button press
+		if (press && (cb & 0x03) == 0) // left button press
 			return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row, Shift = (cb & 0x04) != 0 };
 
 		return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
@@ -520,9 +526,9 @@ internal static class WindowsConsole
 		char b2 = PeekCharAt(hIn, 3);
 		char b3 = PeekCharAt(hIn, 4);
 		if (b1 == '\0' || b2 == '\0' || b3 == '\0')
-			return null;  // not fully present yet
+			return null; // not fully present yet
 
-		DrainChars(hIn, 5);  // '[' 'M' and the three encoded bytes
+		DrainChars(hIn, 5); // '[' 'M' and the three encoded bytes
 
 		int cb  = b1 - 32;
 		int col = b2 - 32 - 1;
@@ -531,9 +537,9 @@ internal static class WindowsConsole
 		if ((cb & 0x40) != 0)
 		{
 			// 0=up, 1=down, 2=left, 3=right — keep the horizontal deltas off the vertical axis.
-			int btn = cb & 0x03;
-			bool horizontal = btn == 2 || btn == 3;
-			short delta = horizontal
+			int   btn        = cb & 0x03;
+			bool  horizontal = btn == 2 || btn == 3;
+			short delta      = horizontal
 				? (short)(btn == 3 ? 120 : -120)
 				: (short)(btn == 0 ? 120 : -120);
 			bool wheelShift = (cb & 0x04) != 0;
@@ -587,7 +593,7 @@ internal static class WindowsConsole
 			'Q' => ConsoleKey.F2,
 			'R' => ConsoleKey.F3,
 			'S' => ConsoleKey.F4,
-			_ => (ConsoleKey)0,
+			_   => (ConsoleKey)0,
 		};
 	}
 
@@ -597,24 +603,24 @@ internal static class WindowsConsole
 		return code switch
 		{
 			1 or 7 => ConsoleKey.Home,
-			2 => ConsoleKey.Insert,
-			3 => ConsoleKey.Delete,
+			2      => ConsoleKey.Insert,
+			3      => ConsoleKey.Delete,
 			4 or 8 => ConsoleKey.End,
-			5 => ConsoleKey.PageUp,
-			6 => ConsoleKey.PageDown,
-			11 => ConsoleKey.F1,
-			12 => ConsoleKey.F2,
-			13 => ConsoleKey.F3,
-			14 => ConsoleKey.F4,
-			15 => ConsoleKey.F5,
-			17 => ConsoleKey.F6,
-			18 => ConsoleKey.F7,
-			19 => ConsoleKey.F8,
-			20 => ConsoleKey.F9,
-			21 => ConsoleKey.F10,
-			23 => ConsoleKey.F11,
-			24 => ConsoleKey.F12,
-			_ => (ConsoleKey)0,
+			5      => ConsoleKey.PageUp,
+			6      => ConsoleKey.PageDown,
+			11     => ConsoleKey.F1,
+			12     => ConsoleKey.F2,
+			13     => ConsoleKey.F3,
+			14     => ConsoleKey.F4,
+			15     => ConsoleKey.F5,
+			17     => ConsoleKey.F6,
+			18     => ConsoleKey.F7,
+			19     => ConsoleKey.F8,
+			20     => ConsoleKey.F9,
+			21     => ConsoleKey.F10,
+			23     => ConsoleKey.F11,
+			24     => ConsoleKey.F12,
+			_      => (ConsoleKey)0,
 		};
 	}
 
@@ -683,6 +689,6 @@ internal static class WindowsConsole
 		IntPtr hOut = GetStdHandle(StdOutputHandle);
 		IntPtr hIn  = GetStdHandle(StdInputHandle);
 		SetConsoleMode(hOut, _originalOutputMode);
-		SetConsoleMode(hIn, _originalInputMode);
+		SetConsoleMode( hIn,  _originalInputMode);
 	}
 }

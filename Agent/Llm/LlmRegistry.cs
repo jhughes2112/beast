@@ -93,7 +93,7 @@ public class LlmRegistry
 				if (!modelConfig.Enabled)
 					continue;
 
-				LlmModel model = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, modelConfig.Extras, modelConfig.Headers, modelConfig);
+				LlmModel model        = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, modelConfig.Extras, modelConfig.Headers, modelConfig);
 				fresh[modelConfig.Id] = model;
 			}
 		}
@@ -128,8 +128,8 @@ public class LlmRegistry
 				continue;
 			}
 
-			string endpoint = ModelCatalog.NormalizeRequestEndpoint(provider.BaseUrl);
-			Dictionary<string, LlmModel> updated = new(_models, StringComparer.OrdinalIgnoreCase);
+			string                       endpoint = ModelCatalog.NormalizeRequestEndpoint(provider.BaseUrl);
+			Dictionary<string, LlmModel> updated  = new(_models, StringComparer.OrdinalIgnoreCase);
 			foreach (AutoModelConfig enabled in provider.Models)
 			{
 				// A disabled entry keeps its overrides on disk but registers nothing.
@@ -178,9 +178,9 @@ public class LlmRegistry
 
 		CostConfig cost = enabled.Cost ?? new CostConfig
 		{
-			Input = found.CostInput > 0 ? found.CostInput : 0m,
-			Output = found.CostOutput > 0 ? found.CostOutput : 0m,
-			CacheRead = found.CostCacheRead > 0 ? found.CostCacheRead : 0m,
+			Input      = found.CostInput > 0 ? found.CostInput : 0m,
+			Output     = found.CostOutput > 0 ? found.CostOutput : 0m,
+			CacheRead  = found.CostCacheRead > 0 ? found.CostCacheRead : 0m,
 			CacheWrite = 0m
 		};
 
@@ -188,14 +188,14 @@ public class LlmRegistry
 
 		return new ModelConfig
 		{
-			Id = enabled.Id,
-			Name = string.IsNullOrEmpty(found.Name) ? enabled.Id : found.Name,
-			Enabled = true,
-			ContextWindow = window,
+			Id              = enabled.Id,
+			Name            = string.IsNullOrEmpty(found.Name) ? enabled.Id : found.Name,
+			Enabled         = true,
+			ContextWindow   = window,
 			MaxOutputTokens = enabled.MaxOutputTokens > 0 ? enabled.MaxOutputTokens : found.MaxOutputTokens,
 			ReasoningEffort = enabled.ReasoningEffort,
-			Cost = cost,
-			Input = input
+			Cost            = cost,
+			Input           = input
 		};
 	}
 
@@ -257,7 +257,7 @@ public class LlmRegistry
 				// cache it separately so future models at the same URL match immediately. The
 				// rewrite goes through a copy-and-swap so concurrent readers of _models never see
 				// a dictionary being mutated.
-				_probeCache[effectiveEndpoint] = detected;
+				_probeCache[effectiveEndpoint]       = detected;
 				Dictionary<string, LlmModel> updated = new(_models, StringComparer.OrdinalIgnoreCase);
 				foreach (string modelId in modelIds)
 				{
@@ -274,7 +274,9 @@ public class LlmRegistry
 	// is never shared between sessions. The returned service's availability object IS shared
 	// so rate-limits discovered by one session affect model selection for others.
 	// Returns null if no suitable model is available (all down, context too small, or no role).
-	public LlmService? CreateService(Role? role, string preferredModelId, int minContextRequired)
+	// withoutReasoning strips the model's thinking budget for this service only, for callers whose
+	// work is a transformation rather than a decision.
+	public LlmService? CreateService(Role? role, string preferredModelId, int minContextRequired, bool withoutReasoning)
 	{
 		if (role == null)
 			return null;
@@ -285,6 +287,8 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
+		if (withoutReasoning)
+			model = model.WithoutReasoning();
 		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models);
 	}
 
@@ -296,7 +300,7 @@ public class LlmRegistry
 	public LlmService? CreateFallbackService(LlmService current, int minContextRequired)
 	{
 		IReadOnlyList<string> modelIds = current.RoleModelIds;
-		DateTimeOffset now = DateTimeOffset.UtcNow;
+		DateTimeOffset        now      = DateTimeOffset.UtcNow;
 
 		int start = 0;
 		for (int i = 0; i < modelIds.Count; i++)
@@ -386,8 +390,8 @@ public class LlmRegistry
 	// every model in the role is permanently down.
 	public long GetMillisecondsUntilAvailable(Role role)
 	{
-		long best = long.MaxValue;
-		DateTimeOffset now = DateTimeOffset.UtcNow;
+		long           best = long.MaxValue;
+		DateTimeOffset now  = DateTimeOffset.UtcNow;
 		foreach (string cid in role.Models)
 		{
 			if (!_models.ContainsKey(cid))
@@ -483,7 +487,7 @@ public class LlmRegistry
 		// park behind another session's rate limit while a lower-ranked model sits idle. Only when
 		// every live model is backing off is the one that recovers SOONEST returned — the caller
 		// then waits out the shortest backoff instead of the selection failing outright.
-		LlmModel? backingOff = null;
+		LlmModel?      backingOff   = null;
 		DateTimeOffset backingOffAt = DateTimeOffset.MaxValue;
 		foreach (string modelId in role.Models)
 		{
@@ -499,7 +503,7 @@ public class LlmRegistry
 				{
 					if (ma.AvailableAt < backingOffAt)
 					{
-						backingOff = model;
+						backingOff   = model;
 						backingOffAt = ma.AvailableAt;
 					}
 					continue;

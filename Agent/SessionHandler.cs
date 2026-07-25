@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,19 +22,19 @@ using System.Threading.Tasks;
 public class SessionHandler
 {
 	// Advances along the chain when the session compacts.
-	private Session _activeSession;
+	private Session     _activeSession;
 	private LlmService? _service;
-	private string? _nextModel;
-	private bool _wantsCompact;
+	private string?     _nextModel;
+	private bool        _wantsCompact;
 
 	// Files staged by the client via /attach, waiting for the message text they belong to.
 	private readonly List<string> _pendingAttachments = new List<string>();
 
 	// Terminator sink written by the tool callback, read after each dispatch round.
 	private string? _terminatorValue;
-	private bool _terminatorSucceeded;
-	private bool _terminatorCalled;
-	private int _terminatorTokens;
+	private bool    _terminatorSucceeded;
+	private bool    _terminatorCalled;
+	private int     _terminatorTokens;
 
 	// Failure reason recorded when the model could not complete and no fallback was available.
 	private string? _lastFailure;
@@ -53,7 +54,7 @@ public class SessionHandler
 	public SessionHandler(Session session)
 	{
 		_activeSession = session;
-		_scope = new CancellationTokenSource();
+		_scope         = new CancellationTokenSource();
 	}
 
 	// Drives the session chain until shutdown. Answering the caller does not end the run — the
@@ -69,7 +70,7 @@ public class SessionHandler
 		_activeSession.AnnounceToClient();
 
 		const int kMaxWindDownTurns = 5;
-		int turn = 0;
+		int   turn = 0;
 		Role? role = null;
 
 		ResetScope(ct);
@@ -83,7 +84,7 @@ public class SessionHandler
 			{
 				// Budgets live on the session (part of its reply obligation), so they survive reload,
 				// travel to compaction successors, and clear the moment the caller has been answered.
-				int maxWork = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns : int.MaxValue;
+				int maxWork  = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns : int.MaxValue;
 				int maxTotal = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
 
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
@@ -120,8 +121,8 @@ public class SessionHandler
 				ResetScope(ct);
 
 				// Wind-down only makes sense while the session still owes a reply to force out.
-				bool windDown = turn >= maxWork && _activeSession.OwesReply;
-				bool lastTurn = turn == maxTotal - 1;
+				bool windDown    = turn >= maxWork && _activeSession.OwesReply;
+				bool lastTurn    = turn == maxTotal - 1;
 				bool contextFull = false;
 				try
 				{
@@ -157,7 +158,7 @@ public class SessionHandler
 				if (_terminatorCalled || _lastFailure != null)
 				{
 					NotifyComplete(role.Name, orchestrator, true);
-					_lastFailure = null;
+					_lastFailure      = null;
 					_terminatorCalled = false;
 				}
 				turn++;
@@ -199,12 +200,12 @@ public class SessionHandler
 	// or the run fails. Returns true when the context is full and the caller must compact.
 	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, bool lastTurn, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
-		Tool[] tools = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
-		string? forcedTool = windDown ? _activeSession.TerminatorName : null;
-		int outputCap = windDown ? _activeSession.OutputBudgetTokens : 0;
-		bool workToolsActive = _activeSession.WorkInProgress;
-		bool contextFull = false;
-		bool turnComplete = false;
+		Tool[]  tools           = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
+		string? forcedTool      = windDown ? _activeSession.TerminatorName : null;
+		int     outputCap       = windDown ? _activeSession.OutputBudgetTokens : 0;
+		bool    workToolsActive = _activeSession.WorkInProgress;
+		bool    contextFull     = false;
+		bool    turnComplete    = false;
 
 		// Deleted ends the cluster immediately: MarkDeleted wakes a parked handler through the
 		// input signal, and without this check the wake would read as steering and run more turns.
@@ -281,7 +282,7 @@ public class SessionHandler
 				if (!turnComplete && _activeSession.WorkInProgress != workToolsActive)
 				{
 					workToolsActive = _activeSession.WorkInProgress;
-					tools = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
+					tools           = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
 				}
 
 				_activeSession.SendStats();
@@ -298,7 +299,7 @@ public class SessionHandler
 		if (_terminatorCalled)
 		{
 			_terminatorTokens = _activeSession.LastTokenUsage?.CompletionTokens ?? 0;
-			int budget = _activeSession.OutputBudgetTokens;
+			int budget        = _activeSession.OutputBudgetTokens;
 			if (budget > 0 && _terminatorTokens > budget && !lastTurn)
 			{
 				_terminatorCalled = false;
@@ -363,8 +364,8 @@ public class SessionHandler
 	// the context is full and the turn must end in compaction.
 	private async Task<bool> CheckContextFullAsync(LlmService service, Tool[] tools, ITransportServer transport, CancellationToken token)
 	{
-		bool full = false;
-		int threshold = _activeSession.ContextWindow - GetCompactionReserve();
+		bool full      = false;
+		int  threshold = _activeSession.ContextWindow - GetCompactionReserve();
 
 		// Only text appended since the last measurement counts: everything up to and including the
 		// last assistant turn is already inside ContextLength, and unmeasured tool outputs are
@@ -416,8 +417,8 @@ public class SessionHandler
 	// fallback is available and the turn must end.
 	private string? FallBackOrFail(LlmService service, ProtocolResult result, LlmRegistry registry, ITransportServer transport)
 	{
-		string? failure = null;
-		bool rateLimited = result.Outcome == ProtocolCallOutcome.TooManyRetries;
+		string? failure     = null;
+		bool    rateLimited = result.Outcome == ProtocolCallOutcome.TooManyRetries;
 
 		// The model failed this session: if it is still the role's sticky preference, clear it so
 		// selection reverts to the ranked pecking order (a failure never wipes a NEWER choice).
@@ -469,23 +470,23 @@ public class SessionHandler
 		else
 		{
 			transport.Status(_activeSession.Id, "[Compaction] Started.");
-			string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, registry, roleService, transport, ct);
-			LlmService? service = string.IsNullOrWhiteSpace(summary) ? null : registry.CreateService(role, _activeSession.Model, 0);
+			string?     summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, registry, roleService, transport, ct);
+			LlmService? service = string.IsNullOrWhiteSpace(summary) ? null : registry.CreateService(role, _activeSession.Model, 0, false);
 			if (summary == null || service == null)
 			{
 				transport.Status(_activeSession.Id, "[Compaction] Failed.");
 			}
 			else
 			{
-				Session predecessor = _activeSession;
-				Session? parent = orchestrator.FindParent(predecessor);
+				Session  predecessor = _activeSession;
+				Session? parent      = orchestrator.FindParent(predecessor);
 
 				// Hand the reply obligation (terminator, output budget, turn budget) to the successor
 				// before the predecessor is saved, so a reload never resurrects two sessions both
 				// claiming to answer the same caller.
-				string terminatorName = predecessor.TerminatorName;
-				int outputBudgetTokens = predecessor.OutputBudgetTokens;
-				int maxWorkTurns = predecessor.MaxWorkTurns;
+				string terminatorName     = predecessor.TerminatorName;
+				int    outputBudgetTokens = predecessor.OutputBudgetTokens;
+				int    maxWorkTurns       = predecessor.MaxWorkTurns;
 				predecessor.ClearReplyObligation();
 
 				predecessor.SetDispatchScope(null);
@@ -555,9 +556,9 @@ public class SessionHandler
 				predecessor.MarkInterrupted();
 				orchestrator.EnsureHandler(predecessor);
 
-				_activeSession = successor;
-				_service = service;
-				_lastInputTokens = 0;
+				_activeSession        = successor;
+				_service              = service;
+				_lastInputTokens      = 0;
 				_costRecordedToParent = 0m;
 				transport.Status(predecessor.Id, "[Compaction] Complete.");
 				compacted = true;
@@ -613,31 +614,67 @@ public class SessionHandler
 	// otherwise. Each staged copy is deleted once consumed so the folder does not grow forever.
 	private async Task DeliverWithAttachmentsAsync(string line, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
 	{
-		StringBuilder text = new StringBuilder(line);
+		StringBuilder         text        = new StringBuilder(line);
 		List<MediaAttachment> attachments = new List<MediaAttachment>();
+		List<(string Display, MediaKind Kind, string Staged)> unsupported = new List<(string, MediaKind, string)>();
 
 		foreach (string entry in _pendingAttachments)
 		{
-			int sep = entry.IndexOf('\x01');
-			string stagedName = sep >= 0 ? entry.Substring(0, sep) : entry;
+			int    sep          = entry.IndexOf('\x01');
+			string stagedName   = sep >= 0 ? entry.Substring(0, sep) : entry;
 			string originalPath = sep >= 0 ? entry.Substring(sep + 1) : string.Empty;
 
-			(string note, MediaAttachment? attachment, bool retain) = await MediaIntake.ResolveAsync(
+			(string note, MediaAttachment? attachment, string unsupportedDisplay, MediaKind kind) = await MediaIntake.ResolveAsync(
 				stagedName, originalPath, _activeSession, registry, ct);
 
 			if (attachment != null)
 				attachments.Add(attachment);
 			if (note.Length > 0)
 				text.Append("\n\n").Append(note);
-
-			// A file the model is being told to open with inspect_media has to survive the turn;
-			// everything else is fully consumed here.
-			if (!retain)
+			if (unsupportedDisplay.Length > 0)
+				unsupported.Add((unsupportedDisplay, kind, stagedName));
+			else
 				MediaIntake.DiscardStaged(stagedName);
 		}
 
 		_pendingAttachments.Clear();
 		_activeSession.Bundle.OnUserMessage(text.ToString(), attachments);
+
+		// Media the current model cannot take is a human decision, not something to work around.
+		// Substituting a description would not give the model what native input gives it — the
+		// image tokens the attention heads actually reason over — so say plainly that the wrong
+		// model is loaded, and name the ones that would work.
+		foreach ((string display, MediaKind kind, string staged) in unsupported)
+		{
+			transport.Alert(_activeSession.Id, BuildCapabilityAlert(display, kind, registry));
+			MediaIntake.DiscardStaged(staged);
+		}
+	}
+
+	// The red banner raised when a dropped file needs a modality the loaded model does not declare.
+	// It names the file, what it needs, and every enabled model that has it — because the fix is
+	// one /model away and the user should not have to go hunting for which one to pick.
+	private static string BuildCapabilityAlert(string display, MediaKind kind, LlmRegistry registry)
+	{
+		string         modality = MediaKinds.Modality(kind);
+		List<LlmModel> capable  = MediaKinds.CapableModels(registry, kind);
+
+		if (capable.Count == 0)
+		{
+			return $"'{display}' needs {modality} input, which the current model does not accept — and no enabled model does either. "
+				+ "Enable one in /config (a model's modalities are discovered from its endpoint, or set when you enable it).";
+		}
+
+		StringBuilder names = new StringBuilder();
+		foreach (LlmModel model in capable)
+		{
+			if (names.Length > 0)
+				names.Append('\n');
+			names.Append("  /model ").Append(model.ConfigId).Append($"   (in:${model.Config.Cost.Input:0.00}/Mtok)");
+		}
+
+		return $"'{display}' needs {modality} input and the current model does not accept it, so it was NOT sent.\n"
+			+ $"These enabled models do — switch with /model and send it again:\n{names}";
 	}
 
 	private async Task DrainPendingAsync(LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
@@ -670,10 +707,10 @@ public class SessionHandler
 				continue;
 			}
 
-			string trimmed = line.TrimStart('/').Trim();
-			int spaceIdx = trimmed.IndexOf(' ');
-			string verb = (spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed).ToLowerInvariant();
-			string? args = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : null;
+			string  trimmed  = line.TrimStart('/').Trim();
+			int     spaceIdx = trimmed.IndexOf(' ');
+			string  verb     = (spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed).ToLowerInvariant();
+			string? args     = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : null;
 
 			switch (verb)
 			{
@@ -710,11 +747,11 @@ public class SessionHandler
 	// model while the status message still named the one the user asked for.
 	private void QueueModelSwitch(string args, RoleService roleService, LlmRegistry registry, ITransportServer transport)
 	{
-		int spaceIdx = args.IndexOf(' ');
-		string modelArg = spaceIdx >= 0 ? args.Substring(0, spaceIdx) : args;
-		Role? role = roleService.GetRole(_activeSession.Role);
-		LlmModel? target = registry.GetModel(modelArg);
-		int minRequired = _activeSession.ContextLength + GetCompactionReserve();
+		int       spaceIdx    = args.IndexOf(' ');
+		string    modelArg    = spaceIdx >= 0 ? args.Substring(0, spaceIdx) : args;
+		Role?     role        = roleService.GetRole(_activeSession.Role);
+		LlmModel? target      = registry.GetModel(modelArg);
+		int       minRequired = _activeSession.ContextLength + GetCompactionReserve();
 
 		bool inRole = false;
 		if (role != null && target != null)
@@ -823,8 +860,8 @@ public class SessionHandler
 	private void Terminate(bool success, string output)
 	{
 		_terminatorSucceeded = success;
-		_terminatorValue = output;
-		_terminatorCalled = true;
+		_terminatorValue     = output;
+		_terminatorCalled    = true;
 	}
 
 	// ---- Steering / idle waits ----
@@ -893,7 +930,8 @@ public class SessionHandler
 		{
 			// Model is ready; block until the user sends input. This is the normal idle path
 			// and must be a real await so other continuations (transport receive, etc.) can run.
-			try { await _activeSession.WaitForInputAsync(ct); }
+			try
+			{ await _activeSession.WaitForInputAsync(ct); }
 			catch (OperationCanceledException) { }
 			return;
 		}
@@ -904,10 +942,12 @@ public class SessionHandler
 			: $"No Models Available, waiting {(int)Math.Ceiling(waitMs / 1000.0)}s");
 
 		using CancellationTokenSource waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-		Task waitTask = _activeSession.WaitForInputAsync(waitCts.Token);
+		Task waitTask                         = _activeSession.WaitForInputAsync(waitCts.Token);
 		await Task.WhenAny(Task.Delay(delayMs, ct), waitTask);
 		waitCts.Cancel();
-		try { await waitTask; } catch (OperationCanceledException) { }
+		try
+		{ await waitTask; }
+		catch (OperationCanceledException) { }
 	}
 
 	// ---- Helpers ----
@@ -920,8 +960,8 @@ public class SessionHandler
 	{
 		if (_service == null || _service.IsDown || _service.Model.ConfigId != _activeSession.Model)
 		{
-			int minCtx = _activeSession.ContextLength + GetCompactionReserve();
-			LlmService? newService = registry.CreateService(role, _activeSession.Model, minCtx);
+			int         minCtx     = _activeSession.ContextLength + GetCompactionReserve();
+			LlmService? newService = registry.CreateService(role, _activeSession.Model, minCtx, false);
 			if (newService != null)
 			{
 				_activeSession.UpdateModel(newService.Model);
@@ -949,15 +989,15 @@ public class SessionHandler
 
 	private List<string> BuildCompletionCandidates(RoleService roleService, LlmRegistry registry)
 	{
-		List<string> candidates = new List<string> { "/compact", "/config", "/reload", "/model", "/finish", "/help" };
-		Role? activeRole = roleService.GetRole(_activeSession.Role);
-		LlmModel? activeModel = activeRole != null
+		List<string> candidates  = new List<string> { "/compact", "/config", "/role", "/reload", "/model", "/finish", "/help" };
+		Role?        activeRole  = roleService.GetRole(_activeSession.Role);
+		LlmModel?    activeModel = activeRole != null
 			? registry.GetModelForRole(activeRole, _activeSession.Model, _activeSession.ContextLength + GetCompactionReserve())
 			: null;
 		if (activeRole != null)
 		{
-			string currentModelId = activeModel != null ? activeModel.ConfigId : _activeSession.Model + " (not available)";
-			List<string> enabledModels = registry.GetEnabledModelsForRole(activeRole);
+			string       currentModelId = activeModel != null ? activeModel.ConfigId : _activeSession.Model + " (not available)";
+			List<string> enabledModels  = registry.GetEnabledModelsForRole(activeRole);
 			if (!string.IsNullOrEmpty(currentModelId) && enabledModels.Contains(currentModelId))
 				candidates.Add("/model " + currentModelId + ModelPricingLabel(currentModelId, registry));
 			foreach (string modelId in enabledModels)
@@ -970,13 +1010,36 @@ public class SessionHandler
 		return candidates;
 	}
 
+	// The completion label for one model: what it costs, and what it can actually take as input.
+	// Capabilities belong here because /model is the switch a user reaches for when the model in
+	// front of them cannot read what they just dropped in.
 	private string ModelPricingLabel(string modelId, LlmRegistry registry)
 	{
 		LlmModel? model = registry.GetModel(modelId);
 		if (model == null)
 			return string.Empty;
-		CostConfig cost = model.Config.Cost;
-		return $"  in:${cost.Input:0.00} out:${cost.Output:0.00} /Mtok";
+
+		CostConfig cost  = model.Config.Cost;
+		string     label = $"  in:${cost.Input:0.00} out:${cost.Output:0.00} /Mtok";
+
+		string modalities = ModalityLabel(model.Config);
+		if (modalities.Length > 0)
+			label += "  " + modalities;
+		return label;
+	}
+
+	// Non-text input modalities, named rather than abbreviated: this shows up in a completion list
+	// where there is room, and "image" reads better than a letter code.
+	private static string ModalityLabel(ModelConfig config)
+	{
+		string label = string.Empty;
+		foreach (string input in config.Input)
+		{
+			if (string.Equals(input, "text", StringComparison.OrdinalIgnoreCase))
+				continue;
+			label = label.Length == 0 ? input.ToLowerInvariant() : label + "," + input.ToLowerInvariant();
+		}
+		return label.Length == 0 ? string.Empty : "+" + label;
 	}
 
 	// Answers the caller once: delivers the terminator result, a failure report, or the salvaged
@@ -992,13 +1055,13 @@ public class SessionHandler
 	{
 		if (_activeSession.OwesReply)
 		{
-			bool ok;
+			bool   ok;
 			string output;
-			int tokens = _terminatorTokens;
+			int    tokens = _terminatorTokens;
 
 			if (_terminatorCalled)
 			{
-				ok = _terminatorSucceeded;
+				ok     = _terminatorSucceeded;
 				output = _terminatorValue ?? string.Empty;
 			}
 			else
@@ -1006,19 +1069,19 @@ public class SessionHandler
 				string salvaged = LastAssistantText();
 				if (!string.IsNullOrEmpty(_lastFailure))
 				{
-					ok = false;
+					ok     = false;
 					output = string.IsNullOrEmpty(salvaged)
 						? $"The {roleName} subagent could not finish: {_lastFailure}."
 						: $"The {roleName} subagent could not finish: {_lastFailure}.\n\nLast progress before it stopped:\n{salvaged}";
 				}
 				else if (string.IsNullOrEmpty(salvaged))
 				{
-					ok = false;
+					ok     = false;
 					output = "The subagent finished without returning a result.";
 				}
 				else
 				{
-					ok = true;
+					ok     = true;
 					output = salvaged;
 					tokens = _activeSession.LastTokenUsage?.CompletionTokens ?? _terminatorTokens;
 				}

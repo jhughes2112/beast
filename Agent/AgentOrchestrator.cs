@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -12,16 +12,16 @@ using System.Threading.Tasks;
 // per-session commands are delivered to the target session's queue via Deliver.
 public class AgentOrchestrator : ISessionOrchestrator
 {
-	private readonly ITransportServer _transport;
+	private readonly ITransportServer        _transport;
 	private readonly CancellationTokenSource _cancellationTokenSource;
-	private readonly LlmRegistry _registry;
-	private readonly RoleService _roleService;
-	private readonly SettingsService _settings;
+	private readonly LlmRegistry             _registry;
+	private readonly RoleService             _roleService;
+	private readonly SettingsService         _settings;
 	// True for a current-folder launch with no worktree: the root session is ephemeral and nothing is resumed.
 	private readonly bool _ephemeral;
 
 	// All live sessions tracked by the orchestrator, keyed by session ID.
-	private readonly object _sessionLock = new object();
+	private readonly object                      _sessionLock = new object();
 	private readonly Dictionary<string, Session> _allSessions = new Dictionary<string, Session>(StringComparer.Ordinal);
 
 	// Live completion callbacks, keyed by the session that owes the reply: each is a caller in this
@@ -35,19 +35,19 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private Task? _testTask;
 
 	public AgentOrchestrator(
-		LlmRegistry registry,
-		RoleService roleService,
-		SettingsService settings,
-		ITransportServer transport,
+		LlmRegistry             registry,
+		RoleService             roleService,
+		SettingsService         settings,
+		ITransportServer        transport,
 		CancellationTokenSource cancellationTokenSource,
-		bool ephemeral)
+		bool                    ephemeral)
 	{
-		_registry = registry;
-		_roleService = roleService;
-		_settings = settings;
-		_transport = transport;
+		_registry                = registry;
+		_roleService             = roleService;
+		_settings                = settings;
+		_transport               = transport;
 		_cancellationTokenSource = cancellationTokenSource;
-		_ephemeral = ephemeral;
+		_ephemeral               = ephemeral;
 	}
 
 	public async Task RunAsync()
@@ -92,8 +92,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 		bool refused = false;
 		lock (_sessionLock)
 		{
-			string? parentId = GetParentId(session.Id);
-			bool parentGone = parentId != null && (!_allSessions.TryGetValue(parentId, out Session? parent) || parent.Deleted);
+			string? parentId   = GetParentId(session.Id);
+			bool    parentGone = parentId != null && (!_allSessions.TryGetValue(parentId, out Session? parent) || parent.Deleted);
 			if (_quiescing || parentGone)
 				refused = true;
 			else
@@ -121,13 +121,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// it answers, and returns the result through the OnComplete callback. One entry point for
 	// every subagent — Developer, Reviewer, and the helper roles (Explorer, WebFetch) alike.
 	public async Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(
-		BeastSettings settings,
-		Session parent,
-		string roleName,
-		string? displayName,
-		string prompt,
-		int maxWorkTurns,
-		int outputBudgetTokens,
+		BeastSettings     settings,
+		Session           parent,
+		string            roleName,
+		string?           displayName,
+		string            prompt,
+		int               maxWorkTurns,
+		int               outputBudgetTokens,
 		CancellationToken ct)
 	{
 		if (outputBudgetTokens <= 0)
@@ -145,14 +145,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (role.Kind != RoleKind.Subagent)
 			return (false, $"Role '{roleName}' is not a subagent role.", 0);
 
-		LlmService? service = _registry.CreateService(role, string.Empty, 0);
+		LlmService? service = _registry.CreateService(role, string.Empty, 0, false);
 		if (service == null)
 			return (false, $"No model available for role '{roleName}'.", 0);
 
 		// No caller-supplied name: build one from the first line of the prompt.
 		if (displayName == null)
 		{
-			int nl = prompt.IndexOf('\n');
+			int    nl   = prompt.IndexOf('\n');
 			string head = (nl >= 0 ? prompt.Substring(0, nl) : prompt).Trim();
 			if (head.Length > 60)
 				head = head.Substring(0, 60);
@@ -165,7 +165,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			SessionService.Save(parent.Data);
 
 		// Inject worktree context so the subagent knows which branch and path it operates on.
-		string banner = await WorktreeBannerAsync(ct);
+		string banner       = await WorktreeBannerAsync(ct);
 		string seededPrompt = string.IsNullOrEmpty(banner) ? prompt : $"{banner}\n\n{prompt}";
 
 		// The reply obligation is written onto the session itself so it survives save/load and can
@@ -261,7 +261,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 
 		SessionHandler handler = new SessionHandler(session);
-		_ = RunRevivedAsync();
+		_                      = RunRevivedAsync();
 
 		async Task RunRevivedAsync()
 		{
@@ -295,7 +295,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		lock (_sessionLock)
 		{
 			_quiescing = true;
-			live = new List<Session>(_allSessions.Values);
+			live       = new List<Session>(_allSessions.Values);
 		}
 		foreach (Session s in live)
 		{
@@ -354,8 +354,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// parents that are no longer registered.
 	public Session? FindParent(Session session)
 	{
-		string? parentId = GetParentId(session.Id);
-		Session? parent = null;
+		string?  parentId = GetParentId(session.Id);
+		Session? parent   = null;
 		if (parentId != null)
 		{
 			lock (_sessionLock)
@@ -428,11 +428,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 				break;
 			}
 		}
-		Role? role = _roleService.GetRole(roleName);
-		string systemPrompt = role?.SystemPrompt ?? string.Empty;
-		LlmModel? model = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
-		string modelId = model?.ConfigId ?? string.Empty;
-		BeastSession fresh = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName,
+		Role?        role         = _roleService.GetRole(roleName);
+		string       systemPrompt = role?.SystemPrompt ?? string.Empty;
+		LlmModel?    model        = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
+		string       modelId      = model?.ConfigId ?? string.Empty;
+		BeastSession fresh        = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName,
 			string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
 	}
@@ -440,8 +440,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// Returns the most recently created root session from disk, or null if none exists.
 	private static BeastSession? FindLastRootSession()
 	{
-		List<SessionService.SessionFileInfo> all = SessionService.LoadAll();
-		BeastSession? best = null;
+		List<SessionService.SessionFileInfo> all  = SessionService.LoadAll();
+		BeastSession?                        best = null;
 		long bestOrder = -1;
 
 		foreach (SessionService.SessionFileInfo info in all)
@@ -451,7 +451,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			if (info.CreationOrder > bestOrder)
 			{
 				bestOrder = info.CreationOrder;
-				best = info.Session;
+				best      = info.Session;
 			}
 		}
 
@@ -489,7 +489,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 				{
 					if (!childrenMap.TryGetValue(parentId, out List<SessionService.SessionFileInfo>? kids))
 					{
-						kids = new List<SessionService.SessionFileInfo>();
+						kids                  = new List<SessionService.SessionFileInfo>();
 						childrenMap[parentId] = kids;
 					}
 					kids.Add(info);
@@ -565,7 +565,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private static void DfsAddToOrdered(
 		SessionService.SessionFileInfo node,
 		Dictionary<string, List<SessionService.SessionFileInfo>> childrenMap,
-		List<SessionService.SessionFileInfo> ordered)
+		List<SessionService.SessionFileInfo>                     ordered)
 	{
 		ordered.Add(node);
 		if (childrenMap.TryGetValue(node.Session.Id, out List<SessionService.SessionFileInfo>? children))
@@ -594,15 +594,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 	public static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
 		"quit", "finish", "reload", "help", "delete-session", "test",
-		"config-endpoints", "config-catalog", "config-apply", "config-search-apply"
+		"config-endpoints", "config-catalog", "config-apply", "config-search-apply",
+		"config-roles", "config-role-apply"
 	};
 
 	private static bool IsGlobalCommand(string text)
 	{
 		// Caller guarantees text starts with '/'.
-		string trimmed = text.Substring(1).Trim();
-		int spaceIdx = trimmed.IndexOf(' ');
-		string verb = spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed;
+		string trimmed  = text.Substring(1).Trim();
+		int    spaceIdx = trimmed.IndexOf(' ');
+		string verb     = spaceIdx >= 0 ? trimmed.Substring(0, spaceIdx) : trimmed;
 		return GlobalCommands.Contains(verb);
 	}
 
@@ -621,7 +622,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			if (line.Length == 0)
 				continue;
 
-			int pipe = line.IndexOf('|');
+			int    pipe    = line.IndexOf('|');
 			string content = pipe >= 0 ? line.Substring(pipe + 1) : line;
 			if (content.Length == 0)
 				continue;
@@ -688,10 +689,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// true when the new configuration is live.
 	private async Task<bool> ReloadConfigurationAsync(string sessionId, CancellationToken ct)
 	{
-		bool reloaded = false;
-		Dictionary<string, Role> priorRoles = _roleService.SnapshotRoles();
-		BeastSettings priorSettings = _settings.SnapshotSettings();
-		Dictionary<string, LlmModel> priorModels = _registry.SnapshotModels();
+		bool                         reloaded      = false;
+		Dictionary<string, Role>     priorRoles    = _roleService.SnapshotRoles();
+		BeastSettings                priorSettings = _settings.SnapshotSettings();
+		Dictionary<string, LlmModel> priorModels   = _registry.SnapshotModels();
 		try
 		{
 			_roleService.Reload();
@@ -763,18 +764,81 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			payload.Search.Add(new ConfigSearchInfo
 			{
-				Id = provider.Id,
-				Name = provider.DisplayName,
-				Domain = provider.Domain,
+				Id               = provider.Id,
+				Name             = provider.DisplayName,
+				Domain           = provider.Domain,
 				PricePerThousand = provider.PricePerThousand,
-				Configured = entry != null,
-				Enabled = entry != null && entry.Enabled,
-				HasKey = WebSearchRegistry.ResolveApiKey(_settings.Settings, provider).Length > 0,
-				Model = entry != null && !string.IsNullOrEmpty(entry.Model) ? entry.Model : provider.DefaultModel
+				Configured       = entry != null,
+				Enabled          = entry != null && entry.Enabled,
+				HasKey           = WebSearchRegistry.ResolveApiKey(_settings.Settings, provider).Length > 0,
+				Model            = entry != null && !string.IsNullOrEmpty(entry.Model) ? entry.Model : provider.DefaultModel
 			});
 		}
 
 		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigEndpointsPayload));
+	}
+
+	// Sends every role with its model order for the /role editor. Models are labelled with cost and
+	// modalities so the ordering decision can be made without leaving the editor, and ids the
+	// registry no longer knows are still listed — configured-but-unavailable is information, and
+	// dropping them here would quietly delete them on the next save.
+	private void HandleConfigRoles(string sessionId)
+	{
+		ConfigRolesPayload payload = new ConfigRolesPayload();
+
+		lock (_sessionLock)
+		{
+			if (_allSessions.TryGetValue(sessionId, out Session? session))
+				payload.Active = session.Role;
+		}
+
+		foreach ((string name, Role role) in _roleService.Roles)
+		{
+			ConfigRoleInfo info = new ConfigRoleInfo { Name = role.Name, Kind = role.Kind.ToString() };
+			foreach (string modelId in role.Models)
+			{
+				LlmModel? model = _registry.GetModel(modelId);
+				string    label = string.Empty;
+				if (model != null)
+				{
+					label             = $"in:${model.Config.Cost.Input:0.00} out:${model.Config.Cost.Output:0.00}";
+					string modalities = string.Empty;
+					foreach (string input in model.Config.Input)
+					{
+						if (string.Equals(input, "text", StringComparison.OrdinalIgnoreCase))
+							continue;
+						modalities = modalities.Length == 0 ? input.ToLowerInvariant() : modalities + "," + input.ToLowerInvariant();
+					}
+					if (modalities.Length > 0)
+						label += "  +" + modalities;
+				}
+				info.Models.Add(new ConfigRoleModel { Id = modelId, Label = label, Available = model != null });
+			}
+			payload.Roles.Add(info);
+		}
+
+		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigRolesPayload));
+	}
+
+	// Persists one role's model order, then reloads so running sessions pick up the new preference.
+	private async Task HandleConfigRoleApplyAsync(string sessionId, string args, CancellationToken ct)
+	{
+		ConfigRoleApplyPayload? payload = null;
+		try
+		{
+			payload = JsonSerializer.Deserialize(args, BeastJson.Compact.ConfigRoleApplyPayload);
+		}
+		catch (Exception ex)
+		{
+			_transport.Error(sessionId, $"config-role-apply: unusable payload: {ex.Message}");
+		}
+
+		if (payload != null && !string.IsNullOrWhiteSpace(payload.Role))
+		{
+			_roleService.SaveRoleModelOrder(payload.Role, payload.Models);
+			await ReloadConfigurationAsync(sessionId, ct);
+			_transport.Status(sessionId, $"Saved model order for the {payload.Role} role.");
+		}
 	}
 
 	// Persists the web-search provider list from the picker, then reloads so the tool set rebuilds
@@ -806,12 +870,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private async Task HandleConfigCatalogAsync(string sessionId, string args, CancellationToken ct)
 	{
 		string baseUrl = string.Empty;
-		string apiKey = string.Empty;
+		string apiKey  = string.Empty;
 		try
 		{
 			System.Text.Json.Nodes.JsonNode? node = System.Text.Json.Nodes.JsonNode.Parse(args);
 			baseUrl = node?["baseUrl"]?.GetValue<string>() ?? string.Empty;
-			apiKey = node?["apiKey"]?.GetValue<string>() ?? string.Empty;
+			apiKey  = node?["apiKey"]?.GetValue<string>() ?? string.Empty;
 		}
 		catch (Exception)
 		{
@@ -861,10 +925,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 					(List<DiscoveredModel> retried, string retryError) = await ModelCatalog.FetchAsync(swapped, apiKey, ct);
 					if (retryError.Length == 0)
 					{
-						baseUrl = swapped;
+						baseUrl         = swapped;
 						payload.BaseUrl = swapped;
-						discovered = retried;
-						error = string.Empty;
+						discovered      = retried;
+						error           = string.Empty;
 						AutoProviderConfig? swappedExisting = FindAutoEndpoint(baseUrl);
 						if (swappedExisting != null)
 							existing = swappedExisting;
@@ -878,7 +942,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 				if (cached != null)
 				{
 					discovered = cached;
-					error = string.Empty;
+					error      = string.Empty;
 				}
 			}
 			payload.Error = error;
@@ -888,17 +952,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 				AutoModelConfig? entry = FindAutoModel(existing, d.Id);
 				payload.Models.Add(new ConfigModelInfo
 				{
-					Id = d.Id,
-					Name = d.Name,
-					ContextWindow = d.ContextWindow,
+					Id              = d.Id,
+					Name            = d.Name,
+					ContextWindow   = d.ContextWindow,
 					MaxOutputTokens = d.MaxOutputTokens,
-					CostInput = d.CostInput,
-					CostOutput = d.CostOutput,
-					Modalities = d.Modalities,
-					Configured = entry != null,
-					Enabled = entry != null && entry.Enabled,
-					Created = d.Created,
-					Override = entry
+					CostInput       = d.CostInput,
+					CostOutput      = d.CostOutput,
+					Modalities      = d.Modalities,
+					Configured      = entry != null,
+					Enabled         = entry != null && entry.Enabled,
+					Created         = d.Created,
+					Override        = entry
 				});
 			}
 
@@ -921,11 +985,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 					{
 						payload.Models.Add(new ConfigModelInfo
 						{
-							Id = entry.Id,
-							Name = $"{entry.Id} (not in catalog)",
+							Id         = entry.Id,
+							Name       = $"{entry.Id} (not in catalog)",
 							Configured = true,
-							Enabled = entry.Enabled,
-							Override = entry
+							Enabled    = entry.Enabled,
+							Override   = entry
 						});
 					}
 				}
@@ -1011,7 +1075,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		string trimmed = text.Substring(1).Trim();
 		string verb;
-		int spaceIdx = trimmed.IndexOf(' ');
+		int    spaceIdx = trimmed.IndexOf(' ');
 		if (spaceIdx >= 0)
 			verb = trimmed.Substring(0, spaceIdx).ToLowerInvariant();
 		else
@@ -1037,7 +1101,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 				// twice (host-swap retry), and the input loop must keep servicing commands —
 				// including the /quit or Esc-driven traffic of a user giving up on the fetch.
 				string catalogArgs = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty;
-				_ = Task.Run(async () =>
+				_                  = Task.Run(async () =>
 				{
 					try
 					{
@@ -1057,6 +1121,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 			case "config-search-apply":
 				await HandleConfigSearchApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
+			case "config-roles":
+				HandleConfigRoles(sessionId);
+				break;
+			case "config-role-apply":
+				await HandleConfigRoleApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
+				break;
 			case "help":
 				_transport.Output(sessionId, "Commands: /compact, /reload, /model <id>, /finish, /test, /quit");
 				break;
@@ -1074,8 +1144,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 					// and resurrect the files DeleteTree just removed. Collect, mark, and remove
 					// under ONE lock hold so a concurrently spawning child either lands in the sweep
 					// or is refused by RegisterSession's parent-alive rule — never orphaned between.
-					string childPrefix = target + "_";
-					List<Session> doomed = new List<Session>();
+					string        childPrefix = target + "_";
+					List<Session> doomed      = new List<Session>();
 					lock (_sessionLock)
 					{
 						foreach ((string id, Session s) in _allSessions)
@@ -1176,7 +1246,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 
 		ToolResult check = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
-		string[] lines = check.StdOut.Trim().Length == 0
+		string[]   lines = check.StdOut.Trim().Length == 0
 			? Array.Empty<string>()
 			: check.StdOut.Trim().Split('\n');
 		string verdict = lines.Length > 0 ? lines[0].Trim() : string.Empty;
@@ -1207,8 +1277,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 		}
 
-		ToolResult recheck = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
-		string[] recheckLines = recheck.StdOut.Trim().Length == 0
+		ToolResult recheck      = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
+		string[]   recheckLines = recheck.StdOut.Trim().Length == 0
 			? Array.Empty<string>()
 			: recheck.StdOut.Trim().Split('\n');
 		if (recheckLines.Length == 0 || recheckLines[0].Trim() != "OK")
@@ -1242,7 +1312,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 
 		// The CWD (/workspace) is gone now; move to /git so the process keeps a valid working directory.
-		try { Directory.SetCurrentDirectory("/git"); } catch { }
+		try
+		{ Directory.SetCurrentDirectory("/git"); }
+		catch { }
 
 		_transport.Output(sessionId, $"Worktree finished and integrated into '{baseBranch}'. Removing it and shutting down.");
 		_transport.Status(sessionId, "worktree-finished");
@@ -1297,7 +1369,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return string.Empty;
 
 		string branch = lines[0].Trim();
-		string path = lines[1].Trim();
+		string path   = lines[1].Trim();
 		if (string.IsNullOrEmpty(branch) || string.IsNullOrEmpty(path))
 			return string.Empty;
 

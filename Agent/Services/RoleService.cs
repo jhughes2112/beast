@@ -13,10 +13,16 @@ public class RoleService
 	public Dictionary<string, Role> Roles { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
 
 	private readonly string _workDirRolesPath;
+	private readonly string _homeDirRolesPath;
+
+	// The role set as configured, before the registry expands '*' into concrete model ids. Saving
+	// works from this so a wildcard survives an edit.
+	private Dictionary<string, Role> _rawRoles = new(StringComparer.OrdinalIgnoreCase);
 
 	public RoleService(string workDir)
 	{
 		_workDirRolesPath = Path.Combine(workDir, ".beast", "roles.json");
+		_homeDirRolesPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "roles.json");
 		LoadRoles();
 	}
 
@@ -112,16 +118,86 @@ public class RoleService
 		foreach (Role role in defaults)
 			fresh[role.Name] = role;
 
-		// Write the project's roles.json from the defaults when missing; otherwise load it and assign its
-		// roles over the defaults so edits take effect (and any extra roles are added).
-		if (!File.Exists(_workDirRolesPath))
-			WriteRolesFile(_workDirRolesPath, defaults);
+		// The USER file is the real one — roles are a per-person preference, not a per-checkout
+		// fact, and /role edits belong somewhere every project sees. Written from the defaults
+		// when missing, then layered over them.
+		if (!File.Exists(_homeDirRolesPath))
+			WriteRolesFile(_homeDirRolesPath, defaults);
 		else
+			ApplyRolesFromFile(_homeDirRolesPath, fresh);
+
+		// A project roles.json is an override layer on top: useful for a repo that genuinely needs
+		// its own prompts, and applied last so it wins.
+		if (File.Exists(_workDirRolesPath))
 			ApplyRolesFromFile(_workDirRolesPath, fresh);
+
+		// Keep the roles exactly as configured, BEFORE the registry expands any '*'. Saving must
+		// write these: writing the published set back would bake today's model list into every
+		// wildcard role and silently stop new models from ever joining it.
+		_rawRoles = new Dictionary<string, Role>(fresh, StringComparer.OrdinalIgnoreCase);
 
 		// Published as a single reference swap: a reader racing a reload sees the complete old set
 		// or the complete new one, never a half-filled dictionary mid-rebuild.
 		Roles = fresh;
+	}
+
+	// Rewrites one role's model order in roles.json and reloads. The order given is the effective
+	// one the user just arranged; when the role was configured with a '*' the marker is appended
+	// back so models added later still join the role automatically, at the end.
+	public void SaveRoleModelOrder(string roleName, List<string> modelIds)
+	{
+		if (!_rawRoles.TryGetValue(roleName, out Role? raw))
+			return;
+
+		List<string> saved = new List<string>(modelIds);
+		if (raw.Models.Contains("*"))
+			saved.Add("*");
+
+		List<Role> all = new List<Role>();
+		foreach ((string name, Role role) in _rawRoles)
+		{
+			if (string.Equals(name, roleName, StringComparison.OrdinalIgnoreCase))
+				all.Add(new Role(role.Name, role.Description, role.Kind, saved, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt));
+			else
+				all.Add(role);
+		}
+
+		WriteRolesFile(_homeDirRolesPath, all);
+
+		// A copy of this role in the project file would override what was just saved and make the
+		// edit look like a no-op. Lift that one role out; anything else the project overrides is
+		// left exactly as it was.
+		RemoveRoleFromProjectFile(roleName);
+
+		LoadRoles();
+	}
+
+	// Drops one role from the project roles.json, leaving the rest of the file intact. Best-effort:
+	// a project file that cannot be rewritten is not worth failing the save over — the home file is
+	// already correct, and the shadowing is visible the moment the editor reopens.
+	private void RemoveRoleFromProjectFile(string roleName)
+	{
+		if (!File.Exists(_workDirRolesPath))
+			return;
+
+		try
+		{
+			string     json = File.ReadAllText(_workDirRolesPath);
+			RolesFile? file = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
+			if (file == null)
+				return;
+
+			int removed = file.Agents.RemoveAll(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+			removed    += file.Subagents.RemoveAll(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
+			if (removed == 0)
+				return;
+
+			File.WriteAllText(_workDirRolesPath, JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile));
+		}
+		catch (Exception ex)
+		{
+			Console.Error.WriteLine($"[RoleService] Could not remove '{roleName}' from the project roles.json: {ex.Message}");
+		}
 	}
 
 	// Serializes the current role set into roles.json, splitting it into the Agents and Subagents blocks
@@ -203,7 +279,7 @@ public class RoleService
 		if (string.IsNullOrEmpty(role.Name))
 			return;
 
-		Role kinded = new Role(role.Name, role.Description, kind, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
+		Role kinded         = new Role(role.Name, role.Description, kind, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
 		target[kinded.Name] = kinded;
 	}
 
@@ -215,7 +291,7 @@ public class RoleService
 	// the Developer.  This should be a smart model.
 	private static Role DefaultRole()
 	{
-		const string description = "Light conversation role";
+		const string description  = "Light conversation role";
 		const string systemPrompt = """
 			You are a helpful assistant with read-only privileges. Your only job is to be conversational and pass work to the Developer. Always delegate immediately to the Developer the moment the user asks for work to be performed.
 			""";
@@ -253,7 +329,7 @@ public class RoleService
 	// a smart model.
 	private static Role DeveloperRole()
 	{
-		const string description = "Implements changes with full read/write/shell access, and gets them reviewed";
+		const string description   = "Implements changes with full read/write/shell access, and gets them reviewed";
 		const string summaryPrompt = """
 			Create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing seamlessly without losing context.
 			Organize your thoughts and ensure you've covered all necessary points. Process: 
@@ -297,7 +373,7 @@ public class RoleService
 	// receives. This should be a smart model, but different from the Developer. There is no reason it should run so long that it needs to compact.
 	private static Role ReviewerRole()
 	{
-		const string description = "Reviews changes read-only; approves or rejects with comments";
+		const string description  = "Reviews changes read-only; approves or rejects with comments";
 		const string systemPrompt =
 			"""
             You are a reviewer agent with read-only access to the worktree. Inspect the indicated changes against the goal you were given: check correctness, scope, code quality and that nothing obviously broke.
@@ -318,7 +394,7 @@ public class RoleService
 	// return_to_caller (forced during wind-down). This should be a fast model, since it runs on every digest.
 	private static Role ExplorerRole()
 	{
-		const string description = "To reduce context by providing a brief roadmap of a file relevant to a goal";
+		const string description  = "To reduce context by providing a brief roadmap of a file relevant to a goal";
 		const string systemPrompt =
 			"""
 			You are a first-pass discovery agent. Given a goal and a block of content from the target file, generate an index of regions relevant to the stated goal so the caller can read them directly using read_file.
@@ -346,7 +422,7 @@ public class RoleService
 	// and parse it.
 	private static Role WebFetchRole()
 	{
-		const string description = "To reduce context by returning the useful parts of a web page";
+		const string description  = "To reduce context by returning the useful parts of a web page";
 		const string systemPrompt =
 			"""
 			You are a web content extraction agent. The fetched resource has been saved to /tmp/ in several different convenient formats. Use whichever view best serves the goal: html-stripped text for readable content, the html tag skeleton for structure and navigation, and the unmodified raw file.
@@ -367,7 +443,7 @@ public class RoleService
 	// file (declarations come from /config discovery), so this role's list can safely be '*'.
 	private static Role MediaReaderRole()
 	{
-		const string description = "Interprets an attached image or audio file against a goal";
+		const string description  = "Interprets an attached image or audio file against a goal";
 		const string systemPrompt =
 			"""
 			You are a media inspection agent. You are given a goal and a media file (image or audio) attached to the message.
@@ -387,7 +463,7 @@ public class RoleService
 	// empty because the service is built from the search model directly, not picked by role.
 	private static Role WebSearchRole()
 	{
-		const string description = "To return live web search results that serve the goal";
+		const string description  = "To return live web search results that serve the goal";
 		const string systemPrompt =
 			"""
 			You are a web search agent. Search the live web for the given query and answer exactly what the goal asks for:

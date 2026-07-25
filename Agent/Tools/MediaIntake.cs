@@ -13,15 +13,16 @@ using System.Threading.Tasks;
 // and sends its staged name ahead of the message text. This resolves those into either real
 // attachments on the user turn or text standing in for them:
 //
-//   - the current model declares the modality  -> attach it, so the model sees the actual pixels
-//     and can be re-asked about it for the rest of the conversation
-//   - it does not                              -> the cheapest enabled model that CAN see it is
-//     asked to describe it, and the description rides along as text
+//   - the current model declares the modality  -> attach it, so the model's attention runs over
+//     the media itself and it stays re-askable for the rest of the conversation
+//   - it does not                              -> the file is NOT sent; UnsupportedDisplay is set
+//     and the caller alerts the user to switch models
 //   - the file is text                         -> inlined verbatim
 //   - nothing can read it                      -> a one-line note naming the type and size
 //
-// Attaching to the current model is preferred wherever possible because it is the only option that
-// survives follow-up questions: a description answers once and forgets.
+// There is deliberately no describe-it-with-another-model fallback. A description is text, and
+// text does not do what native media input does; quietly swapping one for the other would leave
+// the model reasoning over a transcription while the user believed it had seen the thing.
 public static class MediaIntake
 {
 	// Staged files above this are refused: a base64 payload of this size already dwarfs most
@@ -85,61 +86,55 @@ public static class MediaIntake
 	// Resolves one staged file. stagedName is the file's name inside the staging folder;
 	// originalPath is where it came from on the user's machine, used for display and for the
 	// model's benefit (it may be able to read it directly if it lives in the workspace).
-	public static async Task<(string Text, MediaAttachment? Attachment, bool Retain)> ResolveAsync(
-		string stagedName,
-		string originalPath,
-		Session session,
-		LlmRegistry registry,
+	public static async Task<(string Text, MediaAttachment? Attachment, string InspectPath, MediaKind Kind)> ResolveAsync(
+		string            stagedName,
+		string            originalPath,
+		Session           session,
+		LlmRegistry       registry,
 		CancellationToken ct)
 	{
-		string staged = Path.Combine(StagingFolder(), stagedName);
+		string staged  = Path.Combine(StagingFolder(), stagedName);
 		string display = string.IsNullOrEmpty(originalPath) ? stagedName : originalPath;
 
 		if (!File.Exists(staged))
-			return ($"[attachment {display} could not be read: the staged copy is missing]", null, false);
+			return ($"[attachment {display} could not be read: the staged copy is missing]", null, string.Empty, MediaKind.Unknown);
 
-		long bytes = new FileInfo(staged).Length;
+		long bytes                        = new FileInfo(staged).Length;
 		(MediaKind kind, string mimeType) = MediaKinds.Classify(originalPath.Length > 0 ? originalPath : stagedName);
 
 		if (kind == MediaKind.Text)
-			return (await InlineTextAsync(staged, display, ct), null, false);
+			return (await InlineTextAsync(staged, display, ct), null, string.Empty, MediaKind.Text);
 
 		if (kind == MediaKind.Unknown)
-			return ($"[attachment {display}: {bytes} bytes of an unrecognized type — no model can read it directly]", null, false);
+			return ($"[attachment {display}: {bytes} bytes of an unrecognized type — no model can read it directly]", null, string.Empty, MediaKind.Unknown);
 
 		if (bytes > MaxAttachmentBytes)
-			return ($"[attachment {display} is {bytes / (1024 * 1024)}MB, over the {MaxAttachmentBytes / (1024 * 1024)}MB limit — not sent]", null, false);
+			return ($"[attachment {display} is {bytes / (1024 * 1024)}MB, over the {MaxAttachmentBytes / (1024 * 1024)}MB limit — not sent]", null, string.Empty, kind);
 
 		// The session's own model gets first refusal: attaching beats describing whenever it works.
 		LlmModel? current = registry.GetModel(session.Model);
 		if (current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string data = Convert.ToBase64String(await File.ReadAllBytesAsync(staged, ct));
-			return ($"[attached {display}]", new MediaAttachment(mimeType, data), false);
+			return ($"[attached {display}]", new MediaAttachment(mimeType, data), string.Empty, kind);
 		}
 
-		// Otherwise the file cannot ride along, and describing it HERE would be wrong twice over:
-		// the description would appear before the user's own message (it is produced while that
-		// message is still being assembled), and it would arrive as unattributed assistant text
-		// for work no one can see happening. Point the model at inspect_media instead — it does
-		// the same job through the cheapest capable model, but as a visible tool call, in order.
+		// Otherwise the file cannot ride along, and there is no good substitute: a description
+		// produced by another model is text, and text is not what native media input buys — the
+		// point of attaching an image is that the model's attention runs over the image itself,
+		// which no transcription reproduces. So the file is simply not sent, and the caller raises
+		// a banner telling the user to switch to a model that can take it.
+		//
+		// The model still gets one short line, because it can see the path marker in the user's
+		// message and would otherwise be left guessing what happened to it.
 		string modality = MediaKinds.Modality(kind);
-		if (MediaKinds.CapableModels(registry, kind).Count == 0)
-		{
-			return ($"[attached {display} — neither the current model nor any other enabled model accepts '{modality}' input, so it could not be read. "
-				+ "Enable one with /config, or tell the user what you would need.]", null, false);
-		}
-
-		// The staged copy is what inspect_media must open: the original path may be outside the
-		// workspace and unreadable from here.
-		return ($"[attached {display} — the current model cannot accept '{modality}' input. "
-			+ $"Call inspect_media with file_path \"{staged}\" and a goal describing what you need from it; a capable model will read it and answer.]", null, true);
+		return ($"[{display} was not sent: this model does not accept {modality} input]", null, display, kind);
 	}
 
 	private static async Task<string> InlineTextAsync(string staged, string display, CancellationToken ct)
 	{
 		string content = await File.ReadAllTextAsync(staged, ct);
-		bool clipped = content.Length > MaxInlineTextChars;
+		bool   clipped = content.Length > MaxInlineTextChars;
 		if (clipped)
 			content = content.Substring(0, MaxInlineTextChars);
 

@@ -45,6 +45,7 @@ public static class ModelCatalogTests
 		ctx.Assert(!MediaKinds.Supports(vision, MediaKind.Audio), "MediaKinds: undeclared audio is unsupported");
 		ctx.Assert(!MediaKinds.Supports(plain, MediaKind.Image), "MediaKinds: a model declaring nothing is text-only");
 		ctx.Assert(!MediaKinds.Supports(vision, MediaKind.Text), "MediaKinds: text is never a model capability question");
+
 	}
 
 	private static void TestNormalizeRequestEndpoint(TestContext ctx)
