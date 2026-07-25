@@ -622,15 +622,18 @@ public class SessionHandler
 			string stagedName = sep >= 0 ? entry.Substring(0, sep) : entry;
 			string originalPath = sep >= 0 ? entry.Substring(sep + 1) : string.Empty;
 
-			(string note, MediaAttachment? attachment) = await MediaIntake.ResolveAsync(
-				stagedName, originalPath, _activeSession, registry, roleService, transport, ct);
+			(string note, MediaAttachment? attachment, bool retain) = await MediaIntake.ResolveAsync(
+				stagedName, originalPath, _activeSession, registry, ct);
 
 			if (attachment != null)
 				attachments.Add(attachment);
 			if (note.Length > 0)
 				text.Append("\n\n").Append(note);
 
-			MediaIntake.DiscardStaged(stagedName);
+			// A file the model is being told to open with inspect_media has to survive the turn;
+			// everything else is fully consumed here.
+			if (!retain)
+				MediaIntake.DiscardStaged(stagedName);
 		}
 
 		_pendingAttachments.Clear();

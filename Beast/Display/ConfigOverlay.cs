@@ -494,6 +494,10 @@ internal class ConfigOverlay
 				_search[index].Model = string.Empty;
 				ApplySearch();
 			}
+			else if (kind == HomeRowKind.Endpoint)
+			{
+				DeleteEndpoint(index);
+			}
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
@@ -521,6 +525,37 @@ internal class ConfigOverlay
 		{
 			Close();
 		}
+	}
+
+	// Removes an endpoint, but only once nothing depends on it. An endpoint still serving models is
+	// left alone with an explanation rather than silently pulling them out from under the roles
+	// that use them; a manual endpoint is hand-written config this picker does not own.
+	private void DeleteEndpoint(int index)
+	{
+		(string baseUrl, string source, int enabledCount) = _endpoints[index];
+
+		if (source == "manual")
+		{
+			_status = "Manual endpoints are edited in settings.json, not here.";
+			return;
+		}
+		if (enabledCount > 0)
+		{
+			_status = $"{baseUrl} still has {enabledCount} enabled model(s) — open it and turn them off first.";
+			return;
+		}
+
+		// An apply carrying no models is how the agent is told to drop the endpoint entirely.
+		JsonObject payload = new JsonObject
+		{
+			["baseUrl"] = baseUrl,
+			["apiKey"] = string.Empty,
+			["models"] = new JsonArray()
+		};
+		_status = $"Removing {baseUrl}…";
+		_baseUrl = baseUrl;
+		_mode = Mode.Applying;
+		_sendCommand("/config-apply " + payload.ToJsonString());
 	}
 
 	private void HandleSearchModelKey(ConsoleKeyInfo key)
@@ -1048,7 +1083,7 @@ internal class ConfigOverlay
 		{
 			case Mode.Endpoints:
 			{
-				AnsiToScreen.WriteLine(s, 2, 1, "↑↓ move · Enter open/edit · space toggle · Del remove · Esc close", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1, "↑↓ move · Enter open/edit · space toggle · Del remove (when unused) · Esc close", dimFg, bg);
 
 				int visRows = bh - 4;
 				if (_homeSelected < _homeScroll)
@@ -1077,7 +1112,9 @@ internal class ConfigOverlay
 					}
 
 					Rgb rowFg = kind == HomeRowKind.AddEndpoint ? onFg : textFg;
-					if (kind == HomeRowKind.Endpoint && _endpoints[index].Source == "manual")
+					// An endpoint contributing no models is dimmed: nothing depends on it, which is
+					// also exactly the state in which Del will remove it.
+					if (kind == HomeRowKind.Endpoint && (_endpoints[index].Source == "manual" || _endpoints[index].EnabledCount == 0))
 						rowFg = dimFg;
 					s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 

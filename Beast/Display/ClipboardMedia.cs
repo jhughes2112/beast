@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -20,6 +20,20 @@ internal static class ClipboardMedia
 
 	[DllImport("user32.dll", SetLastError = true)]
 	private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+	// The clipboard is a single shared resource and the app that just wrote to it (the snipping
+	// tool, a browser) may still hold it open for a few milliseconds. One failed attempt is not a
+	// verdict, so retry briefly before giving up.
+	private static bool OpenClipboardWithRetry()
+	{
+		for (int attempt = 0; attempt < 10; attempt++)
+		{
+			if (OpenClipboard(IntPtr.Zero))
+				return true;
+			System.Threading.Thread.Sleep(20);
+		}
+		return false;
+	}
 
 	[DllImport("user32.dll", SetLastError = true)]
 	private static extern bool CloseClipboard();
@@ -48,7 +62,7 @@ internal static class ClipboardMedia
 		List<string> files = new List<string>();
 		if (!IsClipboardFormatAvailable(CF_HDROP))
 			return files;
-		if (!OpenClipboard(IntPtr.Zero))
+		if (!OpenClipboardWithRetry())
 			return files;
 
 		try
@@ -88,7 +102,7 @@ internal static class ClipboardMedia
 	{
 		if (!IsClipboardFormatAvailable(CF_DIB))
 			return string.Empty;
-		if (!OpenClipboard(IntPtr.Zero))
+		if (!OpenClipboardWithRetry())
 			return string.Empty;
 
 		byte[]? dib = null;

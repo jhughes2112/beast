@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -85,46 +85,55 @@ public static class MediaIntake
 	// Resolves one staged file. stagedName is the file's name inside the staging folder;
 	// originalPath is where it came from on the user's machine, used for display and for the
 	// model's benefit (it may be able to read it directly if it lives in the workspace).
-	public static async Task<(string Text, MediaAttachment? Attachment)> ResolveAsync(
+	public static async Task<(string Text, MediaAttachment? Attachment, bool Retain)> ResolveAsync(
 		string stagedName,
 		string originalPath,
 		Session session,
 		LlmRegistry registry,
-		RoleService roleService,
-		ITransportServer transport,
 		CancellationToken ct)
 	{
 		string staged = Path.Combine(StagingFolder(), stagedName);
 		string display = string.IsNullOrEmpty(originalPath) ? stagedName : originalPath;
 
 		if (!File.Exists(staged))
-			return ($"[attachment {display} could not be read: the staged copy is missing]", null);
+			return ($"[attachment {display} could not be read: the staged copy is missing]", null, false);
 
 		long bytes = new FileInfo(staged).Length;
 		(MediaKind kind, string mimeType) = MediaKinds.Classify(originalPath.Length > 0 ? originalPath : stagedName);
 
 		if (kind == MediaKind.Text)
-			return (await InlineTextAsync(staged, display, ct), null);
+			return (await InlineTextAsync(staged, display, ct), null, false);
 
 		if (kind == MediaKind.Unknown)
-			return ($"[attachment {display}: {bytes} bytes of an unrecognized type — no model can read it directly]", null);
+			return ($"[attachment {display}: {bytes} bytes of an unrecognized type — no model can read it directly]", null, false);
 
 		if (bytes > MaxAttachmentBytes)
-			return ($"[attachment {display} is {bytes / (1024 * 1024)}MB, over the {MaxAttachmentBytes / (1024 * 1024)}MB limit — not sent]", null);
+			return ($"[attachment {display} is {bytes / (1024 * 1024)}MB, over the {MaxAttachmentBytes / (1024 * 1024)}MB limit — not sent]", null, false);
 
 		// The session's own model gets first refusal: attaching beats describing whenever it works.
 		LlmModel? current = registry.GetModel(session.Model);
 		if (current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string data = Convert.ToBase64String(await File.ReadAllBytesAsync(staged, ct));
-			return ($"[attached {display}]", new MediaAttachment(mimeType, data));
+			return ($"[attached {display}]", new MediaAttachment(mimeType, data), false);
 		}
 
-		// Otherwise hand it to the cheapest model that declares the modality and carry back what it
-		// saw. The description is one-shot by nature — say so, so the model does not assume it can
-		// ask follow-up questions about pixels it never received.
-		string described = await DescribeAsync(staged, display, kind, session, registry, roleService, transport, ct);
-		return (described, null);
+		// Otherwise the file cannot ride along, and describing it HERE would be wrong twice over:
+		// the description would appear before the user's own message (it is produced while that
+		// message is still being assembled), and it would arrive as unattributed assistant text
+		// for work no one can see happening. Point the model at inspect_media instead — it does
+		// the same job through the cheapest capable model, but as a visible tool call, in order.
+		string modality = MediaKinds.Modality(kind);
+		if (MediaKinds.CapableModels(registry, kind).Count == 0)
+		{
+			return ($"[attached {display} — neither the current model nor any other enabled model accepts '{modality}' input, so it could not be read. "
+				+ "Enable one with /config, or tell the user what you would need.]", null, false);
+		}
+
+		// The staged copy is what inspect_media must open: the original path may be outside the
+		// workspace and unreadable from here.
+		return ($"[attached {display} — the current model cannot accept '{modality}' input. "
+			+ $"Call inspect_media with file_path \"{staged}\" and a goal describing what you need from it; a capable model will read it and answer.]", null, true);
 	}
 
 	private static async Task<string> InlineTextAsync(string staged, string display, CancellationToken ct)
@@ -142,37 +151,4 @@ public static class MediaIntake
 		return sb.ToString();
 	}
 
-	// Runs the media through the cheapest capable model in a throwaway stage session, exactly as
-	// the inspect_media tool does, and returns its description as text.
-	private static async Task<string> DescribeAsync(
-		string staged,
-		string display,
-		MediaKind kind,
-		Session session,
-		LlmRegistry registry,
-		RoleService roleService,
-		ITransportServer transport,
-		CancellationToken ct)
-	{
-		string modality = MediaKinds.Modality(kind);
-		Role? mediaRole = roleService.GetRole("MediaReader");
-		if (mediaRole == null)
-			return $"[attachment {display} could not be interpreted: the MediaReader role is not configured]";
-
-		List<LlmModel> capable = MediaKinds.CapableModels(registry, kind);
-		if (capable.Count == 0)
-		{
-			return $"[attachment {display} was not sent: neither the current model nor any other enabled model accepts '{modality}' input. "
-				+ "Enable one with /config, or ask about the file another way.]";
-		}
-
-		string goal = $"Describe this {modality} in full, faithful detail: everything visible or audible that someone who cannot perceive it would need in order to reason about it. Include any text verbatim.";
-		MediaInspector inspector = new MediaInspector();
-		ToolResult result = await inspector.InspectWithModelsAsync("intake", staged, goal, mediaRole, capable, registry, session, transport, 0, ct);
-
-		if (result.ExitCode != 0)
-			return $"[attachment {display} could not be interpreted: {result.StdErr}]";
-
-		return $"[attached {display} — the current model cannot accept {modality} input, so {capable[0].Config.Name} described it. This description is all that was captured; the {modality} itself is not in the conversation.]\n{result.StdOut}";
-	}
 }

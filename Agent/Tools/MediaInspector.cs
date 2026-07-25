@@ -72,6 +72,11 @@ public class MediaInspector
 		byte[] bytes = await File.ReadAllBytesAsync(filePath, ct);
 		string data = Convert.ToBase64String(bytes);
 
+		// The stage session runs silently: its answer is this tool's result and belongs in the tool
+		// block, in call order. Streaming it to the caller's transcript put a description on screen
+		// as unattributed assistant text — and, for a drag-and-drop, before the user's own message.
+		TransportSilent quiet = new TransportSilent();
+
 		string failures = string.Empty;
 		foreach (LlmModel model in candidates)
 		{
@@ -79,21 +84,23 @@ public class MediaInspector
 			if (service == null)
 				continue;
 
-			// Throwaway stage session reusing the caller's ID: the streamed answer renders in the
-			// caller's view, nothing is announced or saved, and cost rolls up to the real session.
+			// Throwaway stage session reusing the caller's ID: nothing is announced or saved, and
+			// cost rolls up to the real session.
 			BeastSession stageData = new BeastSession(session.Id, session.DisplayName, service.Model.ConfigId, mediaRole.Name,
 				string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
-			Session stage = new Session(stageData, mediaRole.SystemPrompt, transport, session.IsSubagent);
+			Session stage = new Session(stageData, mediaRole.SystemPrompt, quiet, session.IsSubagent);
 			stage.UpdateModel(service.Model);
 			string prompt = $"Goal: {goal}\nFile: {filePath}\n\nThe media file is attached.";
 			stage.Bundle.Canonical.OnUserMessageWithAttachments(prompt, new List<MediaAttachment> { new MediaAttachment(mimeType, data) });
 
-			ProtocolResult result = await service.RunToCompletionAsync(stage, Array.Empty<Tool>(), null, 0, maxOutputTokens, false, transport, ct);
+			ProtocolResult result = await service.RunToCompletionAsync(stage, Array.Empty<Tool>(), null, 0, maxOutputTokens, false, quiet, ct);
 			session.RecordCost(stage.TotalCost);
 
 			if (result.Outcome == ProtocolCallOutcome.Success)
 			{
-				string answer = result.Payload!.AssistantText;
+				// Name the model that actually looked: the answer is second-hand, and both the
+				// caller and the user reading the tool block should know whose eyes produced it.
+				string answer = $"{result.Payload!.AssistantText}\n\n[read by {service.Model.Config.Name}]";
 				return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, result.Payload.Usage.CompletionTokens));
 			}
 

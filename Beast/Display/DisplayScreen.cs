@@ -17,7 +17,7 @@ using TextCopy;
 // Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
-	private const string HelpText     = "Commands: /compact, /config, /reload, /model <id>, /finish, /verbose, /test, /quit";
+	private const string HelpText     = "Commands: /compact, /config, /reload, /model <id>, /finish, /verbose, /test, /quit  ·  Alt+V pastes a clipboard image";
 	private const int    MaxInputRows = 10;
 
 	// Slash verbs forwarded to the agent; anything else is refused locally. The orchestrator's own
@@ -2068,19 +2068,29 @@ public class DisplayScreen : IDisplay
 				cursorPos = inputBuffer.Length;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
-			else if (key.Key == ConsoleKey.V && ctrl)
+			// Ctrl+V AND Alt+V both paste. Alt+V exists because Windows Terminal binds Ctrl+V to its
+			// own paste, which sends the clipboard's TEXT as a bracketed paste — so an image-only
+			// clipboard sends nothing at all and this handler never runs. Alt+V is unbound there and
+			// reaches us, making it the reliable way to paste a screenshot.
+			else if (key.Key == ConsoleKey.V && (ctrl || alt))
 			{
 				lock (_consoleLock)
 					_followReadyTick = 0;
 
 				// Non-text clipboard contents first: copied files and screenshot bitmaps both
 				// become path markers, so a pasted image travels the same route as a dropped one.
-				string insert = PasteMediaMarkers();
+				(string insert, string report) = PasteMediaMarkers();
 				if (insert.Length == 0)
 				{
 					string? clip = ClipboardService.GetText();
 					if (!string.IsNullOrEmpty(clip))
 						insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
+					else
+						SetStatus(report.Length > 0 ? report : "Clipboard is empty.");
+				}
+				else if (report.Length > 0)
+				{
+					SetStatus(report);
 				}
 
 				if (insert.Length > 0)
@@ -2157,23 +2167,29 @@ public class DisplayScreen : IDisplay
 	// raw bitmap data from a screenshot. A screenshot has no file of its own, so it is written into
 	// the staging folder here and the marker points at that copy. Empty when the clipboard holds
 	// neither, which sends the caller to the text path.
-	private string PasteMediaMarkers()
+	private (string Markers, string Report) PasteMediaMarkers()
 	{
 		if (_attachmentRoot.Length == 0)
-			return string.Empty;
+			return (string.Empty, string.Empty);
 
 		StringBuilder markers = new StringBuilder();
+		int fileCount = 0;
 		foreach (string file in ClipboardMedia.GetFiles())
-			markers.Append($"[ path {file} ] ");
-
-		if (markers.Length == 0)
 		{
-			string image = ClipboardMedia.SaveImage(MediaIntake.EnsureStagingFolder(_attachmentRoot));
-			if (image.Length > 0)
-				markers.Append($"[ path {image} ] ");
+			markers.Append($"[ path {file} ] ");
+			fileCount++;
 		}
+		if (fileCount > 0)
+			return (markers.ToString(), fileCount == 1 ? "Attached 1 file from the clipboard." : $"Attached {fileCount} files from the clipboard.");
 
-		return markers.ToString();
+		string image = ClipboardMedia.SaveImage(MediaIntake.EnsureStagingFolder(_attachmentRoot));
+		if (image.Length > 0)
+			return ($"[ path {image} ] ", "Attached the clipboard image.");
+
+		// Nothing usable. Say so rather than doing nothing visible — a silent no-op here reads as
+		// a broken feature, and the most common cause (an image-only clipboard swallowed by the
+		// terminal's own Ctrl+V) is invisible from the user's side.
+		return (string.Empty, "Clipboard holds no image or files (for a screenshot, try Alt+V).");
 	}
 
 	// Copies one dropped file into the workspace staging folder under a collision-proof name, and
