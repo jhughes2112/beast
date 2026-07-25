@@ -259,6 +259,22 @@ internal class RoleOverlay
 		if (_modelIndex >= _scroll + visRows)
 			_scroll = _modelIndex - visRows + 1;
 
+		// Size the id column to the widest id actually present rather than to the panel: padding
+		// every row out to a fixed share of the width left a canyon between the ids and their
+		// costs, and squeezed the modality tags into ellipses. Bounded so one absurd id cannot
+		// push the costs off the edge.
+		int idWidth = 0;
+		foreach ((string id, string label, bool available) in role.Models)
+		{
+			if (id.Length > idWidth)
+				idWidth = id.Length;
+		}
+		int idCeiling = Math.Max(12, innerW - 36);
+		if (idWidth > idCeiling)
+			idWidth = idCeiling;
+		if (idWidth < 12)
+			idWidth = 12;
+
 		for (int r = 0; r < visRows; r++)
 		{
 			int idx = _scroll + r;
@@ -273,7 +289,7 @@ internal class RoleOverlay
 			s.Fill(new Rect(1, r + 4, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 
 			string note = available ? label : "not currently available";
-			string line = $"{idx + 1,2}. {Truncate(id, Math.Max(10, innerW - 30)).PadRight(Math.Max(10, innerW - 30))} {note}";
+			string line = $"{idx + 1,2}. {Truncate(id, idWidth).PadRight(idWidth)}  {note}";
 			AnsiToScreen.WriteLine(s, 2, r + 4, Truncate(line, innerW), rowFg, rowBg);
 		}
 

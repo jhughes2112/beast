@@ -25,7 +25,7 @@ public static class ReasoningEffort
 	public static ReasoningLevel Parse(string? word)
 	{
 		ReasoningLevel level;
-		string normalized = (word ?? string.Empty).Trim().ToLowerInvariant();
+		string         normalized = (word ?? string.Empty).Trim().ToLowerInvariant();
 		switch (normalized)
 		{
 			case "minimal":
@@ -63,7 +63,7 @@ public static class ReasoningEffort
 	public static string DisplayWord(string? word)
 	{
 		ReasoningLevel level = Parse(word);
-		string result;
+		string         result;
 		switch (level)
 		{
 			case ReasoningLevel.Minimal:
@@ -92,7 +92,7 @@ public static class ReasoningEffort
 	public static string DisplaySuffix(string? word)
 	{
 		string display = DisplayWord(word);
-		string result = string.IsNullOrEmpty(display) ? string.Empty : $" ({display})";
+		string result  = string.IsNullOrEmpty(display) ? string.Empty : $" ({display})";
 		return result;
 	}
 
@@ -102,7 +102,7 @@ public static class ReasoningEffort
 	public static string? OpenAiEffort(string? word)
 	{
 		ReasoningLevel level = Parse(word);
-		string? result;
+		string?        result;
 		switch (level)
 		{
 			case ReasoningLevel.Minimal:
@@ -127,13 +127,42 @@ public static class ReasoningEffort
 		return result;
 	}
 
+	// The Anthropic output_config.effort word used by models that take ADAPTIVE thinking instead of a
+	// token budget (Opus 4.6 and later reject "thinking.type.enabled" outright). Null for None so the
+	// field is omitted. Minimal has no counterpart in this ladder and reads as low.
+	public static string? AnthropicEffort(string? word)
+	{
+		ReasoningLevel level = Parse(word);
+		string?        result;
+		switch (level)
+		{
+			case ReasoningLevel.Minimal:
+			case ReasoningLevel.Low:
+				result = "low";
+				break;
+			case ReasoningLevel.Medium:
+				result = "medium";
+				break;
+			case ReasoningLevel.High:
+				result = "high";
+				break;
+			case ReasoningLevel.Max:
+				result = "max";
+				break;
+			default:
+				result = null;
+				break;
+		}
+		return result;
+	}
+
 	// The Anthropic thinking budget in tokens, clamped to leave room for the visible answer within the
 	// turn's max_tokens. Returns 0 when thinking is off or there is no room. Anthropic requires a budget
 	// of at least 1024 and strictly less than max_tokens.
 	public static int AnthropicBudget(string? word, int maxTokens)
 	{
 		ReasoningLevel level = Parse(word);
-		int target;
+		int            target;
 		switch (level)
 		{
 			case ReasoningLevel.Minimal:
@@ -165,7 +194,7 @@ public static class ReasoningEffort
 		{
 			// Leave at least 512 tokens for the answer, and never drop below the 1024 minimum.
 			int ceiling = maxTokens - 512;
-			budget = target > ceiling ? ceiling : target;
+			budget      = target > ceiling ? ceiling : target;
 			if (budget < 1024)
 				budget = 1024;
 		}

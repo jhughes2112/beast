@@ -20,6 +20,29 @@ public static class ModelCatalogTests
 		TestAttachmentRoundTrip(ctx);
 		TestChatCompletionsAttachmentParts(ctx);
 		TestMediaKinds(ctx);
+		TestAnthropicThinkingShapes(ctx);
+	}
+
+	// Anthropic changed its thinking contract: the budgeted form is rejected outright by newer
+	// models, which want adaptive + an effort word. Both shapes have to be producible, and the
+	// 400 that says so has to be recognized.
+	private static void TestAnthropicThinkingShapes(TestContext ctx)
+	{
+		ctx.AssertEqual("low", ReasoningEffort.AnthropicEffort("minimal"), "AnthropicEffort: minimal collapses to low");
+		ctx.AssertEqual("medium", ReasoningEffort.AnthropicEffort("medium"), "AnthropicEffort: medium");
+		ctx.AssertEqual("max", ReasoningEffort.AnthropicEffort("max"), "AnthropicEffort: max survives (unlike the OpenAI ladder)");
+		ctx.AssertNull(ReasoningEffort.AnthropicEffort(""), "AnthropicEffort: no effort configured yields no field");
+		ctx.AssertNull(ReasoningEffort.AnthropicEffort("none"), "AnthropicEffort: none yields no field");
+
+		// The budgeted form must still be produced for models that take it.
+		ctx.Assert(ReasoningEffort.AnthropicBudget("medium", 16384) > 0, "AnthropicBudget: budgeted form still available");
+
+		string real = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"\\\"thinking.type.enabled\\\" is not supported for this model. Use \\\"thinking.type.adaptive\\\" and \\\"output_config.effort\\\" to control thinking behavior.\"}}";
+		bool wants = (bool)Reflect.Static(typeof(ProtocolAnthropic), "WantsAdaptiveThinking", new[] { typeof(string) }, new object[] { real })!;
+		ctx.Assert(wants, "WantsAdaptiveThinking: the real Anthropic 400 is recognized");
+
+		bool unrelated = (bool)Reflect.Static(typeof(ProtocolAnthropic), "WantsAdaptiveThinking", new[] { typeof(string) }, new object[] { "{\"error\":{\"message\":\"credit balance is too low\"}}" })!;
+		ctx.Assert(!unrelated, "WantsAdaptiveThinking: an unrelated 400 does not trigger the retry");
 	}
 
 	// Extension classification and capability matching drive the whole drag-and-drop routing

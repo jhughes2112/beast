@@ -29,7 +29,7 @@ public class ProtocolAnthropic
 	// Native runtime state: wire-format message objects ({"role","content":[blocks]}) plus the
 	// system prompt text. Both are in-memory only and rebuilt from canonical by Rehydrate.
 	private readonly JsonArray _native = new JsonArray();
-	private string _system = string.Empty;
+	private          string    _system = string.Empty;
 
 	// The live turn just produced by this protocol, held until the session commits it. The commit
 	// fan-out routes OnAssistantTurn back through this protocol, which consumes this verbatim
@@ -39,13 +39,28 @@ public class ProtocolAnthropic
 	// committed, so the pending message is simply discarded when the next turn replaces it.
 	private JsonObject? _pendingNative;
 
+	// Which thinking shape this endpoint's model accepts. Anthropic changed it: the budgeted
+	// {"type":"enabled","budget_tokens":N} form is rejected outright by Opus 4.6 and later, which
+	// want {"type":"adaptive"} plus output_config.effort. Learned from the 400 rather than guessed
+	// from a model name, and cached for the life of this protocol instance so the retry is paid
+	// once per session, not once per turn.
+	private bool _adaptiveThinking;
+
+	// True when a 400 says this model wants the adaptive thinking shape. Matched on the field names
+	// Anthropic quotes back rather than on prose, so a reworded message still lands.
+	private static bool WantsAdaptiveThinking(string responseBody)
+	{
+		return responseBody.Contains("thinking.type.enabled", StringComparison.OrdinalIgnoreCase)
+			|| responseBody.Contains("thinking.type.adaptive", StringComparison.OrdinalIgnoreCase);
+	}
+
 	// Rebuilds the native wire-format message chain from canonical, stripping thinking and
 	// enforcing user/assistant alternation. Called by ProtocolProxy right after creating or
 	// switching in.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
 		_native.Clear();
-		_system = string.Empty;
+		_system        = string.Empty;
 		_pendingNative = null;
 
 		foreach (CanonicalMessage msg in messages)
@@ -104,7 +119,7 @@ public class ProtocolAnthropic
 			{
 				JsonObject image = new JsonObject
 				{
-					["type"] = "image",
+					["type"]   = "image",
 					["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = att.MimeType, ["data"] = att.Base64Data }
 				};
 				AppendContent("user", image);
@@ -138,7 +153,7 @@ public class ProtocolAnthropic
 						&& obj["type"]?.GetValue<string>() == "tool_use"
 						&& obj["id"]?.GetValue<string>() == tc.Id)
 					{
-						obj["name"] = tc.Name;
+						obj["name"]  = tc.Name;
 						obj["input"] = ParseInput(tc.ArgumentsJson);
 					}
 				}
@@ -168,16 +183,16 @@ public class ProtocolAnthropic
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
-		LlmModel model,
-		ListenerBundle bundle,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		int? maxCompletionTokens,
+		LlmModel                   model,
+		ListenerBundle             bundle,
+		List<ToolDefinition>       tools,
+		string?                    forcedToolName,
+		int?                       maxCompletionTokens,
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		LiveUsageProgress onProgress,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		LiveUsageProgress             onProgress,
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		try
 		{
@@ -187,36 +202,52 @@ public class ProtocolAnthropic
 			if (maxTokens <= 0)
 				maxTokens = 8192;
 
-			JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxTokens, true, extraPayload);
-			body["stream"] = true;
-			logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-
-			using HttpRequestMessage request = BuildRequest(model.Endpoint, body, model, extraHeaders);
-			using HttpResponseMessage response = await ProtocolHelpers.GetClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-
-			if (!response.IsSuccessStatusCode)
+			// At most two attempts: the second exists only to re-send after learning that this model
+			// wants the adaptive thinking shape. Anything else returns on the first pass.
+			for (int attempt = 0; ; attempt++)
 			{
-				string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-				int statusCode = (int)response.StatusCode;
+				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxTokens, true, extraPayload);
+				body["stream"]  = true;
+				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
-				if (statusCode == 429 || ProtocolHelpers.IsRateLimited(response, responseBody))
+				using HttpRequestMessage request   = BuildRequest(model.Endpoint, body, model, extraHeaders);
+				using HttpResponseMessage response = await ProtocolHelpers.GetClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+				if (!response.IsSuccessStatusCode)
 				{
-					return logger.ProtocolFailure(
-						ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(response, responseBody)),
-						model, DetectedProtocol.Anthropic, "RateLimited", statusCode, responseBody, responseBody, null);
-				}
-				if (ProtocolHelpers.IsPermanentClientError(statusCode))
-				{
-					if (ProtocolHelpers.IsContextOverflow(responseBody))
+					string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+					int    statusCode   = (int)response.StatusCode;
+
+					if (statusCode == 429 || ProtocolHelpers.IsRateLimited(response, responseBody))
 					{
-						return ProtocolHelpers.ContextOverflowFailure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+						return logger.ProtocolFailure(
+							ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(response, responseBody)),
+							model, DetectedProtocol.Anthropic, "RateLimited", statusCode, responseBody, responseBody, null);
 					}
-					return ProtocolHelpers.Failure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
-				}
-				return ProtocolHelpers.TransientFailure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, response);
-			}
 
-			return await ReadStreamAsync(response, model, bundle, onProgress, logger, cancellationToken);
+					// The model rejected the budgeted thinking form. That is a REQUEST-SHAPE problem,
+					// not a dead model — adopt the adaptive form and re-send once, rather than
+					// reporting a permanent failure that marks a perfectly good model unavailable.
+					if (attempt == 0 && !_adaptiveThinking && WantsAdaptiveThinking(responseBody))
+					{
+						_adaptiveThinking = true;
+						logger.Write(model.Config.Name, model.Endpoint, "[thinking] model rejected budget_tokens; retrying with adaptive thinking + output_config.effort");
+						continue;
+					}
+
+					if (ProtocolHelpers.IsPermanentClientError(statusCode))
+					{
+						if (ProtocolHelpers.IsContextOverflow(responseBody))
+						{
+							return ProtocolHelpers.ContextOverflowFailure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+						}
+						return ProtocolHelpers.Failure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+					}
+					return ProtocolHelpers.TransientFailure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, response);
+				}
+
+				return await ReadStreamAsync(response, model, bundle, onProgress, logger, cancellationToken);
+			}
 		}
 		catch (OperationCanceledException)
 		{
@@ -244,17 +275,17 @@ public class ProtocolAnthropic
 	// builders take the deltas so a long text block is not rebuilt into JSON on every chunk.
 	private sealed class BlockBuilder
 	{
-		public readonly string Type;
-		public readonly JsonObject Raw;
-		public readonly StringBuilder Text = new StringBuilder();
-		public readonly StringBuilder Thinking = new StringBuilder();
+		public readonly string        Type;
+		public readonly JsonObject    Raw;
+		public readonly StringBuilder Text      = new StringBuilder();
+		public readonly StringBuilder Thinking  = new StringBuilder();
 		public readonly StringBuilder Signature = new StringBuilder();
 		public readonly StringBuilder InputJson = new StringBuilder();
 
 		public BlockBuilder(string type, JsonObject raw)
 		{
 			Type = type;
-			Raw = raw;
+			Raw  = raw;
 		}
 	}
 
@@ -263,18 +294,18 @@ public class ProtocolAnthropic
 	private async Task<ProtocolResult> ReadStreamAsync(HttpResponseMessage response, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		SortedDictionary<int, BlockBuilder> blocks = new SortedDictionary<int, BlockBuilder>();
-		string? openStreamTag = null;
-		int freshInputTokens = 0;
-		int cacheCreationTokens = 0;
-		int cacheReadTokens = 0;
-		int outputTokens = 0;
-		string stopReason = "end_turn";
-		int streamedChars = 0;
-		bool sawEvent = false;
+		string? openStreamTag       = null;
+		int     freshInputTokens    = 0;
+		int     cacheCreationTokens = 0;
+		int     cacheReadTokens     = 0;
+		int     outputTokens        = 0;
+		string  stopReason          = "end_turn";
+		int     streamedChars       = 0;
+		bool    sawEvent            = false;
 
 		try
 		{
-			using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+			using Stream stream       = await response.Content.ReadAsStreamAsync(cancellationToken);
 			using StreamReader reader = new StreamReader(stream);
 
 			for (; ; )
@@ -285,25 +316,25 @@ public class ProtocolAnthropic
 				if (!line.StartsWith("data: ", StringComparison.Ordinal))
 					continue;
 
-				JsonNode? evt = JsonNode.Parse(line.Substring(6));
-				string? type = evt?["type"]?.GetValue<string>();
+				JsonNode? evt  = JsonNode.Parse(line.Substring(6));
+				string?   type = evt?["type"]?.GetValue<string>();
 				if (type == null)
 					continue;
 				sawEvent = true;
 
 				if (type == "message_start")
 				{
-					JsonNode? usage = evt!["message"]?["usage"];
-					freshInputTokens = usage?["input_tokens"]?.GetValue<int>() ?? 0;
+					JsonNode? usage     = evt!["message"]?["usage"];
+					freshInputTokens    = usage?["input_tokens"]?.GetValue<int>() ?? 0;
 					cacheCreationTokens = usage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
-					cacheReadTokens = usage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+					cacheReadTokens     = usage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
 				}
 				else if (type == "content_block_start")
 				{
-					int index = evt!["index"]?.GetValue<int>() ?? blocks.Count;
-					JsonObject raw = evt["content_block"] as JsonObject ?? new JsonObject();
-					string blockType = raw["type"]?.GetValue<string>() ?? "text";
-					blocks[index] = new BlockBuilder(blockType, (JsonObject)raw.DeepClone());
+					int        index     = evt!["index"]?.GetValue<int>() ?? blocks.Count;
+					JsonObject raw       = evt["content_block"] as JsonObject ?? new JsonObject();
+					string     blockType = raw["type"]?.GetValue<string>() ?? "text";
+					blocks[index]        = new BlockBuilder(blockType, (JsonObject)raw.DeepClone());
 				}
 				else if (type == "content_block_delta")
 				{
@@ -311,8 +342,8 @@ public class ProtocolAnthropic
 					if (!blocks.TryGetValue(index, out BlockBuilder? block))
 						continue;
 
-					JsonNode? delta = evt["delta"];
-					string? deltaType = delta?["type"]?.GetValue<string>();
+					JsonNode? delta     = evt["delta"];
+					string?   deltaType = delta?["type"]?.GetValue<string>();
 					if (deltaType == "text_delta")
 					{
 						string text = delta?["text"]?.GetValue<string>() ?? string.Empty;
@@ -389,9 +420,9 @@ public class ProtocolAnthropic
 				// Provisional running usage for this turn. Anthropic only reports output tokens on
 				// the final message_delta, so during the body of the stream we estimate from
 				// accumulated streamed characters (~4 chars/token) for continuous motion.
-				int liveOutput = outputTokens > 0 ? outputTokens : streamedChars / 4;
-				int liveCached = cacheReadTokens + cacheCreationTokens;
-				decimal liveCost = (freshInputTokens / 1_000_000m) * model.Config.Cost.Input
+				int     liveOutput = outputTokens > 0 ? outputTokens : streamedChars / 4;
+				int     liveCached = cacheReadTokens + cacheCreationTokens;
+				decimal liveCost   = (freshInputTokens / 1_000_000m) * model.Config.Cost.Input
 								 + (liveOutput / 1_000_000m) * model.Config.Cost.Output;
 				onProgress(freshInputTokens, liveOutput, liveCost, liveCached);
 			}
@@ -424,10 +455,10 @@ public class ProtocolAnthropic
 	// the session commits it) and the semantic payload.
 	private ProtocolResult CommitStreamedResponse(SortedDictionary<int, BlockBuilder> blocks, int freshInputTokens, int cacheCreationTokens, int cacheReadTokens, int outputTokens, string stopReason, LlmModel model)
 	{
-		JsonArray content = new JsonArray();
-		StringBuilder textBuilder = new StringBuilder();
-		StringBuilder thinkingBuilder = new StringBuilder();
-		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>();
+		JsonArray              content         = new JsonArray();
+		StringBuilder          textBuilder     = new StringBuilder();
+		StringBuilder          thinkingBuilder = new StringBuilder();
+		List<SemanticToolCall> toolCalls       = new List<SemanticToolCall>();
 
 		foreach ((int _, BlockBuilder block) in blocks)
 		{
@@ -441,24 +472,24 @@ public class ProtocolAnthropic
 			{
 				string thinking = block.Thinking.ToString();
 				thinkingBuilder.Append(thinking);
-				JsonObject thinkingBlock = new JsonObject();
-				thinkingBlock["type"] = "thinking";
-				thinkingBlock["thinking"] = thinking;
+				JsonObject thinkingBlock   = new JsonObject();
+				thinkingBlock["type"]      = "thinking";
+				thinkingBlock["thinking"]  = thinking;
 				thinkingBlock["signature"] = block.Signature.ToString();
 				content.Add((JsonNode)thinkingBlock);
 			}
 			else if (block.Type == "tool_use")
 			{
-				string id = block.Raw["id"]?.GetValue<string>() ?? string.Empty;
-				string name = block.Raw["name"]?.GetValue<string>() ?? string.Empty;
+				string id       = block.Raw["id"]?.GetValue<string>() ?? string.Empty;
+				string name     = block.Raw["name"]?.GetValue<string>() ?? string.Empty;
 				string argsJson = block.InputJson.Length > 0 ? block.InputJson.ToString() : (block.Raw["input"]?.ToJsonString() ?? "{}");
 				toolCalls.Add(new SemanticToolCall { Id = id, Name = name, ArgumentsJson = argsJson });
 
 				JsonObject use = new JsonObject();
-				use["type"] = "tool_use";
-				use["id"] = id;
-				use["name"] = name;
-				use["input"] = ParseInput(argsJson);
+				use["type"]    = "tool_use";
+				use["id"]      = id;
+				use["name"]    = name;
+				use["input"]   = ParseInput(argsJson);
 				content.Add((JsonNode)use);
 			}
 			else
@@ -473,9 +504,9 @@ public class ProtocolAnthropic
 		// turn back via OnAssistantTurn, which appends the pending message exactly once. Adding it
 		// here as well would double-append every live turn and duplicate tool_use ids.
 		JsonObject assistant = new JsonObject();
-		assistant["role"] = "assistant";
+		assistant["role"]    = "assistant";
 		assistant["content"] = content;
-		_pendingNative = assistant;
+		_pendingNative       = assistant;
 
 		// Anthropic's input_tokens excludes cache reads/writes; the full context is the sum of all
 		// input components plus output.
@@ -483,9 +514,9 @@ public class ProtocolAnthropic
 
 		TokenUsageInfo usage = new TokenUsageInfo
 		{
-			PromptTokens = totalInputTokens,
+			PromptTokens     = totalInputTokens,
 			CompletionTokens = outputTokens,
-			CachedTokens = cacheReadTokens + cacheCreationTokens
+			CachedTokens     = cacheReadTokens + cacheCreationTokens
 		};
 
 		// Cost from the model's configured per-million pricing, billing cache writes and reads at
@@ -496,7 +527,7 @@ public class ProtocolAnthropic
 					 + (cacheReadTokens / 1_000_000m) * model.Config.Cost.CacheRead
 					 + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
 
-		string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
+		string           finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
 		List<ToolResult> emptyResults = new List<ToolResult>();
 		return ProtocolResult.Succeeded(new ProtocolCallPayload(textBuilder.ToString(), thinkingBuilder.ToString(), toolCalls, emptyResults, finishReason, usage, cost));
 	}
@@ -505,13 +536,13 @@ public class ProtocolAnthropic
 	// Falls back to the legacy tracer (max_tokens=1) if the count endpoint is unavailable (e.g.
 	// OpenRouter).
 	public async Task<TracerResult> CountTokensAsync(
-		LlmModel model,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		List<ToolDefinition>          tools,
+		string?                       forcedToolName,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		// Build the count endpoint URL: model.Endpoint ends with /messages, count endpoint is
 		// /messages/count_tokens.
@@ -524,12 +555,12 @@ public class ProtocolAnthropic
 		logger.Write(model.Config.Name, countEndpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 		HttpResponseMessage httpResponse;
-		string responseBody;
+		string              responseBody;
 		try
 		{
 			using HttpRequestMessage req = BuildRequest(countEndpoint, body, model, extraHeaders);
-			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-			responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			httpResponse                 = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+			responseBody                 = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 		}
 		catch (OperationCanceledException)
 		{
@@ -574,24 +605,24 @@ public class ProtocolAnthropic
 	// without generating a meaningful response. Kept as fallback for providers without
 	// /count_tokens (e.g. OpenRouter).
 	public async Task<TracerResult> ExecuteTracerAsync(
-		LlmModel model,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		List<ToolDefinition>          tools,
+		string?                       forcedToolName,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		JsonObject body = BuildRequestBody(model, tools, forcedToolName, 1, false, extraPayload);
 		logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 		HttpResponseMessage httpResponse;
-		string responseBody;
+		string              responseBody;
 		try
 		{
 			using HttpRequestMessage req = BuildRequest(model.Endpoint, body, model, extraHeaders);
-			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-			responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			httpResponse                 = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+			responseBody                 = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 		}
 		catch (OperationCanceledException)
 		{
@@ -609,17 +640,17 @@ public class ProtocolAnthropic
 
 		if (httpResponse.IsSuccessStatusCode)
 		{
-			JsonNode? root = JsonNode.Parse(responseBody);
+			JsonNode? root      = JsonNode.Parse(responseBody);
 			JsonNode? usageNode = root?["usage"];
 			if (usageNode == null)
 				return TracerResult.Failed("No usage info in tracer response");
 
 			// Anthropic's input_tokens EXCLUDES cache reads/writes; TracerResult.InputTokens is
 			// defined as the TOTAL prompt size, so fold the cache components in here.
-			int inputTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
+			int inputTokens      = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
 			int cacheWriteTokens = usageNode["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
-			int cacheReadTokens = usageNode["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
-			int cachedTokens = cacheWriteTokens + cacheReadTokens;
+			int cacheReadTokens  = usageNode["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+			int cachedTokens     = cacheWriteTokens + cacheReadTokens;
 
 			return TracerResult.Success(inputTokens + cachedTokens, cachedTokens);
 		}
@@ -650,12 +681,12 @@ public class ProtocolAnthropic
 	private JsonObject BuildRequestBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int maxTokens, bool withThinking, Dictionary<string, JsonNode?> extraPayload)
 	{
 		JsonObject body = new JsonObject();
-		body["model"] = model.Config.Id;
+		body["model"]   = model.Config.Id;
 		if (maxTokens > 0)
 		{
 			// count_tokens (maxTokens == 0) rejects extra inputs — max_tokens and temperature are
 			// only legal on the real /messages call.
-			body["max_tokens"] = maxTokens;
+			body["max_tokens"]  = maxTokens;
 			body["temperature"] = 1.0;
 		}
 		body["messages"] = CloneMessages();
@@ -671,7 +702,7 @@ public class ProtocolAnthropic
 			foreach (ToolDefinition td in tools)
 			{
 				JsonObject t = new JsonObject();
-				t["name"] = td.Function.Name;
+				t["name"]    = td.Function.Name;
 				if (!string.IsNullOrEmpty(td.Function.Description))
 					t["description"] = td.Function.Description;
 				if (td.Function.Parameters != null)
@@ -684,15 +715,15 @@ public class ProtocolAnthropic
 			// otherwise the model chooses (API default, no tool_choice sent).
 			if (forcedToolName == ProtocolProxy.AnyTool)
 			{
-				JsonObject tc = new JsonObject();
-				tc["type"] = "any";
+				JsonObject tc       = new JsonObject();
+				tc["type"]          = "any";
 				body["tool_choice"] = tc;
 			}
 			else if (!string.IsNullOrEmpty(forcedToolName))
 			{
-				JsonObject tc = new JsonObject();
-				tc["type"] = "tool";
-				tc["name"] = forcedToolName;
+				JsonObject tc       = new JsonObject();
+				tc["type"]          = "tool";
+				tc["name"]          = forcedToolName;
 				body["tool_choice"] = tc;
 			}
 		}
@@ -701,13 +732,32 @@ public class ProtocolAnthropic
 		// wind-down turn that forces the terminator runs without it rather than 400ing.
 		if (withThinking && string.IsNullOrEmpty(forcedToolName))
 		{
-			int budget = ReasoningEffort.AnthropicBudget(model.Config.ReasoningEffort, maxTokens);
-			if (budget > 0)
+			if (_adaptiveThinking)
 			{
-				JsonObject thinking = new JsonObject();
-				thinking["type"] = "enabled";
-				thinking["budget_tokens"] = budget;
-				body["thinking"] = thinking;
+				// Newer models (Opus 4.6 and later) reject the budgeted form and want an effort word
+				// on output_config instead, letting the model choose how much to think.
+				string? effort = ReasoningEffort.AnthropicEffort(model.Config.ReasoningEffort);
+				if (effort != null)
+				{
+					JsonObject thinking = new JsonObject();
+					thinking["type"]    = "adaptive";
+					body["thinking"]    = thinking;
+
+					JsonObject outputConfig = body["output_config"] as JsonObject ?? new JsonObject();
+					outputConfig["effort"]  = effort;
+					body["output_config"]   = outputConfig;
+				}
+			}
+			else
+			{
+				int budget = ReasoningEffort.AnthropicBudget(model.Config.ReasoningEffort, maxTokens);
+				if (budget > 0)
+				{
+					JsonObject thinking       = new JsonObject();
+					thinking["type"]          = "enabled";
+					thinking["budget_tokens"] = budget;
+					body["thinking"]          = thinking;
+				}
 			}
 		}
 
@@ -762,10 +812,10 @@ public class ProtocolAnthropic
 	private static HttpRequestMessage BuildRequest(string endpoint, JsonObject body, LlmModel model, Dictionary<string, string> extraHeaders)
 	{
 		HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-		request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-		request.Headers.TryAddWithoutValidation("x-api-key", model.ApiKey);
-		request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
-		request.Headers.TryAddWithoutValidation("anthropic-version", AnthropicVersion);
+		request.Content            = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+		request.Headers.TryAddWithoutValidation("x-api-key",                     model.ApiKey);
+		request.Headers.TryAddWithoutValidation("Authorization",     $"Bearer {model.ApiKey}");
+		request.Headers.TryAddWithoutValidation("anthropic-version",         AnthropicVersion);
 
 		foreach ((string name, string value) in extraHeaders)
 		{
@@ -780,27 +830,27 @@ public class ProtocolAnthropic
 	private static JsonObject TextBlock(string text)
 	{
 		JsonObject block = new JsonObject();
-		block["type"] = "text";
-		block["text"] = text;
+		block["type"]    = "text";
+		block["text"]    = text;
 		return block;
 	}
 
 	private static JsonObject ToolUseBlock(string id, string name, string argsJson)
 	{
 		JsonObject block = new JsonObject();
-		block["type"] = "tool_use";
-		block["id"] = id;
-		block["name"] = name;
-		block["input"] = ParseInput(argsJson);
+		block["type"]    = "tool_use";
+		block["id"]      = id;
+		block["name"]    = name;
+		block["input"]   = ParseInput(argsJson);
 		return block;
 	}
 
 	private static JsonObject ToolResultBlock(string toolUseId, string content)
 	{
-		JsonObject block = new JsonObject();
-		block["type"] = "tool_result";
+		JsonObject block     = new JsonObject();
+		block["type"]        = "tool_result";
 		block["tool_use_id"] = toolUseId;
-		block["content"] = new JsonArray(TextBlock(content));
+		block["content"]     = new JsonArray(TextBlock(content));
 		return block;
 	}
 
@@ -819,7 +869,7 @@ public class ProtocolAnthropic
 		}
 
 		JsonObject msg = new JsonObject();
-		msg["role"] = role;
+		msg["role"]    = role;
 		msg["content"] = new JsonArray(block);
 		_native.Add((JsonNode)msg);
 	}

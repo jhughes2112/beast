@@ -265,6 +265,14 @@ public class SessionHandler
 				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
 				{
 					Console.Error.WriteLine($"[SessionHandler] {role.Name} session {_activeSession.Id} dispatch cancelled.");
+
+					// The assistant turn is already committed, so every tool call it made MUST be
+					// answered — a call with no result is a malformed conversation that the strict
+					// providers reject outright ("No tool output found for function call …") on the
+					// very next request, taking the model down with it. ToolDispatch fills in a
+					// cancelled result for each call before it throws; commit those.
+					_activeSession.CommitToolResults(result.Payload!);
+
 					turnComplete = !await TryResumeAfterInterruptAsync(role, roleService, registry, transport, ct);
 					continue;
 				}
