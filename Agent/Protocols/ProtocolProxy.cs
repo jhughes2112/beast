@@ -141,6 +141,13 @@ public class ProtocolProxy
 		_protocolAnthropic?.OnUserMessage(text);
 	}
 
+	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
+	{
+		_protocolChatCompletions?.OnUserMessage(text, attachments);
+		_protocolResponses?.OnUserMessage(text, attachments);
+		_protocolAnthropic?.OnUserMessage(text, attachments);
+	}
+
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
 		_protocolChatCompletions?.OnAssistantTurn(text, thinking, toolCalls);

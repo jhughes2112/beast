@@ -19,15 +19,6 @@ public class MediaInspector
 	// Attachments above this size are refused outright: they would dwarf any context window.
 	private const long MaxFileBytes = 16 * 1024 * 1024;
 
-	// (extension → mime) for the media kinds the wire formats can carry.
-	private static readonly Dictionary<string, string> kMimeByExtension = new(StringComparer.OrdinalIgnoreCase)
-	{
-		{ ".png", "image/png" }, { ".jpg", "image/jpeg" }, { ".jpeg", "image/jpeg" },
-		{ ".gif", "image/gif" }, { ".webp", "image/webp" }, { ".bmp", "image/bmp" },
-		{ ".wav", "audio/wav" }, { ".mp3", "audio/mp3" }, { ".m4a", "audio/m4a" },
-		{ ".ogg", "audio/ogg" }, { ".flac", "audio/flac" }
-	};
-
 	public async Task<ToolResult> InspectAsync(
 		string toolCallId,
 		string filePath,
@@ -46,75 +37,74 @@ public class MediaInspector
 		if (!File.Exists(filePath))
 			return new ToolResult(toolCallId, string.Empty, $"Error: File not found: {filePath}", 1, 0);
 
-		string extension = Path.GetExtension(filePath);
-		if (!kMimeByExtension.TryGetValue(extension, out string? mimeType))
-			return new ToolResult(toolCallId, string.Empty, $"Error: unsupported media type '{extension}'. Supported: png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac.", 1, 0);
+		(MediaKind kind, string mimeType) = MediaKinds.Classify(filePath);
+		if (kind == MediaKind.Text || kind == MediaKind.Unknown)
+			return new ToolResult(toolCallId, string.Empty, $"Error: '{Path.GetExtension(filePath)}' is not media this tool can interpret. Images, audio, and video only — use read_file for text.", 1, 0);
 
 		long fileBytes = new FileInfo(filePath).Length;
 		if (fileBytes > MaxFileBytes)
 			return new ToolResult(toolCallId, string.Empty, $"Error: {filePath} is {fileBytes / (1024 * 1024)}MB; the limit is {MaxFileBytes / (1024 * 1024)}MB.", 1, 0);
 
-		string modality = mimeType.StartsWith("audio/", StringComparison.Ordinal) ? "audio" : "image";
-		LlmService? service = PickCapableService(mediaRole, registry, modality);
-		if (service == null)
-			return new ToolResult(toolCallId, string.Empty, $"Error: no enabled model declares '{modality}' input. Enable one with /config (its modalities are discovered or set there).", 1, 0);
+		List<LlmModel> capable = MediaKinds.CapableModels(registry, kind);
+		if (capable.Count == 0)
+			return new ToolResult(toolCallId, string.Empty, $"Error: no enabled model declares '{MediaKinds.Modality(kind)}' input. Enable one with /config (its modalities are discovered or set there).", 1, 0);
 
-		byte[] bytes = await File.ReadAllBytesAsync(filePath, ct);
-		MediaAttachment attachment = new MediaAttachment(mimeType, Convert.ToBase64String(bytes));
-
-		// Throwaway stage session reusing the caller's ID: the streamed answer renders in the
-		// caller's view, nothing is announced or saved, and cost rolls up to the real session.
-		BeastSession data = new BeastSession(session.Id, session.DisplayName, service.Model.ConfigId, mediaRole.Name,
-			string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
-		Session stage = new Session(data, mediaRole.SystemPrompt, transport, session.IsSubagent);
-		stage.UpdateModel(service.Model);
-		string prompt = $"Goal: {goal}\nFile: {filePath}\n\nThe media file is attached.";
-		stage.Bundle.Canonical.OnUserMessageWithAttachments(prompt, new List<MediaAttachment> { attachment });
-
-		ProtocolResult result = await service.RunToCompletionAsync(stage, Array.Empty<Tool>(), null, 0, maxOutputTokens, false, transport, ct);
-		session.RecordCost(stage.TotalCost);
-
-		ToolResult final;
-		if (result.Outcome == ProtocolCallOutcome.Success)
-		{
-			string answer = result.Payload!.AssistantText;
-			final = new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, result.Payload.Usage.CompletionTokens));
-		}
-		else
-		{
-			// Try-and-see is the last word on capability: the provider rejecting the attachment
-			// (or anything else terminal) surfaces here so the model — and the user — see why.
-			string detail = string.IsNullOrEmpty(result.ErrorMessage) ? result.Outcome.ToString() : result.ErrorMessage;
-			final = new ToolResult(toolCallId, string.Empty, $"Error: {service.Model.Config.Name} could not process {filePath}: {detail}", 1, 0);
-		}
-		return final;
+		return await InspectWithModelsAsync(toolCallId, filePath, goal, mediaRole, capable, registry, session, transport, maxOutputTokens, ct);
 	}
 
-	// First model in the role's list whose declared input modalities include the required one.
-	private static LlmService? PickCapableService(Role mediaRole, LlmRegistry registry, string modality)
+	// Runs the file past the given candidate models, cheapest first, stopping at the first one that
+	// answers. Falling through matters because a declared modality is only a claim: a model that
+	// rejects the attachment at request time should cost the caller a retry on the next candidate,
+	// not the whole call. Shared with the drag-and-drop intake path.
+	public async Task<ToolResult> InspectWithModelsAsync(
+		string toolCallId,
+		string filePath,
+		string goal,
+		Role mediaRole,
+		List<LlmModel> candidates,
+		LlmRegistry registry,
+		Session session,
+		ITransportServer transport,
+		int maxOutputTokens,
+		CancellationToken ct)
 	{
-		foreach (string modelId in mediaRole.Models)
+		(MediaKind kind, string mimeType) = MediaKinds.Classify(filePath);
+		byte[] bytes = await File.ReadAllBytesAsync(filePath, ct);
+		string data = Convert.ToBase64String(bytes);
+
+		string failures = string.Empty;
+		foreach (LlmModel model in candidates)
 		{
-			LlmModel? model = registry.GetModel(modelId);
-			if (model == null)
+			LlmService? service = registry.CreateServiceById(model.ConfigId, 0);
+			if (service == null)
 				continue;
 
-			bool capable = false;
-			foreach (string input in model.Config.Input)
+			// Throwaway stage session reusing the caller's ID: the streamed answer renders in the
+			// caller's view, nothing is announced or saved, and cost rolls up to the real session.
+			BeastSession stageData = new BeastSession(session.Id, session.DisplayName, service.Model.ConfigId, mediaRole.Name,
+				string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+			Session stage = new Session(stageData, mediaRole.SystemPrompt, transport, session.IsSubagent);
+			stage.UpdateModel(service.Model);
+			string prompt = $"Goal: {goal}\nFile: {filePath}\n\nThe media file is attached.";
+			stage.Bundle.Canonical.OnUserMessageWithAttachments(prompt, new List<MediaAttachment> { new MediaAttachment(mimeType, data) });
+
+			ProtocolResult result = await service.RunToCompletionAsync(stage, Array.Empty<Tool>(), null, 0, maxOutputTokens, false, transport, ct);
+			session.RecordCost(stage.TotalCost);
+
+			if (result.Outcome == ProtocolCallOutcome.Success)
 			{
-				if (string.Equals(input, modality, StringComparison.OrdinalIgnoreCase))
-				{
-					capable = true;
-					break;
-				}
+				string answer = result.Payload!.AssistantText;
+				return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, result.Payload.Usage.CompletionTokens));
 			}
-			if (!capable)
-				continue;
 
-			LlmService? service = registry.CreateServiceById(modelId, 0);
-			if (service != null)
-				return service;
+			// Try-and-see is the last word on capability: a provider rejecting the attachment is
+			// recorded and the next-cheapest candidate gets a turn.
+			string detail = string.IsNullOrEmpty(result.ErrorMessage) ? result.Outcome.ToString() : result.ErrorMessage;
+			string reason = $"{service.Model.Config.Name}: {detail}";
+			failures = failures.Length == 0 ? reason : failures + "; " + reason;
 		}
-		return null;
+
+		string summary = failures.Length == 0 ? "no capable model was available" : failures;
+		return new ToolResult(toolCallId, string.Empty, $"Error: {filePath} could not be interpreted: {summary}", 1, 0);
 	}
 }

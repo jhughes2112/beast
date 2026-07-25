@@ -1,7 +1,31 @@
+using System.Collections.Generic;
+
+
 // Unit tests for CharWidth — terminal column width calculations.
 // Validates that each codepoint returns the expected width (0 = zero-width, 1 = single-width, 2 = wide).
 public static class CharWidthTests
 {
+	// Path-marker parsing for dropped files: the submit path depends on pulling every marker back
+	// out of the line exactly as it was inserted.
+	public static void TestPathMarkers(TestContext ctx)
+	{
+		List<string> one = InputLayer.ExtractPathMarkers("look at [ path D:\\shots\\bug.png ] please");
+		ctx.AssertEqual(1, one.Count, "PathMarkers: one marker found");
+		ctx.AssertEqual("D:\\shots\\bug.png", one[0], "PathMarkers: path extracted verbatim");
+
+		List<string> two = InputLayer.ExtractPathMarkers("[ path a\\one.png ] and [ path b\\two.wav ]");
+		ctx.AssertEqual(2, two.Count, "PathMarkers: multiple markers in order");
+		ctx.AssertEqual("b\\two.wav", two[1], "PathMarkers: second path");
+
+		ctx.AssertEqual(0, InputLayer.ExtractPathMarkers("no markers here").Count, "PathMarkers: plain text yields none");
+		ctx.AssertEqual(0, InputLayer.ExtractPathMarkers("[ path unterminated").Count, "PathMarkers: unterminated marker ignored");
+
+		// Ordinary pasted text must never be mistaken for a dropped file.
+		ctx.AssertNull(InputLayer.TryMakePathMarker("just some words"), "PathMarkers: prose is not a path");
+		ctx.AssertNull(InputLayer.TryMakePathMarker("D:\\definitely\\not\\here.png"), "PathMarkers: a non-existent path is not a drop");
+		ctx.AssertNull(InputLayer.TryMakePathMarker("line one\nline two"), "PathMarkers: multi-line paste is not a drop");
+	}
+
 	public static void Test(TestContext ctx)
 	{
 		ctx.Log("  CharWidthTests");

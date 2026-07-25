@@ -19,6 +19,32 @@ public static class ModelCatalogTests
 		TestXaiEnrichment(ctx);
 		TestAttachmentRoundTrip(ctx);
 		TestChatCompletionsAttachmentParts(ctx);
+		TestMediaKinds(ctx);
+	}
+
+	// Extension classification and capability matching drive the whole drag-and-drop routing
+	// decision, so both need to be exact.
+	private static void TestMediaKinds(TestContext ctx)
+	{
+		ctx.AssertEqual(MediaKind.Image, MediaKinds.Classify("shot.PNG").Kind, "MediaKinds: image by extension, case-insensitive");
+		ctx.AssertEqual("image/png", MediaKinds.Classify("shot.png").MimeType, "MediaKinds: png mime");
+		ctx.AssertEqual(MediaKind.Audio, MediaKinds.Classify("clip.mp3").Kind, "MediaKinds: audio");
+		ctx.AssertEqual(MediaKind.Video, MediaKinds.Classify("clip.mp4").Kind, "MediaKinds: video");
+		ctx.AssertEqual(MediaKind.Text, MediaKinds.Classify("Program.cs").Kind, "MediaKinds: source is text");
+		ctx.AssertEqual(MediaKind.Text, MediaKinds.Classify("Dockerfile").Kind, "MediaKinds: extensionless treated as text");
+		ctx.AssertEqual(MediaKind.Unknown, MediaKinds.Classify("bundle.zip").Kind, "MediaKinds: unknown binary");
+		ctx.AssertEqual(string.Empty, MediaKinds.Classify("notes.txt").MimeType, "MediaKinds: text carries no wire mime");
+
+		ctx.AssertEqual("image", MediaKinds.Modality(MediaKind.Image), "MediaKinds: image modality");
+		ctx.AssertEqual(string.Empty, MediaKinds.Modality(MediaKind.Text), "MediaKinds: text needs no modality");
+
+		// A model must DECLARE the modality; declaring nothing means text-only, never assumed capable.
+		ModelConfig vision = new ModelConfig { Id = "v", Input = new List<string> { "text", "image" } };
+		ModelConfig plain = new ModelConfig { Id = "p" };
+		ctx.Assert(MediaKinds.Supports(vision, MediaKind.Image), "MediaKinds: declared image input supports images");
+		ctx.Assert(!MediaKinds.Supports(vision, MediaKind.Audio), "MediaKinds: undeclared audio is unsupported");
+		ctx.Assert(!MediaKinds.Supports(plain, MediaKind.Image), "MediaKinds: a model declaring nothing is text-only");
+		ctx.Assert(!MediaKinds.Supports(vision, MediaKind.Text), "MediaKinds: text is never a model capability question");
 	}
 
 	private static void TestNormalizeRequestEndpoint(TestContext ctx)

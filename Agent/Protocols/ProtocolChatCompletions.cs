@@ -96,6 +96,16 @@ public class ProtocolChatCompletions
 							["input_audio"] = new JsonObject { ["data"] = att.Base64Data, ["format"] = att.MimeType.Substring(6) }
 						});
 					}
+					else if (att.MimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
+					{
+						// Video is the least standardized part type; servers that accept it here
+						// (OpenRouter, Gemini's compat layer) use video_url with a data URI.
+						parts.Add((JsonNode)new JsonObject
+						{
+							["type"] = "video_url",
+							["video_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
+						});
+					}
 					else
 					{
 						parts.Add((JsonNode)new JsonObject
@@ -181,6 +191,16 @@ public class ProtocolChatCompletions
 		msg["role"] = "user";
 		msg["content"] = text;
 		_native.Add((JsonNode)msg);
+	}
+
+	// A user turn carrying media. Never merged into a preceding user message: the content-part
+	// array cannot be concatenated the way plain strings can. Built through ToNativeMessage so the
+	// live turn and a rehydrated one produce byte-identical wire shapes.
+	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
+	{
+		JsonObject? msg = ToNativeMessage(new UserMessage(text, attachments));
+		if (msg != null)
+			_native.Add((JsonNode)msg);
 	}
 
 	// A completed assistant turn from replay or another protocol. Thinking is dropped because

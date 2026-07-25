@@ -48,6 +48,23 @@ public class ListenerBundle
 		_transport?.OnUserMessage(text);
 	}
 
+	// A user turn carrying media. Fanned out like any other turn — canonical AND the live protocol
+	// both get it — because a protocol that only saw the text would send an attachment-free copy of
+	// the message the model is being asked about. The transport gets the text alone: the client
+	// already shows the file markers the user typed.
+	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
+	{
+		if (attachments.Count == 0)
+		{
+			OnUserMessage(text);
+			return;
+		}
+
+		_canonical.OnUserMessageWithAttachments(text, attachments);
+		_activeProxy?.OnUserMessage(text, attachments);
+		_transport?.OnUserMessage(text);
+	}
+
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
 		_canonical.OnAssistantTurn(text, thinking, toolCalls);

@@ -39,6 +39,9 @@ public interface IDisplay
 	// Feeds a /config flow payload (endpoint list, catalog, apply ack) to the picker overlay.
 	void OnConfigFrame(string json);
 
+	// The host folder bound to /workspace; dropped files are staged inside it for the agent.
+	void SetAttachmentRoot(string root);
+
 	// Surfaces an agent error inside the /config overlay while it is open (no-op otherwise), so
 	// a failure that means "no reply is coming" is visible in the modal, not hidden behind it.
 	void OnConfigError(string text);

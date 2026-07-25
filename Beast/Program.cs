@@ -79,6 +79,7 @@ public class Program
 			TestContext ctx = new TestContext(new TransportClientConsole());
 			TransportTests.Test(ctx);
 			CharWidthTests.Test(ctx);
+			CharWidthTests.TestPathMarkers(ctx);
 			Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
 		}

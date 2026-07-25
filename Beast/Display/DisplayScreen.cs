@@ -31,7 +31,7 @@ public class DisplayScreen : IDisplay
 		// Per-session verbs, handled by the session's own command loop rather than the orchestrator.
 		HashSet<string> verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			"compact", "model", "cancel"
+			"compact", "model", "cancel", "attach"
 		};
 		foreach (string verb in AgentOrchestrator.GlobalCommands)
 			verbs.Add(verb);
@@ -115,6 +115,10 @@ public class DisplayScreen : IDisplay
 
 	// /config modal overlay; created on first open so it can capture SendAsync.
 	private ConfigOverlay? _configOverlay;
+
+	// Host path of the folder bound to /workspace: dropped files are staged inside it so the agent
+	// can read them and so they die with the worktree. Empty until the launcher supplies it.
+	private string _attachmentRoot = string.Empty;
 	private int  _sessionTreeSelected = 0;
 	private int  _sessionTreeScroll = 0;
 	private int  _sessionActive = 0;
@@ -353,6 +357,9 @@ public class DisplayScreen : IDisplay
 	}
 
 	public void SetSendAsync(Func<string, Task> sendAsync) { _sendAsync = sendAsync; }
+
+	// The host folder bound to /workspace, so dropped files can be staged where the agent sees them.
+	public void SetAttachmentRoot(string root) { _attachmentRoot = root; }
 
 	// Opens the /config picker (invoked when the user submits "/config").
 	private void OpenConfigOverlay()
@@ -1721,7 +1728,7 @@ public class DisplayScreen : IDisplay
 						}
 						queued.Add(text);
 					}
-					_ = SendAsync(text);
+					_ = SendWithAttachmentsAsync(text);
 				}
 
 				lock (_consoleLock)
@@ -2065,11 +2072,20 @@ public class DisplayScreen : IDisplay
 			{
 				lock (_consoleLock)
 					_followReadyTick = 0;
-				string? clip = ClipboardService.GetText();
-				if (!string.IsNullOrEmpty(clip))
+
+				// Non-text clipboard contents first: copied files and screenshot bitmaps both
+				// become path markers, so a pasted image travels the same route as a dropped one.
+				string insert = PasteMediaMarkers();
+				if (insert.Length == 0)
+				{
+					string? clip = ClipboardService.GetText();
+					if (!string.IsNullOrEmpty(clip))
+						insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
+				}
+
+				if (insert.Length > 0)
 				{
 					inCompletion = false;
-					string insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
 					inputBuffer.Insert(cursorPos, insert);
 					cursorPos += insert.Length;
 					SetInput(inputBuffer.ToString(), cursorPos);
@@ -2115,6 +2131,74 @@ public class DisplayScreen : IDisplay
 				cursorPos++;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
+		}
+	}
+
+	// Sends a submitted line, staging any "[ path ... ]" markers first. Each dropped file is copied
+	// into ~/.beast/attachments — the one folder mounted into the agent's container — and announced
+	// with /attach, so a file dragged from anywhere on this machine is readable by an agent that
+	// cannot otherwise see the host filesystem. The sends are awaited in order so every /attach
+	// lands before the text it belongs to.
+	private async Task SendWithAttachmentsAsync(string text)
+	{
+		List<string> paths = InputLayer.ExtractPathMarkers(text);
+		foreach (string path in paths)
+		{
+			string staged = StageAttachment(path);
+			if (staged.Length > 0)
+				await SendAsync($"/attach {staged}\x01{path}");
+			else
+				SetStatus($"Could not attach {path}");
+		}
+		await SendAsync(text);
+	}
+
+	// Builds path markers for anything non-textual on the clipboard: files copied in Explorer, or
+	// raw bitmap data from a screenshot. A screenshot has no file of its own, so it is written into
+	// the staging folder here and the marker points at that copy. Empty when the clipboard holds
+	// neither, which sends the caller to the text path.
+	private string PasteMediaMarkers()
+	{
+		if (_attachmentRoot.Length == 0)
+			return string.Empty;
+
+		StringBuilder markers = new StringBuilder();
+		foreach (string file in ClipboardMedia.GetFiles())
+			markers.Append($"[ path {file} ] ");
+
+		if (markers.Length == 0)
+		{
+			string image = ClipboardMedia.SaveImage(MediaIntake.EnsureStagingFolder(_attachmentRoot));
+			if (image.Length > 0)
+				markers.Append($"[ path {image} ] ");
+		}
+
+		return markers.ToString();
+	}
+
+	// Copies one dropped file into the workspace staging folder under a collision-proof name, and
+	// returns that name. A file already sitting in the staging folder (a pasted screenshot) is used
+	// where it lies rather than duplicated. Empty on failure — an unreadable file must not block
+	// the message.
+	private string StageAttachment(string path)
+	{
+		if (_attachmentRoot.Length == 0)
+			return string.Empty;
+
+		try
+		{
+			string folder = MediaIntake.EnsureStagingFolder(_attachmentRoot);
+			string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
+			if (parent != null && string.Equals(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar), parent.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+				return Path.GetFileName(path);
+
+			string staged = $"{Guid.NewGuid():N}{Path.GetExtension(path)}";
+			File.Copy(path, Path.Combine(folder, staged), true);
+			return staged;
+		}
+		catch (Exception)
+		{
+			return string.Empty;
 		}
 	}
 

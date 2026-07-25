@@ -129,6 +129,14 @@ public class BeastApp : IAsyncDisposable
 		_display.SetSessionSwitchCallback(SwitchActiveSession);
 		_display.SetSessionDeleteCallback(DeleteSession);
 
+		// Dropped files stage into the folder bound to /workspace — the worktree for a normal
+		// launch, the current folder for an ephemeral one — so the agent can read them and they go
+		// away when the worktree does.
+		if (_worktree.HasValue)
+			_display.SetAttachmentRoot(_worktree.Value.Ephemeral ? _worktree.Value.RepoCwd : _worktree.Value.HostPath);
+		else
+			_display.SetAttachmentRoot(Environment.CurrentDirectory);
+
 		// Put the worktree (or agent) name in the console tab title so multiple Beast tabs are
 		// distinguishable; the separator animates while the agent is busy.
 		ConsoleChrome.Configure(_worktree.HasValue ? _worktree.Value.Name : _agentName);

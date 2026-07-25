@@ -56,29 +56,7 @@ public class ProtocolAnthropic
 			}
 			else if (msg is UserMessage um)
 			{
-				AppendContent("user", TextBlock(um.Text));
-
-				// Attachments become image source blocks. Anthropic has no audio input; an audio
-				// attachment degrades to a text note so the model reports it instead of guessing.
-				if (um.Attachments != null)
-				{
-					foreach (MediaAttachment att in um.Attachments)
-					{
-						if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
-						{
-							AppendContent("user", TextBlock("[An audio attachment was supplied, but this provider does not accept audio input.]"));
-						}
-						else
-						{
-							JsonObject image = new JsonObject
-							{
-								["type"] = "image",
-								["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = att.MimeType, ["data"] = att.Base64Data }
-							};
-							AppendContent("user", image);
-						}
-					}
-				}
+				AppendUserMessage(um.Text, um.Attachments);
 			}
 			else if (msg is ToolResultMessage tr)
 			{
@@ -103,6 +81,39 @@ public class ProtocolAnthropic
 	public void OnUserMessage(string text)
 	{
 		AppendContent("user", TextBlock(text));
+	}
+
+	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
+	{
+		AppendUserMessage(text, attachments);
+	}
+
+	// Appends a user turn and any media it carries, so a live turn and a rehydrated one build the
+	// same blocks. Attachments become image source blocks; Anthropic accepts no audio or video
+	// input, so those degrade to a text note the model can report rather than silently vanishing.
+	private void AppendUserMessage(string text, IReadOnlyList<MediaAttachment>? attachments)
+	{
+		AppendContent("user", TextBlock(text));
+
+		if (attachments == null)
+			return;
+
+		foreach (MediaAttachment att in attachments)
+		{
+			if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+			{
+				JsonObject image = new JsonObject
+				{
+					["type"] = "image",
+					["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = att.MimeType, ["data"] = att.Base64Data }
+				};
+				AppendContent("user", image);
+			}
+			else
+			{
+				AppendContent("user", TextBlock($"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]"));
+			}
+		}
 	}
 
 	// A completed assistant turn. When this protocol produced the turn live, the pending

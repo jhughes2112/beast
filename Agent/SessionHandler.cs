@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -24,6 +25,9 @@ public class SessionHandler
 	private LlmService? _service;
 	private string? _nextModel;
 	private bool _wantsCompact;
+
+	// Files staged by the client via /attach, waiting for the message text they belong to.
+	private readonly List<string> _pendingAttachments = new List<string>();
 
 	// Terminator sink written by the tool callback, read after each dispatch round.
 	private string? _terminatorValue;
@@ -83,7 +87,7 @@ public class SessionHandler
 				int maxTotal = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
 
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
-				DrainInput(roleService, registry, transport);
+				await DrainInput(roleService, registry, transport, ct);
 				role = roleService.GetRole(_activeSession.Role);
 
 				// Apply a queued /model right away — even when the session then parks idle — so the
@@ -226,7 +230,7 @@ public class SessionHandler
 			{
 				// A retry backoff was interrupted because input arrived. Drain it here so a queued
 				// /model applies at the loop top before the next attempt; not a failure, no fallback.
-				DrainInput(roleService, registry, transport);
+				await DrainInput(roleService, registry, transport, ct);
 			}
 			else if (result.Outcome == ProtocolCallOutcome.Interrupted)
 			{
@@ -269,7 +273,7 @@ public class SessionHandler
 
 				// Drain any queued commands (e.g. /model) between tool rounds so they take
 				// effect before the next LLM call rather than waiting for the turn to end.
-				DrainInput(roleService, registry, transport);
+				await DrainInput(roleService, registry, transport, ct);
 
 				turnComplete = TurnComplete(role, windDown, lastTurn, hasToolCalls);
 
@@ -576,7 +580,7 @@ public class SessionHandler
 	// /compact and /model are always let through to resolve the blocked state.
 	// Also checks the session's NeedsRefresh flag: when set, re-fetches the role
 	// and recreates the LlmService so /reload changes propagate immediately.
-	private void DrainInput(RoleService roleService, LlmRegistry registry, ITransportServer transport)
+	private async Task DrainInput(RoleService roleService, LlmRegistry registry, ITransportServer transport, CancellationToken ct)
 	{
 		if (_activeSession.NeedsRefresh)
 		{
@@ -601,6 +605,40 @@ public class SessionHandler
 			}
 		}
 
+		await DrainPendingAsync(registry, roleService, transport, ct);
+	}
+
+	// Resolves every staged file for this turn and commits the user message with whatever the
+	// resolution produced: real attachments for a model that can see them, substituted text
+	// otherwise. Each staged copy is deleted once consumed so the folder does not grow forever.
+	private async Task DeliverWithAttachmentsAsync(string line, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
+	{
+		StringBuilder text = new StringBuilder(line);
+		List<MediaAttachment> attachments = new List<MediaAttachment>();
+
+		foreach (string entry in _pendingAttachments)
+		{
+			int sep = entry.IndexOf('\x01');
+			string stagedName = sep >= 0 ? entry.Substring(0, sep) : entry;
+			string originalPath = sep >= 0 ? entry.Substring(sep + 1) : string.Empty;
+
+			(string note, MediaAttachment? attachment) = await MediaIntake.ResolveAsync(
+				stagedName, originalPath, _activeSession, registry, roleService, transport, ct);
+
+			if (attachment != null)
+				attachments.Add(attachment);
+			if (note.Length > 0)
+				text.Append("\n\n").Append(note);
+
+			MediaIntake.DiscardStaged(stagedName);
+		}
+
+		_pendingAttachments.Clear();
+		_activeSession.Bundle.OnUserMessage(text.ToString(), attachments);
+	}
+
+	private async Task DrainPendingAsync(LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
+	{
 		while (_activeSession.TryDequeuePending(out string? line))
 		{
 			if (!line!.StartsWith("/", StringComparison.Ordinal))
@@ -611,7 +649,16 @@ public class SessionHandler
 				}
 				else
 				{
-					_activeSession.Bundle.OnUserMessage(line);
+					// Files dropped into the input arrive as /attach lines immediately before the
+					// text they belong to, so anything staged is folded into THIS turn.
+					if (_pendingAttachments.Count > 0)
+					{
+						await DeliverWithAttachmentsAsync(line, registry, roleService, transport, ct);
+					}
+					else
+					{
+						_activeSession.Bundle.OnUserMessage(line);
+					}
 
 					// New input on a completed session: clear status so the session runs again.
 					if (_activeSession.Status != SessionStatus.Ongoing)
@@ -635,6 +682,12 @@ public class SessionHandler
 				case "model":
 					if (args != null)
 						QueueModelSwitch(args, roleService, registry, transport);
+					break;
+				case "attach":
+					// Staged-file notice from the client: "stagedName\x01originalPath". Held until
+					// the message text arrives so the files land on the turn they belong to.
+					if (args != null)
+						_pendingAttachments.Add(args);
 					break;
 				case "help":
 					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /cancel");
@@ -819,7 +872,7 @@ public class SessionHandler
 		{
 			_activeSession.SendBusy();
 			ResetScope(ct);
-			DrainInput(roleService, registry, transport);
+			await DrainInput(roleService, registry, transport, ct);
 			RefreshService(role, registry);
 		}
 		return resumed;

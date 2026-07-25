@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 
 
@@ -159,8 +160,68 @@ internal static class InputLayer
 
 	// Builds the text to insert at the cursor for a paste event. Large pastes become a placeholder
 	// that is expanded back to full content when the line is committed.
+	// Dragging a file onto a Windows terminal types its path into the input as if pasted, so the
+	// drop is caught here rather than through any drag-and-drop API: a pasted single line that
+	// resolves to an existing file becomes a path marker, which the submit path turns into a real
+	// attachment. Returns null when the paste is ordinary text.
+	internal static string? TryMakePathMarker(string pasted)
+	{
+		string trimmed = pasted.Trim();
+		if (trimmed.Length == 0 || trimmed.IndexOf('\n') >= 0)
+			return null;
+
+		// Terminals quote a dropped path when it contains spaces.
+		if (trimmed.Length > 1 && trimmed[0] == '"' && trimmed[trimmed.Length - 1] == '"')
+			trimmed = trimmed.Substring(1, trimmed.Length - 2);
+		if (trimmed.Length > 1 && trimmed[0] == '\'' && trimmed[trimmed.Length - 1] == '\'')
+			trimmed = trimmed.Substring(1, trimmed.Length - 2);
+
+		try
+		{
+			if (!File.Exists(trimmed))
+				return null;
+			return $"[ path {Path.GetFullPath(trimmed)} ]";
+		}
+		catch (Exception)
+		{
+			// A malformed path is just text.
+			return null;
+		}
+	}
+
+	// Pulls every "[ path ... ]" marker out of a submitted line, in order. The markers stay in the
+	// text: the model benefits from seeing where the file was referenced, and the path itself is
+	// useful to it when the file lives in the workspace.
+	internal static List<string> ExtractPathMarkers(string text)
+	{
+		List<string> paths = new List<string>();
+		const string open = "[ path ";
+		const string close = " ]";
+
+		int scan = 0;
+		while (true)
+		{
+			int start = text.IndexOf(open, scan, StringComparison.Ordinal);
+			if (start < 0)
+				break;
+			int end = text.IndexOf(close, start + open.Length, StringComparison.Ordinal);
+			if (end < 0)
+				break;
+
+			string path = text.Substring(start + open.Length, end - start - open.Length).Trim();
+			if (path.Length > 0)
+				paths.Add(path);
+			scan = end + close.Length;
+		}
+		return paths;
+	}
+
 	internal static string BuildPasteInsert(string content, Dictionary<string, string> pasteBuffers, ref int pasteSeq)
 	{
+		string? marker = TryMakePathMarker(content);
+		if (marker != null)
+			return marker;
+
 		if (content.Length < 256)
 			return content;
 

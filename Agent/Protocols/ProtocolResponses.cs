@@ -60,22 +60,7 @@ public class ProtocolResponses
 			}
 			else if (msg is UserMessage um)
 			{
-				JsonObject item = BuildMessageItem("user", "input_text", um.Text);
-
-				// Attachments join the same content array as input_image parts. The Responses API
-				// has no audio input part; audio degrades to a text note so the model reports it.
-				if (um.Attachments != null && um.Attachments.Count > 0)
-				{
-					JsonArray content = (JsonArray)item["content"]!;
-					foreach (MediaAttachment att in um.Attachments)
-					{
-						if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
-							content.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = "[An audio attachment was supplied, but this provider does not accept audio input.]" });
-						else
-							content.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
-					}
-				}
-				input.Add((JsonNode)item);
+				input.Add((JsonNode)BuildUserItem(um.Text, um.Attachments));
 			}
 			else if (msg is AssistantMessage am)
 			{
@@ -115,6 +100,31 @@ public class ProtocolResponses
 	public void OnUserMessage(string text)
 	{
 		_deltaInput.Add((JsonNode)BuildMessageItem("user", "input_text", text));
+	}
+
+	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
+	{
+		_deltaInput.Add((JsonNode)BuildUserItem(text, attachments));
+	}
+
+	// Builds a user item and folds any attachments into its content array as input_image parts, so
+	// a live turn and a rehydrated one produce the same shape. The Responses API has no audio or
+	// video input part; those degrade to a text note rather than being dropped silently.
+	private static JsonObject BuildUserItem(string text, IReadOnlyList<MediaAttachment>? attachments)
+	{
+		JsonObject item = BuildMessageItem("user", "input_text", text);
+		if (attachments == null || attachments.Count == 0)
+			return item;
+
+		JsonArray content = (JsonArray)item["content"]!;
+		foreach (MediaAttachment att in attachments)
+		{
+			if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+				content.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
+			else
+				content.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+		}
+		return item;
 	}
 
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)

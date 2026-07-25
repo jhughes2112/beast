@@ -352,6 +352,14 @@ public class LlmRegistry
 		return PickModel(role, preferredModelId, minContextRequired);
 	}
 
+	// Every registered (enabled) model. Used by capability-driven selection — media routing picks
+	// from the whole enabled set rather than one role's list, because the question is "what can
+	// read a PNG", not "what does this role prefer".
+	public List<LlmModel> AllModels()
+	{
+		return new List<LlmModel>(_models.Values);
+	}
+
 	// Returns the registered model for a config ID, or null if it is not enabled/known.
 	public LlmModel? GetModel(string configId)
 	{
