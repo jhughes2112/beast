@@ -32,7 +32,7 @@ public static class MediaKinds
 
 	private static readonly Dictionary<string, string> kVideo = new(StringComparer.OrdinalIgnoreCase)
 	{
-		{ ".mp4", "video/mp4" }, { ".mov", "video/quicktime" }, { ".webm", "video/webm" },
+		{ ".mp4", "video/mp4" },   { ".mov", "video/quicktime" }, { ".webm", "video/webm" },
 		{ ".mpeg", "video/mpeg" }, { ".mpg", "video/mpeg" }
 	};
 
@@ -102,17 +102,19 @@ public static class MediaKinds
 		return false;
 	}
 
-	// Every enabled model that can take this kind, cheapest input cost first — the same
-	// spend-the-least rule the web-search providers follow.
-	public static List<LlmModel> CapableModels(LlmRegistry registry, MediaKind kind)
+	// The models from a role's list that can take this kind, IN THE ROLE'S ORDER. The role's
+	// ordering is the user's stated preference (arranged in /role), so it wins over any
+	// cheapest-first heuristic — and selecting outside the role would suggest or use models the
+	// role's own machinery (e.g. /model) refuses.
+	public static List<LlmModel> CapableModels(LlmRegistry registry, MediaKind kind, IReadOnlyList<string> roleModelIds)
 	{
 		List<LlmModel> capable = new List<LlmModel>();
-		foreach (LlmModel model in registry.AllModels())
+		foreach (string modelId in roleModelIds)
 		{
-			if (MediaKinds.Supports(model.Config, kind))
+			LlmModel? model = registry.GetModel(modelId);
+			if (model != null && Supports(model.Config, kind))
 				capable.Add(model);
 		}
-		capable.Sort((a, b) => a.Config.Cost.Input.CompareTo(b.Config.Cost.Input));
 		return capable;
 	}
 }

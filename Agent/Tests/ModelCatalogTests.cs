@@ -1,3 +1,4 @@
+﻿using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -21,6 +22,181 @@ public static class ModelCatalogTests
 		TestChatCompletionsAttachmentParts(ctx);
 		TestMediaKinds(ctx);
 		TestAnthropicThinkingShapes(ctx);
+		TestPathMarkerStripping(ctx);
+		TestUnansweredToolCallRepair(ctx);
+		TestAttachmentsSurviveFlush(ctx);
+		TestTextAfterMediaMerge(ctx);
+		TestSelectiveMarkerStrip(ctx);
+		TestStagedNameTraversal(ctx);
+	}
+
+	// A staged name is a bare file name; /attach is user-reachable, so a rooted or ".."-bearing
+	// name must never resolve outside the staging folder — DiscardStaged would otherwise DELETE
+	// whatever file it escaped to.
+	private static void TestStagedNameTraversal(TestContext ctx)
+	{
+		string staging = MediaIntake.EnsureStagingFolder(Environment.CurrentDirectory);
+		string victim  = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(staging)!, "victim.txt");
+		System.IO.File.WriteAllText(victim, "do not delete");
+		try
+		{
+			MediaIntake.DiscardStaged("../victim.txt");
+			MediaIntake.DiscardStaged("..\\victim.txt");
+			ctx.Assert(System.IO.File.Exists(victim), "Traversal: a ..-name never deletes outside the staging folder");
+
+			MediaIntake.DiscardStaged(victim);
+			ctx.Assert(System.IO.File.Exists(victim), "Traversal: a rooted name never deletes outside the staging folder");
+
+			string inside = System.IO.Path.Combine(staging, "legit.txt");
+			System.IO.File.WriteAllText(inside, "staged");
+			MediaIntake.DiscardStaged("legit.txt");
+			ctx.Assert(!System.IO.File.Exists(inside), "Traversal: a bare name inside the folder still discards");
+		}
+		finally
+		{
+			if (System.IO.File.Exists(victim))
+				System.IO.File.Delete(victim);
+		}
+	}
+
+	// Plain text merged into a media-bearing user message must fold into the part array, not throw
+	// — GetValue<string> on array content killed the session handler when a second line was
+	// drained before an assistant reply.
+	private static void TestTextAfterMediaMerge(TestContext ctx)
+	{
+		ProtocolChatCompletions protocol = new ProtocolChatCompletions();
+		protocol.OnUserMessage("look at this", new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") });
+		protocol.OnUserMessage("and tell me more");
+
+		JsonArray native = (JsonArray)Reflect.GetField(protocol, "_native")!;
+		ctx.AssertEqual(1, native.Count, "MediaMerge: the follow-up text merges rather than appending a second user message");
+		JsonArray? parts = native[0]?["content"] as JsonArray;
+		ctx.AssertNotNull(parts, "MediaMerge: content stays a part array");
+		string mergedText = parts![0]?["text"]?.GetValue<string>() ?? string.Empty;
+		ctx.AssertContains(mergedText, "look at this", "MediaMerge: the original text survives");
+		ctx.AssertContains(mergedText, "and tell me more", "MediaMerge: the follow-up joins it");
+		ctx.AssertEqual("image_url", parts[1]?["type"]?.GetValue<string>(), "MediaMerge: the image part is untouched");
+
+		// A media-only message gains a text part at the front when text merges in later.
+		ProtocolChatCompletions wordless = new ProtocolChatCompletions();
+		wordless.OnUserMessage(string.Empty, new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") });
+		wordless.OnUserMessage("what is this?");
+		JsonArray wordlessNative = (JsonArray)Reflect.GetField(wordless, "_native")!;
+		JsonArray? wordlessParts = wordlessNative[0]?["content"] as JsonArray;
+		ctx.AssertEqual("text", wordlessParts![0]?["type"]?.GetValue<string>(), "MediaMerge: a wordless media turn gains a leading text part");
+		ctx.AssertEqual("what is this?", wordlessParts[0]?["text"]?.GetValue<string>(), "MediaMerge: with the merged text");
+	}
+
+	// Only markers whose file actually staged are stripped; one that failed to stage stays in the
+	// text so the request for it is never silently erased.
+	private static void TestSelectiveMarkerStrip(TestContext ctx)
+	{
+		HashSet<string> staged = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "D:\\shots\\ok.png" };
+		string result = MediaIntake.StripPathMarkers("[ path D:\\shots\\ok.png ] compare with [ path D:\\shots\\failed.png ]", staged);
+		ctx.Assert(!result.Contains("ok.png"), "SelectiveStrip: the staged file's marker is removed");
+		ctx.AssertContains(result, "[ path D:\\shots\\failed.png ]", "SelectiveStrip: the unstaged file's marker survives");
+
+		ctx.AssertEqual("just words",
+			MediaIntake.StripPathMarkers("[ path a\\x.png ] just words", null), "SelectiveStrip: null set strips everything (the unconditional form)");
+	}
+
+	// The pending queue has two consumers: the handler's drain (which resolves media) and
+	// FlushPendingMessages (which does not). When the staged files lived on the handler, the flush
+	// could commit the text with no media and leave the attachment to ride along with the NEXT
+	// message — the file was owned by the wrong object. Text with media waiting must stay queued.
+	private static void TestAttachmentsSurviveFlush(TestContext ctx)
+	{
+		Session session = NewSession();
+		session.AddPendingAttachment("staged.png\x01D:\\shots\\a.png");
+		session.AddUserMessage("what is this?");
+
+		session.FlushPendingMessages();
+
+		ctx.Assert(session.HasPending, "Flush: text with media waiting stays queued for the drain");
+		foreach (CanonicalMessage msg in session.Bundle.Canonical.Messages)
+			ctx.Assert(!(msg is UserMessage), "Flush: no message is committed while its media is unresolved");
+
+		// Once the drain has taken the attachments, the flush behaves normally again.
+		ctx.AssertEqual(1, session.TakePendingAttachments().Count, "Flush: the drain takes the staged files");
+		ctx.Assert(!session.HasPendingAttachments, "Flush: taking clears them, so they cannot reach a second message");
+		session.FlushPendingMessages();
+		ctx.Assert(!session.HasPending, "Flush: plain text flushes once nothing is waiting on it");
+	}
+
+	// An unanswered tool call makes the whole conversation invalid to the strict providers, so the
+	// repair pass has to close every gap — and leave everything else exactly as it was.
+	private static void TestUnansweredToolCallRepair(TestContext ctx)
+	{
+		// Two calls, one answered: only the orphan gets a placeholder, and it lands at the end.
+		Session session = NewSession();
+		List<SemanticToolCall> calls = new List<SemanticToolCall>
+		{
+			new SemanticToolCall { Id = "call_a", Name = "assign_work", ArgumentsJson = "{}" },
+			new SemanticToolCall { Id = "call_b", Name = "read_file", ArgumentsJson = "{}" }
+		};
+		session.Bundle.OnUserMessage("do the thing");
+		session.Bundle.OnAssistantTurn(string.Empty, string.Empty, calls);
+		session.Bundle.OnToolResult(new ToolResult("call_b", "file contents", string.Empty, 0, 3));
+
+		session.CompleteDanglingToolCalls();
+
+		IReadOnlyList<CanonicalMessage> messages = session.Bundle.Canonical.Messages;
+		ToolResultMessage last = (ToolResultMessage)messages[messages.Count - 1];
+		ctx.AssertEqual("call_a", last.ToolCallId, "Repair: the unanswered call is the one filled in");
+		ctx.AssertContains(last.Content, "interrupted by user", "Repair: the placeholder says why");
+
+		// Running it again must not stack up duplicates.
+		int before = messages.Count;
+		session.CompleteDanglingToolCalls();
+		ctx.AssertEqual(before, session.Bundle.Canonical.Messages.Count, "Repair: idempotent once every call is answered");
+
+		// A fully answered round is left completely alone.
+		Session clean = NewSession();
+		clean.Bundle.OnUserMessage("hi");
+		clean.Bundle.OnAssistantTurn(string.Empty, string.Empty, new List<SemanticToolCall> { new SemanticToolCall { Id = "c1", Name = "ls", ArgumentsJson = "{}" } });
+		clean.Bundle.OnToolResult(new ToolResult("c1", "files", string.Empty, 0, 2));
+		int cleanBefore = clean.Bundle.Canonical.Messages.Count;
+		clean.CompleteDanglingToolCalls();
+		ctx.AssertEqual(cleanBefore, clean.Bundle.Canonical.Messages.Count, "Repair: an answered round is untouched");
+
+		// A plain conversation with no tool calls at all is untouched.
+		Session plain = NewSession();
+		plain.Bundle.OnUserMessage("hello");
+		plain.Bundle.OnAssistantTurn("hi there", string.Empty, new List<SemanticToolCall>());
+		int plainBefore = plain.Bundle.Canonical.Messages.Count;
+		plain.CompleteDanglingToolCalls();
+		ctx.AssertEqual(plainBefore, plain.Bundle.Canonical.Messages.Count, "Repair: a conversation without tool calls is untouched");
+	}
+
+	private static Session NewSession()
+	{
+		BeastSession data = new BeastSession("repair", "repair", "model", "role", string.Empty, 0,
+			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+		return new Session(data, string.Empty, new TestCaptureTransport(), false);
+	}
+
+	// The client's path markers must not reach the model once the file is attached: the image is
+	// already in the message, and repeating its path is noise that also biases on the file name.
+	private static void TestPathMarkerStripping(TestContext ctx)
+	{
+		ctx.AssertEqual("Tell me about her shape.",
+			MediaIntake.StripPathMarkers("[ path D:\\ai\\out\\ComfyUI_00009_.png ]  Tell me about her shape."),
+			"StripPathMarkers: leading marker and its spacing removed");
+		ctx.AssertEqual("before after",
+			MediaIntake.StripPathMarkers("before [ path a\\one.png ] after"), "StripPathMarkers: no doubled gap where the marker was");
+		ctx.AssertEqual(string.Empty,
+			MediaIntake.StripPathMarkers("[ path a\\one.png ]"), "StripPathMarkers: an image with no words leaves empty text");
+		ctx.AssertEqual("compare these",
+			MediaIntake.StripPathMarkers("[ path a\\one.png ] compare these [ path b\\two.png ]"), "StripPathMarkers: several markers in one line");
+		ctx.AssertEqual("plain text", MediaIntake.StripPathMarkers("plain text"), "StripPathMarkers: unmarked text untouched");
+
+		// An image dropped with no words must not produce an empty text block beside the media.
+		UserMessage wordless = new UserMessage(string.Empty, new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") });
+		JsonObject native = (JsonObject)Reflect.Static(typeof(ProtocolChatCompletions), "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { wordless })!;
+		JsonArray? parts = native["content"] as JsonArray;
+		ctx.AssertNotNull(parts, "Wordless attachment: content is a part array");
+		ctx.AssertEqual(1, parts!.Count, "Wordless attachment: only the image part, no empty text block");
+		ctx.AssertEqual("image_url", parts[0]?["type"]?.GetValue<string>(), "Wordless attachment: the part is the image");
 	}
 
 	// Anthropic changed its thinking contract: the budgeted form is rejected outright by newer

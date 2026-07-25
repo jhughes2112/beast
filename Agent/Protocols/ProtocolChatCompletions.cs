@@ -22,7 +22,7 @@ using System.Threading.Tasks;
 public class ProtocolChatCompletions
 {
 	private bool _parallelToolCallsSupported = true;
-	private bool _streamingSupported = true;
+	private bool _streamingSupported         = true;
 
 	// Server-stated affordable completion cap, learned from an OpenRouter 402 ("can only afford
 	// N tokens"). 0 = no cap known. Applied to every subsequent request of this instance so a
@@ -71,14 +71,14 @@ public class ProtocolChatCompletions
 		if (msg is SystemMessage sm)
 		{
 			JsonObject obj = new JsonObject();
-			obj["role"] = "system";
+			obj["role"]    = "system";
 			obj["content"] = sm.Text;
 			return obj;
 		}
 		if (msg is UserMessage um)
 		{
 			JsonObject obj = new JsonObject();
-			obj["role"] = "user";
+			obj["role"]    = "user";
 			if (um.Attachments != null && um.Attachments.Count > 0)
 			{
 				// Multimodal turn: content becomes a typed part array — text first, then each
@@ -92,7 +92,7 @@ public class ProtocolChatCompletions
 					{
 						parts.Add((JsonNode)new JsonObject
 						{
-							["type"] = "input_audio",
+							["type"]        = "input_audio",
 							["input_audio"] = new JsonObject { ["data"] = att.Base64Data, ["format"] = att.MimeType.Substring(6) }
 						});
 					}
@@ -102,7 +102,7 @@ public class ProtocolChatCompletions
 						// (OpenRouter, Gemini's compat layer) use video_url with a data URI.
 						parts.Add((JsonNode)new JsonObject
 						{
-							["type"] = "video_url",
+							["type"]      = "video_url",
 							["video_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
 						});
 					}
@@ -110,7 +110,7 @@ public class ProtocolChatCompletions
 					{
 						parts.Add((JsonNode)new JsonObject
 						{
-							["type"] = "image_url",
+							["type"]      = "image_url",
 							["image_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
 						});
 					}
@@ -126,19 +126,19 @@ public class ProtocolChatCompletions
 		if (msg is AssistantMessage am)
 		{
 			JsonObject obj = new JsonObject();
-			obj["role"] = "assistant";
+			obj["role"]    = "assistant";
 			obj["content"] = am.Text ?? string.Empty;
 			if (am.ToolCalls.Count > 0)
 			{
 				JsonArray tcArr = new JsonArray();
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
-					JsonObject tcObj = new JsonObject();
-					tcObj["id"] = tc.Id;
-					tcObj["type"] = "function";
-					JsonObject fn = new JsonObject();
-					fn["name"] = tc.Name;
-					fn["arguments"] = tc.ArgumentsJson;
+					JsonObject tcObj  = new JsonObject();
+					tcObj["id"]       = tc.Id;
+					tcObj["type"]     = "function";
+					JsonObject fn     = new JsonObject();
+					fn["name"]        = tc.Name;
+					fn["arguments"]   = tc.ArgumentsJson;
 					tcObj["function"] = fn;
 					tcArr.Add((JsonNode)tcObj);
 				}
@@ -148,9 +148,9 @@ public class ProtocolChatCompletions
 		}
 		if (msg is ToolResultMessage tr)
 		{
-			JsonObject obj = new JsonObject();
-			obj["role"] = "tool";
-			obj["content"] = tr.Content;
+			JsonObject obj      = new JsonObject();
+			obj["role"]         = "tool";
+			obj["content"]      = tr.Content;
 			obj["tool_call_id"] = tr.ToolCallId;
 			return obj;
 		}
@@ -167,28 +167,47 @@ public class ProtocolChatCompletions
 		}
 
 		JsonObject msg = new JsonObject();
-		msg["role"] = "system";
+		msg["role"]    = "system";
 		msg["content"] = text;
 		_native.Insert(0, msg);
 	}
 
 	public void OnUserMessage(string text)
 	{
-		// If the last item is already a user message, merge text in-place.
+		// If the last item is already a user message, merge text in-place. The content may be a
+		// part ARRAY (a media-bearing turn) rather than a string — GetValue<string> on that throws
+		// and killed the handler when text followed an image without an assistant turn between.
 		int count = _native.Count;
 		if (count > 0)
 		{
 			JsonNode? last = _native[count - 1];
 			if (last != null && last["role"]?.GetValue<string>() == "user")
 			{
+				if (last["content"] is JsonArray parts)
+				{
+					// Fold into the first text part (mirroring canonical's "\n" merge), or lead
+					// with a new one when the turn was media-only.
+					foreach (JsonNode? part in parts)
+					{
+						if (part is JsonObject obj && obj["type"]?.GetValue<string>() == "text")
+						{
+							string? existingPart = obj["text"]?.GetValue<string>();
+							obj["text"]          = string.IsNullOrEmpty(existingPart) ? text : existingPart + "\n" + text;
+							return;
+						}
+					}
+					parts.Insert(0, new JsonObject { ["type"] = "text", ["text"] = text });
+					return;
+				}
+
 				string? existing = last["content"]?.GetValue<string>();
-				last["content"] = string.IsNullOrEmpty(existing) ? text : existing + "\n" + text;
+				last["content"]  = string.IsNullOrEmpty(existing) ? text : existing + "\n" + text;
 				return;
 			}
 		}
 
 		JsonObject msg = new JsonObject();
-		msg["role"] = "user";
+		msg["role"]    = "user";
 		msg["content"] = text;
 		_native.Add((JsonNode)msg);
 	}
@@ -208,7 +227,7 @@ public class ProtocolChatCompletions
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
 		JsonObject msg = new JsonObject();
-		msg["role"] = "assistant";
+		msg["role"]    = "assistant";
 		msg["content"] = text ?? string.Empty;
 
 		if (toolCalls.Count > 0)
@@ -216,12 +235,12 @@ public class ProtocolChatCompletions
 			JsonArray tcArr = new JsonArray();
 			foreach (SemanticToolCall tc in toolCalls)
 			{
-				JsonObject tcObj = new JsonObject();
-				tcObj["id"] = tc.Id;
-				tcObj["type"] = "function";
-				JsonObject fn = new JsonObject();
-				fn["name"] = tc.Name;
-				fn["arguments"] = tc.ArgumentsJson;
+				JsonObject tcObj  = new JsonObject();
+				tcObj["id"]       = tc.Id;
+				tcObj["type"]     = "function";
+				JsonObject fn     = new JsonObject();
+				fn["name"]        = tc.Name;
+				fn["arguments"]   = tc.ArgumentsJson;
 				tcObj["function"] = fn;
 				tcArr.Add((JsonNode)tcObj);
 			}
@@ -234,28 +253,28 @@ public class ProtocolChatCompletions
 	public void OnToolResult(ToolResult result)
 	{
 		JsonObject msg = new JsonObject();
-		msg["role"] = "tool";
+		msg["role"]    = "tool";
 		string content = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
 		{
 			content = content + "\nstderr: " + result.StdErr;
 		}
-		msg["content"] = content;
+		msg["content"]      = content;
 		msg["tool_call_id"] = result.Id;
 		_native.Add((JsonNode)msg);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
-		LlmModel model,
-		ListenerBundle bundle,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		int? maxCompletionTokens,
+		LlmModel                   model,
+		ListenerBundle             bundle,
+		List<ToolDefinition>       tools,
+		string?                    forcedToolName,
+		int?                       maxCompletionTokens,
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		LiveUsageProgress onProgress,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		LiveUsageProgress             onProgress,
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		try
 		{
@@ -300,7 +319,7 @@ public class ProtocolChatCompletions
 				}
 
 				HttpResponseMessage httpResponse;
-				string responseBody;
+				string              responseBody;
 				try
 				{
 					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, cancellationToken);
@@ -335,7 +354,7 @@ public class ProtocolChatCompletions
 						return ProtocolResult.Transient("Empty response from API", null);
 					}
 
-					string? errMsg = root["error"]?["message"]?.GetValue<string>();
+					string?    errMsg  = root["error"]?["message"]?.GetValue<string>();
 					JsonArray? choices = root["choices"]?.AsArray();
 					if (choices == null || choices.Count == 0 || errMsg != null)
 					{
@@ -364,7 +383,7 @@ public class ProtocolChatCompletions
 					(TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
 
 					List<ToolResult> emptyResults = new List<ToolResult>();
-					ProtocolResult success = ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+					ProtocolResult   success      = ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
 					if (ShouldAdaptToolChoice(success, forcedToolName, tools))
 					{
 						_toolChoiceMode = 1;
@@ -394,7 +413,7 @@ public class ProtocolChatCompletions
 				if ((int)httpResponse.StatusCode == 402)
 				{
 					int affordable = ParseAffordableTokens(responseBody);
-					int capped = affordable - affordable / 10;
+					int capped     = affordable - affordable / 10;
 					if (capped > 0 && (_affordableMaxTokens == 0 || capped < _affordableMaxTokens))
 					{
 						_affordableMaxTokens = capped;
@@ -450,7 +469,7 @@ httpResponse);
 	private JsonObject BuildRequestBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens)
 	{
 		JsonObject body = new JsonObject();
-		body["model"] = model.Config.Id;
+		body["model"]   = model.Config.Id;
 
 		// System prompts arrive through the bundle as semantic events (see BeastSession.RaiseSystemPrompt),
 		// so the messages array is sent verbatim with no prepended global system block.
@@ -465,12 +484,12 @@ httpResponse);
 		// If the last message is neither user nor tool, append an empty user turn so the API will respond.
 		if (messages.Count > 0)
 		{
-			JsonNode? last = messages[messages.Count - 1];
-			string? lastRole = last?["role"]?.GetValue<string>();
+			JsonNode? last     = messages[messages.Count - 1];
+			string?   lastRole = last?["role"]?.GetValue<string>();
 			if (lastRole != "user" && lastRole != "tool")
 			{
 				JsonObject filler = new JsonObject();
-				filler["role"] = "user";
+				filler["role"]    = "user";
 				filler["content"] = string.Empty;
 				messages.Add((JsonNode)filler);
 			}
@@ -484,13 +503,13 @@ httpResponse);
 			JsonArray toolsArr = new JsonArray();
 			foreach (ToolDefinition td in tools)
 			{
-				JsonObject fn = new JsonObject();
-				fn["name"] = td.Function.Name;
+				JsonObject fn     = new JsonObject();
+				fn["name"]        = td.Function.Name;
 				fn["description"] = td.Function.Description;
-				fn["parameters"] = td.Function.Parameters.DeepClone();
+				fn["parameters"]  = td.Function.Parameters.DeepClone();
 
-				JsonObject toolObj = new JsonObject();
-				toolObj["type"] = td.Type;
+				JsonObject toolObj  = new JsonObject();
+				toolObj["type"]     = td.Type;
 				toolObj["function"] = fn;
 				toolsArr.Add((JsonNode)toolObj);
 			}
@@ -513,11 +532,11 @@ httpResponse);
 				// so start straight at the string and skip a wasted round trip.
 				if (_toolChoiceMode == 0 && tools.Count > 1)
 				{
-					JsonObject fn = new JsonObject();
-					fn["name"] = forcedToolName;
-					JsonObject choice = new JsonObject();
-					choice["type"] = "function";
-					choice["function"] = fn;
+					JsonObject fn       = new JsonObject();
+					fn["name"]          = forcedToolName;
+					JsonObject choice   = new JsonObject();
+					choice["type"]      = "function";
+					choice["function"]  = fn;
 					body["tool_choice"] = choice;
 				}
 				else
@@ -558,8 +577,8 @@ httpResponse);
 			else if (_reasoningMode == 1)
 			{
 				JsonObject reasoning = new JsonObject();
-				reasoning["effort"] = effort;
-				body["reasoning"] = reasoning;
+				reasoning["effort"]  = effort;
+				body["reasoning"]    = reasoning;
 			}
 		}
 
@@ -572,11 +591,11 @@ httpResponse);
 	{
 		const string marker = "can only afford ";
 		int result = 0;
-		int idx = responseBody.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+		int idx    = responseBody.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
 		if (idx >= 0)
 		{
 			int start = idx + marker.Length;
-			int end = start;
+			int end   = start;
 			while (end < responseBody.Length && char.IsDigit(responseBody[end]))
 				end++;
 			if (end > start)
@@ -598,7 +617,7 @@ httpResponse);
 		string requestJson = obj.ToJsonString();
 
 		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
-		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
 		foreach ((string name, string value) in extraHeaders)
@@ -610,20 +629,20 @@ httpResponse);
 	}
 
 	private async Task<ProtocolResult?> ExecuteStreamingAsync(
-		LlmModel model,
-		JsonObject body,
-		List<ToolDefinition> tools,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		JsonObject                    body,
+		List<ToolDefinition>          tools,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		ListenerBundle bundle,
-		LiveUsageProgress onProgress,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		ListenerBundle                bundle,
+		LiveUsageProgress             onProgress,
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		string url = model.Endpoint;
 
-		JsonObject obj = (JsonObject)body.DeepClone();
-		obj["stream"] = true;
+		JsonObject obj        = (JsonObject)body.DeepClone();
+		obj["stream"]         = true;
 		obj["stream_options"] = new JsonObject { ["include_usage"] = true };
 
 		foreach ((string name, JsonNode? value) in extraPayload)
@@ -634,7 +653,7 @@ httpResponse);
 		string requestJson = obj.ToJsonString();
 
 		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url);
-		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
 		foreach ((string name, string value) in extraHeaders)
@@ -670,8 +689,8 @@ httpResponse);
 
 		if (!httpResponse.IsSuccessStatusCode)
 		{
-			string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-			int statusCode = (int)httpResponse.StatusCode;
+			string errorBody       = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			int    statusCode      = (int)httpResponse.StatusCode;
 			string errorLogMessage = string.IsNullOrEmpty(errorBody)
 				? $"HTTP {statusCode} with empty response body. Endpoint: {url}"
 				: errorBody;
@@ -710,15 +729,15 @@ httpResponse);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 
-		StringBuilder contentBuilder = new StringBuilder();
-		StringBuilder reasoningBuilder = new StringBuilder();
+		StringBuilder           contentBuilder       = new StringBuilder();
+		StringBuilder           reasoningBuilder     = new StringBuilder();
 		List<StreamingToolCall> toolCallAccumulators = new List<StreamingToolCall>();
-		string finishReason = string.Empty;
-		JsonNode? usageNodeFinal = null;
-		string? openStreamTag = null;
-		int streamedCharCount = 0;
-		int livePromptTokens = 0;
-		int liveCachedTokens = 0;
+		string                  finishReason         = string.Empty;
+		JsonNode?               usageNodeFinal       = null;
+		string?                 openStreamTag        = null;
+		int                     streamedCharCount    = 0;
+		int                     livePromptTokens     = 0;
+		int                     liveCachedTokens     = 0;
 
 		try
 		{
@@ -744,7 +763,7 @@ httpResponse);
 					JsonNode? usageNode = chunkNode["usage"];
 					if (usageNode != null)
 					{
-						usageNodeFinal = usageNode;
+						usageNodeFinal    = usageNode;
 						int? promptTokens = usageNode["prompt_tokens"]?.GetValue<int?>();
 						if (promptTokens.HasValue && promptTokens.Value > 0)
 						{
@@ -860,7 +879,7 @@ httpResponse);
 		}
 
 		string assistantText = contentBuilder.ToString();
-		string thinking = reasoningBuilder.ToString();
+		string thinking      = reasoningBuilder.ToString();
 
 		List<SemanticToolCall> semanticToolCalls = new List<SemanticToolCall>();
 		if (toolCallAccumulators.Count > 0)
@@ -893,8 +912,8 @@ httpResponse);
 
 	private sealed class StreamingToolCall
 	{
-		public string Id = string.Empty;
-		public string Name = string.Empty;
+		public string        Id        = string.Empty;
+		public string        Name      = string.Empty;
 		public StringBuilder Arguments = new StringBuilder();
 	}
 
@@ -904,8 +923,8 @@ httpResponse);
 	// character count (chars/4). The committed usage will correct both at end-of-turn.
 	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress, int liveCachedTokens = 0)
 	{
-		int estimatedOutputTokens = streamedCharCount / 4;
-		decimal estimatedCost = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
+		int     estimatedOutputTokens = streamedCharCount / 4;
+		decimal estimatedCost         = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
 							  + (estimatedOutputTokens / 1_000_000m) * model.Config.Cost.Output;
 		onProgress(livePromptTokens, estimatedOutputTokens, estimatedCost, liveCachedTokens);
 	}
@@ -945,14 +964,14 @@ httpResponse);
 	// tool is treated as prose, not as a failed call.
 	private static string ExtractXmlToolCalls(string text, List<ToolDefinition> tools, List<SemanticToolCall> toolCalls)
 	{
-		const string open = "<tool_call>";
+		const string open  = "<tool_call>";
 		const string close = "</tool_call>";
 
 		string remaining = text;
 		if (remaining.Contains(open, StringComparison.Ordinal))
 		{
 			StringBuilder cleaned = new StringBuilder();
-			int pos = 0;
+			int           pos     = 0;
 			for (; ; )
 			{
 				int start = remaining.IndexOf(open, pos, StringComparison.Ordinal);
@@ -968,8 +987,8 @@ httpResponse);
 					break;
 				}
 
-				string inner = remaining.Substring(start + open.Length, end - start - open.Length).Trim();
-				SemanticToolCall? call = ParseXmlToolCall(inner);
+				string            inner = remaining.Substring(start + open.Length, end - start - open.Length).Trim();
+				SemanticToolCall? call  = ParseXmlToolCall(inner);
 				if (call != null && IsOfferedTool(tools, call.Name))
 				{
 					toolCalls.Add(call);
@@ -1010,11 +1029,11 @@ httpResponse);
 			try
 			{
 				JsonNode? node = JsonNode.Parse(inner);
-				string? name = node?["name"]?.GetValue<string>();
+				string?   name = node?["name"]?.GetValue<string>();
 				if (node is JsonObject && !string.IsNullOrEmpty(name))
 				{
 					JsonNode? args = node["arguments"];
-					string argsJson;
+					string    argsJson;
 					if (args is JsonObject argsObj)
 						argsJson = argsObj.ToJsonString();
 					else if (args is JsonValue value && value.TryGetValue(out string? argsText))
@@ -1041,20 +1060,20 @@ httpResponse);
 	// value (the template's framing) so multi-line content like file bodies survives verbatim.
 	private static SemanticToolCall? ParseFunctionXmlToolCall(string inner)
 	{
-		const string functionOpen = "<function=";
-		const string parameterOpen = "<parameter=";
+		const string functionOpen   = "<function=";
+		const string parameterOpen  = "<parameter=";
 		const string parameterClose = "</parameter>";
 
-		SemanticToolCall? call = null;
-		int fnStart = inner.IndexOf(functionOpen, StringComparison.Ordinal);
-		int fnNameEnd = fnStart >= 0 ? inner.IndexOf('>', fnStart + functionOpen.Length) : -1;
+		SemanticToolCall? call      = null;
+		int               fnStart   = inner.IndexOf(functionOpen, StringComparison.Ordinal);
+		int               fnNameEnd = fnStart >= 0 ? inner.IndexOf('>', fnStart + functionOpen.Length) : -1;
 		if (fnNameEnd > 0)
 		{
 			string name = inner.Substring(fnStart + functionOpen.Length, fnNameEnd - fnStart - functionOpen.Length).Trim();
 			if (name.Length > 0)
 			{
 				JsonObject args = new JsonObject();
-				int pos = fnNameEnd + 1;
+				int        pos  = fnNameEnd + 1;
 				for (; ; )
 				{
 					int pStart = inner.IndexOf(parameterOpen, pos, StringComparison.Ordinal);
@@ -1067,8 +1086,8 @@ httpResponse);
 					if (pClose < 0)
 						break;
 
-					string key = inner.Substring(pStart + parameterOpen.Length, pNameEnd - pStart - parameterOpen.Length).Trim();
-					string value = inner.Substring(pNameEnd + 1, pClose - pNameEnd - 1);
+					string key   = inner.Substring(pStart + parameterOpen.Length, pNameEnd - pStart - parameterOpen.Length).Trim();
+					string value = inner.Substring(                 pNameEnd + 1,                    pClose - pNameEnd - 1);
 					if (value.StartsWith("\n", StringComparison.Ordinal))
 						value = value.Substring(1);
 					if (value.EndsWith("\n", StringComparison.Ordinal))
@@ -1088,8 +1107,8 @@ httpResponse);
 	{
 		return new SemanticToolCall
 		{
-			Id = $"xmltc_{Guid.NewGuid():N}".Substring(0, 24),
-			Name = name,
+			Id            = $"xmltc_{Guid.NewGuid():N}".Substring(0, 24),
+			Name          = name,
 			ArgumentsJson = argsJson
 		};
 	}
@@ -1098,16 +1117,16 @@ httpResponse);
 	{
 		string text = messageObj["content"]?.GetValue<string>() ?? string.Empty;
 
-		List<SemanticToolCall> tcs = new List<SemanticToolCall>();
-		JsonArray? tcArr = messageObj["tool_calls"]?.AsArray();
+		List<SemanticToolCall> tcs   = new List<SemanticToolCall>();
+		JsonArray?             tcArr = messageObj["tool_calls"]?.AsArray();
 		if (tcArr != null)
 		{
 			foreach (JsonNode? n in tcArr)
 			{
 				if (n == null)
 					continue;
-				string id = n["id"]?.GetValue<string>() ?? string.Empty;
-				string name = n["function"]?["name"]?.GetValue<string>() ?? string.Empty;
+				string id       = n["id"]?.GetValue<string>() ?? string.Empty;
+				string name     = n["function"]?["name"]?.GetValue<string>() ?? string.Empty;
 				string argsJson = n["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
 				tcs.Add(new SemanticToolCall { Id = id, Name = name, ArgumentsJson = argsJson });
 			}
@@ -1147,11 +1166,11 @@ httpResponse);
 	private static (TokenUsageInfo usage, decimal cost) ExtractUsageFromNode(JsonNode? usageNode, LlmModel model)
 	{
 		TokenUsageInfo usage = new TokenUsageInfo();
-		decimal cost = 0m;
+		decimal        cost  = 0m;
 		if (usageNode == null)
 			return (usage, cost);
 
-		int totalPromptTokens = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
+		int totalPromptTokens  = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
 		usage.CompletionTokens = usageNode["completion_tokens"]?.GetValue<int>() ?? 0;
 
 		int cachedTokens = usageNode["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
@@ -1160,7 +1179,7 @@ httpResponse);
 		usage.PromptTokens = totalPromptTokens;
 		usage.CachedTokens = cachedTokens;
 
-		decimal? reported = null;
+		decimal?  reported = null;
 		JsonNode? costNode = usageNode["cost"];
 		if (costNode is JsonValue cv && cv.TryGetValue<decimal>(out decimal dv))
 		{
@@ -1174,9 +1193,9 @@ httpResponse);
 		else
 		{
 			int freshPromptTokens = totalPromptTokens - cachedTokens;
-			cost += (freshPromptTokens / 1_000_000m) * model.Config.Cost.Input;
-			cost += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
-			cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
+			cost                 += (freshPromptTokens / 1_000_000m) * model.Config.Cost.Input;
+			cost                 += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
+			cost                 += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
 		}
 
 		return (usage, cost);
@@ -1219,13 +1238,13 @@ httpResponse);
 	// Tracer call: sends the same request with max_completion_tokens=1 to get accurate token counts
 	// without generating a meaningful response. Returns token usage info from the provider, or error status.
 	public async Task<TracerResult> ExecuteTracerAsync(
-		LlmModel model,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		List<ToolDefinition>          tools,
+		string?                       forcedToolName,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		try
 		{
@@ -1234,7 +1253,7 @@ httpResponse);
 			string requestJson = body.ToJsonString();
 
 			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-			req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+			req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
 			foreach ((string name, string value) in extraHeaders)
@@ -1243,7 +1262,7 @@ httpResponse);
 			}
 
 			HttpResponseMessage httpResponse;
-			string responseBody;
+			string              responseBody;
 			try
 			{
 				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -1309,13 +1328,13 @@ httpResponse);
 	// No dedicated token-counting endpoint for Chat Completions.
 	// Delegates to the existing ExecuteTracerAsync logic (max_completion_tokens=1).
 	public async Task<TracerResult> CountTokensAsync(
-		LlmModel model,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		List<ToolDefinition>          tools,
+		string?                       forcedToolName,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		return await ExecuteTracerAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
 	}

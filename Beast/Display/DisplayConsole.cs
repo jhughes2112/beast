@@ -8,19 +8,19 @@ using System.Threading.Tasks;
 // Blocks in RunAsync until cancellation fires.
 public class DisplayConsole : IDisplay
 {
-	private readonly ClientLog _log;
-	private readonly bool _verbose;
-	private int _streamIndex = -1;
-	private FrameType _streamType = FrameType.Output;
-	private FrameType _lastStreamType = FrameType.Output;
-	private bool _didStream = false;
-	private bool _hadPreviousStream = false;
-	private readonly HashSet<int> _streamedSlots = new HashSet<int>();
-	private Action? _frameDrain;
+	private readonly ClientLog    _log;
+	private readonly bool         _verbose;
+	private          int          _streamIndex       = -1;
+	private          FrameType    _streamType        = FrameType.Output;
+	private          FrameType    _lastStreamType    = FrameType.Output;
+	private          bool         _didStream         = false;
+	private          bool         _hadPreviousStream = false;
+	private readonly HashSet<int> _streamedSlots     = new HashSet<int>();
+	private          Action?      _frameDrain;
 
 	public DisplayConsole(ClientLog log, bool verbose)
 	{
-		_log = log;
+		_log     = log;
 		_verbose = verbose;
 	}
 
@@ -45,8 +45,8 @@ public class DisplayConsole : IDisplay
 	public void OnStreamStart(int streamIndex, FrameType type)
 	{
 		_streamIndex = streamIndex;
-		_streamType = type;
-		_didStream = false;
+		_streamType  = type;
+		_didStream   = false;
 		_streamedSlots.Add(streamIndex);
 
 		if (type == FrameType.Thinking && !_verbose)
@@ -81,8 +81,8 @@ public class DisplayConsole : IDisplay
 		}
 
 		_lastStreamType = _streamType;
-		_streamIndex = -1;
-		_didStream = false;
+		_streamIndex    = -1;
+		_didStream      = false;
 	}
 
 	public void SetAgentBusy(bool busy, long startTick)
@@ -105,17 +105,18 @@ public class DisplayConsole : IDisplay
 		_frameDrain = drain;
 	}
 
-	public void SetSessionCounts(int active, int total) { }
-	public void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
-	public void SetSessionSwitchCallback(Action<string> switchTo) { }
-	public void SetSessionDeleteCallback(Action<string> deleteSession) { }
-	public void ClearPendingGhost(string sessionId) { }
-	public void SetPendingGhost(string sessionId, string[] lines) { }
-	public void OnConfigFrame(string json) { }
-	public void SetAttachmentRoot(string root) { }
-	public void OnConfigError(string text) { }
-	public bool IsAutoTrackSuppressed() { return false; }
-	public void RestoreTerminal() { }  // non-interactive display does not own the alt screen
+	public void SetSessionCounts        (int active, int total)                                       { }
+	public void SetSessionList          (IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
+	public void SetSessionSwitchCallback(Action<string> switchTo)                                     { }
+	public void SetSessionDeleteCallback(Action<string> deleteSession)                                { }
+	public void ClearPendingGhost       (string sessionId)                       { }
+	public void SetPendingGhost         (string sessionId, string[] lines)       { }
+	public void OnConfigFrame           (string json)                            { }
+	public void SetAttachmentRoot       (string root)                            { }
+	public void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }
+	public void OnConfigError           (string text)                            { }
+	public bool IsAutoTrackSuppressed   ()                                       { return false; }
+	public void RestoreTerminal         ()                                       { } // non-interactive display does not own the alt screen
 
 	public async Task RunAsync(CancellationToken cancellationToken)
 	{
@@ -133,9 +134,9 @@ public class DisplayConsole : IDisplay
 	private void OnMessageUpdated(DisplayMessage msg)
 	{
 		if (msg.Index == _streamIndex)
-			return;  // streaming is handled in OnStreamChunk/OnStreamEnd
+			return; // streaming is handled in OnStreamChunk/OnStreamEnd
 		if (_streamedSlots.Contains(msg.Index))
-			return;  // already rendered live during streaming
+			return; // already rendered live during streaming
 
 		if (_verbose)
 		{

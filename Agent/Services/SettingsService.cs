@@ -12,12 +12,19 @@ using System.Text.Json.Nodes;
 public class SettingsService
 {
 	private readonly string _homeDirSettingsPath;
+	private readonly string _legacyWorkDirSettingsPath;
 
 	public BeastSettings Settings { get; private set; }
 
+	// Set when a pre-single-file project settings.json with real content is found: earlier builds
+	// wrote and honored one, so silently ignoring it would lose configured providers, keys, and
+	// search settings on upgrade. Surfaced by the orchestrator as a startup alert.
+	public string? LegacySettingsWarning { get; private set; }
+
 	public SettingsService(string workDir)
 	{
-		_homeDirSettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "settings.json");
+		_homeDirSettingsPath       = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "settings.json");
+		_legacyWorkDirSettingsPath = Path.Combine(workDir, ".beast", "settings.json");
 
 		Settings = null!;
 		LoadSettings();
@@ -43,6 +50,49 @@ public class SettingsService
 		// Published with a single reference assignment: a concurrent reader never sees a
 		// half-populated settings object.
 		Settings = home;
+
+		DetectLegacyProjectSettings();
+	}
+
+	// Flags a leftover project settings.json that carries real configuration. Empty auto-generated
+	// stubs from old builds are everywhere and mean nothing, so only meaningful content warns; a
+	// file that will not even parse warns too, since it plainly held SOMETHING.
+	private void DetectLegacyProjectSettings()
+	{
+		LegacySettingsWarning = null;
+		if (!File.Exists(_legacyWorkDirSettingsPath))
+			return;
+
+		bool meaningful;
+		try
+		{
+			string         json   = File.ReadAllText(_legacyWorkDirSettingsPath);
+			BeastSettings? legacy = string.IsNullOrWhiteSpace(json)
+				? null
+				: JsonSerializer.Deserialize(json, BeastJson.Config.BeastSettings);
+			// Every field the old project merge honored counts — not just providers and search. A
+			// legacy file holding only a sound path or a compaction reserve was still shaping
+			// behavior before the single-file change, and its owner deserves the same warning.
+			meaningful = legacy != null
+				&& (legacy.Providers.Count > 0 || legacy.Auto.Count > 0 || legacy.WebSearch?.Openrouter != null
+					|| (legacy.WebSearch != null && legacy.WebSearch.Providers.Count > 0)
+					|| legacy.Tools.Count > 0
+					|| !string.IsNullOrEmpty(legacy.IdleSoundFile)
+					|| !string.IsNullOrEmpty(legacy.SubagentSoundFile)
+					|| legacy.CompactionReserveTokens > 0);
+		}
+		catch (Exception)
+		{
+			meaningful = true;
+		}
+
+		if (meaningful)
+		{
+			LegacySettingsWarning =
+				$"This project has a legacy settings file at {_legacyWorkDirSettingsPath} that is NO LONGER READ — configuration now lives only in ~/.beast/settings.json. "
+				+ "Move anything you still need (providers, API keys, web search) into the user file, then delete the project file to silence this.";
+			Console.Error.WriteLine($"[SettingsService] {LegacySettingsWarning}");
+		}
 	}
 
 	private BeastSettings? LoadSettingsFromFile(string path)

@@ -68,14 +68,83 @@ public static class MediaIntake
 		return folder;
 	}
 
+	// Strips the "[ path ... ]" markers the client inserts, leaving what the user actually wrote.
+	// The marker exists so the client knows what to stage; once the file is attached it is pure
+	// noise to the model — the image is right there in the message, and repeating its path (twice,
+	// with an "[attached …]" note) spent tokens telling the model something it can see.
+	public static string StripPathMarkers(string text)
+	{
+		return StripPathMarkers(text, null);
+	}
+
+	// stagedPaths, when given, limits the strip to markers whose path actually reached the agent
+	// as a staged attachment. A marker for a file the client FAILED to stage stays in the text —
+	// stripping it too made that file vanish without a trace, so the model (and the transcript)
+	// never learned it was ever asked about.
+	public static string StripPathMarkers(string text, ISet<string>? stagedPaths)
+	{
+		const string open  = "[ path ";
+		const string close = " ]";
+
+		StringBuilder clean = new StringBuilder();
+		int           scan  = 0;
+		while (true)
+		{
+			int start = text.IndexOf(open, scan, StringComparison.Ordinal);
+			if (start < 0)
+				break;
+			int end = text.IndexOf(close, start + open.Length, StringComparison.Ordinal);
+			if (end < 0)
+				break;
+
+			if (stagedPaths != null)
+			{
+				string markerPath = text.Substring(start + open.Length, end - start - open.Length).Trim();
+				if (!stagedPaths.Contains(markerPath))
+				{
+					// Not one of ours to remove: keep the marker and continue past it.
+					clean.Append(text, scan, end + close.Length - scan);
+					scan = end + close.Length;
+					continue;
+				}
+			}
+
+			clean.Append(text, scan, start - scan);
+			scan = end + close.Length;
+
+			// The spaces that surrounded the marker would otherwise collapse into a doubled gap.
+			while (scan < text.Length && text[scan] == ' ' && clean.Length > 0 && clean[clean.Length - 1] == ' ')
+				scan++;
+		}
+		clean.Append(text, scan, text.Length - scan);
+		return clean.ToString().Trim();
+	}
+
+	// A staged name is a bare file name inside the staging folder, nothing more. It arrives over
+	// the user-accessible /attach command, so anything path-like is rejected rather than combined:
+	// a rooted path would REPLACE the staging prefix and ".." segments would escape it, after which
+	// resolve would read — and the discard that follows every consumed attachment would DELETE —
+	// an arbitrary file the agent can reach. Null when the name is not a plain file name.
+	private static string? SafeStagedPath(string stagedName)
+	{
+		string? staged = null;
+		if (stagedName.Length > 0
+			&& string.Equals(stagedName, Path.GetFileName(stagedName), StringComparison.Ordinal)
+			&& stagedName != "." && stagedName != "..")
+		{
+			staged = Path.Combine(StagingFolder(), stagedName);
+		}
+		return staged;
+	}
+
 	// Removes a staged copy once it has been folded into a turn. Best-effort: a file left behind by
 	// a crash is harmless, and failing the turn over a locked temp file would not be.
 	public static void DiscardStaged(string stagedName)
 	{
 		try
 		{
-			string staged = Path.Combine(StagingFolder(), stagedName);
-			if (File.Exists(staged))
+			string? staged = SafeStagedPath(stagedName);
+			if (staged != null && File.Exists(staged))
 				File.Delete(staged);
 		}
 		catch (Exception)
@@ -93,10 +162,12 @@ public static class MediaIntake
 		LlmRegistry       registry,
 		CancellationToken ct)
 	{
-		string staged  = Path.Combine(StagingFolder(), stagedName);
-		string display = string.IsNullOrEmpty(originalPath) ? stagedName : originalPath;
+		string? staged  = SafeStagedPath(stagedName);
+		string  display = string.IsNullOrEmpty(originalPath) ? stagedName : originalPath;
 
-		if (!File.Exists(staged))
+		// A path-like name is treated exactly like a missing file: the client only ever sends bare
+		// names, so anything else is a hand-typed /attach trying to read outside the staging folder.
+		if (staged == null || !File.Exists(staged))
 			return ($"[attachment {display} could not be read: the staged copy is missing]", null, string.Empty, MediaKind.Unknown);
 
 		long bytes                        = new FileInfo(staged).Length;
@@ -116,7 +187,8 @@ public static class MediaIntake
 		if (current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string data = Convert.ToBase64String(await File.ReadAllBytesAsync(staged, ct));
-			return ($"[attached {display}]", new MediaAttachment(mimeType, data), string.Empty, kind);
+			// No note: the attachment IS the evidence, and naming the file again only adds tokens.
+			return (string.Empty, new MediaAttachment(mimeType, data), string.Empty, kind);
 		}
 
 		// Otherwise the file cannot ride along, and there is no good substitute: a description
@@ -133,10 +205,23 @@ public static class MediaIntake
 
 	private static async Task<string> InlineTextAsync(string staged, string display, CancellationToken ct)
 	{
-		string content = await File.ReadAllTextAsync(staged, ct);
-		bool   clipped = content.Length > MaxInlineTextChars;
-		if (clipped)
-			content = content.Substring(0, MaxInlineTextChars);
+		// Bounded read: text files skip the byte cap (a huge log is still a legitimate drop), so
+		// reading the whole file first would balloon memory only to throw all but the head away.
+		// One character past the cap is read purely to know whether truncation happened.
+		char[] buffer = new char[MaxInlineTextChars + 1];
+		int    read   = 0;
+		using (StreamReader reader = new StreamReader(staged))
+		{
+			while (read < buffer.Length)
+			{
+				int n = await reader.ReadAsync(buffer.AsMemory(read, buffer.Length - read), ct);
+				if (n == 0)
+					break;
+				read += n;
+			}
+		}
+		bool   clipped = read > MaxInlineTextChars;
+		string content = new string(buffer, 0, clipped ? MaxInlineTextChars : read);
 
 		StringBuilder sb = new StringBuilder();
 		sb.Append("[attached ").Append(display).Append(clipped ? " — truncated]" : "]").Append('\n');

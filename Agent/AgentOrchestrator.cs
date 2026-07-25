@@ -70,6 +70,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (!_registry.HasModels)
 			_transport.Config(initial.Id, "{\"kind\":\"no-models\"}");
 
+		// A project settings.json from before the single-file change still holds real config that
+		// is no longer read; the user has to migrate it by hand, so say so loudly once.
+		if (_settings.LegacySettingsWarning != null)
+			_transport.Alert(initial.Id, _settings.LegacySettingsWarning);
+
 		// Restore all saved sessions to the client before the first handler starts so the F10 session
 		// tree shows the complete worktree history. The resumed root is replayed last inside
 		// SessionHandler.RunAsync so it becomes the active view.
@@ -190,7 +195,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// obligation to a compaction successor via TransferCompletion).
 		subSession.SetMaxWorkTurns(maxWorkTurns);
 		lock (_sessionLock)
-			_completions[subSession.Id] = (ok, text, tokens) => tcs.TrySetResult((ok, text, tokens));
+		{
+			_completions[subSession.Id] = (ok, text, tokens) =>
+			{
+				// TrySetResult failing means the caller was interrupted and moved on — its tool-call
+				// slot was answered with "[interrupted by user]" long ago. This callback is the only
+				// channel the surviving child's real completion still arrives on (the caller-facing
+				// task is terminal and can never observe it), so a successful late result is handed
+				// to the parent as ordinary input rather than dropped on the floor.
+				if (!tcs.TrySetResult((ok, text, tokens)) && ok)
+					parent.DeliverLateToolResult($"{roleName} subagent", text);
+			};
+		}
 
 		SessionHandler handler = new SessionHandler(subSession);
 
@@ -689,8 +705,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// true when the new configuration is live.
 	private async Task<bool> ReloadConfigurationAsync(string sessionId, CancellationToken ct)
 	{
-		bool                         reloaded      = false;
-		Dictionary<string, Role>     priorRoles    = _roleService.SnapshotRoles();
+		bool reloaded = false;
+		(Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) priorRoles = _roleService.SnapshotRoles();
 		BeastSettings                priorSettings = _settings.SnapshotSettings();
 		Dictionary<string, LlmModel> priorModels   = _registry.SnapshotModels();
 		try
@@ -835,9 +851,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		if (payload != null && !string.IsNullOrWhiteSpace(payload.Role))
 		{
-			_roleService.SaveRoleModelOrder(payload.Role, payload.Models);
-			await ReloadConfigurationAsync(sessionId, ct);
-			_transport.Status(sessionId, $"Saved model order for the {payload.Role} role.");
+			// Two honest failure modes: the save itself can fail (no file owns the role — its
+			// project file was unreadable), and a saved order can fail to APPLY (reload rejects
+			// the config). Claiming success in either case told the user an inactive order was live.
+			if (!_roleService.SaveRoleModelOrder(payload.Role, payload.Models))
+				_transport.Error(sessionId, $"The {payload.Role} order could not be saved — no roles.json owns that role (see the agent log for the file error).");
+			else if (await ReloadConfigurationAsync(sessionId, ct))
+				_transport.Status(sessionId, $"Saved model order for the {payload.Role} role.");
+			else
+				_transport.Error(sessionId, $"The {payload.Role} order was saved to roles.json, but applying it failed — fix the reported problem, then /reload.");
 		}
 	}
 

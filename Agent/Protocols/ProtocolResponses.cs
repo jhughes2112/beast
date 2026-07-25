@@ -8,7 +8,7 @@ using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
-// OpenAI Responses API  
+// OpenAI Responses API
 // Wire protocol is stateful by default: passing previous_response_id continues
 // a server-managed conversation thread, so do not also replay the full message
 // history or the context will be duplicated. Either use stateful chaining via
@@ -69,12 +69,12 @@ public class ProtocolResponses
 
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
-					string id = ProtocolHelpers.NormalizeToolCallId(tc.Id);
-					JsonObject item = new JsonObject();
-					item["type"] = "function_call";
-					item["id"] = id;
-					item["call_id"] = id;
-					item["name"] = tc.Name;
+					string     id     = ProtocolHelpers.NormalizeToolCallId(tc.Id);
+					JsonObject item   = new JsonObject();
+					item["type"]      = "function_call";
+					item["id"]        = id;
+					item["call_id"]   = id;
+					item["name"]      = tc.Name;
 					item["arguments"] = tc.ArgumentsJson;
 					input.Add((JsonNode)item);
 				}
@@ -82,9 +82,9 @@ public class ProtocolResponses
 			else if (msg is ToolResultMessage tr)
 			{
 				JsonObject item = new JsonObject();
-				item["type"] = "function_call_output";
+				item["type"]    = "function_call_output";
 				item["call_id"] = ProtocolHelpers.NormalizeToolCallId(tr.ToolCallId);
-				item["output"] = tr.Content;
+				item["output"]  = tr.Content;
 				input.Add((JsonNode)item);
 			}
 		}
@@ -117,6 +117,11 @@ public class ProtocolResponses
 			return item;
 
 		JsonArray content = (JsonArray)item["content"]!;
+
+		// A message that is nothing but a dropped image has no words; drop the empty text part
+		// rather than sending a blank block alongside the media.
+		if (string.IsNullOrEmpty(text))
+			content.Clear();
 		foreach (MediaAttachment att in attachments)
 		{
 			if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
@@ -136,13 +141,13 @@ public class ProtocolResponses
 
 		foreach (SemanticToolCall tc in toolCalls)
 		{
-			string normalizedId = ProtocolHelpers.NormalizeToolCallId(tc.Id);
-			JsonObject item = new JsonObject();
-			item["type"] = "function_call";
-			item["id"] = normalizedId;
-			item["call_id"] = normalizedId;
-			item["name"] = tc.Name;
-			item["arguments"] = tc.ArgumentsJson;
+			string     normalizedId = ProtocolHelpers.NormalizeToolCallId(tc.Id);
+			JsonObject item         = new JsonObject();
+			item["type"]            = "function_call";
+			item["id"]              = normalizedId;
+			item["call_id"]         = normalizedId;
+			item["name"]            = tc.Name;
+			item["arguments"]       = tc.ArgumentsJson;
 			_deltaInput.Add((JsonNode)item);
 		}
 	}
@@ -150,9 +155,9 @@ public class ProtocolResponses
 	public void OnToolResult(ToolResult result)
 	{
 		JsonObject item = new JsonObject();
-		item["type"] = "function_call_output";
+		item["type"]    = "function_call_output";
 		item["call_id"] = ProtocolHelpers.NormalizeToolCallId(result.Id);
-		string output = result.StdOut;
+		string output   = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
 		{
 			output = output + "\nstderr: " + result.StdErr;
@@ -162,16 +167,16 @@ public class ProtocolResponses
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
-		LlmModel model,
-		ListenerBundle bundle,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		int? maxCompletionTokens,
+		LlmModel                   model,
+		ListenerBundle             bundle,
+		List<ToolDefinition>       tools,
+		string?                    forcedToolName,
+		int?                       maxCompletionTokens,
 		Dictionary<string, string> extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		LiveUsageProgress onProgress,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		LiveUsageProgress             onProgress,
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		try
 		{
@@ -188,7 +193,7 @@ public class ProtocolResponses
 			string requestJson = body.ToJsonString();
 
 			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-			req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+			req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 			foreach ((string name, string value) in extraHeaders)
 			{
@@ -196,7 +201,7 @@ public class ProtocolResponses
 			}
 
 			HttpResponseMessage httpResponse;
-			string responseBody;
+			string              responseBody;
 			try
 			{
 				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
@@ -264,7 +269,7 @@ public class ProtocolResponses
 	private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
 	{
 		JsonObject body = new JsonObject();
-		body["model"] = model.Config.Id;
+		body["model"]   = model.Config.Id;
 
 		// If we have rehydrated input, send the full history once (no previous_response_id).
 		// Otherwise, chain from the last response id and send only the delta items.
@@ -288,16 +293,16 @@ public class ProtocolResponses
 
 		if (tools.Count > 0)
 		{
-			JsonArray toolsArr = new JsonArray();
-			JsonObject twebsearch = new JsonObject();  // the allows web search to happen internally on any OpenAI model, about a penny a search
-			twebsearch["type"] = "web_search";
+			JsonArray  toolsArr   = new JsonArray();
+			JsonObject twebsearch = new JsonObject(); // the allows web search to happen internally on any OpenAI model, about a penny a search
+			twebsearch["type"]    = "web_search";
 			toolsArr.Add((JsonNode)twebsearch);
 
 			foreach (ToolDefinition td in tools)
 			{
 				JsonObject t = new JsonObject();
-				t["type"] = "function";
-				t["name"] = td.Function.Name;
+				t["type"]    = "function";
+				t["name"]    = td.Function.Name;
 				if (!string.IsNullOrEmpty(td.Function.Description))
 					t["description"] = td.Function.Description;
 				if (td.Function.Parameters != null)
@@ -314,9 +319,9 @@ public class ProtocolResponses
 			}
 			else if (!string.IsNullOrEmpty(forcedToolName))
 			{
-				JsonObject choice = new JsonObject();
-				choice["type"] = "function";
-				choice["name"] = forcedToolName;
+				JsonObject choice   = new JsonObject();
+				choice["type"]      = "function";
+				choice["name"]      = forcedToolName;
 				body["tool_choice"] = choice;
 			}
 			else
@@ -331,8 +336,8 @@ public class ProtocolResponses
 		if (effort != null)
 		{
 			JsonObject reasoning = new JsonObject();
-			reasoning["effort"] = effort;
-			body["reasoning"] = reasoning;
+			reasoning["effort"]  = effort;
+			body["reasoning"]    = reasoning;
 		}
 
 		foreach ((string name, JsonNode? value) in extraPayload)
@@ -345,13 +350,13 @@ public class ProtocolResponses
 
 	private static JsonObject BuildMessageItem(string role, string blockType, string text)
 	{
-		JsonObject item = new JsonObject();
-		item["type"] = "message";
-		item["role"] = role;
-		JsonArray content = new JsonArray();
-		JsonObject block = new JsonObject();
-		block["type"] = blockType;
-		block["text"] = text;
+		JsonObject item    = new JsonObject();
+		item["type"]       = "message";
+		item["role"]       = role;
+		JsonArray  content = new JsonArray();
+		JsonObject block   = new JsonObject();
+		block["type"]      = blockType;
+		block["text"]      = text;
 		content.Add((JsonNode)block);
 		item["content"] = content;
 		return item;
@@ -360,12 +365,12 @@ public class ProtocolResponses
 	private async Task<ProtocolResult?> ExecuteStreamingAsync(LlmModel model, JsonObject body, Dictionary<string, string> extraHeaders, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationToken cancellationToken)
 	{
 		JsonObject streamBody = (JsonObject)body.DeepClone();
-		streamBody["stream"] = true;
+		streamBody["stream"]  = true;
 
 		string requestJson = streamBody.ToJsonString();
 
 		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 
 		foreach ((string name, string value) in extraHeaders)
@@ -400,8 +405,8 @@ public class ProtocolResponses
 
 		if (!httpResponse.IsSuccessStatusCode)
 		{
-			string errorBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-			int statusCode = (int)httpResponse.StatusCode;
+			string errorBody  = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			int    statusCode = (int)httpResponse.StatusCode;
 
 			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
 			// the provider rejects streaming for this model, so we disable it and fall through to
@@ -433,9 +438,9 @@ public class ProtocolResponses
 		}
 
 		JsonNode? finalResponseNode = null;
-		string? openStreamTag = null;
-		int liveInputTokens = 0;
-		int liveCachedTokens = 0;
+		string?   openStreamTag     = null;
+		int       liveInputTokens   = 0;
+		int       liveCachedTokens  = 0;
 
 		try
 		{
@@ -577,9 +582,9 @@ public class ProtocolResponses
 			return ProtocolResult.Transient(errMsg ?? "Empty response from Responses API", null);
 		}
 
-		StringBuilder assistantTextBuilder = new StringBuilder();
-		StringBuilder thinkingBuilder = new StringBuilder();
-		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>();
+		StringBuilder          assistantTextBuilder = new StringBuilder();
+		StringBuilder          thinkingBuilder      = new StringBuilder();
+		List<SemanticToolCall> toolCalls            = new List<SemanticToolCall>();
 
 		foreach (JsonNode? item in output)
 		{
@@ -589,7 +594,7 @@ public class ProtocolResponses
 			string? type = item["type"]?.GetValue<string>();
 			if (type == "function_call")
 			{
-				string id = item["call_id"]?.GetValue<string>() ?? item["id"]?.GetValue<string>() ?? string.Empty;
+				string id   = item["call_id"]?.GetValue<string>() ?? item["id"]?.GetValue<string>() ?? string.Empty;
 				string name = item["name"]?.GetValue<string>() ?? string.Empty;
 				string args = item["arguments"]?.GetValue<string>() ?? string.Empty;
 				toolCalls.Add(new SemanticToolCall { Id = id, Name = name, ArgumentsJson = args });
@@ -602,7 +607,7 @@ public class ProtocolResponses
 					foreach (JsonNode? block in content)
 					{
 						string? blockType = block?["type"]?.GetValue<string>();
-						string? text = block?["text"]?.GetValue<string>();
+						string? text      = block?["text"]?.GetValue<string>();
 						if (blockType == "output_text" && !string.IsNullOrEmpty(text))
 						{
 							assistantTextBuilder.Append(text);
@@ -626,7 +631,7 @@ public class ProtocolResponses
 		}
 
 		string assistantText = assistantTextBuilder.ToString();
-		string thinking = thinkingBuilder.ToString();
+		string thinking      = thinkingBuilder.ToString();
 
 
 
@@ -634,12 +639,12 @@ public class ProtocolResponses
 		// and delta buffer so subsequent turns accumulate fresh deltas.
 		// The id is in-memory only and never written into canonical state.
 		_previousResponseId = responseRoot["id"]?.GetValue<string>();
-		_rehydratedInput = null;
+		_rehydratedInput    = null;
 		_deltaInput.Clear();
 
 		// The Responses API reports output clipping via incomplete_details rather than a finish
 		// reason; normalize it to "length" so callers detect cut-off replies uniformly.
-		string finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
+		string  finishReason     = toolCalls.Count > 0 ? "tool_calls" : "stop";
 		string? incompleteReason = responseRoot["incomplete_details"]?["reason"]?.GetValue<string>();
 		if (toolCalls.Count == 0 && incompleteReason == "max_output_tokens")
 			finishReason = "length";
@@ -652,13 +657,13 @@ public class ProtocolResponses
 
 	private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode responseRoot, LlmModel model)
 	{
-		TokenUsageInfo usage = new TokenUsageInfo();
-		decimal cost = 0m;
-		JsonNode? usageNode = responseRoot["usage"];
+		TokenUsageInfo usage     = new TokenUsageInfo();
+		decimal        cost      = 0m;
+		JsonNode?      usageNode = responseRoot["usage"];
 		if (usageNode == null)
 			return (usage, cost);
 
-		int totalInputTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
+		int totalInputTokens   = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
 		usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
 
 		int cachedTokens = usageNode["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
@@ -668,7 +673,7 @@ public class ProtocolResponses
 		usage.CachedTokens = cachedTokens;
 
 		// Prefer a server-reported cost when present; otherwise calculate from fresh token counts.
-		decimal? reported = null;
+		decimal?  reported = null;
 		JsonNode? costNode = usageNode["cost"];
 		if (costNode is JsonValue cv && cv.TryGetValue<decimal>(out decimal dv))
 		{
@@ -682,9 +687,9 @@ public class ProtocolResponses
 		else
 		{
 			int freshInputTokens = totalInputTokens - cachedTokens;
-			cost += (freshInputTokens / 1_000_000m) * model.Config.Cost.Input;
-			cost += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
-			cost += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
+			cost                += (freshInputTokens / 1_000_000m) * model.Config.Cost.Input;
+			cost                += (cachedTokens / 1_000_000m) * model.Config.Cost.CacheRead;
+			cost                += (usage.CompletionTokens / 1_000_000m) * model.Config.Cost.Output;
 		}
 
 		return (usage, cost);
@@ -693,13 +698,13 @@ public class ProtocolResponses
 	// Token counting call: uses OpenAI's dedicated /responses/input_tokens/count endpoint (side-effect-free).
 	// Falls back to the legacy tracer (max_output_tokens=1) if the count endpoint is unavailable.
 	public async Task<TracerResult> CountTokensAsync(
-		LlmModel model,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		List<ToolDefinition>          tools,
+		string?                       forcedToolName,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		// Build the count endpoint URL: model.Endpoint ends with /responses, count endpoint is /responses/input_tokens/count
 		string countEndpoint = model.Endpoint;
@@ -719,7 +724,7 @@ public class ProtocolResponses
 		string requestJson = body.ToJsonString();
 
 		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, countEndpoint);
-		req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+		req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 		foreach ((string name, string value) in extraHeaders)
 		{
@@ -727,7 +732,7 @@ public class ProtocolResponses
 		}
 
 		HttpResponseMessage httpResponse;
-		string responseBody;
+		string              responseBody;
 		try
 		{
 			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
@@ -780,7 +785,7 @@ public class ProtocolResponses
 	private JsonObject BuildCountBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, Dictionary<string, JsonNode?> extraPayload)
 	{
 		JsonObject body = new JsonObject();
-		body["model"] = model.Config.Id;
+		body["model"]   = model.Config.Id;
 
 		// Build input array from rehydrated or delta state (no previous_response_id chaining for count)
 		JsonArray input = new JsonArray();
@@ -802,16 +807,16 @@ public class ProtocolResponses
 
 		if (tools.Count > 0)
 		{
-			JsonArray toolsArr = new JsonArray();
+			JsonArray  toolsArr   = new JsonArray();
 			JsonObject twebsearch = new JsonObject();
-			twebsearch["type"] = "web_search";
+			twebsearch["type"]    = "web_search";
 			toolsArr.Add((JsonNode)twebsearch);
 
 			foreach (ToolDefinition td in tools)
 			{
 				JsonObject t = new JsonObject();
-				t["type"] = "function";
-				t["name"] = td.Function.Name;
+				t["type"]    = "function";
+				t["name"]    = td.Function.Name;
 				if (!string.IsNullOrEmpty(td.Function.Description))
 					t["description"] = td.Function.Description;
 				if (td.Function.Parameters != null)
@@ -827,8 +832,8 @@ public class ProtocolResponses
 		if (effort != null)
 		{
 			JsonObject reasoning = new JsonObject();
-			reasoning["effort"] = effort;
-			body["reasoning"] = reasoning;
+			reasoning["effort"]  = effort;
+			body["reasoning"]    = reasoning;
 		}
 
 		// Merge extra payload (skip stream, max_output_tokens, tool_choice, previous_response_id)
@@ -846,13 +851,13 @@ public class ProtocolResponses
 	// without generating a meaningful response.
 	// Kept as fallback for providers that don't support /responses/input_tokens/count.
 	public async Task<TracerResult> ExecuteTracerAsync(
-		LlmModel model,
-		List<ToolDefinition> tools,
-		string? forcedToolName,
-		Dictionary<string, string> extraHeaders,
+		LlmModel                      model,
+		List<ToolDefinition>          tools,
+		string?                       forcedToolName,
+		Dictionary<string, string>    extraHeaders,
 		Dictionary<string, JsonNode?> extraPayload,
-		SessionLogger logger,
-		CancellationToken cancellationToken)
+		SessionLogger                 logger,
+		CancellationToken             cancellationToken)
 	{
 		try
 		{
@@ -862,7 +867,7 @@ public class ProtocolResponses
 			string requestJson = body.ToJsonString();
 
 			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-			req.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+			req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
 			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
 			foreach ((string name, string value) in extraHeaders)
 			{
@@ -870,7 +875,7 @@ public class ProtocolResponses
 			}
 
 			HttpResponseMessage httpResponse;
-			string responseBody;
+			string              responseBody;
 			try
 			{
 				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
@@ -905,7 +910,7 @@ public class ProtocolResponses
 				if (usageNode == null)
 					return TracerResult.Failed("No usage info in tracer response");
 
-				int inputTokens = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
+				int inputTokens  = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
 				int cachedTokens = usageNode["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;
 
 				return TracerResult.Success(inputTokens, cachedTokens);

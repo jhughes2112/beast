@@ -108,7 +108,11 @@ public class ProtocolAnthropic
 	// input, so those degrade to a text note the model can report rather than silently vanishing.
 	private void AppendUserMessage(string text, IReadOnlyList<MediaAttachment>? attachments)
 	{
-		AppendContent("user", TextBlock(text));
+		// An empty text block is rejected outright by the API, and a message that is nothing but a
+		// dropped image legitimately has no words — the media carries the turn on its own.
+		bool hasMedia = attachments != null && attachments.Count > 0;
+		if (!hasMedia || !string.IsNullOrEmpty(text))
+			AppendContent("user", TextBlock(text));
 
 		if (attachments == null)
 			return;

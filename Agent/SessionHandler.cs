@@ -27,9 +27,6 @@ public class SessionHandler
 	private string?     _nextModel;
 	private bool        _wantsCompact;
 
-	// Files staged by the client via /attach, waiting for the message text they belong to.
-	private readonly List<string> _pendingAttachments = new List<string>();
-
 	// Terminator sink written by the tool callback, read after each dispatch round.
 	private string? _terminatorValue;
 	private bool    _terminatorSucceeded;
@@ -114,6 +111,15 @@ public class SessionHandler
 					await WaitForInputOrModelAsync(ct, role, registry, transport);
 					continue;
 				}
+
+				// 3.5. Input that landed AFTER this iteration's drain goes back through the drain,
+				// never straight into a turn. Racing it in broke visibly with attachments: Beast
+				// sends "/attach" then the text as two frames, and a text arriving in the gap
+				// between step 1 and here would start a cluster whose flush (correctly) refuses to
+				// commit text with unresolved media — so the model was called with NOTHING new,
+				// answered its own previous reply, and the user saw an unprompted second response.
+				if (_activeSession.HasPending)
+					continue;
 
 				// 4. Run one turn cluster.
 				_activeSession.EnsureNamedAndAnnounce();
@@ -622,11 +628,24 @@ public class SessionHandler
 	// otherwise. Each staged copy is deleted once consumed so the folder does not grow forever.
 	private async Task DeliverWithAttachmentsAsync(string line, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
 	{
-		StringBuilder         text        = new StringBuilder(line);
+		// Taken (not read) so they can only ever be applied to this one message.
+		List<string> taken = _activeSession.TakePendingAttachments();
+
+		// Only markers whose file actually reached the agent are stripped: a marker the client
+		// FAILED to stage stays in the text, so the request for that file is never silently erased.
+		HashSet<string> stagedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (string entry in taken)
+		{
+			int sep = entry.IndexOf('\x01');
+			if (sep >= 0)
+				stagedPaths.Add(entry.Substring(sep + 1));
+		}
+
+		StringBuilder         text        = new StringBuilder(MediaIntake.StripPathMarkers(line, stagedPaths));
 		List<MediaAttachment> attachments = new List<MediaAttachment>();
 		List<(string Display, MediaKind Kind, string Staged)> unsupported = new List<(string, MediaKind, string)>();
 
-		foreach (string entry in _pendingAttachments)
+		foreach (string entry in taken)
 		{
 			int    sep          = entry.IndexOf('\x01');
 			string stagedName   = sep >= 0 ? entry.Substring(0, sep) : entry;
@@ -645,32 +664,35 @@ public class SessionHandler
 				MediaIntake.DiscardStaged(stagedName);
 		}
 
-		_pendingAttachments.Clear();
 		_activeSession.Bundle.OnUserMessage(text.ToString(), attachments);
 
 		// Media the current model cannot take is a human decision, not something to work around.
 		// Substituting a description would not give the model what native input gives it — the
 		// image tokens the attention heads actually reason over — so say plainly that the wrong
 		// model is loaded, and name the ones that would work.
+		Role? activeRole = roleService.GetRole(_activeSession.Role);
 		foreach ((string display, MediaKind kind, string staged) in unsupported)
 		{
-			transport.Alert(_activeSession.Id, BuildCapabilityAlert(display, kind, registry));
+			transport.Alert(_activeSession.Id, BuildCapabilityAlert(display, kind, registry, activeRole));
 			MediaIntake.DiscardStaged(staged);
 		}
 	}
 
 	// The red banner raised when a dropped file needs a modality the loaded model does not declare.
-	// It names the file, what it needs, and every enabled model that has it — because the fix is
-	// one /model away and the user should not have to go hunting for which one to pick.
-	private static string BuildCapabilityAlert(string display, MediaKind kind, LlmRegistry registry)
+	// It names the file, what it needs, and the capable models IN THIS ROLE — /model can only
+	// switch within the role's list, so suggesting anything outside it hands the user a command
+	// that would be refused.
+	private static string BuildCapabilityAlert(string display, MediaKind kind, LlmRegistry registry, Role? activeRole)
 	{
 		string         modality = MediaKinds.Modality(kind);
-		List<LlmModel> capable  = MediaKinds.CapableModels(registry, kind);
+		List<LlmModel> capable  = activeRole != null
+			? MediaKinds.CapableModels(registry, kind, activeRole.Models)
+			: new List<LlmModel>();
 
 		if (capable.Count == 0)
 		{
-			return $"'{display}' needs {modality} input, which the current model does not accept — and no enabled model does either. "
-				+ "Enable one in /config (a model's modalities are discovered from its endpoint, or set when you enable it).";
+			return $"'{display}' needs {modality} input, which the current model does not accept — and no model in this role does either. "
+				+ "Enable a capable model in /config, or add one to this role's list in /role, then send it again.";
 		}
 
 		StringBuilder names = new StringBuilder();
@@ -693,13 +715,24 @@ public class SessionHandler
 			{
 				if (IsContextBlocked)
 				{
-					transport.Status(_activeSession.Id, "Context window full — use /compact or /model <id> before sending more input.");
+					// The text is dropped, so the media staged for it must go with it — leaving the
+					// attachments armed silently glued the old file onto the next unrelated message
+					// sent after a /compact or /model resolved the block.
+					if (_activeSession.HasPendingAttachments)
+					{
+						foreach (string entry in _activeSession.TakePendingAttachments())
+						{
+							int sep = entry.IndexOf('\x01');
+							MediaIntake.DiscardStaged(sep >= 0 ? entry.Substring(0, sep) : entry);
+						}
+					}
+					transport.Status(_activeSession.Id, "Context window full — the message (and any attached files) was dropped. Use /compact or /model <id>, then send it again.");
 				}
 				else
 				{
 					// Files dropped into the input arrive as /attach lines immediately before the
 					// text they belong to, so anything staged is folded into THIS turn.
-					if (_pendingAttachments.Count > 0)
+					if (_activeSession.HasPendingAttachments)
 					{
 						await DeliverWithAttachmentsAsync(line, registry, roleService, transport, ct);
 					}
@@ -735,7 +768,7 @@ public class SessionHandler
 					// Staged-file notice from the client: "stagedName\x01originalPath". Held until
 					// the message text arrives so the files land on the turn they belong to.
 					if (args != null)
-						_pendingAttachments.Add(args);
+						_activeSession.AddPendingAttachment(args);
 					break;
 				case "help":
 					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /cancel");

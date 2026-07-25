@@ -17,10 +17,10 @@ using System.Threading.Tasks;
 // already in Messages; pass string.Empty to skip re-injection.
 public class Session
 {
-	private readonly BeastSession _data;
-	private readonly ListenerBundle _bundle;
+	private readonly BeastSession     _data;
+	private readonly ListenerBundle   _bundle;
 	private readonly ITransportServer _transport;
-	private readonly ContextBudget _budget = new ContextBudget();
+	private readonly ContextBudget    _budget = new ContextBudget();
 
 	// Single ordered queue of pending inbound lines: plain user text and slash commands interleaved
 	// in arrival order. /cancel is never queued — Deliver handles it immediately. Both the turn-boundary
@@ -32,13 +32,13 @@ public class Session
 	// Initialized from BeastSession.TerminalStatus so reloaded sessions reflect their prior state.
 	private SessionStatus _status = SessionStatus.Ongoing;
 
-	private readonly SemaphoreSlim _inputSignal = new SemaphoreSlim(0, 1);
-	private CancellationTokenSource? _turnCts;
+	private readonly SemaphoreSlim            _inputSignal = new SemaphoreSlim(0, 1);
+	private          CancellationTokenSource? _turnCts;
 	// The whole-turn cancellation scope owned by the runner. Unlike _turnCts (alive only for the duration of a
 	// single LLM call), this spans the entire turn including the tool-dispatch rounds between LLM calls, so a
 	// /cancel that arrives while a tool is running still interrupts it instead of being dropped.
 	private CancellationTokenSource? _dispatchCts;
-	private bool _isSubagent;
+	private bool                     _isSubagent;
 
 	// " (high)" style suffix for the active model's reasoning level, shown after the model name in stats.
 	// Set by UpdateModel each turn; empty until the first turn or when thinking is off.
@@ -72,19 +72,19 @@ public class Session
 	// the typed properties and methods below.
 	public BeastSession Data => _data;
 
-	public string Id => _data.Id;
-	public string DisplayName => _data.DisplayName;
-	public string Model => _data.Model;
-	public int ContextWindow => _data.ContextWindow;
-	public string Role => _data.Role;
-	public bool Ephemeral => _data.Ephemeral;
-	public bool IsSubagent => _isSubagent;
-	public bool IsEmpty => string.IsNullOrEmpty(_data.DisplayName);
-	public int ContextLength => _data.CurrentContextSize;
-	public TokenUsageInfo? LastTokenUsage => _data.LastTokenUsage;
-	public decimal TotalCost => _data.TotalCost;
-	public int CumulativeInputTokens => _data.CumulativeInputTokens;
-	public int CumulativeOutputTokens => _data.CumulativeOutputTokens;
+	public string          Id                     => _data.Id;
+	public string          DisplayName            => _data.DisplayName;
+	public string          Model                  => _data.Model;
+	public int             ContextWindow          => _data.ContextWindow;
+	public string          Role                   => _data.Role;
+	public bool            Ephemeral              => _data.Ephemeral;
+	public bool            IsSubagent             => _isSubagent;
+	public bool            IsEmpty                => string.IsNullOrEmpty(_data.DisplayName);
+	public int             ContextLength          => _data.CurrentContextSize;
+	public TokenUsageInfo? LastTokenUsage         => _data.LastTokenUsage;
+	public decimal         TotalCost              => _data.TotalCost;
+	public int             CumulativeInputTokens  => _data.CumulativeInputTokens;
+	public int             CumulativeOutputTokens => _data.CumulativeOutputTokens;
 
 	// Central token accounting for the context window. LlmService configures it at turn start and
 	// queries it for completion sizing and tool-response reservations.
@@ -117,11 +117,11 @@ public class Session
 
 	public Session(BeastSession data, string systemPrompt, ITransportServer transport, bool isSubagent)
 	{
-		_data = data;
-		_transport = transport;
+		_data       = data;
+		_transport  = transport;
 		_isSubagent = isSubagent;
-		QueryLog = new SessionLogger(data.Id);
-		_bundle = new ListenerBundle(
+		QueryLog    = new SessionLogger(data.Id);
+		_bundle     = new ListenerBundle(
 			new CanonicalConversation(data.Messages),
 			new ListenerTransport(_transport, data.Id));
 		// Persist the system prompt to canonical only — never emit it to the transport here. Display is
@@ -156,7 +156,7 @@ public class Session
 			// Seed from the persisted counter so a reloaded session continues past any IDs already issued.
 			if (_data.ChildCounter > _childCounter)
 				_childCounter = _data.ChildCounter;
-			n = ++_childCounter;
+			n                  = ++_childCounter;
 			_data.ChildCounter = n;
 		}
 		return $"{_data.Id}_{n}";
@@ -204,8 +204,8 @@ public class Session
 		// Hand-built node instead of an anonymous type: anonymous types have no source-generated
 		// metadata and would need the reflection serializer, which Native AOT does not have.
 		JsonObject announce = new JsonObject();
-		announce["id"] = _data.Id;
-		announce["name"] = _data.DisplayName;
+		announce["id"]      = _data.Id;
+		announce["name"]    = _data.DisplayName;
 		_transport.SessionAnnounce(_data.Id, announce.ToJsonString());
 	}
 
@@ -214,7 +214,7 @@ public class Session
 	// delivered (terminator, failure report, or salvage), and by the restore pass (Incomplete).
 	public void SetTerminationStatus(SessionStatus status)
 	{
-		_status = status;
+		_status              = status;
 		_data.TerminalStatus = status.ToString();
 		_transport.SessionStatus(_data.Id, status.ToString());
 	}
@@ -224,7 +224,7 @@ public class Session
 	// EffectiveStatus so a session that still owes its reply reads as Working, not Ongoing.
 	public void ResumeFromComplete()
 	{
-		_status = SessionStatus.Ongoing;
+		_status              = SessionStatus.Ongoing;
 		_data.TerminalStatus = string.Empty;
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
@@ -281,9 +281,9 @@ public class Session
 	// the client since Working derives from the obligation that just cleared.
 	public void ClearReplyObligation()
 	{
-		_data.TerminatorName = string.Empty;
+		_data.TerminatorName     = string.Empty;
 		_data.OutputBudgetTokens = 0;
-		_data.MaxWorkTurns = 0;
+		_data.MaxWorkTurns       = 0;
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
@@ -325,6 +325,17 @@ public class Session
 		RecordTurnUsage(payload.Usage);
 	}
 
+	// Delivers the output of a tool call that finished AFTER its slot was already answered — an
+	// interrupted subagent that kept working and eventually reported back. The work is real and the
+	// content is useful; only its provenance changed, so it arrives as ordinary input rather than
+	// being forced into a tool-result slot that is already filled and would duplicate the id.
+	public void DeliverLateToolResult(string toolName, string content)
+	{
+		if (string.IsNullOrWhiteSpace(content))
+			return;
+		AddUserMessage($"[late result of the interrupted {toolName} call]\n{content}");
+	}
+
 	public void CommitToolResults(ProtocolCallPayload payload)
 	{
 		foreach (ToolResult result in payload.ToolResults)
@@ -352,9 +363,9 @@ public class Session
 		// Cumulative input tracks only fresh (non-cached) tokens — cached reads are already "paid for"
 		// and don't represent additional spend across turns. PromptTokens is the TOTAL the provider
 		// processed (including cached), so subtract CachedTokens to get the fresh portion.
-		_data.CumulativeInputTokens += usage.PromptTokens - usage.CachedTokens;
+		_data.CumulativeInputTokens  += usage.PromptTokens - usage.CachedTokens;
 		_data.CumulativeOutputTokens += usage.CompletionTokens;
-		_data.LastTokenUsage = usage;
+		_data.LastTokenUsage          = usage;
 		// The context size is exactly the tokens the provider processed this turn: the whole prompt it
 		// read plus the completion it produced. That is the conversation's true size going into the
 		// next turn, and it already includes any tool outputs appended since the last response, so the
@@ -447,6 +458,38 @@ public class Session
 	// Used by SessionRunner to break out of the inter-turn delay early.
 	public Task WaitForInputAsync(CancellationToken ct) => _inputSignal.WaitAsync(ct);
 
+	// Files the client staged for the next user message, held here rather than on the handler so
+	// EVERY consumer of the pending queue can see them. When they lived on the handler this flush
+	// silently bypassed them: the drain would take the /attach line, then this would commit the
+	// text with no media, and the orphaned attachment rode along with the NEXT message instead.
+	private readonly List<string> _pendingAttachments = new List<string>();
+
+	public bool HasPendingAttachments
+	{
+		get
+		{
+			lock (_pendingAttachments)
+				return _pendingAttachments.Count > 0;
+		}
+	}
+
+	public void AddPendingAttachment(string entry)
+	{
+		lock (_pendingAttachments)
+			_pendingAttachments.Add(entry);
+	}
+
+	// Hands over the staged files and clears them, so they can only ever be applied to one message.
+	public List<string> TakePendingAttachments()
+	{
+		lock (_pendingAttachments)
+		{
+			List<string> taken = new List<string>(_pendingAttachments);
+			_pendingAttachments.Clear();
+			return taken;
+		}
+	}
+
 	// Drains leading plain-text lines from the pending queue into the bundle, stopping at the first
 	// queued slash command (left for the boundary drain to apply in order). Call before saving a
 	// session that had AddUserMessage() called outside of a running turn.
@@ -455,6 +498,12 @@ public class Session
 		while (_pending.TryPeek(out string? line))
 		{
 			if (line!.StartsWith("/", StringComparison.Ordinal))
+				break;
+
+			// Media is waiting for this line. Only the handler's drain can resolve it (reading the
+			// staged file, checking the model's modalities), so leave the text queued for it rather
+			// than committing a message whose image would then attach itself to the next one.
+			if (HasPendingAttachments)
 				break;
 			_pending.TryDequeue(out string? _);
 			_bundle.OnUserMessage(line);
@@ -575,8 +624,9 @@ public class Session
 	// Synthesizes an error result for any assistant tool call that never received one — the turn
 	// was interrupted mid-round, or the app shut down and the session was reloaded. Without this
 	// the next request would carry tool calls with no matching tool results, which providers
-	// reject or models misread.
-	private void CompleteDanglingToolCalls()
+	// reject or models misread. Public so the handler can also run it immediately before a request,
+	// which covers unwind paths that never reach BeginTurn.
+	public void CompleteDanglingToolCalls()
 	{
 		System.Collections.Generic.HashSet<string> satisfiedIds = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
 		foreach (CanonicalMessage msg in _data.Messages)
@@ -600,7 +650,7 @@ public class Session
 		}
 
 		foreach (string id in danglingIds)
-			_bundle.OnToolResult(new ToolResult(id, string.Empty, "Tool call was interrupted before it completed.", 1, 0));
+			_bundle.OnToolResult(new ToolResult(id, string.Empty, "[interrupted by user]", 1, 0));
 	}
 
 	// Cleans up after a turn. If interrupted, sets the wait state so NeedsAttention() stays
@@ -629,7 +679,7 @@ public class Session
 	public Session Fork()
 	{
 		List<CanonicalMessage> forkedMessages = new List<CanonicalMessage>(_data.Messages);
-		BeastSession forked = new BeastSession(
+		BeastSession           forked         = new BeastSession(
 			_data.Id,
 			_data.DisplayName,
 			_data.Model,
@@ -747,8 +797,8 @@ public class Session
 	// then prepends "(N+1) " so the chain reads "(1) hello", "(2) hello", etc.
 	internal static string IncrementDisplayName(string displayName)
 	{
-		string base_ = displayName;
-		int generation = 1;
+		string base_      = displayName;
+		int    generation = 1;
 
 		if (displayName.Length > 3 && displayName[0] == '(')
 		{
@@ -756,7 +806,7 @@ public class Session
 			if (close > 1 && int.TryParse(displayName.Substring(1, close - 1), out int n))
 			{
 				generation = n + 1;
-				base_ = displayName.Substring(close + 1).TrimStart();
+				base_      = displayName.Substring(close + 1).TrimStart();
 			}
 		}
 

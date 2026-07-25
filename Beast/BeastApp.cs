@@ -14,13 +14,13 @@ public class BeastApp : IAsyncDisposable
 	// Per-session conversation model and streaming state, keyed by session ID.
 	internal class SessionState
 	{
-		public ConversationModel Model { get; } = new ConversationModel();
-		public int NextIndex;
-		public int StreamIndex = -1;
-		public StringBuilder StreamContent = new StringBuilder();
-		public Dictionary<string, int> StreamTagToSlot = new Dictionary<string, int>();
-		public Dictionary<int, FrameType> SlotTypes = new Dictionary<int, FrameType>();
-		public Dictionary<FrameType, int> PendingCommit = new Dictionary<FrameType, int>();
+		public ConversationModel          Model { get; } = new ConversationModel();
+		public int                        NextIndex;
+		public int                        StreamIndex     = -1;
+		public StringBuilder              StreamContent   = new StringBuilder();
+		public Dictionary<string, int>    StreamTagToSlot = new Dictionary<string, int>();
+		public Dictionary<int, FrameType> SlotTypes       = new Dictionary<int, FrameType>();
+		public Dictionary<FrameType, int> PendingCommit   = new Dictionary<FrameType, int>();
 
 		// Tick when this session's current turn began (its Busy frame arrived). Drives the duration
 		// shown in the separator so it reflects how long this session has been working, independent
@@ -29,42 +29,42 @@ public class BeastApp : IAsyncDisposable
 
 		// Last stats reported by the agent for this session. Pushed to the display whenever
 		// this session becomes the actively viewed one.
-		public string StatsModel = "";
-		public string StatsRole = "";
-		public int StatsPromptTokens;
-		public int StatsCompletionTokens;
+		public string  StatsModel = "";
+		public string  StatsRole  = "";
+		public int     StatsPromptTokens;
+		public int     StatsCompletionTokens;
 		public decimal StatsTotalCost;
-		public int StatsMaxContext;
-		public int StatsContextTokens;
-		public int StatsCachedTokens;
+		public int     StatsMaxContext;
+		public int     StatsContextTokens;
+		public int     StatsCachedTokens;
 
 		// Termination status reported by the agent via SessionStatus frames. Defaults to Ongoing.
 		public SessionStatus Status = SessionStatus.Ongoing;
 	}
 
-	private readonly ILauncher _agentContext;
-	private readonly List<string> _messages;
-	private readonly IDisplay _display;
-	private readonly ClientLog _log;
-	private readonly string _agentName;
+	private readonly ILauncher            _agentContext;
+	private readonly List<string>         _messages;
+	private readonly IDisplay             _display;
+	private readonly ClientLog            _log;
+	private readonly string               _agentName;
 	private readonly Worktrees.Selection? _worktree;
 	// Set when the agent reports a successful /finish; on shutdown the worktree's host folder is removed.
-	private bool _worktreeFinished;
+	private bool    _worktreeFinished;
 	private string? _idleSoundFile;
 	private string? _subagentSoundFile;
 
 	private CancellationTokenSource? _cts;
-	private ITransportClient? _wsClient;
+	private ITransportClient?        _wsClient;
 
 	// Per-session models and streaming state.
 	private readonly Dictionary<string, SessionState> _sessions = new Dictionary<string, SessionState>(StringComparer.Ordinal);
-	private string _activeSessionId = "";
-	private readonly HashSet<string> _busySessions = new HashSet<string>(StringComparer.Ordinal);
+	private          string          _activeSessionId = "";
+	private readonly HashSet<string> _busySessions    = new HashSet<string>(StringComparer.Ordinal);
 	// Display names announced by the agent via SessionAnnounce frames, keyed by session ID.
 	private readonly Dictionary<string, string> _sessionDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
 
 	// Read loop state
-	private Task? _readTask;
+	private Task?                    _readTask;
 	private CancellationTokenSource? _readCts;
 	// Inbound frames queued by ReadLoop and drained under _consoleLock by DrainFrameQueue().
 	private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string SessionId, string Content)> _frameQueue
@@ -73,11 +73,11 @@ public class BeastApp : IAsyncDisposable
 	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, ClientLog log, string agentName, Worktrees.Selection? worktree)
 	{
 		_agentContext = agentContext;
-		_messages = messages;
-		_display = display;
-		_log = log;
-		_agentName = agentName;
-		_worktree = worktree;
+		_messages     = messages;
+		_display      = display;
+		_log          = log;
+		_agentName    = agentName;
+		_worktree     = worktree;
 	}
 
 	// Sends /quit to the agent so it saves the session, then waits for it to disconnect.
@@ -113,7 +113,7 @@ public class BeastApp : IAsyncDisposable
 
 	public async Task<int> Run()
 	{
-		_cts = new CancellationTokenSource();
+		_cts                    = new CancellationTokenSource();
 		Console.CancelKeyPress += (sender, e) =>
 		{
 			e.Cancel = true;
@@ -124,6 +124,7 @@ public class BeastApp : IAsyncDisposable
 		SessionState rootState = new SessionState();
 		_display.Attach(rootState.Model);
 		_display.SetSendAsync(text => _wsClient!.SendAsync(_activeSessionId + "|" + text, _cts!.Token));
+		_display.SetSendToAsync((sessionId, text) => _wsClient!.SendAsync(sessionId + "|" + text, _cts!.Token));
 		_display.SetRequestExit(RequestGracefulExit);
 		_display.SetFrameDrain(DrainFrameQueue);
 		_display.SetSessionSwitchCallback(SwitchActiveSession);
@@ -145,8 +146,8 @@ public class BeastApp : IAsyncDisposable
 		try
 		{
 			SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
-			_idleSoundFile = settings.Settings.IdleSoundFile;
-			_subagentSoundFile = settings.Settings.SubagentSoundFile;
+			_idleSoundFile           = settings.Settings.IdleSoundFile;
+			_subagentSoundFile       = settings.Settings.SubagentSoundFile;
 		}
 		catch (ConfigException)
 		{
@@ -161,7 +162,7 @@ public class BeastApp : IAsyncDisposable
 
 			_wsClient = await RetryConnectAsync($"ws://localhost:{hostPort}/", _agentContext, _log, _cts.Token);
 
-			_readCts = new CancellationTokenSource();
+			_readCts  = new CancellationTokenSource();
 			_readTask = ReadLoop(_wsClient, _readCts.Token);
 
 			await _display.RunAsync(_cts.Token);
@@ -234,7 +235,7 @@ public class BeastApp : IAsyncDisposable
 		if (_sessions.TryGetValue(sessionId, out SessionState? existing))
 			return existing;
 
-		SessionState state = new SessionState();
+		SessionState state   = new SessionState();
 		_sessions[sessionId] = state;
 
 		if (string.IsNullOrEmpty(_activeSessionId))
@@ -353,7 +354,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				if (content == "ready")
 				{
 					string readySessionId = sessionId;
-					_ = SendInitialMessagesAsync(readySessionId);
+					_                     = SendInitialMessagesAsync(readySessionId);
 				}
 				else if (content == "worktree-finished")
 				{
@@ -378,28 +379,28 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				try
 				{
 					using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(content);
-					System.Text.Json.JsonElement root = doc.RootElement;
-					string model = root.TryGetProperty("model", out System.Text.Json.JsonElement m) ? m.GetString() ?? "" : "";
-					string role = root.TryGetProperty("role", out System.Text.Json.JsonElement rl) ? rl.GetString() ?? "" : "";
-					int prompt = root.TryGetProperty("promptTokens", out System.Text.Json.JsonElement p) ? p.GetInt32() : 0;
-					int completion = root.TryGetProperty("completionTokens", out System.Text.Json.JsonElement c) ? c.GetInt32() : 0;
-					decimal cost = root.TryGetProperty("totalCost", out System.Text.Json.JsonElement tc) ? tc.GetDecimal() : 0m;
-					int maxContext = root.TryGetProperty("maxContext", out System.Text.Json.JsonElement mc) ? mc.GetInt32() : 0;
-					int contextTokens = root.TryGetProperty("contextTokens", out System.Text.Json.JsonElement ct) ? ct.GetInt32() : 0;
-					int cachedTokens = root.TryGetProperty("cachedTokens", out System.Text.Json.JsonElement ct2) ? ct2.GetInt32() : 0;
+					System.Text.Json.JsonElement root       = doc.RootElement;
+					string                       model      = root.TryGetProperty("model",  out System.Text.Json.JsonElement m) ? m.GetString() ?? "" : "";
+					string                       role       = root.TryGetProperty("role",  out System.Text.Json.JsonElement rl) ? rl.GetString() ?? "" : "";
+					int     prompt        = root.TryGetProperty("promptTokens",       out System.Text.Json.JsonElement p) ? p.GetInt32() : 0;
+					int     completion    = root.TryGetProperty("completionTokens",   out System.Text.Json.JsonElement c) ? c.GetInt32() : 0;
+					decimal cost          = root.TryGetProperty("totalCost",         out System.Text.Json.JsonElement tc) ? tc.GetDecimal() : 0m;
+					int     maxContext    = root.TryGetProperty("maxContext",        out System.Text.Json.JsonElement mc) ? mc.GetInt32() : 0;
+					int     contextTokens = root.TryGetProperty("contextTokens",     out System.Text.Json.JsonElement ct) ? ct.GetInt32() : 0;
+					int     cachedTokens  = root.TryGetProperty("cachedTokens",     out System.Text.Json.JsonElement ct2) ? ct2.GetInt32() : 0;
 
 					// Stats are session-scoped: store them on the session they belong to so switching
 					// sessions in the F10 overlay shows that session's own model/role/token counts.
-					string statsId = string.IsNullOrEmpty(sessionId) ? _activeSessionId : sessionId;
-					SessionState statsSession = EnsureSession(statsId);
-					statsSession.StatsModel = model;
-					statsSession.StatsRole = role;
-					statsSession.StatsPromptTokens = prompt;
+					string       statsId               = string.IsNullOrEmpty(sessionId) ? _activeSessionId : sessionId;
+					SessionState statsSession          = EnsureSession(statsId);
+					statsSession.StatsModel            = model;
+					statsSession.StatsRole             = role;
+					statsSession.StatsPromptTokens     = prompt;
 					statsSession.StatsCompletionTokens = completion;
-					statsSession.StatsTotalCost = cost;
-					statsSession.StatsMaxContext = maxContext;
-					statsSession.StatsContextTokens = contextTokens;
-					statsSession.StatsCachedTokens = cachedTokens;
+					statsSession.StatsTotalCost        = cost;
+					statsSession.StatsMaxContext       = maxContext;
+					statsSession.StatsContextTokens    = contextTokens;
+					statsSession.StatsCachedTokens     = cachedTokens;
 
 					if (string.Equals(statsId, _activeSessionId, StringComparison.Ordinal))
 						_display.SetStatsInfo(model, role, prompt, completion, cost, maxContext, contextTokens, cachedTokens);
@@ -429,7 +430,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				_display.OnStreamEnd();
 				_display.SetAgentBusy(false, 0);
 				SessionState reset = EnsureSession(sessionId);
-				reset.Status = SessionStatus.Ongoing;
+				reset.Status       = SessionStatus.Ongoing;
 				_display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0, 0);
 				return;
 
@@ -452,14 +453,14 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		// Session-scoped frames: route to the appropriate SessionState.
 		// Empty session ID means the frame came from the orchestrator (no specific session).
 		// For those, use or create the active session.
-		string effectiveId = string.IsNullOrEmpty(sessionId) ? _activeSessionId : sessionId;
+		string       effectiveId = string.IsNullOrEmpty(sessionId) ? _activeSessionId : sessionId;
 		SessionState session;
 
 		if (string.IsNullOrEmpty(effectiveId))
 		{
 			// First frame before any session is known — create a placeholder with no ID.
-			session = new SessionState();
-			_sessions[""] = session;
+			session          = new SessionState();
+			_sessions[""]    = session;
 			_activeSessionId = "";
 			_display.Attach(session.Model);
 		}
@@ -508,8 +509,8 @@ state.StatsContextTokens, state.StatsCachedTokens);
 			case FrameType.StreamStart:
 				FrameType startType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
 				session.StreamContent.Clear();
-				session.StreamIndex = session.NextIndex++;
-				session.StreamTagToSlot[content] = session.StreamIndex;
+				session.StreamIndex                    = session.NextIndex++;
+				session.StreamTagToSlot[content]       = session.StreamIndex;
 				session.SlotTypes[session.StreamIndex] = startType;
 				session.Model.Update(session.StreamIndex, startType, "");
 				if (isActive)
@@ -612,7 +613,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		try
 		{
 			AudioFileReader reader = new AudioFileReader(soundFile);
-			WaveOutEvent output = new WaveOutEvent();
+			WaveOutEvent    output = new WaveOutEvent();
 			output.Init(reader);
 			output.PlaybackStopped += (s, e) =>
 			{
@@ -651,7 +652,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				if (!await launcher.IsAliveAsync())
 				{
 					string containerLog = await launcher.GetLogsAsync(cancellationToken);
-					string body = string.IsNullOrWhiteSpace(containerLog) ? "(no output captured)" : containerLog.TrimEnd();
+					string body         = string.IsNullOrWhiteSpace(containerLog) ? "(no output captured)" : containerLog.TrimEnd();
 					throw new InvalidOperationException(
 						"Agent backend exited before its server started. Container log follows:\n" + body);
 				}

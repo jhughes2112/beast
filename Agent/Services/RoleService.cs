@@ -15,9 +15,10 @@ public class RoleService
 	private readonly string _workDirRolesPath;
 	private readonly string _homeDirRolesPath;
 
-	// The role set as configured, before the registry expands '*' into concrete model ids. Saving
-	// works from this so a wildcard survives an edit.
-	private Dictionary<string, Role> _rawRoles = new(StringComparer.OrdinalIgnoreCase);
+	// HOME-scope view only (defaults + home file), captured before the project layer merges in and
+	// before the registry expands '*'. Saving works from this: the merged set would absorb a
+	// repository's overrides into the home file, and the expanded set would bake in today's models.
+	private Dictionary<string, Role> _rawHomeRoles = new(StringComparer.OrdinalIgnoreCase);
 
 	public RoleService(string workDir)
 	{
@@ -48,12 +49,19 @@ public class RoleService
 		LoadRoles();
 	}
 
-	// Reload rollback support: the role set is published by reference, so the orchestrator
+	// Reload rollback support: role state is published by reference, so the orchestrator
 	// snapshots it before a /reload and restores it if a LATER stage of the reload fails —
 	// keeping "the previous config was kept" true across the whole reload, not per component.
-	public Dictionary<string, Role> SnapshotRoles() => Roles;
+	// The raw home-scope cache is part of that state: LoadRoles replaces it before the stages
+	// that can fail, and a /role save works from it — restoring only the published set would
+	// let a later save persist model lists from the very configuration the rollback rejected.
+	public (Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) SnapshotRoles() => (Roles, _rawHomeRoles);
 
-	public void RestoreRoles(Dictionary<string, Role> roles) => Roles = roles;
+	public void RestoreRoles((Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) snapshot)
+	{
+		Roles         = snapshot.Published;
+		_rawHomeRoles = snapshot.RawHome;
+	}
 
 	// Expands the '*' entry in role model lists to all enabled model IDs at that position (order
 	// preserved, duplicates skipped). Called by the registry once the model set is known. Each
@@ -126,83 +134,109 @@ public class RoleService
 		else
 			ApplyRolesFromFile(_homeDirRolesPath, fresh);
 
+		// Snapshot the HOME-scope view (defaults + home file) BEFORE the project layer merges in.
+		// Saving works from this: writing the merged set to the home file would promote a repo's
+		// project-specific prompts into every project's configuration. Pre-'*'-expansion too, so a
+		// wildcard survives an edit instead of baking in today's model list.
+		_rawHomeRoles = new Dictionary<string, Role>(fresh, StringComparer.OrdinalIgnoreCase);
+
 		// A project roles.json is an override layer on top: useful for a repo that genuinely needs
 		// its own prompts, and applied last so it wins.
 		if (File.Exists(_workDirRolesPath))
 			ApplyRolesFromFile(_workDirRolesPath, fresh);
-
-		// Keep the roles exactly as configured, BEFORE the registry expands any '*'. Saving must
-		// write these: writing the published set back would bake today's model list into every
-		// wildcard role and silently stop new models from ever joining it.
-		_rawRoles = new Dictionary<string, Role>(fresh, StringComparer.OrdinalIgnoreCase);
 
 		// Published as a single reference swap: a reader racing a reload sees the complete old set
 		// or the complete new one, never a half-filled dictionary mid-rebuild.
 		Roles = fresh;
 	}
 
-	// Rewrites one role's model order in roles.json and reloads. The order given is the effective
-	// one the user just arranged; when the role was configured with a '*' the marker is appended
-	// back so models added later still join the role automatically, at the end.
-	public void SaveRoleModelOrder(string roleName, List<string> modelIds)
+	// Rewrites one role's model order and reloads. The edit lands in the file that OWNS the role's
+	// effective definition: when the project file overrides the role, the order is written into
+	// that override (leaving its prompts/tools intact and the rest of the project file untouched);
+	// otherwise it goes to the user's home file. Only the Models list ever changes — /role edits
+	// order, nothing else. A configured '*' is re-appended so models added later still join.
+	// Returns false when neither file owns the role (a project-only role whose file failed to
+	// read or write) so the caller never reports a save that did not happen.
+	public bool SaveRoleModelOrder(string roleName, List<string> modelIds)
 	{
-		if (!_rawRoles.TryGetValue(roleName, out Role? raw))
-			return;
+		bool written = TryUpdateProjectRoleOrder(roleName, modelIds);
 
-		List<string> saved = new List<string>(modelIds);
-		if (raw.Models.Contains("*"))
-			saved.Add("*");
-
-		List<Role> all = new List<Role>();
-		foreach ((string name, Role role) in _rawRoles)
+		if (!written && _rawHomeRoles.TryGetValue(roleName, out Role? raw))
 		{
-			if (string.Equals(name, roleName, StringComparison.OrdinalIgnoreCase))
-				all.Add(new Role(role.Name, role.Description, role.Kind, saved, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt));
-			else
-				all.Add(role);
+			List<string> saved = new List<string>(modelIds);
+			if (raw.Models.Contains("*"))
+				saved.Add("*");
+
+			List<Role> all = new List<Role>();
+			foreach ((string name, Role role) in _rawHomeRoles)
+			{
+				if (string.Equals(name, roleName, StringComparison.OrdinalIgnoreCase))
+					all.Add(new Role(role.Name, role.Description, role.Kind, saved, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt));
+				else
+					all.Add(role);
+			}
+
+			written = WriteRolesFile(_homeDirRolesPath, all);
 		}
 
-		WriteRolesFile(_homeDirRolesPath, all);
-
-		// A copy of this role in the project file would override what was just saved and make the
-		// edit look like a no-op. Lift that one role out; anything else the project overrides is
-		// left exactly as it was.
-		RemoveRoleFromProjectFile(roleName);
-
-		LoadRoles();
+		if (written)
+			LoadRoles();
+		return written;
 	}
 
-	// Drops one role from the project roles.json, leaving the rest of the file intact. Best-effort:
-	// a project file that cannot be rewritten is not worth failing the save over — the home file is
-	// already correct, and the shadowing is visible the moment the editor reopens.
-	private void RemoveRoleFromProjectFile(string roleName)
+	// Applies the new order inside the project file's own override of the role, when one exists.
+	// Returns false when the project defines no such role (the home file owns it) or the file
+	// cannot be read — writing to home would then be wrong only in the unreadable-file case, and
+	// that file was already failing the whole load loudly.
+	private bool TryUpdateProjectRoleOrder(string roleName, List<string> modelIds)
 	{
-		if (!File.Exists(_workDirRolesPath))
-			return;
-
-		try
+		bool updated = false;
+		if (File.Exists(_workDirRolesPath))
 		{
-			string     json = File.ReadAllText(_workDirRolesPath);
-			RolesFile? file = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
-			if (file == null)
-				return;
+			try
+			{
+				string     json  = File.ReadAllText(_workDirRolesPath);
+				RolesFile? file  = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
+				bool       found = false;
+				if (file != null)
+				{
+					foreach (List<Role> block in new[] { file.Agents, file.Subagents })
+					{
+						for (int i = 0; i < block.Count; i++)
+						{
+							Role role = block[i];
+							if (!string.Equals(role.Name, roleName, StringComparison.OrdinalIgnoreCase))
+								continue;
 
-			int removed = file.Agents.RemoveAll(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
-			removed    += file.Subagents.RemoveAll(r => string.Equals(r.Name, roleName, StringComparison.OrdinalIgnoreCase));
-			if (removed == 0)
-				return;
+							List<string> saved = new List<string>(modelIds);
+							if (role.Models.Contains("*"))
+								saved.Add("*");
+							block[i] = new Role(role.Name, role.Description, role.Kind, saved, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
+							found    = true;
+						}
+					}
+				}
 
-			File.WriteAllText(_workDirRolesPath, JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile));
+				// updated flips only AFTER the write lands: a throw from WriteAllText must report
+				// failure, not a phantom save the file never received.
+				if (found)
+				{
+					File.WriteAllText(_workDirRolesPath, JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile));
+					updated = true;
+				}
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"[RoleService] Could not update '{roleName}' in the project roles.json: {ex.Message}");
+			}
 		}
-		catch (Exception ex)
-		{
-			Console.Error.WriteLine($"[RoleService] Could not remove '{roleName}' from the project roles.json: {ex.Message}");
-		}
+		return updated;
 	}
 
 	// Serializes the current role set into roles.json, splitting it into the Agents and Subagents blocks
-	// by kind. The kind itself is not written — the block a role sits in carries it.
-	private static void WriteRolesFile(string path, IReadOnlyList<Role> roles)
+	// by kind. The kind itself is not written — the block a role sits in carries it. Returns false when
+	// the write failed (logged here), so a save path never reports success for a file left unchanged.
+	private static bool WriteRolesFile(string path, IReadOnlyList<Role> roles)
 	{
 		RolesFile file = new RolesFile();
 		foreach (Role role in roles)
@@ -213,6 +247,7 @@ public class RoleService
 				file.Subagents.Add(role);
 		}
 
+		bool written = false;
 		try
 		{
 			string json = JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile);
@@ -222,11 +257,13 @@ public class RoleService
 				Directory.CreateDirectory(dir);
 
 			File.WriteAllText(path, json);
+			written = true;
 		}
 		catch (Exception ex)
 		{
 			Console.Error.WriteLine($"WARNING: Failed to write roles.json at {path}: {ex}");
 		}
+		return written;
 	}
 
 	// Loads roles.json and assigns each block's roles over the in-code defaults in the target

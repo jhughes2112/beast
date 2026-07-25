@@ -44,9 +44,9 @@ public static class ToolDispatch
 			// Over the caller's budget and unmeasurable: fold the rendered content into StdOut,
 			// clip it to the budget, and flag the clip so the model knows the output is partial.
 			const string notice = "\n[truncated to fit caller budget]";
-			int charBudget = maxOutputTokens * CharsPerToken;
-			int keep = Math.Max(0, charBudget - notice.Length);
-			string clipped = (content.Length > keep ? content.Substring(0, keep) : content) + notice;
+			int    charBudget = maxOutputTokens * CharsPerToken;
+			int    keep       = Math.Max(0, charBudget - notice.Length);
+			string clipped    = (content.Length > keep ? content.Substring(0, keep) : content) + notice;
 			return new ToolResult(raw.Id, clipped, string.Empty, raw.ExitCode, EstimateTokens(clipped));
 		}
 
@@ -96,10 +96,17 @@ public static class ToolDispatch
 			}
 			catch (OperationCanceledException) when (ct.IsCancellationRequested)
 			{
-				// A genuine user/parent cancel: record a cancelled result for this call and remember to
-				// propagate once every task is drained, so the dispatch loop's cancellation guard still fires.
+				// A genuine user/parent cancel: record a result for this call and remember to
+				// propagate once every task is drained, so the dispatch loop's cancellation guard still
+				// fires. The slot MUST be filled — an unanswered call is a malformed conversation the
+				// strict providers reject wholesale.
 				cancelled = true;
-				payload.ToolResults.Add(Error(toolCalls[i].Id, "Tool call was cancelled."));
+				payload.ToolResults.Add(Error(toolCalls[i].Id, "[interrupted by user]"));
+
+				// The underlying work may not have stopped — a subagent asked to do something long
+				// keeps going. Its eventual output cannot be observed HERE (this task is terminal;
+				// it will never transition to completed), so the orchestrator's completion callback
+				// delivers a late-finishing child's result to the parent session instead.
 			}
 			catch (Exception ex)
 			{
@@ -210,7 +217,7 @@ public static class ToolDispatch
 			}
 
 			if (matchedTool == null)
-				continue;  // genuinely unknown tool: left for dispatch to report as not-found
+				continue; // genuinely unknown tool: left for dispatch to report as not-found
 
 			// Pin the (possibly corrected) name so it is persisted, not re-derived on every dispatch.
 			toolCall.Name = matchedTool.Definition.Function.Name;
@@ -219,7 +226,7 @@ public static class ToolDispatch
 			if (argsObj == null || argError != null)
 			{
 				string reason = $"'{toolCall.Name}': {argError ?? "arguments could not be repaired to match the schema"}";
-				broken = broken.Length == 0 ? reason : broken + "; " + reason;
+				broken        = broken.Length == 0 ? reason : broken + "; " + reason;
 				continue;
 			}
 

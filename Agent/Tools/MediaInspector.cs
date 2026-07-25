@@ -20,14 +20,14 @@ public class MediaInspector
 	private const long MaxFileBytes = 16 * 1024 * 1024;
 
 	public async Task<ToolResult> InspectAsync(
-		string toolCallId,
-		string filePath,
-		string goal,
-		Role mediaRole,
-		LlmRegistry registry,
-		Session session,
-		ITransportServer transport,
-		int maxOutputTokens,
+		string            toolCallId,
+		string            filePath,
+		string            goal,
+		Role              mediaRole,
+		LlmRegistry       registry,
+		Session           session,
+		ITransportServer  transport,
+		int               maxOutputTokens,
 		CancellationToken ct)
 	{
 		if (string.IsNullOrWhiteSpace(filePath))
@@ -45,32 +45,34 @@ public class MediaInspector
 		if (fileBytes > MaxFileBytes)
 			return new ToolResult(toolCallId, string.Empty, $"Error: {filePath} is {fileBytes / (1024 * 1024)}MB; the limit is {MaxFileBytes / (1024 * 1024)}MB.", 1, 0);
 
-		List<LlmModel> capable = MediaKinds.CapableModels(registry, kind);
+		// Candidates come from the MediaReader role's own list, in its order — the user arranges
+		// that order in /role, and it beats any cheapest-first guess.
+		List<LlmModel> capable = MediaKinds.CapableModels(registry, kind, mediaRole.Models);
 		if (capable.Count == 0)
-			return new ToolResult(toolCallId, string.Empty, $"Error: no enabled model declares '{MediaKinds.Modality(kind)}' input. Enable one with /config (its modalities are discovered or set there).", 1, 0);
+			return new ToolResult(toolCallId, string.Empty, $"Error: no model in the MediaReader role declares '{MediaKinds.Modality(kind)}' input. Enable one with /config (its modalities are discovered or set there).", 1, 0);
 
 		return await InspectWithModelsAsync(toolCallId, filePath, goal, mediaRole, capable, registry, session, transport, maxOutputTokens, ct);
 	}
 
-	// Runs the file past the given candidate models, cheapest first, stopping at the first one that
+	// Runs the file past the given candidate models, in the caller's preference order, stopping at the first one that
 	// answers. Falling through matters because a declared modality is only a claim: a model that
 	// rejects the attachment at request time should cost the caller a retry on the next candidate,
 	// not the whole call. Shared with the drag-and-drop intake path.
 	public async Task<ToolResult> InspectWithModelsAsync(
-		string toolCallId,
-		string filePath,
-		string goal,
-		Role mediaRole,
-		List<LlmModel> candidates,
-		LlmRegistry registry,
-		Session session,
-		ITransportServer transport,
-		int maxOutputTokens,
+		string            toolCallId,
+		string            filePath,
+		string            goal,
+		Role              mediaRole,
+		List<LlmModel>    candidates,
+		LlmRegistry       registry,
+		Session           session,
+		ITransportServer  transport,
+		int               maxOutputTokens,
 		CancellationToken ct)
 	{
 		(MediaKind kind, string mimeType) = MediaKinds.Classify(filePath);
-		byte[] bytes = await File.ReadAllBytesAsync(filePath, ct);
-		string data = Convert.ToBase64String(bytes);
+		byte[] bytes                      = await File.ReadAllBytesAsync(filePath, ct);
+		string data                       = Convert.ToBase64String(bytes);
 
 		// The stage session runs silently: its answer is this tool's result and belongs in the tool
 		// block, in call order. Streaming it to the caller's transcript put a description on screen
@@ -108,7 +110,7 @@ public class MediaInspector
 			// recorded and the next-cheapest candidate gets a turn.
 			string detail = string.IsNullOrEmpty(result.ErrorMessage) ? result.Outcome.ToString() : result.ErrorMessage;
 			string reason = $"{service.Model.Config.Name}: {detail}";
-			failures = failures.Length == 0 ? reason : failures + "; " + reason;
+			failures      = failures.Length == 0 ? reason : failures + "; " + reason;
 		}
 
 		string summary = failures.Length == 0 ? "no capable model was available" : failures;

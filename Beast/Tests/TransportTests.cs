@@ -10,29 +10,30 @@ using System.Threading.Tasks;
 // No-op IDisplay for use in tests — suppresses all console output and side-effects.
 file sealed class NullDisplay : IDisplay
 {
-	public void Attach(ConversationModel model) { }
-	public void SetStatus(string text) { }
-	public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens) { }
-	public void SetCompletions(IReadOnlyList<string> completions) { }
-	public void OnStreamStart(int streamIndex, FrameType type) { }
-	public void OnStreamChunk(string chunk) { }
-	public void OnStreamEnd() { }
-	public void SetAgentBusy(bool busy, long startTick) { }
-	public void SetSendAsync(Func<string, Task> sendAsync) { }
-	public void SetRequestExit(Action requestExit) { }
-	public void SetFrameDrain(Action drain) { }
-	public void SetSessionCounts(int active, int total) { }
-	public void SetSessionList(IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
-	public void SetSessionSwitchCallback(Action<string> switchTo) { }
-	public void SetSessionDeleteCallback(Action<string> deleteSession) { }
-	public void ClearPendingGhost(string sessionId) { }
-	public void SetPendingGhost(string sessionId, string[] lines) { }
-	public void OnConfigFrame(string json) { }
-	public void SetAttachmentRoot(string root) { }
-	public void OnConfigError(string text) { }
-	public bool IsAutoTrackSuppressed() => false;
-	public Task RunAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-	public void RestoreTerminal() { }
+	public void Attach                  (ConversationModel model) { }
+	public void SetStatus               (string text)             { }
+	public void SetStatsInfo            (string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens) { }
+	public void SetCompletions          (IReadOnlyList<string> completions) { }
+	public void OnStreamStart           (int streamIndex, FrameType type)   { }
+	public void OnStreamChunk           (string chunk)                      { }
+	public void OnStreamEnd             ()                                  { }
+	public void SetAgentBusy            (  bool busy,  long startTick)      { }
+	public void SetSendAsync            (Func<string, Task> sendAsync)      { }
+	public void SetRequestExit          (Action requestExit)                { }
+	public void SetFrameDrain           (Action drain)                      { }
+	public void SetSessionCounts        (int active, int total)             { }
+	public void SetSessionList          (IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
+	public void SetSessionSwitchCallback(Action<string> switchTo)                                     { }
+	public void SetSessionDeleteCallback(Action<string> deleteSession)                                { }
+	public void ClearPendingGhost       (string sessionId)                       { }
+	public void SetPendingGhost         (string sessionId, string[] lines)       { }
+	public void OnConfigFrame           (string json)                            { }
+	public void SetAttachmentRoot       (string root)                            { }
+	public void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }
+	public void OnConfigError           (string text)                            { }
+	public bool IsAutoTrackSuppressed   () => false;
+	public Task RunAsync                (CancellationToken cancellationToken) => Task.CompletedTask;
+	public void RestoreTerminal         () { }
 }
 
 
@@ -89,15 +90,15 @@ public static class TransportTests
 	{
 		return (ValueTuple<FrameType, string, string>)Reflect.Static(typeof(BeastApp), "ParseFrame",
 			new System.Type[] { typeof(string) },
-			new object[] { wire })!;
+			new object[]      { wire })!;
 	}
 
 	private static void TestParseFrameSingle(TestContext ctx)
 	{
 		(FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "hello"));
-		ctx.AssertEqual(FrameType.Output, type, "ParseFrame: output type");
-		ctx.AssertEqual("", sessionId, "ParseFrame: empty session ID for global frame");
-		ctx.AssertEqual("hello", content, "ParseFrame: output content");
+		ctx.AssertEqual(FrameType.Output,      type, "ParseFrame: output type");
+		ctx.AssertEqual(              "", sessionId, "ParseFrame: empty session ID for global frame");
+		ctx.AssertEqual(         "hello",   content, "ParseFrame: output content");
 	}
 
 	private static void TestParseFrameAllTypes(TestContext ctx)
@@ -119,27 +120,27 @@ public static class TransportTests
 		foreach (FrameType t in types)
 		{
 			(FrameType parsedType, string parsedSessionId, string parsedContent) = ParseFrame(MakeWireFrame(t, "content"));
-			ctx.AssertEqual(t, parsedType, $"ParseFrame: type {t} roundtrips");
-			ctx.AssertEqual("", parsedSessionId, $"ParseFrame: empty session ID for {t}");
-			ctx.AssertEqual("content", parsedContent, $"ParseFrame: content for type {t}");
+			ctx.AssertEqual(        t,      parsedType, $"ParseFrame: type {t} roundtrips");
+			ctx.AssertEqual(       "", parsedSessionId, $"ParseFrame: empty session ID for {t}");
+			ctx.AssertEqual("content",   parsedContent, $"ParseFrame: content for type {t}");
 		}
 	}
 
 	private static void TestParseFrameWithSessionId(TestContext ctx)
 	{
 		(FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrameWithSession(FrameType.Output, "abc123", "hello"));
-		ctx.AssertEqual(FrameType.Output, type, "ParseFrame+session: output type");
-		ctx.AssertEqual("abc123", sessionId, "ParseFrame+session: session ID preserved");
-		ctx.AssertEqual("hello", content, "ParseFrame+session: content preserved");
+		ctx.AssertEqual(FrameType.Output,      type, "ParseFrame+session: output type");
+		ctx.AssertEqual(        "abc123", sessionId, "ParseFrame+session: session ID preserved");
+		ctx.AssertEqual(         "hello",   content, "ParseFrame+session: content preserved");
 	}
 
 	private static void TestParseFrameUnicode(TestContext ctx)
 	{
 		string emoji = "Hello 🌍 éàć";
 		(FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, emoji));
-		ctx.AssertEqual(FrameType.Output, type, "ParseFrame: unicode type");
-		ctx.AssertEqual("", sessionId, "ParseFrame: empty session ID for unicode frame");
-		ctx.AssertEqual(emoji, content, "ParseFrame: unicode content preserved");
+		ctx.AssertEqual(FrameType.Output,      type, "ParseFrame: unicode type");
+		ctx.AssertEqual(              "", sessionId, "ParseFrame: empty session ID for unicode frame");
+		ctx.AssertEqual(           emoji,   content, "ParseFrame: unicode content preserved");
 	}
 
 	private static void TestParseFrameEmpty(TestContext ctx)
@@ -147,54 +148,54 @@ public static class TransportTests
 		(FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, ""));
 		ctx.AssertEqual(FrameType.Output, type, "ParseFrame: empty type");
 		ctx.AssertEqual("", sessionId, "ParseFrame: empty session ID for empty content frame");
-		ctx.AssertEqual("", content, "ParseFrame: empty content preserved");
+		ctx.AssertEqual("",   content, "ParseFrame: empty content preserved");
 	}
 
 	private static void TestParseFramePipeInContent(TestContext ctx)
 	{
 		// Content that itself contains pipes should not be split further after the session ID segment.
 		(FrameType type, string sessionId, string content) = ParseFrame(MakeWireFrame(FrameType.Output, "a|b|c"));
-		ctx.AssertEqual(FrameType.Output, type, "ParseFrame: pipe-in-content type");
-		ctx.AssertEqual("", sessionId, "ParseFrame: pipe-in-content empty session ID");
-		ctx.AssertEqual("a|b|c", content, "ParseFrame: pipe-in-content preserved");
+		ctx.AssertEqual(FrameType.Output,      type, "ParseFrame: pipe-in-content type");
+		ctx.AssertEqual(              "", sessionId, "ParseFrame: pipe-in-content empty session ID");
+		ctx.AssertEqual(         "a|b|c",   content, "ParseFrame: pipe-in-content preserved");
 	}
 
 	private static void TestParseFrameBackwardCompat(TestContext ctx)
 	{
 		// Old single-pipe format (from an older agent) is handled gracefully.
 		(FrameType type, string sessionId, string content) = ParseFrame("0|hello");
-		ctx.AssertEqual(FrameType.Output, type, "BackwardCompat: output type");
-		ctx.AssertEqual("", sessionId, "BackwardCompat: empty session ID");
-		ctx.AssertEqual("hello", content, "BackwardCompat: content preserved");
+		ctx.AssertEqual(FrameType.Output,      type, "BackwardCompat: output type");
+		ctx.AssertEqual(              "", sessionId, "BackwardCompat: empty session ID");
+		ctx.AssertEqual(         "hello",   content, "BackwardCompat: content preserved");
 	}
 
 	// ---- ConversationModel (Beast-side) ----
 
 	private static void TestConversationModelUpdate(TestContext ctx)
 	{
-		ConversationModel model = new ConversationModel();
-		int notified = 0;
-		model.MessageUpdated += (_) => notified++;
+		ConversationModel model    = new ConversationModel();
+		int               notified = 0;
+		model.MessageUpdated      += (_) => notified++;
 
 		model.Update(0, FrameType.Output, "first");
-		ctx.AssertEqual(1, model.Messages.Count, "ConversationModel: first message added");
+		ctx.AssertEqual(      1,      model.Messages.Count, "ConversationModel: first message added");
 		ctx.AssertEqual("first", model.Messages[0].Content, "ConversationModel: first content");
 		ctx.Assert(notified > 0, "ConversationModel: update fires event");
 
 		model.Update(0, FrameType.Output, "updated");
-		ctx.AssertEqual(1, model.Messages.Count, "ConversationModel: no new slot on same index");
+		ctx.AssertEqual(        1,      model.Messages.Count, "ConversationModel: no new slot on same index");
 		ctx.AssertEqual("updated", model.Messages[0].Content, "ConversationModel: content updated in place");
 
 		// Adding at index 2 creates a gap — slots 0,1,2 exist.
 		model.Update(2, FrameType.Error, "gap");
-		ctx.AssertEqual(3, model.Messages.Count, "ConversationModel: gap creates slots");
+		ctx.AssertEqual(              3,   model.Messages.Count, "ConversationModel: gap creates slots");
 		ctx.AssertEqual(FrameType.Error, model.Messages[2].Type, "ConversationModel: gap slot has correct type");
 	}
 
 	private static void TestConversationModelCollapseMode(TestContext ctx)
 	{
 		ConversationModel model = new ConversationModel();
-		model.Mode = CollapseMode.Verbose;
+		model.Mode              = CollapseMode.Verbose;
 
 		model.Update(0, FrameType.Tool, "tool output");
 		ctx.Assert(!model.Messages[0].Collapsed, "ConversationModel: verbose mode not collapsed");
@@ -229,8 +230,8 @@ public static class TransportTests
 		object? sessions = Reflect.GetField(app, "_sessions");
 		if (sessions == null)
 			return null;
-		IDictionary dict = (IDictionary)sessions;
-		object? state = dict[sessionId];
+		IDictionary dict  = (IDictionary)sessions;
+		object?     state = dict[sessionId];
 		if (state == null)
 			return null;
 		PropertyInfo? prop = state.GetType().GetProperty("Model");
@@ -255,7 +256,7 @@ public static class TransportTests
 		ProcessFrame(app, FrameType.Output, SID, "Hello!");
 		ConversationModel? model = GetSessionModel(app, SID);
 		ctx.Assert(model != null, "BeastApp: Output frame creates session model");
-		ctx.AssertEqual(1, model!.Messages.Count, "BeastApp: Output frame adds message");
+		ctx.AssertEqual(       1,     model!.Messages.Count, "BeastApp: Output frame adds message");
 		ctx.AssertEqual("Hello!", model.Messages[0].Content, "BeastApp: Output content");
 
 		// Streaming: start → chunk → chunk → end should accumulate in one slot.

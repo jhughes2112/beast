@@ -101,14 +101,15 @@ public class DisplayScreen : IDisplay
 
 	// Collapse mode applied to each attached model; starts at the launch mode and follows Ctrl+O
 	// cycling so session switches don't reset the user's chosen verbosity.
-	private CollapseMode             _currentMode;
-	private ConversationModel?       _model;
-	private Func<string, Task>?      _sendAsync;
-	private Action?                  _requestExit;
-	private CancellationTokenSource? _runCts;
-	private Action?                  _frameDrain;
-	private Action<string>?          _sessionSwitchCallback;
-	private Action<string>?          _sessionDeleteCallback;
+	private CollapseMode                _currentMode;
+	private ConversationModel?          _model;
+	private Func<string, Task>?         _sendAsync;
+	private Func<string, string, Task>? _sendToAsync;
+	private Action?                     _requestExit;
+	private CancellationTokenSource?    _runCts;
+	private Action?                     _frameDrain;
+	private Action<string>?             _sessionSwitchCallback;
+	private Action<string>?             _sessionDeleteCallback;
 
 	// Session tree overlay state.
 	private bool _sessionTreeOpen = false;
@@ -121,7 +122,11 @@ public class DisplayScreen : IDisplay
 
 	// Host path of the folder bound to /workspace: dropped files are staged inside it so the agent
 	// can read them and so they die with the worktree. Empty until the launcher supplies it.
-	private          string                   _attachmentRoot      = string.Empty;
+	private string _attachmentRoot = string.Empty;
+
+	// Serializes submissions so an /attach and the text it belongs to always reach the agent as an
+	// unbroken pair.
+	private readonly SemaphoreSlim            _sendGate            = new SemaphoreSlim(1, 1);
 	private          int                      _sessionTreeSelected = 0;
 	private          int                      _sessionTreeScroll   = 0;
 	private          int                      _sessionActive       = 0;
@@ -360,6 +365,9 @@ public class DisplayScreen : IDisplay
 	}
 
 	public void SetSendAsync(Func<string, Task> sendAsync) { _sendAsync = sendAsync; }
+
+	// Session-pinned send, used by multi-part submissions so every part reaches the same session.
+	public void SetSendToAsync(Func<string, string, Task> sendToAsync) { _sendToAsync = sendToAsync; }
 
 	// The host folder bound to /workspace, so dropped files can be staged where the agent sees them.
 	public void SetAttachmentRoot(string root) { _attachmentRoot = root; }
@@ -2184,16 +2192,39 @@ public class DisplayScreen : IDisplay
 	// lands before the text it belongs to.
 	private async Task SendWithAttachmentsAsync(string text)
 	{
-		List<string> paths = InputLayer.ExtractPathMarkers(text);
-		foreach (string path in paths)
+		// The target session is captured ONCE, at submit time — BEFORE the gate wait, which is the
+		// method's first await and therefore still runs synchronously on the submitting keystroke.
+		// The plain send delegate resolves the active session per call, and this method suspends
+		// both at the gate (behind an earlier submission) and between the /attach lines and the
+		// text — a session switch (manual F10, or the auto-follow) during either wait would land
+		// the parts on the newly active session while the pending ghost was already recorded
+		// under the one the user actually submitted to.
+		string target;
+		lock (_consoleLock)
+			target = _sessionActiveId;
+
+		// Serialized: each submission is fired and forgotten, so two in quick succession would
+		// otherwise interleave on the wire — /attach(A), /attach(B), text(B), text(A) — and the
+		// agent, which pairs attachments with the next text line, would hang A's image onto B's
+		// message and leave A's with none. The whole announce-then-send sequence is one unit.
+		await _sendGate.WaitAsync();
+		try
 		{
-			string staged = StageAttachment(path);
-			if (staged.Length > 0)
-				await SendAsync($"/attach {staged}\x01{path}");
-			else
-				SetStatus($"Could not attach {path}");
+			List<string> paths = InputLayer.ExtractPathMarkers(text);
+			foreach (string path in paths)
+			{
+				string staged = StageAttachment(path);
+				if (staged.Length > 0)
+					await SendToAsync(target, $"/attach {staged}\x01{path}");
+				else
+					SetStatus($"Could not attach {path}");
+			}
+			await SendToAsync(target, text);
 		}
-		await SendAsync(text);
+		finally
+		{
+			_sendGate.Release();
+		}
 	}
 
 	// Builds path markers for anything non-textual on the clipboard: files copied in Explorer, or
@@ -2284,6 +2315,13 @@ public class DisplayScreen : IDisplay
 
 	private async Task SendAsync(string text)
 	{
+		await SendToAsync(null, text);
+	}
+
+	// targetSessionId pins the destination for a multi-part submission; null routes to whatever
+	// session is active when the line actually goes out (the ordinary single-line case).
+	private async Task SendToAsync(string? targetSessionId, string text)
+	{
 		if (text.StartsWith("/", StringComparison.Ordinal))
 		{
 			string trimmed  = text.Substring(1).Trim();
@@ -2314,7 +2352,7 @@ public class DisplayScreen : IDisplay
 
 		}
 
-		if (_sendAsync == null)
+		if (_sendToAsync == null && _sendAsync == null)
 		{
 			SetStatus("[not connected]");
 			return;
@@ -2322,7 +2360,10 @@ public class DisplayScreen : IDisplay
 
 		try
 		{
-			await _sendAsync(text);
+			if (targetSessionId != null && _sendToAsync != null)
+				await _sendToAsync(targetSessionId, text);
+			else
+				await _sendAsync!(text);
 		}
 		catch (Exception ex)
 		{
