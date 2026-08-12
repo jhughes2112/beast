@@ -11,9 +11,9 @@ static class ProtocolHelpers
 	// MaxResponseContentBufferSize caps buffered body size to guard against unbounded malformed responses.
 	private static readonly HttpClient SharedClient = new HttpClient
 	{
-		Timeout = TimeSpan.FromMinutes(5),
-		MaxResponseContentBufferSize = 2 * 1024 * 1024  // 2 MB
-    };
+		Timeout                      = TimeSpan.FromMinutes(5),
+		MaxResponseContentBufferSize = 2 * 1024 * 1024 // 2 MB
+	};
 
 	public static HttpClient GetClient()
 	{
@@ -132,21 +132,9 @@ static class ProtocolHelpers
 	private static int EpochToSecondsFromNow(long epochValue)
 	{
 		long epochSeconds = epochValue > 2_000_000_000 ? epochValue / 1000 : epochValue;
-		long nowSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-		long delta = epochSeconds - nowSeconds + 1;
+		long nowSeconds   = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+		long delta        = epochSeconds - nowSeconds + 1;
 		return delta > 0 ? (int)delta : 0;
-	}
-
-	// The Responses API requires call_id values to start with "fc_". Canonical state may carry
-	// foreign ids (e.g. OpenAI "call_...") so normalize before sending. Applied symmetrically
-	// to function_call id/call_id and function_call_output call_id so pairs stay linked.
-	public static string NormalizeToolCallId(string id)
-	{
-		if (string.IsNullOrEmpty(id))
-			return id;
-		if (id.StartsWith("fc_", StringComparison.Ordinal))
-			return id;
-		return $"fc_{id}";
 	}
 
 	// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
@@ -211,11 +199,11 @@ static class ProtocolHelpers
 	}
 
 	// Logs and returns a Failed result for permanent client errors (4xx excluding retryable).
-	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string 
+	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string
 modelId)
 	{
 		string failureType = (statusCode == 401 || statusCode == 403) ? "AuthFailure" : "ClientError";
-		string message = string.IsNullOrEmpty(responseBody)
+		string message     = string.IsNullOrEmpty(responseBody)
 			? $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}"
 			: responseBody;
 		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, message, responseBody, null);
@@ -223,11 +211,11 @@ modelId)
 	}
 
 	// Logs and returns a Transient result for server errors or retryable 4xx (408/425).
-	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, 
+	public static ProtocolResult TransientFailure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint,
 string modelId, HttpResponseMessage response)
 	{
 		string failureType = statusCode >= 500 ? "ServerError" : "Transient";
-		string message = string.IsNullOrEmpty(responseBody)
+		string message     = string.IsNullOrEmpty(responseBody)
 			? $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}"
 			: responseBody;
 		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, message, responseBody, null);

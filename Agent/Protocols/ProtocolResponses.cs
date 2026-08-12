@@ -39,6 +39,11 @@ public class ProtocolResponses
 	// Incremental input items accumulated since the last successful send via IProtocolListener callbacks.
 	// Used for chaining mode after _rehydratedInput is consumed.
 	private JsonArray _deltaInput;
+	// Set when a response commits while chaining is active: the assistant turn about to be fanned back
+	// in through OnAssistantTurn is the one the server just produced, so it already lives in the
+	// server-side thread. Cleared by that fan-out (or by Rehydrate) so a turn arriving any other way —
+	// an interrupted turn, a replay, a turn from a response that carried no id — is still recorded.
+	private bool _assistantTurnOnServer;
 
 	public ProtocolResponses()
 	{
@@ -48,7 +53,8 @@ public class ProtocolResponses
 	// Clears native chaining state so the next turn replays the full canonical history once.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
-		_previousResponseId = null;
+		_previousResponseId    = null;
+		_assistantTurnOnServer = false;
 		_deltaInput.Clear();
 
 		JsonArray input = new JsonArray();
@@ -69,21 +75,14 @@ public class ProtocolResponses
 
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
-					string     id     = ProtocolHelpers.NormalizeToolCallId(tc.Id);
-					JsonObject item   = new JsonObject();
-					item["type"]      = "function_call";
-					item["id"]        = id;
-					item["call_id"]   = id;
-					item["name"]      = tc.Name;
-					item["arguments"] = tc.ArgumentsJson;
-					input.Add((JsonNode)item);
+					input.Add((JsonNode)BuildFunctionCallItem(tc));
 				}
 			}
 			else if (msg is ToolResultMessage tr)
 			{
 				JsonObject item = new JsonObject();
 				item["type"]    = "function_call_output";
-				item["call_id"] = ProtocolHelpers.NormalizeToolCallId(tr.ToolCallId);
+				item["call_id"] = tr.ToolCallId;
 				item["output"]  = tr.Content;
 				input.Add((JsonNode)item);
 			}
@@ -134,6 +133,15 @@ public class ProtocolResponses
 
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
+		// When chaining, the server already holds this turn under previous_response_id. Echoing it back
+		// duplicates the context, and the echoed function_call is a second, unanswered copy of a call the
+		// server is still tracking — which it rejects with "No tool output found for function call ...".
+		if (_assistantTurnOnServer)
+		{
+			_assistantTurnOnServer = false;
+			return;
+		}
+
 		if (!string.IsNullOrEmpty(text))
 		{
 			_deltaInput.Add((JsonNode)BuildMessageItem("assistant", "output_text", text));
@@ -141,22 +149,28 @@ public class ProtocolResponses
 
 		foreach (SemanticToolCall tc in toolCalls)
 		{
-			string     normalizedId = ProtocolHelpers.NormalizeToolCallId(tc.Id);
-			JsonObject item         = new JsonObject();
-			item["type"]            = "function_call";
-			item["id"]              = normalizedId;
-			item["call_id"]         = normalizedId;
-			item["name"]            = tc.Name;
-			item["arguments"]       = tc.ArgumentsJson;
-			_deltaInput.Add((JsonNode)item);
+			_deltaInput.Add((JsonNode)BuildFunctionCallItem(tc));
 		}
+	}
+
+	// An input-side function_call item. The "id" field is deliberately omitted: it names a server-owned
+	// output item and only ever matches when the server minted it, so sending a synthesized one is at
+	// best noise. Pairing runs on call_id, which is replayed exactly as the provider issued it.
+	private static JsonObject BuildFunctionCallItem(SemanticToolCall tc)
+	{
+		JsonObject item   = new JsonObject();
+		item["type"]      = "function_call";
+		item["call_id"]   = tc.Id;
+		item["name"]      = tc.Name;
+		item["arguments"] = tc.ArgumentsJson;
+		return item;
 	}
 
 	public void OnToolResult(ToolResult result)
 	{
 		JsonObject item = new JsonObject();
 		item["type"]    = "function_call_output";
-		item["call_id"] = ProtocolHelpers.NormalizeToolCallId(result.Id);
+		item["call_id"] = result.Id;
 		string output   = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
 		{
@@ -641,6 +655,11 @@ public class ProtocolResponses
 		_previousResponseId = responseRoot["id"]?.GetValue<string>();
 		_rehydratedInput    = null;
 		_deltaInput.Clear();
+
+		// With an id to chain from, this turn is already in the server-side thread, so the fan-out that
+		// follows must not append it to the next delta. Without one the next turn resends the delta on
+		// its own, and the turn has to be in it.
+		_assistantTurnOnServer = _previousResponseId != null;
 
 		// The Responses API reports output clipping via incomplete_details rather than a finish
 		// reason; normalize it to "length" so callers detect cut-off replies uniformly.
