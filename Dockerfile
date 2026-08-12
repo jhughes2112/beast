@@ -89,33 +89,49 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Headless browsers — Playwright-managed Chromium + Firefox so the agent can render pages,
-# screenshot them, and run end-to-end checks against its own work. `--with-deps` apt-installs
-# the shared libraries and fonts the browsers need. Browsers go to a fixed system-wide path
-# (not root's home) so anything that speaks Playwright — the global node package here, or a
-# same-version python install in a project venv — finds them without re-downloading. The
-# global CLI also gives one-shot commands: `playwright screenshot <url> <file>`,
-# `playwright pdf`, `playwright screenshot --browser firefox ...`. NODE_PATH lets ad-hoc
-# `node -e "require('playwright')..."` scripts resolve the global package from any cwd.
-# WebKit is deliberately skipped: huge dependency footprint, and Chromium/Firefox cover the
-# verification use case.
+# Headless browser for rendering/screenshotting the agent's own work. Only chrome-headless-shell:
+# it's what Playwright picks by default for headless chromium anyway. Full Chromium (389MB) and
+# Firefox (302MB) omitted — they buy only headed mode and cross-engine checks. So headless=False
+# and channel="chromium" have no binary. Fixed browser path so python playwright shares these.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
     NODE_PATH=/usr/lib/node_modules
 RUN npm install -g playwright@1.62.1 \
-    && playwright install --with-deps chromium firefox \
+    && playwright install --with-deps chromium-headless-shell \
     && rm -rf /var/lib/apt/lists/*
 
-# Plain `chromium` command for script-free checks (`chromium --dump-dom <url>`,
-# `chromium --screenshot=out.png <url>`). Resolves the Playwright-installed binary at run time
-# so it survives version bumps. Bakes in headless plus the two flags containers need: the
-# sandbox refuses to start as root, and Docker's default 64MB /dev/shm crashes Chromium on
-# real pages (Playwright-driven launches already pass both by default). --log-level=3 mutes
-# ~25 lines of harmless dbus ERROR spam per run that would otherwise waste output tokens;
-# failed page loads still show their cause because the dumped error-page DOM names the net error.
-RUN printf '%s\n' '#!/bin/sh' \
-      'exec "$(ls -d /opt/ms-playwright/chromium-*/chrome-linux64/chrome | head -n1)" --headless --no-sandbox --disable-dev-shm-usage --log-level=3 "$@"' \
+# Plain `chromium` for script-free checks: --dump-dom, --screenshot=out.png, --print-to-pdf.
+# --no-sandbox (won't start as root) and --disable-dev-shm-usage (64MB /dev/shm crashes it).
+# The grep drops ~6 lines of dbus/GPU/bluetooth noise this binary emits unconditionally and that
+# --log-level/--disable-logging don't suppress; they say "ERROR:" and read as a failed check.
+# Other stderr passes through. fd 3 keeps --dump-dom off the filter; PIPESTATUS keeps chrome's code.
+RUN printf '%s\n' '#!/bin/bash' \
+      'BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | head -n1)' \
+      '{ "$BIN" --no-sandbox --disable-dev-shm-usage "$@" 2>&1 1>&3 | grep -vE "dbus/bus\.cc|dbus/object_proxy\.cc|vaapi_wrapper\.cc|sandbox_linux\.cc|bluez_dbus_manager\.cc" >&2; } 3>&1' \
+      'exit ${PIPESTATUS[0]}' \
       > /usr/local/bin/chromium \
-    && chmod +x /usr/local/bin/chromium
+    && chmod +x /usr/local/bin/chromium \
+    # Raw binary at a stable path for puppeteer, which passes its own flags.
+    && ln -s "$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | head -n1)" /opt/ms-playwright/chrome
+
+# Puppeteer, pointed at the browser above instead of downloading its own Chrome (~170MB).
+# A default puppeteer.launch() drives the headless shell fine.
+ENV PUPPETEER_SKIP_DOWNLOAD=1 \
+    PUPPETEER_EXECUTABLE_PATH=/opt/ms-playwright/chrome
+RUN npm install -g puppeteer@25.6.0
+
+# Python packages agents would otherwise pip-install on nearly every task. Ubuntu 24.04 marks its
+# system Python externally managed (PEP 668), hence --break-system-packages. playwright stays on the
+# same 1.62 line as the node package so it reuses the browser above instead of downloading its own.
+RUN pip3 install --break-system-packages --no-cache-dir \
+        requests httpx beautifulsoup4 lxml html5lib \
+        pillow \
+        numpy pandas matplotlib \
+        pyyaml python-dateutil jsonschema tabulate \
+        pytest ruff \
+        playwright==1.62.0
+
+# Headless matplotlib; otherwise plotting scripts die on "no display" before savefig().
+ENV MPLBACKEND=Agg
 
 # Rust (stable toolchain) — installs rustup + cargo into /usr/local/cargo so all users
 # can invoke rustc/cargo without sourcing a per-user profile.
@@ -150,10 +166,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # `find -exec /bin/sh`, `awk 'BEGIN{system(...)}'`, `xargs /bin/sh` all bypass the whole restriction. Bash
 # builtins (echo, pwd, printf, test, read, ...) still work; only external command resolution is narrowed.
 # Names not present on the image are skipped, so the list can name optional tools harmlessly.
-# `chromium` (the headless wrapper above) is the one deliberate exception to strict read-only:
-# it fetches network content and writes files, but only to the explicit --screenshot/--print-to-pdf
-# output paths, and it can't spawn a shell — that's the verification affordance, not an escape hatch.
-# Its wrapper's internal `ls`/`head` also resolve from this directory, so it works under the narrowed PATH.
+# `chromium` is the deliberate exception: it fetches and writes, but only to explicit --screenshot/
+# --print-to-pdf paths, and can't spawn a shell. Its wrapper needs ls/head/grep from this list.
 # Network diagnostics are observe-only: ping/traceroute/dig/nslookup/host/ss/netstat answer "can I
 # reach it / what resolves / what's listening" but can't reconfigure anything. `ip` and `ifconfig`
 # stay out (their argument forms mutate interfaces/routes when root), as does `nc` (an arbitrary
