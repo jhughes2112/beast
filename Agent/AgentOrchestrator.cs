@@ -1011,6 +1011,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 							Name       = $"{entry.Id} (not in catalog)",
 							Configured = true,
 							Enabled    = entry.Enabled,
+							Missing    = true,
 							Override   = entry
 						});
 					}
@@ -1040,7 +1041,49 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		if (payload != null && !string.IsNullOrWhiteSpace(payload.BaseUrl))
 		{
+			// Enablement diff BEFORE the save: which ids this apply turns off (or drops with the
+			// endpoint) and which it newly enables. The role orderings are updated to match — a
+			// disabled model is gone from every role, a just-enabled one lands at the top. Removal
+			// candidates are everything previously CONFIGURED, not just previously enabled, so
+			// forgetting an already-disabled leftover still sweeps its id out of the roles.
+			AutoProviderConfig? before               = FindAutoEndpoint(payload.BaseUrl);
+			List<string>        previouslyConfigured = new List<string>();
+			List<string>        previouslyEnabled    = new List<string>();
+			if (before != null)
+			{
+				foreach (AutoModelConfig model in before.Models)
+				{
+					previouslyConfigured.Add(model.Id);
+					if (model.Enabled)
+						previouslyEnabled.Add(model.Id);
+				}
+			}
+			List<string> nowEnabled = new List<string>();
+			foreach (AutoModelConfig model in payload.Models)
+			{
+				if (model.Enabled)
+					nowEnabled.Add(model.Id);
+			}
+
 			_settings.SaveAutoEndpoint(payload.BaseUrl, payload.ApiKey, payload.Models);
+
+			List<string> added = new List<string>();
+			foreach (string id in nowEnabled)
+			{
+				if (!ContainsIgnoreCase(previouslyEnabled, id))
+					added.Add(id);
+			}
+			// A dropped id stays in the roles when ANOTHER source (a second endpoint, a manual
+			// provider) still serves it enabled — checked against the just-saved settings.
+			List<string> removed = new List<string>();
+			foreach (string id in previouslyConfigured)
+			{
+				if (!ContainsIgnoreCase(nowEnabled, id) && !ModelEnabledAnywhere(id))
+					removed.Add(id);
+			}
+			if (added.Count > 0 || removed.Count > 0)
+				_roleService.ApplyModelEnablement(added, removed);
+
 			bool reloaded = await ReloadConfigurationAsync(sessionId, ct);
 			_transport.Config(sessionId, reloaded ? "{\"kind\":\"applied\"}" : "{\"kind\":\"apply-failed\"}");
 			if (reloaded)
@@ -1069,6 +1112,39 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		UriBuilder builder = new UriBuilder(uri) { Host = replacement };
 		return builder.Uri.ToString().TrimEnd('/');
+	}
+
+	private static bool ContainsIgnoreCase(List<string> ids, string id)
+	{
+		foreach (string candidate in ids)
+		{
+			if (string.Equals(candidate, id, StringComparison.OrdinalIgnoreCase))
+				return true;
+		}
+		return false;
+	}
+
+	// True when the id is still enabled by any configured source — another auto endpoint or a
+	// manual provider — in which case it keeps its place in the role orderings.
+	private bool ModelEnabledAnywhere(string id)
+	{
+		foreach (AutoProviderConfig auto in _settings.Settings.Auto)
+		{
+			foreach (AutoModelConfig model in auto.Models)
+			{
+				if (model.Enabled && string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+					return true;
+			}
+		}
+		foreach (ProviderConfig provider in _settings.Settings.Providers)
+		{
+			foreach (ModelConfig model in provider.Models)
+			{
+				if (model.Enabled && string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+					return true;
+			}
+		}
+		return false;
 	}
 
 	private AutoProviderConfig? FindAutoEndpoint(string baseUrl)

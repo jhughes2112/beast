@@ -184,6 +184,126 @@ public class RoleService
 		return written;
 	}
 
+	// Applies a /config enablement change to every persisted role ordering, scope-aware like
+	// SaveRoleModelOrder: ids that are no longer enabled anywhere are removed from each role's
+	// Models list in both the home file and any project override, and newly-enabled ids are
+	// inserted at the TOP of each role carrying the '*' wildcard — a just-enabled model is the one
+	// the user reaches for first. Roles without a wildcard are hand-curated and never gain models
+	// here. Reloads only when a file actually changed.
+	public void ApplyModelEnablement(List<string> addedIds, List<string> removedIds)
+	{
+		bool wroteHome    = UpdateHomeRolesEnablement(addedIds, removedIds);
+		bool wroteProject = UpdateProjectRolesEnablement(addedIds, removedIds);
+
+		if (wroteHome || wroteProject)
+			LoadRoles();
+	}
+
+	// Returns the updated model list, or null when the enablement change touches nothing in it.
+	private static List<string>? ApplyEnablementToList(List<string> models, List<string> addedIds, List<string> removedIds)
+	{
+		List<string> updated = new List<string>(models);
+		bool         changed = false;
+
+		foreach (string id in removedIds)
+		{
+			for (int i = updated.Count - 1; i >= 0; i--)
+			{
+				if (string.Equals(updated[i], id, StringComparison.OrdinalIgnoreCase))
+				{
+					updated.RemoveAt(i);
+					changed = true;
+				}
+			}
+		}
+
+		if (updated.Contains("*"))
+		{
+			int insertAt = 0;
+			foreach (string id in addedIds)
+			{
+				bool present = false;
+				foreach (string existing in updated)
+				{
+					if (string.Equals(existing, id, StringComparison.OrdinalIgnoreCase))
+					{
+						present = true;
+						break;
+					}
+				}
+				if (!present)
+				{
+					updated.Insert(insertAt++, id);
+					changed = true;
+				}
+			}
+		}
+
+		return changed ? updated : null;
+	}
+
+	private bool UpdateHomeRolesEnablement(List<string> addedIds, List<string> removedIds)
+	{
+		bool       changed = false;
+		List<Role> all     = new List<Role>();
+		foreach ((string _, Role role) in _rawHomeRoles)
+		{
+			List<string>? models = ApplyEnablementToList(role.Models, addedIds, removedIds);
+			if (models != null)
+			{
+				all.Add(new Role(role.Name, role.Description, role.Kind, models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt));
+				changed = true;
+			}
+			else
+			{
+				all.Add(role);
+			}
+		}
+
+		return changed && WriteRolesFile(_homeDirRolesPath, all);
+	}
+
+	private bool UpdateProjectRolesEnablement(List<string> addedIds, List<string> removedIds)
+	{
+		bool written = false;
+		if (File.Exists(_workDirRolesPath))
+		{
+			try
+			{
+				string     json    = File.ReadAllText(_workDirRolesPath);
+				RolesFile? file    = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
+				bool       changed = false;
+				if (file != null)
+				{
+					foreach (List<Role> block in new[] { file.Agents, file.Subagents })
+					{
+						for (int i = 0; i < block.Count; i++)
+						{
+							Role          role   = block[i];
+							List<string>? models = ApplyEnablementToList(role.Models, addedIds, removedIds);
+							if (models != null)
+							{
+								block[i] = new Role(role.Name, role.Description, role.Kind, models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt);
+								changed  = true;
+							}
+						}
+					}
+				}
+
+				if (changed)
+				{
+					File.WriteAllText(_workDirRolesPath, JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile));
+					written = true;
+				}
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"[RoleService] Could not apply model enablement to the project roles.json: {ex.Message}");
+			}
+		}
+		return written;
+	}
+
 	// Applies the new order inside the project file's own override of the role, when one exists.
 	// Returns false when the project defines no such role (the home file owns it) or the file
 	// cannot be read — writing to home would then be wrong only in the unreadable-file case, and

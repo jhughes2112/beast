@@ -16,15 +16,15 @@ internal class ConfigOverlay
 	// One web-search provider as reported by the agent.
 	private class SearchRow
 	{
-		public string Id = string.Empty;
-		public string Name = string.Empty;
-		public string Domain = string.Empty;
+		public string  Id     = string.Empty;
+		public string  Name   = string.Empty;
+		public string  Domain = string.Empty;
 		public decimal Price;
-		public bool Configured;
-		public bool Enabled;
+		public bool    Configured;
+		public bool    Enabled;
 		// False when no configured endpoint carries the provider's domain: the provider cannot
 		// run regardless of Enabled, and the row says so rather than pretending to work.
-		public bool HasKey;
+		public bool   HasKey;
 		public string Model = string.Empty;
 	}
 
@@ -43,31 +43,31 @@ internal class ConfigOverlay
 	{
 		("Custom URL…", ""),
 		("llama-server (local)", "http://localhost:8080/v1/chat/completions"),
-		("OpenAI", "https://api.openai.com/v1/responses"),
-		("Anthropic", "https://api.anthropic.com/v1/messages"),
-		("OpenRouter", "https://openrouter.ai/api/v1/chat/completions"),
+		("OpenAI",               "https://api.openai.com/v1/responses"),
+		("Anthropic",            "https://api.anthropic.com/v1/messages"),
+		("OpenRouter",           "https://openrouter.ai/api/v1/chat/completions"),
 		("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
-		("xAI (Grok)", "https://api.x.ai/v1/chat/completions"),
-		("Ollama (local)", "http://localhost:11434/v1/chat/completions"),
+		("xAI (Grok)",        "https://api.x.ai/v1/chat/completions"),
+		("Ollama (local)",    "http://localhost:11434/v1/chat/completions"),
 		("LM Studio (local)", "http://localhost:1234/v1/chat/completions"),
-		("vLLM (local)", "http://localhost:8000/v1/chat/completions"),
+		("vLLM (local)",      "http://localhost:8000/v1/chat/completions"),
 		("KoboldCpp (local)", "http://localhost:5001/v1/chat/completions"),
-		("Jan (local)", "http://localhost:1337/v1/chat/completions"),
-		("DeepSeek", "https://api.deepseek.com/v1/chat/completions"),
-		("Groq", "https://api.groq.com/openai/v1/chat/completions"),
-		("Mistral", "https://api.mistral.ai/v1/chat/completions"),
-		("Together AI", "https://api.together.xyz/v1/chat/completions"),
-		("Fireworks", "https://api.fireworks.ai/inference/v1/chat/completions"),
-		("Perplexity", "https://api.perplexity.ai/chat/completions"),
-		("Cerebras", "https://api.cerebras.ai/v1/chat/completions"),
-		("Moonshot (Kimi)", "https://api.moonshot.ai/v1/chat/completions"),
+		("Jan (local)",       "http://localhost:1337/v1/chat/completions"),
+		("DeepSeek",          "https://api.deepseek.com/v1/chat/completions"),
+		("Groq",              "https://api.groq.com/openai/v1/chat/completions"),
+		("Mistral",           "https://api.mistral.ai/v1/chat/completions"),
+		("Together AI",       "https://api.together.xyz/v1/chat/completions"),
+		("Fireworks",         "https://api.fireworks.ai/inference/v1/chat/completions"),
+		("Perplexity",        "https://api.perplexity.ai/chat/completions"),
+		("Cerebras",          "https://api.cerebras.ai/v1/chat/completions"),
+		("Moonshot (Kimi)",   "https://api.moonshot.ai/v1/chat/completions"),
 		("Qwen (DashScope)", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"),
-		("Zhipu GLM", "https://api.z.ai/api/paas/v4/chat/completions"),
-		("MiniMax", "https://api.minimax.io/v1/chat/completions"),
+		("Zhipu GLM",  "https://api.z.ai/api/paas/v4/chat/completions"),
+		("MiniMax",    "https://api.minimax.io/v1/chat/completions"),
 		("NVIDIA NIM", "https://integrate.api.nvidia.com/v1/chat/completions"),
-		("Novita", "https://api.novita.ai/v3/openai/chat/completions"),
+		("Novita",     "https://api.novita.ai/v3/openai/chat/completions"),
 		("Hyperbolic", "https://api.hyperbolic.xyz/v1/chat/completions"),
-		("SambaNova", "https://api.sambanova.ai/v1/chat/completions")
+		("SambaNova",  "https://api.sambanova.ai/v1/chat/completions")
 	};
 
 	private int _presetSelected;
@@ -75,64 +75,67 @@ internal class ConfigOverlay
 
 	private class ModelRow
 	{
-		public string Id = string.Empty;
+		public string Id   = string.Empty;
 		public string Name = string.Empty;
 
 		// Discovered values exactly as the endpoint reported them (0 / -1 / null = unknown).
-		public int DiscWindow;
-		public decimal DiscCostIn = -1m;
-		public decimal DiscCostOut = -1m;
+		public int           DiscWindow;
+		public decimal       DiscCostIn  = -1m;
+		public decimal       DiscCostOut = -1m;
 		public List<string>? DiscModalities;
 		// Unix epoch seconds the model was released; 0 = unknown (sorts to the alphabetical tail).
 		public long Created;
 
 		// User overrides (0 / -1 / null / empty = none — discovery rules). Blank edits clear these.
-		public int OvrWindow;
-		public decimal OvrCostIn = -1m;
-		public decimal OvrCostOut = -1m;
+		public int           OvrWindow;
+		public decimal       OvrCostIn  = -1m;
+		public decimal       OvrCostOut = -1m;
 		public List<string>? OvrModalities;
-		public string OvrEffort = string.Empty;
+		public string        OvrEffort = string.Empty;
 
 		public bool Enabled;
 		// True when a settings entry exists (even disabled) — disabling never forgets overrides.
 		public bool Configured;
+		// True when the entry is configured but the endpoint's catalog no longer lists it: it
+		// cannot be enabled, so space and Del both forget it.
+		public bool Missing;
 
 		// Effective values: override beats discovered.
-		public int Window => OvrWindow > 0 ? OvrWindow : DiscWindow;
-		public decimal CostIn => OvrCostIn >= 0 ? OvrCostIn : DiscCostIn;
-		public decimal CostOut => OvrCostOut >= 0 ? OvrCostOut : DiscCostOut;
+		public int           Window     => OvrWindow > 0 ? OvrWindow : DiscWindow;
+		public decimal       CostIn     => OvrCostIn >= 0 ? OvrCostIn : DiscCostIn;
+		public decimal       CostOut    => OvrCostOut >= 0 ? OvrCostOut : DiscCostOut;
 		public List<string>? Modalities => OvrModalities ?? DiscModalities;
 
 		// Unknown means neither discovered nor overridden — the fields that MUST be supplied
 		// before the model can be enabled.
-		public bool UnknownWindow => Window <= 0;
-		public bool UnknownCost => CostIn < 0 || CostOut < 0;
+		public bool UnknownWindow     => Window <= 0;
+		public bool UnknownCost       => CostIn < 0 || CostOut < 0;
 		public bool UnknownModalities => Modalities == null;
 	}
 
-	private Mode _mode = Mode.Closed;
+	private          Mode _mode = Mode.Closed;
 	private readonly List<(string BaseUrl, string Source, int EnabledCount)> _endpoints = new();
 	// Every provider the agent supports, in the order it sent them (cheapest first).
-	private readonly List<SearchRow> _search = new();
+	private readonly List<SearchRow>                     _search   = new();
 	private readonly List<(HomeRowKind Kind, int Index)> _homeRows = new();
-	private int _homeSelected;
-	private int _homeScroll;
+	private          int _homeSelected;
+	private          int _homeScroll;
 	// The provider whose model is being edited (SearchModel mode).
 	private SearchRow? _searchModelRow;
-	private string _baseUrl = string.Empty;
-	private string _apiKey = string.Empty;
+	private string     _baseUrl = string.Empty;
+	private string     _apiKey  = string.Empty;
 	// Shared text-entry buffer for the AddUrl/AddKey/Details modes.
-	private string _entry = string.Empty;
-	private string _status = string.Empty;
-	private readonly List<ModelRow> _models = new();
-	private readonly List<int> _visible = new();
-	private int _modelSelected;
-	private int _modelScroll;
-	private string _filter = string.Empty;
+	private          string         _entry   = string.Empty;
+	private          string         _status  = string.Empty;
+	private readonly List<ModelRow> _models  = new();
+	private readonly List<int>      _visible = new();
+	private          int            _modelSelected;
+	private          int            _modelScroll;
+	private          string         _filter = string.Empty;
 
-	private ModelRow? _detailRow;
+	private          ModelRow? _detailRow;
 	private readonly List<(string Field, bool Required)> _detailFields = new();
-	private int _detailIndex;
+	private          int _detailIndex;
 	// True when the editor was opened by an enable (space on a row with unknowns): finishing it
 	// completes the enable. False when opened by Enter as a plain edit.
 	private bool _detailEnableOnFinish;
@@ -158,7 +161,7 @@ internal class ConfigOverlay
 		_search.Clear();
 		_homeRows.Clear();
 		_homeSelected = 0;
-		_homeScroll = 0;
+		_homeScroll   = 0;
 		_models.Clear();
 		_filter = string.Empty;
 		_status = "Loading endpoints…";
@@ -179,7 +182,7 @@ internal class ConfigOverlay
 		try
 		{
 			JsonNode? root = JsonNode.Parse(json);
-			string kind = root?["kind"]?.GetValue<string>() ?? string.Empty;
+			string    kind = root?["kind"]?.GetValue<string>() ?? string.Empty;
 			if (kind == "endpoints")
 			{
 				_endpoints.Clear();
@@ -207,14 +210,14 @@ internal class ConfigOverlay
 							continue;
 						_search.Add(new SearchRow
 						{
-							Id = entry["id"]?.GetValue<string>() ?? string.Empty,
-							Name = entry["name"]?.GetValue<string>() ?? string.Empty,
-							Domain = entry["domain"]?.GetValue<string>() ?? string.Empty,
-							Price = entry["price"]?.GetValue<decimal>() ?? 0m,
+							Id         = entry["id"]?.GetValue<string>() ?? string.Empty,
+							Name       = entry["name"]?.GetValue<string>() ?? string.Empty,
+							Domain     = entry["domain"]?.GetValue<string>() ?? string.Empty,
+							Price      = entry["price"]?.GetValue<decimal>() ?? 0m,
 							Configured = entry["configured"]?.GetValue<bool>() ?? false,
-							Enabled = entry["enabled"]?.GetValue<bool>() ?? false,
-							HasKey = entry["hasKey"]?.GetValue<bool>() ?? false,
-							Model = entry["model"]?.GetValue<string>() ?? string.Empty
+							Enabled    = entry["enabled"]?.GetValue<bool>() ?? false,
+							HasKey     = entry["hasKey"]?.GetValue<bool>() ?? false,
+							Model      = entry["model"]?.GetValue<string>() ?? string.Empty
 						});
 					}
 				}
@@ -233,55 +236,63 @@ internal class ConfigOverlay
 					_baseUrl = effective;
 
 				string error = root?["error"]?.GetValue<string>() ?? string.Empty;
-				if (error.Length > 0)
+
+				// A failed fetch still carries the endpoint's CONFIGURED models, so an unreachable
+				// endpoint's list opens anyway — disabling a model must never require the provider
+				// to be up. Only a failure with nothing configured has no list to show.
+				_models.Clear();
+				JsonArray? list = root?["models"]?.AsArray();
+				if (list != null)
+				{
+					foreach (JsonNode? m in list)
+					{
+						if (m == null)
+							continue;
+						ModelRow row = new ModelRow
+						{
+							Id             = m["id"]?.GetValue<string>() ?? string.Empty,
+							Name           = m["name"]?.GetValue<string>() ?? string.Empty,
+							DiscWindow     = m["contextWindow"]?.GetValue<int>() ?? 0,
+							DiscCostIn     = m["costInput"]?.GetValue<decimal>() ?? -1m,
+							DiscCostOut    = m["costOutput"]?.GetValue<decimal>() ?? -1m,
+							DiscModalities = ReadStringList(m["modalities"]),
+							Enabled        = m["enabled"]?.GetValue<bool>() ?? false,
+							Configured     = m["configured"]?.GetValue<bool>() ?? false,
+							Missing        = m["missing"]?.GetValue<bool>() ?? false,
+							Created        = m["created"]?.GetValue<long>() ?? 0
+						};
+						JsonNode? over = m["override"];
+						if (over != null)
+						{
+							row.OvrWindow  = over["contextWindow"]?.GetValue<int>() ?? 0;
+							JsonNode? cost = over["cost"];
+							if (cost != null)
+							{
+								row.OvrCostIn  = cost["input"]?.GetValue<decimal>() ?? -1m;
+								row.OvrCostOut = cost["output"]?.GetValue<decimal>() ?? -1m;
+							}
+							row.OvrModalities = ReadStringList(over["modalities"]);
+							row.OvrEffort     = over["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
+						}
+						_models.Add(row);
+					}
+				}
+
+				if (_models.Count == 0 && error.Length > 0)
 				{
 					_status = error;
-					_mode = Mode.Endpoints;
+					_mode   = Mode.Endpoints;
 				}
 				else
 				{
-					_models.Clear();
-					JsonArray? list = root?["models"]?.AsArray();
-					if (list != null)
-					{
-						foreach (JsonNode? m in list)
-						{
-							if (m == null)
-								continue;
-							ModelRow row = new ModelRow
-							{
-								Id = m["id"]?.GetValue<string>() ?? string.Empty,
-								Name = m["name"]?.GetValue<string>() ?? string.Empty,
-								DiscWindow = m["contextWindow"]?.GetValue<int>() ?? 0,
-								DiscCostIn = m["costInput"]?.GetValue<decimal>() ?? -1m,
-								DiscCostOut = m["costOutput"]?.GetValue<decimal>() ?? -1m,
-								DiscModalities = ReadStringList(m["modalities"]),
-								Enabled = m["enabled"]?.GetValue<bool>() ?? false,
-								Configured = m["configured"]?.GetValue<bool>() ?? false,
-								Created = m["created"]?.GetValue<long>() ?? 0
-							};
-							JsonNode? over = m["override"];
-							if (over != null)
-							{
-								row.OvrWindow = over["contextWindow"]?.GetValue<int>() ?? 0;
-								JsonNode? cost = over["cost"];
-								if (cost != null)
-								{
-									row.OvrCostIn = cost["input"]?.GetValue<decimal>() ?? -1m;
-									row.OvrCostOut = cost["output"]?.GetValue<decimal>() ?? -1m;
-								}
-								row.OvrModalities = ReadStringList(over["modalities"]);
-								row.OvrEffort = over["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
-							}
-							_models.Add(row);
-						}
-					}
-					_dirty = false;
-					_filter = string.Empty;
+					_dirty         = false;
+					_filter        = string.Empty;
 					_modelSelected = 0;
-					_modelScroll = 0;
+					_modelScroll   = 0;
 					RebuildVisible();
-					_status = string.Empty;
+					_status = error.Length > 0
+						? $"Catalog fetch failed ({error}) — showing configured models; space or Del removes one."
+						: string.Empty;
 					_mode = Mode.Models;
 				}
 			}
@@ -289,9 +300,9 @@ internal class ConfigOverlay
 			{
 				// Back to a refreshed endpoint list rather than closing: configuring several
 				// endpoints in one sitting is the common case, and Esc leaves when done.
-				_status = $"Saved {_baseUrl}.";
+				_status       = $"Saved {_baseUrl}.";
 				_homeSelected = 0;
-				_mode = Mode.Endpoints;
+				_mode         = Mode.Endpoints;
 				_sendCommand("/config-endpoints");
 			}
 			else if (kind == "search-applied")
@@ -302,7 +313,7 @@ internal class ConfigOverlay
 			else if (kind == "apply-failed")
 			{
 				_status = "Apply failed — see the error above. Esc to close.";
-				_mode = Mode.Models;
+				_mode   = Mode.Models;
 			}
 		}
 		catch (Exception ex)
@@ -361,7 +372,7 @@ internal class ConfigOverlay
 			}
 			else if (_mode == Mode.Models)
 			{
-				_filter += clean;
+				_filter       += clean;
 				_modelSelected = 0;
 				RebuildVisible();
 			}
@@ -476,7 +487,7 @@ internal class ConfigOverlay
 			if (kind == HomeRowKind.Search)
 			{
 				SearchRow provider = _search[index];
-				provider.Enabled = !provider.Enabled;
+				provider.Enabled   = !provider.Enabled;
 				if (provider.Enabled)
 					provider.Configured = true;
 				if (provider.Enabled && !provider.HasKey)
@@ -490,8 +501,8 @@ internal class ConfigOverlay
 			if (kind == HomeRowKind.Search)
 			{
 				_search[index].Configured = false;
-				_search[index].Enabled = false;
-				_search[index].Model = string.Empty;
+				_search[index].Enabled    = false;
+				_search[index].Model      = string.Empty;
 				ApplySearch();
 			}
 			else if (kind == HomeRowKind.Endpoint)
@@ -504,21 +515,21 @@ internal class ConfigOverlay
 			if (kind == HomeRowKind.AddEndpoint)
 			{
 				_presetSelected = 0;
-				_presetScroll = 0;
-				_mode = Mode.AddPreset;
+				_presetScroll   = 0;
+				_mode           = Mode.AddPreset;
 			}
 			else if (kind == HomeRowKind.Endpoint)
 			{
 				_baseUrl = _endpoints[index].BaseUrl;
-				_apiKey = string.Empty;
+				_apiKey  = string.Empty;
 				RequestCatalog();
 			}
 			else if (kind == HomeRowKind.Search)
 			{
 				// Enter edits the search model, matching Enter-edits-values on the model list.
 				_searchModelRow = _search[index];
-				_entry = _searchModelRow.Model;
-				_mode = Mode.SearchModel;
+				_entry          = _searchModelRow.Model;
+				_mode           = Mode.SearchModel;
 			}
 		}
 		else if (key.Key == ConsoleKey.Escape)
@@ -527,21 +538,17 @@ internal class ConfigOverlay
 		}
 	}
 
-	// Removes an endpoint, but only once nothing depends on it. An endpoint still serving models is
-	// left alone with an explanation rather than silently pulling them out from under the roles
-	// that use them; a manual endpoint is hand-written config this picker does not own.
+	// Removes an endpoint outright, models and all — an unreachable endpoint must never be
+	// undeletable just because models are still attached; the agent drops its models and cleans
+	// them out of the role orderings. A manual endpoint is hand-written config this picker does
+	// not own.
 	private void DeleteEndpoint(int index)
 	{
-		(string baseUrl, string source, int enabledCount) = _endpoints[index];
+		(string baseUrl, string source, int _) = _endpoints[index];
 
 		if (source == "manual")
 		{
 			_status = "Manual endpoints are edited in settings.json, not here.";
-			return;
-		}
-		if (enabledCount > 0)
-		{
-			_status = $"{baseUrl} still has {enabledCount} enabled model(s) — open it and turn them off first.";
 			return;
 		}
 
@@ -549,12 +556,12 @@ internal class ConfigOverlay
 		JsonObject payload = new JsonObject
 		{
 			["baseUrl"] = baseUrl,
-			["apiKey"] = string.Empty,
-			["models"] = new JsonArray()
+			["apiKey"]  = string.Empty,
+			["models"]  = new JsonArray()
 		};
-		_status = $"Removing {baseUrl}…";
+		_status  = $"Removing {baseUrl}…";
 		_baseUrl = baseUrl;
-		_mode = Mode.Applying;
+		_mode    = Mode.Applying;
 		_sendCommand("/config-apply " + payload.ToJsonString());
 	}
 
@@ -563,7 +570,7 @@ internal class ConfigOverlay
 		if (key.Key == ConsoleKey.Escape)
 		{
 			_searchModelRow = null;
-			_mode = Mode.Endpoints;
+			_mode           = Mode.Endpoints;
 		}
 		else if (key.Key == ConsoleKey.Backspace)
 		{
@@ -577,8 +584,8 @@ internal class ConfigOverlay
 				// Blank restores the provider's built-in default, matching blank-means-auto on the
 				// model editor; the agent resolves the default and echoes it back.
 				_searchModelRow.Model = _entry.Trim();
-				_searchModelRow = null;
-				_mode = Mode.Endpoints;
+				_searchModelRow       = null;
+				_mode                 = Mode.Endpoints;
 				ApplySearch();
 			}
 		}
@@ -600,8 +607,8 @@ internal class ConfigOverlay
 			providers.Add((JsonNode)new JsonObject
 			{
 				["provider"] = row.Id,
-				["enabled"] = row.Enabled,
-				["model"] = row.Model
+				["enabled"]  = row.Enabled,
+				["model"]    = row.Model
 			});
 		}
 		_sendCommand("/config-search-apply " + new JsonObject { ["providers"] = providers }.ToJsonString());
@@ -628,13 +635,13 @@ internal class ConfigOverlay
 			if (_presetSelected == 0)
 			{
 				_entry = string.Empty;
-				_mode = Mode.AddUrl;
+				_mode  = Mode.AddUrl;
 			}
 			else
 			{
 				_baseUrl = kPresets[_presetSelected].Url;
-				_entry = string.Empty;
-				_mode = Mode.AddKey;
+				_entry   = string.Empty;
+				_mode    = Mode.AddKey;
 			}
 		}
 	}
@@ -657,14 +664,14 @@ internal class ConfigOverlay
 				if (_entry.Trim().Length > 0)
 				{
 					_baseUrl = _entry.Trim();
-					_entry = string.Empty;
-					_mode = Mode.AddKey;
+					_entry   = string.Empty;
+					_mode    = Mode.AddKey;
 				}
 			}
 			else
 			{
 				_apiKey = _entry.Trim();
-				_entry = string.Empty;
+				_entry  = string.Empty;
 				RequestCatalog();
 			}
 		}
@@ -685,7 +692,7 @@ internal class ConfigOverlay
 			}
 			else
 			{
-				_mode = Mode.Endpoints;
+				_mode   = Mode.Endpoints;
 				_status = string.Empty;
 			}
 		}
@@ -707,11 +714,16 @@ internal class ConfigOverlay
 			if (_modelSelected >= 0 && _modelSelected < _visible.Count)
 			{
 				ModelRow row = _models[_visible[_modelSelected]];
-				if (row.Enabled)
+				if (row.Missing)
+				{
+					// A model the endpoint no longer serves cannot be enabled — off IS forget.
+					ForgetModel(_visible[_modelSelected]);
+				}
+				else if (row.Enabled)
 				{
 					// Disable keeps the entry and its overrides — disabling is not forgetting.
 					row.Enabled = false;
-					_dirty = true;
+					_dirty      = true;
 				}
 				else if (row.UnknownWindow || row.UnknownCost || row.UnknownModalities)
 				{
@@ -721,9 +733,17 @@ internal class ConfigOverlay
 				else
 				{
 					row.Enabled = true;
-					_dirty = true;
+					_dirty      = true;
 				}
 			}
+		}
+		else if (key.Key == ConsoleKey.Delete)
+		{
+			// Del forgets the entry outright whatever its state — enabled, disabled, or gone from
+			// the catalog — so a dead model can always be cleared out (and, on apply, swept from
+			// the role orderings by the agent).
+			if (_modelSelected >= 0 && _modelSelected < _visible.Count)
+				ForgetModel(_visible[_modelSelected]);
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
@@ -736,16 +756,40 @@ internal class ConfigOverlay
 		{
 			if (_filter.Length > 0)
 			{
-				_filter = _filter.Substring(0, _filter.Length - 1);
+				_filter        = _filter.Substring(0, _filter.Length - 1);
 				_modelSelected = 0;
 				RebuildVisible();
 			}
 		}
 		else if (key.KeyChar != '\0' && !char.IsControl(key.KeyChar) && key.KeyChar != ' ')
 		{
-			_filter += key.KeyChar;
+			_filter       += key.KeyChar;
 			_modelSelected = 0;
 			RebuildVisible();
+		}
+	}
+
+	// Forgets a model's settings entry outright — enabled or not. The apply drops the entry and
+	// the agent sweeps the id out of the role orderings. A row the catalog still lists stays
+	// visible as unconfigured; a vanished one has nothing left to show and leaves the list.
+	private void ForgetModel(int modelIdx)
+	{
+		ModelRow row      = _models[modelIdx];
+		row.Enabled       = false;
+		row.Configured    = false;
+		row.OvrWindow     = 0;
+		row.OvrCostIn     = -1m;
+		row.OvrCostOut    = -1m;
+		row.OvrModalities = null;
+		row.OvrEffort     = string.Empty;
+		_dirty            = true;
+
+		if (row.Missing)
+		{
+			_models.RemoveAt(modelIdx);
+			RebuildVisible();
+			if (_modelSelected >= _visible.Count)
+				_modelSelected = Math.Max(0, _visible.Count - 1);
 		}
 	}
 
@@ -756,8 +800,8 @@ internal class ConfigOverlay
 	{
 		_detailRow = row;
 		_detailFields.Clear();
-		bool windowRequired = row.UnknownWindow;
-		bool costRequired = row.UnknownCost;
+		bool windowRequired     = row.UnknownWindow;
+		bool costRequired       = row.UnknownCost;
 		bool modalitiesRequired = row.UnknownModalities;
 
 		if (!requiredOnly || windowRequired)
@@ -779,9 +823,9 @@ internal class ConfigOverlay
 		}
 
 		_detailEnableOnFinish = enableOnFinish;
-		_detailIndex = 0;
-		_entry = DetailPrefill(_detailFields[0].Field, row);
-		_mode = Mode.Details;
+		_detailIndex          = 0;
+		_entry                = DetailPrefill(_detailFields[0].Field, row);
+		_mode                 = Mode.Details;
 	}
 
 	private void HandleDetailsKey(ConsoleKeyInfo key)
@@ -791,7 +835,7 @@ internal class ConfigOverlay
 			// Stop editing; fields already committed this session keep their new values. A
 			// pending enable is abandoned — the row stays off.
 			_detailRow = null;
-			_mode = Mode.Models;
+			_mode      = Mode.Models;
 		}
 		else if (key.Key == ConsoleKey.Backspace)
 		{
@@ -809,10 +853,10 @@ internal class ConfigOverlay
 					if (_detailEnableOnFinish)
 					{
 						_detailRow.Enabled = true;
-						_dirty = true;
+						_dirty             = true;
 					}
 					_detailRow = null;
-					_mode = Mode.Models;
+					_mode      = Mode.Models;
 				}
 				else
 				{
@@ -854,23 +898,23 @@ internal class ConfigOverlay
 		switch (field)
 		{
 			case "window":
-				name = "Context window (tokens)";
+				name       = "Context window (tokens)";
 				discovered = row.DiscWindow > 0 ? row.DiscWindow.ToString() : string.Empty;
 				break;
 			case "costIn":
-				name = "Input cost ($ per Mtok)";
+				name       = "Input cost ($ per Mtok)";
 				discovered = row.DiscCostIn >= 0 ? $"${row.DiscCostIn:0.00}" : string.Empty;
 				break;
 			case "costOut":
-				name = "Output cost ($ per Mtok)";
+				name       = "Output cost ($ per Mtok)";
 				discovered = row.DiscCostOut >= 0 ? $"${row.DiscCostOut:0.00}" : string.Empty;
 				break;
 			case "modalities":
-				name = "Input modalities (text,image,audio)";
+				name       = "Input modalities (text,image,audio)";
 				discovered = row.DiscModalities != null ? string.Join(",", row.DiscModalities) : string.Empty;
 				break;
 			default:
-				name = "Reasoning effort (none/minimal/low/medium/high/max)";
+				name       = "Reasoning effort (none/minimal/low/medium/high/max)";
 				discovered = string.Empty;
 				break;
 		}
@@ -903,7 +947,7 @@ internal class ConfigOverlay
 				else
 					row.OvrEffort = string.Empty;
 				_dirty = true;
-				ok = true;
+				ok     = true;
 			}
 		}
 		else if (field == "window")
@@ -911,8 +955,8 @@ internal class ConfigOverlay
 			if (int.TryParse(value, out int window) && window > 0)
 			{
 				row.OvrWindow = window;
-				_dirty = true;
-				ok = true;
+				_dirty        = true;
+				ok            = true;
 			}
 		}
 		else if (field == "costIn" || field == "costOut")
@@ -924,7 +968,7 @@ internal class ConfigOverlay
 				else
 					row.OvrCostOut = cost;
 				_dirty = true;
-				ok = true;
+				ok     = true;
 			}
 		}
 		else if (field == "modalities")
@@ -939,15 +983,15 @@ internal class ConfigOverlay
 			if (modalities.Count > 0)
 			{
 				row.OvrModalities = modalities;
-				_dirty = true;
-				ok = true;
+				_dirty            = true;
+				ok                = true;
 			}
 		}
 		else
 		{
 			row.OvrEffort = value.ToLowerInvariant();
-			_dirty = true;
-			ok = true;
+			_dirty        = true;
+			ok            = true;
 		}
 		return ok;
 	}
@@ -957,10 +1001,10 @@ internal class ConfigOverlay
 		JsonObject request = new JsonObject
 		{
 			["baseUrl"] = _baseUrl,
-			["apiKey"] = _apiKey
+			["apiKey"]  = _apiKey
 		};
 		_status = $"Fetching catalog from {_baseUrl}…";
-		_mode = Mode.Loading;
+		_mode   = Mode.Loading;
 		_sendCommand("/config-catalog " + request.ToJsonString());
 	}
 
@@ -984,7 +1028,7 @@ internal class ConfigOverlay
 				// is always whole; a genuinely unknown side was required at enable time anyway.
 				entry["cost"] = new JsonObject
 				{
-					["input"] = row.OvrCostIn >= 0 ? row.OvrCostIn : row.DiscCostIn >= 0 ? row.DiscCostIn : 0m,
+					["input"]  = row.OvrCostIn >= 0 ? row.OvrCostIn : row.DiscCostIn >= 0 ? row.DiscCostIn : 0m,
 					["output"] = row.OvrCostOut >= 0 ? row.OvrCostOut : row.DiscCostOut >= 0 ? row.DiscCostOut : 0m
 				};
 			}
@@ -1003,11 +1047,11 @@ internal class ConfigOverlay
 		JsonObject payload = new JsonObject
 		{
 			["baseUrl"] = _baseUrl,
-			["apiKey"] = _apiKey,
-			["models"] = models
+			["apiKey"]  = _apiKey,
+			["models"]  = models
 		};
 		_status = "Applying…";
-		_mode = Mode.Applying;
+		_mode   = Mode.Applying;
 		_sendCommand("/config-apply " + payload.ToJsonString());
 	}
 
@@ -1047,34 +1091,34 @@ internal class ConfigOverlay
 	public Screen Build(int w, int h)
 	{
 		int bw = Math.Min(Math.Max(60, w - 8), 100);
-		int bh = Math.Min(Math.Max(12, h - 4), 32);
+		int bh = Math.Min(Math.Max(12, h - 4),  32);
 
-		Rgb bg = new Rgb(24, 24, 30);
-		Rgb borderFg = new Rgb(90, 90, 110);
-		Rgb titleFg = new Rgb(200, 200, 210);
-		Rgb textFg = new Rgb(160, 160, 165);
-		Rgb dimFg = new Rgb(105, 105, 110);
-		Rgb selBg = new Rgb(52, 52, 66);
-		Rgb onFg = new Rgb(130, 190, 140);
+		Rgb bg        = new Rgb( 24,  24,  30);
+		Rgb borderFg  = new Rgb( 90,  90, 110);
+		Rgb titleFg   = new Rgb(200, 200, 210);
+		Rgb textFg    = new Rgb(160, 160, 165);
+		Rgb dimFg     = new Rgb(105, 105, 110);
+		Rgb selBg     = new Rgb( 52,  52,  66);
+		Rgb onFg      = new Rgb(130, 190, 140);
 		Rgb unknownFg = new Rgb(206, 178, 108);
-		Rgb statusFg = new Rgb(206, 178, 108);
+		Rgb statusFg  = new Rgb(206, 178, 108);
 
 		Screen s = new Screen(bw, bh, new Cell(' ', textFg, bg, CellStyle.None));
 
 		// Border + title.
 		for (int x = 0; x < bw; x++)
 		{
-			s.Set(x, 0, new Cell('─', borderFg, bg, CellStyle.None));
+			s.Set(x,      0, new Cell('─', borderFg, bg, CellStyle.None));
 			s.Set(x, bh - 1, new Cell('─', borderFg, bg, CellStyle.None));
 		}
 		for (int y = 0; y < bh; y++)
 		{
-			s.Set(0, y, new Cell('│', borderFg, bg, CellStyle.None));
+			s.Set(     0, y, new Cell('│', borderFg, bg, CellStyle.None));
 			s.Set(bw - 1, y, new Cell('│', borderFg, bg, CellStyle.None));
 		}
-		s.Set(0, 0, new Cell('┌', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1, 0, new Cell('┐', borderFg, bg, CellStyle.None));
-		s.Set(0, bh - 1, new Cell('└', borderFg, bg, CellStyle.None));
+		s.Set(     0,      0, new Cell('┌', borderFg, bg, CellStyle.None));
+		s.Set(bw - 1,      0, new Cell('┐', borderFg, bg, CellStyle.None));
+		s.Set(     0, bh - 1, new Cell('└', borderFg, bg, CellStyle.None));
 		s.Set(bw - 1, bh - 1, new Cell('┘', borderFg, bg, CellStyle.None));
 		AnsiToScreen.WriteLine(s, 2, 0, " Model Configuration ", titleFg, bg);
 
@@ -1083,7 +1127,7 @@ internal class ConfigOverlay
 		{
 			case Mode.Endpoints:
 			{
-				AnsiToScreen.WriteLine(s, 2, 1, "↑↓ move · Enter open/edit · space toggle · Del remove (when unused) · Esc close", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1, "↑↓ move · Enter open/edit · space toggle · Del remove · Esc close", dimFg, bg);
 
 				int visRows = bh - 4;
 				if (_homeSelected < _homeScroll)
@@ -1098,9 +1142,9 @@ internal class ConfigOverlay
 						break;
 
 					(HomeRowKind kind, int index) = _homeRows[idx];
-					int row = r + 3;
-					bool sel = idx == _homeSelected;
-					Rgb rowBg = sel ? selBg : bg;
+					int  row                      = r + 3;
+					bool sel                      = idx == _homeSelected;
+					Rgb  rowBg                    = sel ? selBg : bg;
 
 					if (kind == HomeRowKind.Spacer)
 						continue;
@@ -1112,8 +1156,7 @@ internal class ConfigOverlay
 					}
 
 					Rgb rowFg = kind == HomeRowKind.AddEndpoint ? onFg : textFg;
-					// An endpoint contributing no models is dimmed: nothing depends on it, which is
-					// also exactly the state in which Del will remove it.
+					// An endpoint contributing no models is dimmed: nothing depends on it.
 					if (kind == HomeRowKind.Endpoint && (_endpoints[index].Source == "manual" || _endpoints[index].EnabledCount == 0))
 						rowFg = dimFg;
 					s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
@@ -1122,7 +1165,7 @@ internal class ConfigOverlay
 					if (kind == HomeRowKind.Endpoint)
 					{
 						string tag = _endpoints[index].Source == "manual" ? " [manual]" : string.Empty;
-						line = $"{_endpoints[index].BaseUrl}{tag}  ({_endpoints[index].EnabledCount} enabled)";
+						line       = $"{_endpoints[index].BaseUrl}{tag}  ({_endpoints[index].EnabledCount} enabled)";
 					}
 					else if (kind == HomeRowKind.AddEndpoint)
 					{
@@ -1134,11 +1177,11 @@ internal class ConfigOverlay
 						// Brightness tracks whether the provider CAN run: a row with no resolvable
 						// key is dimmed whatever its flag says, so the ones ready to use stand out
 						// and the rest still show what they would cost and what they are waiting on.
-						bool live = provider.Enabled && provider.HasKey;
+						bool   live = provider.Enabled && provider.HasKey;
 						string mark = live ? "[x]" : provider.Enabled ? "[!]" : "[ ]";
 						string note = provider.HasKey ? provider.Model : $"needs an api key on {provider.Domain}";
-						line = $"{mark} {provider.Name,-16} {$"${provider.Price:0.00}/1k",11}  {note}";
-						rowFg = !provider.HasKey ? dimFg : live ? onFg : textFg;
+						line        = $"{mark} {provider.Name,-16} {$"${provider.Price:0.00}/1k",11}  {note}";
+						rowFg       = !provider.HasKey ? dimFg : live ? onFg : textFg;
 					}
 
 					AnsiToScreen.WriteLine(s, 2, row, Truncate(line, innerW), rowFg, rowBg);
@@ -1147,10 +1190,10 @@ internal class ConfigOverlay
 			}
 			case Mode.SearchModel:
 			{
-				AnsiToScreen.WriteLine(s, 2, 1, Truncate($"Search model for {_searchModelRow?.Name}", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, 3, Truncate("Model id  [blank = the provider's default]", innerW), textFg, bg);
-				AnsiToScreen.WriteLine(s, 2, 5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2, "Enter accept · Esc cancel", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1,  Truncate($"Search model for {_searchModelRow?.Name}", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 3, Truncate("Model id  [blank = the provider's default]", innerW),  textFg, bg);
+				AnsiToScreen.WriteLine(s, 2,      5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,           "Enter accept · Esc cancel",   dimFg, bg);
 				break;
 			}
 			case Mode.AddPreset:
@@ -1168,9 +1211,9 @@ internal class ConfigOverlay
 					int idx = _presetScroll + r;
 					if (idx >= kPresets.Length)
 						break;
-					bool sel = idx == _presetSelected;
-					Rgb rowBg = sel ? selBg : bg;
-					Rgb rowFg = idx == 0 ? onFg : textFg;
+					bool sel   = idx == _presetSelected;
+					Rgb  rowBg = sel ? selBg : bg;
+					Rgb  rowFg = idx == 0 ? onFg : textFg;
 					s.Fill(new Rect(1, r + 3, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 
 					const int nameWidth = 22;
@@ -1189,20 +1232,20 @@ internal class ConfigOverlay
 					: $"API key for {_baseUrl} (blank for none):";
 				AnsiToScreen.WriteLine(s, 2, 2, label, textFg, bg);
 				string shown = _mode == Mode.AddKey && _entry.Length > 0 ? new string('•', _entry.Length) : _entry;
-				AnsiToScreen.WriteLine(s, 2, 4, Truncate("> " + shown + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2, "Enter continue · Esc back", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2,      4, Truncate("> " + shown + "▏", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,          "Enter continue · Esc back",   dimFg, bg);
 				break;
 			}
 			case Mode.Loading:
 			case Mode.Applying:
 			{
 				AnsiToScreen.WriteLine(s, 2, bh / 2, Truncate(_status, innerW), statusFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2, "Esc to cancel", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,           "Esc to cancel",    dimFg, bg);
 				break;
 			}
 			case Mode.Models:
 			{
-				string header = $"{_baseUrl}  —  space toggle · Enter edit · type filter · Esc save+back";
+				string header = $"{_baseUrl}  —  space toggle · Enter edit · Del forget · type filter · Esc save+back";
 				AnsiToScreen.WriteLine(s, 2, 1, Truncate(header, innerW), dimFg, bg);
 				AnsiToScreen.WriteLine(s, 2, 2, Truncate($"Filter: {_filter}▏   ({CountEnabled()} enabled / {_models.Count} total)", innerW), textFg, bg);
 
@@ -1217,15 +1260,15 @@ internal class ConfigOverlay
 					int idx = _modelScroll + r;
 					if (idx >= _visible.Count)
 						break;
-					ModelRow row = _models[_visible[idx]];
-					bool sel = idx == _modelSelected;
-					Rgb rowBg = sel ? selBg : bg;
-					Rgb rowFg = row.Enabled ? onFg : row.Configured ? unknownFg : textFg;
+					ModelRow row   = _models[_visible[idx]];
+					bool     sel   = idx == _modelSelected;
+					Rgb      rowBg = sel ? selBg : bg;
+					Rgb      rowFg = row.Enabled ? onFg : row.Configured ? unknownFg : textFg;
 					s.Fill(new Rect(1, r + 3, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 
 					// [x] enabled · [-] configured but disabled (overrides kept) · [ ] unconfigured.
-					string mark = row.Enabled ? "[x]" : row.Configured ? "[-]" : "[ ]";
-					string age = FormatAge(row.Created);
+					string mark   = row.Enabled ? "[x]" : row.Configured ? "[-]" : "[ ]";
+					string age    = FormatAge(row.Created);
 					string window = row.Window > 0 ? FormatK(row.Window) : "?ctx";
 					// Normalized $#.## with each price right-aligned in its own sub-column, so the
 					// slash and both decimal points line up down the whole list.
@@ -1233,24 +1276,27 @@ internal class ConfigOverlay
 						? $"{$"${row.CostIn:0.00}",7}/{$"${row.CostOut:0.00}",7}"
 						: "$?".PadLeft(15);
 					string modalities = row.Modalities != null ? ModalityTag(row.Modalities) : "  ?  ";
-					string right = $"{age,5} {window,7} {cost} {modalities}";
-					int idWidth = Math.Max(8, innerW - right.Length - 5);
-					string line = $"{mark} {Truncate(row.Id, idWidth).PadRight(idWidth)} {right}";
+					// A vanished model has no live stats worth faking — say what happened instead.
+					string right   = row.Missing ? "gone from endpoint" : $"{age,5} {window,7} {cost} {modalities}";
+					int    idWidth = Math.Max(8, innerW - right.Length - 5);
+					string line    = $"{mark} {Truncate(row.Id, idWidth).PadRight(idWidth)} {right}";
 					AnsiToScreen.WriteLine(s, 2, r + 3, Truncate(line, innerW), rowFg, rowBg);
-					if (sel && (row.UnknownWindow || row.UnknownCost || row.UnknownModalities) && !row.Enabled)
+					if (sel && row.Missing)
+						AnsiToScreen.WriteLine(s, 2, bh - 2, "No longer in the endpoint's catalog — space or Del removes it from your list.", unknownFg, bg);
+					else if (sel && (row.UnknownWindow || row.UnknownCost || row.UnknownModalities) && !row.Enabled)
 						AnsiToScreen.WriteLine(s, 2, bh - 2, "Some fields are unknown — enabling will ask for them.", unknownFg, bg);
 				}
 				break;
 			}
 			case Mode.Details:
 			{
-				ModelRow? row = _detailRow;
+				ModelRow? row                 = _detailRow;
 				(string field, bool required) = _detailFields[_detailIndex];
 				AnsiToScreen.WriteLine(s, 2, 1, Truncate($"{(_detailEnableOnFinish ? "Enable" : "Edit")} {row?.Id}", innerW), titleFg, bg);
 				if (row != null)
 					AnsiToScreen.WriteLine(s, 2, 3, Truncate($"{DetailLabel(field, required, row)}  ({_detailIndex + 1}/{_detailFields.Count})", innerW), textFg, bg);
-				AnsiToScreen.WriteLine(s, 2, 5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2, "Enter accept · Esc stop editing", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2,      5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,     "Enter accept · Esc stop editing",   dimFg, bg);
 				break;
 			}
 		}

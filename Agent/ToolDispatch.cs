@@ -193,8 +193,9 @@ public static class ToolDispatch
 	// writing both back into the payload so the committed turn (canonical and protocol-native) carries clean
 	// calls instead of the raw model output. Returns null when every call is now dispatchable; otherwise a
 	// reason naming the calls whose arguments cannot satisfy the schema, so the caller can treat the turn as
-	// a transient failure and re-request. A call whose name does not resolve at all is left untouched here —
-	// dispatch reports it as not-found so the model gets that feedback rather than a silent re-roll.
+	// a transient failure and re-request. A call whose name does not resolve at all keeps its name — dispatch
+	// reports it as not-found so the model gets that feedback rather than a silent re-roll — but its
+	// arguments are still repaired to valid JSON, since they are committed and replayed to the provider.
 	public static string? FixToolCalls(ProtocolCallPayload payload, Dictionary<string, Tool> toolLookup)
 	{
 		string broken = string.Empty;
@@ -217,7 +218,16 @@ public static class ToolDispatch
 			}
 
 			if (matchedTool == null)
-				continue; // genuinely unknown tool: left for dispatch to report as not-found
+			{
+				// Genuinely unknown tool: left for dispatch to report as not-found — but its arguments are
+				// still committed and replayed on every later request, and strict providers reject the whole
+				// conversation when they are not valid JSON (a truncated stream leaves an unterminated
+				// string). Repair structurally — there is no schema to check against — and when even that
+				// fails, pin an empty object so the committed turn always carries parseable arguments.
+				JsonObject? repairedArgs = FixJson.TryParseObject(toolCall.ArgumentsJson);
+				toolCall.ArgumentsJson   = repairedArgs != null ? repairedArgs.ToJsonString() : "{}";
+				continue;
+			}
 
 			// Pin the (possibly corrected) name so it is persisted, not re-derived on every dispatch.
 			toolCall.Name = matchedTool.Definition.Function.Name;

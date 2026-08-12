@@ -21,6 +21,47 @@ public static class FixJsonTests
 		TestMissingRequiredArgs(ctx);
 		TestFullPipeline(ctx);
 		TestXmlToolCallExtraction(ctx);
+		TestUnknownToolArgsRepair(ctx);
+	}
+
+	// ─── Unknown-tool argument repair at commit (FixToolCalls) ───────────────
+
+	private static void TestUnknownToolArgsRepair(TestContext ctx)
+	{
+		Dictionary<string, Tool> toolLookup = new Dictionary<string, Tool>
+		{
+			["read_file"] = new Tool { Definition = new ToolDefinition { Function = Def("read_file", Props(("file_path", "string")), "file_path") } }
+		};
+
+		// An unknown tool whose streamed arguments were cut off mid-string (the LiquidAI incident:
+		// hallucinated write_file with an unterminated content value) must still commit valid JSON —
+		// strict providers 400 the whole conversation on replay otherwise.
+		SemanticToolCall truncated = new SemanticToolCall
+		{
+			Id            = "tc1",
+			Name          = "write_file",
+			ArgumentsJson = "{\"file_path\": \"/workspace/garden.html\", \"content\": \"<!DOCTYPE html>\\n<html"
+		};
+		ProtocolCallPayload p1   = MakePayload(truncated);
+		string?             err1 = ToolDispatch.FixToolCalls(p1, toolLookup);
+		ctx.AssertNull(err1, "Unknown: truncated args do not fail the turn");
+		ctx.AssertEqual("write_file", truncated.Name, "Unknown: name preserved for not-found feedback");
+		ctx.AssertNotNull(FixJson.TryParseObject(truncated.ArgumentsJson), "Unknown: committed args are parseable");
+		JsonObject? repaired = JsonNode.Parse(truncated.ArgumentsJson) as JsonObject;
+		ctx.AssertNotNull(repaired, "Unknown: committed args are strictly valid JSON");
+		ctx.AssertEqual("/workspace/garden.html", repaired?["file_path"]?.GetValue<string>(), "Unknown: intact args survive repair");
+
+		// Arguments beyond repair are pinned to an empty object rather than committed raw.
+		SemanticToolCall    garbage = new SemanticToolCall { Id = "tc2", Name = "no_such_tool", ArgumentsJson = "}}not json at all{{" };
+		ProtocolCallPayload p2      = MakePayload(garbage);
+		string?             err2    = ToolDispatch.FixToolCalls(p2, toolLookup);
+		ctx.AssertNull(err2, "Unknown: garbage args do not fail the turn");
+		ctx.AssertEqual("{}", garbage.ArgumentsJson, "Unknown: unrepairable args pinned to empty object");
+	}
+
+	private static ProtocolCallPayload MakePayload(SemanticToolCall call)
+	{
+		return new ProtocolCallPayload(string.Empty, string.Empty, new List<SemanticToolCall> { call }, new List<ToolResult>(), "tool_calls", new TokenUsageInfo(), 0m);
 	}
 
 	// ─── <tool_call> text salvage (template-mismatched local models) ─────────
@@ -35,9 +76,9 @@ public static class FixJsonTests
 		Type[] signature = new[] { typeof(string), typeof(List<ToolDefinition>), typeof(List<SemanticToolCall>) };
 
 		// A well-formed literal <tool_call> block naming an offered tool becomes a real call.
-		List<SemanticToolCall> calls = new List<SemanticToolCall>();
-		string text = "I will read the file now.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"a.cs\"}}\n</tool_call>";
-		string cleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+		List<SemanticToolCall> calls   = new List<SemanticToolCall>();
+		string                 text    = "I will read the file now.\n<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"a.cs\"}}\n</tool_call>";
+		string                 cleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
 			signature, new object[] { text, offered, calls })!;
 		ctx.AssertEqual(1, calls.Count, "XmlToolCall: extracted one call");
 		ctx.AssertEqual("read_file", calls.Count > 0 ? calls[0].Name : "", "XmlToolCall: name recovered");
@@ -47,11 +88,11 @@ public static class FixJsonTests
 
 		// The Qwen-Coder function dialect: <function=name> with <parameter=key> blocks whose raw
 		// multi-line values must survive verbatim (minus the template's framing newlines).
-		List<SemanticToolCall> qwen = new List<SemanticToolCall>();
-		string qwenText = "Listing now.\n<tool_call>  <function=ls>\n<parameter=folder>\n/workspace/Design\n</parameter>\n</function></tool_call>";
-		string qwenCleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+		List<SemanticToolCall> qwen        = new List<SemanticToolCall>();
+		string                 qwenText    = "Listing now.\n<tool_call>  <function=ls>\n<parameter=folder>\n/workspace/Design\n</parameter>\n</function></tool_call>";
+		string                 qwenCleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
 			signature, new object[] { qwenText, offered, qwen })!;
-		ctx.AssertEqual(1, qwen.Count, "XmlToolCall: qwen function form extracted");
+		ctx.AssertEqual(   1,                         qwen.Count, "XmlToolCall: qwen function form extracted");
 		ctx.AssertEqual("ls", qwen.Count > 0 ? qwen[0].Name : "", "XmlToolCall: qwen function name");
 		if (qwen.Count > 0)
 			ctx.AssertContains(qwen[0].ArgumentsJson, "/workspace/Design", "XmlToolCall: qwen parameter value");
@@ -59,16 +100,16 @@ public static class FixJsonTests
 
 		// A well-formed block naming a tool that is NOT offered this turn stays as prose — no
 		// call, no error; a quoted example or hallucinated tool must never round-trip to dispatch.
-		List<SemanticToolCall> unknown = new List<SemanticToolCall>();
-		string unknownText = "<tool_call>{\"name\": \"rm_rf_everything\", \"arguments\": {}}</tool_call>";
-		string unknownKept = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+		List<SemanticToolCall> unknown     = new List<SemanticToolCall>();
+		string                 unknownText = "<tool_call>{\"name\": \"rm_rf_everything\", \"arguments\": {}}</tool_call>";
+		string                 unknownKept = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
 			signature, new object[] { unknownText, offered, unknown })!;
 		ctx.AssertEqual(0, unknown.Count, "XmlToolCall: unknown tool produces no call");
 		ctx.AssertContains(unknownKept, "rm_rf_everything", "XmlToolCall: unknown-tool block kept as text");
 
 		// A malformed block produces no call and stays visible in the text.
 		List<SemanticToolCall> none = new List<SemanticToolCall>();
-		string kept = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+		string                 kept = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
 			signature, new object[] { "<tool_call>not json</tool_call>", offered, none })!;
 		ctx.AssertEqual(0, none.Count, "XmlToolCall: malformed block produces no call");
 		ctx.AssertContains(kept, "<tool_call>", "XmlToolCall: malformed block kept visible");
@@ -88,7 +129,7 @@ public static class FixJsonTests
 		ctx.AssertNotNull(r1, "Arg: case-insensitive names parse");
 		ctx.AssertNull(e1, "Arg: case-insensitive names no error");
 		ctx.AssertEqual("/f", r1?["file_path"]?.GetValue<string>(), "Arg: File_Path → file_path");
-		ctx.AssertEqual("a", r1?["old_text"]?.GetValue<string>(), "Arg: OLD_TEXT → old_text");
+		ctx.AssertEqual("a",   r1?["old_text"]?.GetValue<string>(), "Arg: OLD_TEXT → old_text");
 
 		// A near-miss (camelCase / dropped underscore) is fuzzy-mapped to the canonical name.
 		(JsonObject? r2, string? e2) = FixJson.TryParseWithSchema(
@@ -99,7 +140,7 @@ public static class FixJsonTests
 		ctx.AssertEqual("b", r2?["new_text"]?.GetValue<string>(), "Arg: newtext → new_text");
 
 		// A genuinely unrelated key is NOT mapped — it stays extra (and is stripped), not mis-assigned.
-		FunctionDefinition single = Def("t", Props(("file_path", "string")), "file_path");
+		FunctionDefinition single    = Def("t", Props(("file_path", "string")), "file_path");
 		(JsonObject? r3, string? e3) = FixJson.TryParseWithSchema(
 			"{\"file_path\": \"/f\", \"thoughts\": \"...\"}", single, null);
 		ctx.AssertNotNull(r3, "Arg: unrelated key parses");
@@ -244,13 +285,13 @@ public static class FixJsonTests
 		JsonObject? r5 = FixJson.TryParseObject("{'file_path': '/foo/bar', 'mode': 'read'}");
 		ctx.AssertNotNull(r5, "NonStd: multi-field single-quoted parses");
 		ctx.AssertEqual("/foo/bar", r5?["file_path"]?.GetValue<string>(), "NonStd: multi-field first value");
-		ctx.AssertEqual("read", r5?["mode"]?.GetValue<string>(), "NonStd: multi-field second value");
+		ctx.AssertEqual("read",          r5?["mode"]?.GetValue<string>(), "NonStd: multi-field second value");
 
 		// Multiple unquoted keys
 		JsonObject? r6 = FixJson.TryParseObject("{file_path: \"/foo\", mode: \"read\"}");
 		ctx.AssertNotNull(r6, "NonStd: multi unquoted keys parse");
 		ctx.AssertEqual("/foo", r6?["file_path"]?.GetValue<string>(), "NonStd: multi unquoted first value");
-		ctx.AssertEqual("read", r6?["mode"]?.GetValue<string>(), "NonStd: multi unquoted second value");
+		ctx.AssertEqual("read",      r6?["mode"]?.GetValue<string>(), "NonStd: multi unquoted second value");
 	}
 
 	// ─── Stage 3: Fuzzy tool name matching ───────────────────────────────────
@@ -314,7 +355,7 @@ public static class FixJsonTests
 		ctx.AssertEqual(3, r1?["count"]?.GetValue<int>(), "Coerce: str→int value");
 
 		// String "3.14" → number 3.14
-		FunctionDefinition numDef = Def("t", Props(("value", "number")));
+		FunctionDefinition numDef    = Def("t", Props(("value", "number")));
 		(JsonObject? r2, string? e2) = FixJson.TryParseWithSchema("{\"value\": \"3.14\"}", numDef, null);
 		ctx.AssertNotNull(r2, "Coerce: str→number parses");
 		ctx.AssertNull(e2, "Coerce: str→number no error");
@@ -322,7 +363,7 @@ public static class FixJsonTests
 		ctx.Assert(dbl.HasValue && Math.Abs(dbl.Value - 3.14) < 0.001, "Coerce: str→number value");
 
 		// String "true" → boolean true
-		FunctionDefinition boolDef = Def("t", Props(("flag", "boolean")));
+		FunctionDefinition boolDef   = Def("t", Props(("flag", "boolean")));
 		(JsonObject? r3, string? e3) = FixJson.TryParseWithSchema("{\"flag\": \"true\"}", boolDef, null);
 		ctx.AssertNotNull(r3, "Coerce: str→bool parses");
 		ctx.AssertNull(e3, "Coerce: str→bool no error");
@@ -334,7 +375,7 @@ public static class FixJsonTests
 		ctx.AssertEqual(false, r3b?["flag"]?.GetValue<bool>(), "Coerce: str→false value");
 
 		// Integer 42 → string "42"
-		FunctionDefinition strDef = Def("t", Props(("name", "string")));
+		FunctionDefinition strDef    = Def("t", Props(("name", "string")));
 		(JsonObject? r4, string? e4) = FixJson.TryParseWithSchema("{\"name\": 42}", strDef, null);
 		ctx.AssertNotNull(r4, "Coerce: int→str parses");
 		ctx.AssertNull(e4, "Coerce: int→str no error");
@@ -374,9 +415,9 @@ public static class FixJsonTests
 			schema, null);
 		ctx.AssertNotNull(r2, "Extra: multi hallucinated parses");
 		ctx.AssertNull(e2, "Extra: multi hallucinated no error");
-		ctx.Assert(r2 != null && !r2.ContainsKey("thinking"), "Extra: thinking stripped");
+		ctx.Assert( r2 != null && !r2.ContainsKey("thinking"), "Extra: thinking stripped");
 		ctx.Assert(r2 != null && !r2.ContainsKey("reasoning"), "Extra: reasoning stripped");
-		ctx.Assert(r2 != null && r2.ContainsKey("file_path"), "Extra: file_path kept after multi-strip");
+		ctx.Assert( r2 != null && r2.ContainsKey("file_path"), "Extra: file_path kept after multi-strip");
 
 		// No extra args — object unchanged
 		(JsonObject? r3, string? e3) = FixJson.TryParseWithSchema("{\"file_path\": \"/foo\"}", schema, null);
@@ -465,8 +506,8 @@ public static class FixJsonTests
 			bashSchema, null);
 		ctx.AssertNotNull(r5, "Full: coerce+strip parses");
 		ctx.AssertNull(e5, "Full: coerce+strip no error");
-		ctx.AssertEqual("ls", r5?["command"]?.GetValue<string>(), "Full: coerce+strip command");
-		ctx.AssertEqual(30, r5?["timeout_seconds"]?.GetValue<int>(), "Full: coerce+strip timeout coerced");
+		ctx.AssertEqual("ls",      r5?["command"]?.GetValue<string>(), "Full: coerce+strip command");
+		ctx.AssertEqual(  30, r5?["timeout_seconds"]?.GetValue<int>(), "Full: coerce+strip timeout coerced");
 		ctx.Assert(r5 != null && !r5.ContainsKey("thoughts"), "Full: coerce+strip extras stripped");
 
 		// Missing required after repair — hard error, not silently swallowed
@@ -485,8 +526,8 @@ public static class FixJsonTests
 			"{command: 'ls -la', timeout_seconds: '60'}", bashSchema, null);
 		ctx.AssertNotNull(r8, "Full: unquoted+single-quote+coerce parses");
 		ctx.AssertNull(e8, "Full: unquoted+single-quote+coerce no error");
-		ctx.AssertEqual("ls -la", r8?["command"]?.GetValue<string>(), "Full: command value");
-		ctx.AssertEqual(60, r8?["timeout_seconds"]?.GetValue<int>(), "Full: timeout coerced from string");
+		ctx.AssertEqual("ls -la",      r8?["command"]?.GetValue<string>(), "Full: command value");
+		ctx.AssertEqual(      60, r8?["timeout_seconds"]?.GetValue<int>(), "Full: timeout coerced from string");
 	}
 
 	// ─── Helpers ─────────────────────────────────────────────────────────────
@@ -526,7 +567,7 @@ public static class FixJsonTests
 	{
 		JsonObject parameters = new JsonObject
 		{
-			["type"] = "object",
+			["type"]       = "object",
 			["properties"] = props
 		};
 

@@ -133,7 +133,8 @@ public class ConfigCatalogPayload
 	[JsonPropertyName("baseUrl")]
 	public string BaseUrl { get; set; } = string.Empty;
 
-	// Non-empty when the fetch failed; Models is then empty.
+	// Non-empty when the fetch failed; Models then carries only the configured entries, so an
+	// unreachable endpoint's models can still be disabled or forgotten.
 	[JsonPropertyName("error")]
 	public string Error { get; set; } = string.Empty;
 
@@ -181,6 +182,11 @@ public class ConfigModelInfo
 	// Unix epoch seconds the model was released; 0 = unknown.
 	[JsonPropertyName("created")]
 	public long Created { get; set; } = 0;
+
+	// True when this is a configured entry the endpoint's catalog no longer lists — it cannot be
+	// enabled, only kept as-is or forgotten (space and Del both forget it in the picker).
+	[JsonPropertyName("missing")]
+	public bool Missing { get; set; } = false;
 
 	// The persisted settings entry (sparse overrides), null when the model is unconfigured.
 	[JsonPropertyName("override")]

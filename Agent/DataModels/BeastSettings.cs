@@ -49,10 +49,11 @@ public class ProviderConfig
 	public List<ModelConfig> Models { get; set; } = new();
 }
 
-// One auto-configured endpoint. Models listed here are the ENABLED set — disabling a model in
-// /config removes its entry. A model that vanishes from the endpoint's catalog is temporarily
-// disabled in memory for that run; its entry is never rewritten or flagged on disk, because the
-// user's intent (temporary outage vs. permanent removal) cannot be known here.
+// One auto-configured endpoint. Models listed here are the CONFIGURED set — disabling a model in
+// /config keeps its entry (enabled=false) so its overrides survive, and also drops it from every
+// role ordering. A model that vanishes from the endpoint's catalog is temporarily disabled in
+// memory for that run; its entry is never rewritten or flagged on disk, because the user's intent
+// (temporary outage vs. permanent removal) cannot be known here.
 public class AutoProviderConfig
 {
 	[JsonPropertyName("baseUrl")]
@@ -257,7 +258,7 @@ public class JsonObjectListConverter : JsonConverter<List<JsonObject>>
 	public override List<JsonObject> Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
 	{
 		List<JsonObject> result = new List<JsonObject>();
-		JsonNode? node = JsonNode.Parse(ref reader);
+		JsonNode?        node   = JsonNode.Parse(ref reader);
 
 		if (node is JsonArray array)
 		{
