@@ -89,6 +89,34 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Headless browsers — Playwright-managed Chromium + Firefox so the agent can render pages,
+# screenshot them, and run end-to-end checks against its own work. `--with-deps` apt-installs
+# the shared libraries and fonts the browsers need. Browsers go to a fixed system-wide path
+# (not root's home) so anything that speaks Playwright — the global node package here, or a
+# same-version python install in a project venv — finds them without re-downloading. The
+# global CLI also gives one-shot commands: `playwright screenshot <url> <file>`,
+# `playwright pdf`, `playwright screenshot --browser firefox ...`. NODE_PATH lets ad-hoc
+# `node -e "require('playwright')..."` scripts resolve the global package from any cwd.
+# WebKit is deliberately skipped: huge dependency footprint, and Chromium/Firefox cover the
+# verification use case.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    NODE_PATH=/usr/lib/node_modules
+RUN npm install -g playwright@1.62.1 \
+    && playwright install --with-deps chromium firefox \
+    && rm -rf /var/lib/apt/lists/*
+
+# Plain `chromium` command for script-free checks (`chromium --dump-dom <url>`,
+# `chromium --screenshot=out.png <url>`). Resolves the Playwright-installed binary at run time
+# so it survives version bumps. Bakes in headless plus the two flags containers need: the
+# sandbox refuses to start as root, and Docker's default 64MB /dev/shm crashes Chromium on
+# real pages (Playwright-driven launches already pass both by default). --log-level=3 mutes
+# ~25 lines of harmless dbus ERROR spam per run that would otherwise waste output tokens;
+# failed page loads still show their cause because the dumped error-page DOM names the net error.
+RUN printf '%s\n' '#!/bin/sh' \
+      'exec "$(ls -d /opt/ms-playwright/chromium-*/chrome-linux64/chrome | head -n1)" --headless --no-sandbox --disable-dev-shm-usage --log-level=3 "$@"' \
+      > /usr/local/bin/chromium \
+    && chmod +x /usr/local/bin/chromium
+
 # Rust (stable toolchain) — installs rustup + cargo into /usr/local/cargo so all users
 # can invoke rustc/cargo without sourcing a per-user profile.
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -122,6 +150,10 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # `find -exec /bin/sh`, `awk 'BEGIN{system(...)}'`, `xargs /bin/sh` all bypass the whole restriction. Bash
 # builtins (echo, pwd, printf, test, read, ...) still work; only external command resolution is narrowed.
 # Names not present on the image are skipped, so the list can name optional tools harmlessly.
+# `chromium` (the headless wrapper above) is the one deliberate exception to strict read-only:
+# it fetches network content and writes files, but only to the explicit --screenshot/--print-to-pdf
+# output paths, and it can't spawn a shell — that's the verification affordance, not an escape hatch.
+# Its wrapper's internal `ls`/`head` also resolve from this directory, so it works under the narrowed PATH.
 # Network diagnostics are observe-only: ping/traceroute/dig/nslookup/host/ss/netstat answer "can I
 # reach it / what resolves / what's listening" but can't reconfigure anything. `ip` and `ifconfig`
 # stay out (their argument forms mutate interfaces/routes when root), as does `nc` (an arbitrary
@@ -135,6 +167,7 @@ RUN mkdir -p /opt/agent-bins/readonly \
          od xxd hexdump strings \
          sha256sum sha1sum md5sum b2sum cksum base64 base32 \
          git jq xmllint pdftotext \
+         chromium \
          ping traceroute dig nslookup host ss netstat \
          ps lsof \
          date uname whoami id which printenv ; do \
