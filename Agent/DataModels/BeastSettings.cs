@@ -95,6 +95,18 @@ public class AutoModelConfig
 
 	[JsonPropertyName("reasoningEffort")]
 	public string ReasoningEffort { get; set; } = string.Empty;
+
+	// False (the default and the behavior for every other model) = the model's reasoning is never
+	// replayed to the server. Not discoverable — no catalog states it — so it is always the user's
+	// call. See ModelConfig.RetainReasoning for what it does.
+	[JsonPropertyName("retainReasoning")]
+	public bool RetainReasoning { get; set; } = false;
+
+	// True (the default) = ask for thinking summaries. Unlike the fields above this is not a sparse
+	// override — there is nothing to discover — and it is written back to false automatically when an
+	// endpoint refuses. See ModelConfig.ReasoningSummaries.
+	[JsonPropertyName("reasoningSummaries")]
+	public bool ReasoningSummaries { get; set; } = true;
 }
 
 public class ToolConfig
@@ -128,6 +140,26 @@ public class ModelConfig
 	// OpenAI reasoning effort, etc.); the user never sees the underlying numbers. Empty means none.
 	[JsonPropertyName("reasoningEffort")]
 	public string ReasoningEffort { get; set; } = string.Empty;
+
+	// Ask the provider to summarize this model's thinking so the client can show it while the turn
+	// runs, instead of a silent pause. On by default — it is the only window into the slowest and
+	// most expensive part of a reasoning turn. Nothing in any catalog says whether an endpoint will
+	// honor it, so this starts optimistic and is written back to false the first time a server
+	// refuses (a model that does not reason, or an unverified OpenAI organization), which is why the
+	// refusal costs one request per model rather than one per turn. Turn it off by hand to stop
+	// paying for summary tokens. Responses API only.
+	[JsonPropertyName("reasoningSummaries")]
+	public bool ReasoningSummaries { get; set; } = true;
+
+	// Replay this model's own reasoning back to it on later turns, in the shape the server emitted.
+	// Off by default and for every other model: unsigned thinking is normally stripped, because most
+	// providers either ignore it or reject it. A few models are trained on preserved thinking and get
+	// measurably worse without it — Moonshot's Kimi K3 states that the complete assistant message,
+	// reasoning_content included, must be passed back unchanged in multi-turn and tool-calling
+	// conversations. ChatCompletions only; the Anthropic and Responses protocols carry their own
+	// native reasoning state (signed blocks, server-side threads) and ignore this.
+	[JsonPropertyName("retainReasoning")]
+	public bool RetainReasoning { get; set; } = false;
 
 	[JsonPropertyName("cost")]
 	public CostConfig Cost { get; set; } = new();

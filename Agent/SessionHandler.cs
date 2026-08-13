@@ -764,6 +764,9 @@ public class SessionHandler
 					if (args != null)
 						QueueModelSwitch(args, roleService, registry, transport);
 					break;
+				case "effort":
+					ApplyEffort(args, registry, transport);
+					break;
 				case "attach":
 					// Staged-file notice from the client: "stagedName\x01originalPath". Held until
 					// the message text arrives so the files land on the turn they belong to.
@@ -771,7 +774,7 @@ public class SessionHandler
 						_activeSession.AddPendingAttachment(args);
 					break;
 				case "help":
-					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /cancel");
+					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /effort <none|minimal|low|medium|high|max>, /cancel");
 					break;
 				default:
 					transport.Error(_activeSession.Id, $"Unknown command: /{verb}");
@@ -779,6 +782,50 @@ public class SessionHandler
 			}
 		}
 		transport.PendingQueue(_activeSession.Id, _activeSession.PeekAllPending());
+	}
+
+	// Reads or sets how hard the CURRENT model thinks. The change belongs to the model, not to this
+	// session or its role: every session already using it picks the new level up on its next turn,
+	// and it is written to settings so the next run starts there. Applies immediately — unlike
+	// /model there is no queue, because nothing about the conversation has to be re-validated.
+	//
+	// A blank effort reports the level in force, which is never blank: an unconfigured model reads as
+	// the default (ReasoningEffort.DefaultWord). An unrecognized word is refused rather than parsed,
+	// since ReasoningEffort.Parse would otherwise read a typo as None and quietly stop the thinking.
+	private void ApplyEffort(string? args, LlmRegistry registry, ITransportServer transport)
+	{
+		LlmModel? model = registry.GetModel(_activeSession.Model);
+		if (model == null)
+		{
+			transport.Error(_activeSession.Id, $"No model is active for this session.");
+			return;
+		}
+
+		string current = ReasoningEffort.DisplayWord(model.Config.ReasoningEffort);
+		if (string.IsNullOrEmpty(args))
+		{
+			string level = string.IsNullOrEmpty(current) ? "none" : current;
+			transport.Output(_activeSession.Id, $"{model.ConfigId} is thinking at '{level}'. Change it with /effort <none|minimal|low|medium|high|max>.");
+			return;
+		}
+
+		string word = args.Trim().ToLowerInvariant();
+		if (!ReasoningEffort.IsKnownWord(word))
+		{
+			transport.Error(_activeSession.Id, $"Unknown effort '{word}'. Use one of: none, minimal, low, medium, high, max.");
+			return;
+		}
+
+		// "off" is accepted at the prompt but stored as the canonical word, so settings only ever
+		// carry the vocabulary the rest of the system reads.
+		string stored = word == "off" ? "none" : word;
+		bool   saved  = registry.UpdateModelReasoning(model.ConfigId, stored, null);
+		string suffix = saved ? "saved" : "for this run only — the model has no settings entry to write to";
+
+		// Session carries a cached "(high)" suffix for its committed stat frames, stamped when the
+		// model was set. Re-stamp it or this session would keep reporting the level it replaced.
+		_activeSession.UpdateModel(model);
+		transport.Status(_activeSession.Id, $"{model.ConfigId} now thinks at '{stored}' ({suffix}). It takes effect on the next turn, for every session using this model.");
 	}
 
 	// Validates a /model request and queues it; applied before the next LLM call (or immediately

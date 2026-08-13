@@ -20,6 +20,30 @@ public enum ReasoningLevel
 // take an effort word, and Chat Completions additionally needs softer fallbacks (see ProtocolChatCompletions).
 public static class ReasoningEffort
 {
+	// What an unconfigured model thinks at. A blank setting means "nobody has said", not "never think":
+	// the reasoning models are worth far more with their reasoning on, and a user who wants one quiet
+	// says so with /effort none — which persists as the explicit word and is honored as None below.
+	// A model that cannot reason at all learns it from the provider's first refusal and is written back
+	// as "none", so the default costs one rejected request per such model, once, ever.
+	public const string DefaultWord = "medium";
+
+	// The word actually in force for a model: its configured one, or the default when it has none.
+	// Applied at load time (LlmRegistry) so every reader downstream sees a settled value.
+	public static string Effective(string? word)
+	{
+		return string.IsNullOrEmpty(word) ? DefaultWord : word;
+	}
+
+	// True when the word names a level this ladder knows. Used by /effort to refuse a typo outright
+	// rather than let Parse silently read it as None and quietly switch thinking off.
+	public static bool IsKnownWord(string? word)
+	{
+		string normalized = (word ?? string.Empty).Trim().ToLowerInvariant();
+		if (normalized == "none" || normalized == "off")
+			return true;
+		return Parse(normalized) != ReasoningLevel.None;
+	}
+
 	// Parses a settings word into a level. Common synonyms are accepted; anything unrecognized reads as
 	// None so a typo quietly disables thinking instead of erroring the whole model.
 	public static ReasoningLevel Parse(string? word)
@@ -28,6 +52,9 @@ public static class ReasoningEffort
 		string         normalized = (word ?? string.Empty).Trim().ToLowerInvariant();
 		switch (normalized)
 		{
+			case "off":
+				level = ReasoningLevel.None;
+				break;
 			case "minimal":
 			case "min":
 			case "minimum":

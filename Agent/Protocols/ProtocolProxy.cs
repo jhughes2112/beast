@@ -32,8 +32,8 @@ public class ProtocolProxy
 	// Used by the subagent loop to require the model to actually do work with tools.
 	public const string AnyTool = "__any_tool__";
 
-	private const string OpenRouterReferer = "https://mooncast.productions";
-	private const string OpenRouterTitle = "Beast";
+	private const string OpenRouterReferer    = "https://mooncast.productions";
+	private const string OpenRouterTitle      = "Beast";
 	private const string OpenRouterCategories = "cli-agent";
 
 	private LlmModel _model;
@@ -47,18 +47,24 @@ public class ProtocolProxy
 	private ProtocolResponses?       _protocolResponses;
 	private ProtocolAnthropic?       _protocolAnthropic;
 
+	// Where a protocol reports a durable reasoning fact it learned from the provider. Null for the
+	// bare test constructor, where there is no registry to tell and nothing to persist to.
+	private readonly ModelReasoningSink? _onReasoningLearned;
+
 	public ProtocolProxy(LlmModel model)
 	{
-		_model = model;
-		_detected = DetectedProtocol.Unknown;
+		_model              = model;
+		_detected           = DetectedProtocol.Unknown;
+		_onReasoningLearned = null;
 	}
 
 	// Create with a known protocol — skips the per-turn probe in ExecuteAsync.
 	// Always prefer this constructor; use the no-protocol overload only as a fallback.
-	public ProtocolProxy(LlmModel model, DetectedProtocol detected)
+	public ProtocolProxy(LlmModel model, DetectedProtocol detected, ModelReasoningSink onReasoningLearned)
 	{
-		_model = model;
-		_detected = detected;
+		_model              = model;
+		_detected           = detected;
+		_onReasoningLearned = onReasoningLearned;
 	}
 
 	// Infers the protocol from the URL route suffix.
@@ -83,7 +89,7 @@ public class ProtocolProxy
 	{
 		try
 		{
-			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+			using HttpRequestMessage request   = new HttpRequestMessage(HttpMethod.Get, endpoint);
 			using HttpResponseMessage response = await _probeClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
 			return true;
 		}
@@ -120,10 +126,10 @@ public class ProtocolProxy
 	// and rehydrates from canonical. Called by ListenerBundle.InvalidateProtocol().
 	public void Invalidate()
 	{
-		_detected = DetectedProtocol.Unknown;
+		_detected                = DetectedProtocol.Unknown;
 		_protocolChatCompletions = null;
-		_protocolResponses = null;
-		_protocolAnthropic = null;
+		_protocolResponses       = null;
+		_protocolAnthropic       = null;
 	}
 
 	// Fan-out methods called by ListenerBundle for external events (user input, tool results,
@@ -194,7 +200,7 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 	}
 
 	// Token counting call: uses the protocol's dedicated token-counting endpoint (Anthropic /count_tokens,
-// OpenAI Responses /responses/input_tokens/count). For Chat Completions, falls back to the legacy
+	// OpenAI Responses /responses/input_tokens/count). For Chat Completions, falls back to the legacy
 	// tracer (max_completion_tokens=1) since there is no dedicated endpoint.
 	// Returns TracerResult with token counts or error status.
 	public async Task<TracerResult> CountTokensAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName,
@@ -238,7 +244,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolChatCompletions == null)
 		{
-			_protocolChatCompletions = new ProtocolChatCompletions();
+			_protocolChatCompletions = new ProtocolChatCompletions(_model.Config.RetainReasoning, _model.ConfigId, _onReasoningLearned);
 			_protocolChatCompletions.Rehydrate(canonical);
 			_protocolResponses = null;
 			_protocolAnthropic = null;
@@ -250,10 +256,10 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolResponses == null)
 		{
-			_protocolResponses = new ProtocolResponses();
+			_protocolResponses = new ProtocolResponses(_onReasoningLearned);
 			_protocolResponses.Rehydrate(canonical);
 			_protocolChatCompletions = null;
-			_protocolAnthropic = null;
+			_protocolAnthropic       = null;
 		}
 		return _protocolResponses;
 	}
@@ -262,10 +268,10 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolAnthropic == null)
 		{
-			_protocolAnthropic = new ProtocolAnthropic();
+			_protocolAnthropic = new ProtocolAnthropic(_onReasoningLearned);
 			_protocolAnthropic.Rehydrate(canonical);
 			_protocolChatCompletions = null;
-			_protocolResponses = null;
+			_protocolResponses       = null;
 		}
 		return _protocolAnthropic;
 	}
@@ -292,21 +298,21 @@ SessionLogger logger, CancellationToken cancellationToken)
 	public static (Dictionary<string, string> headers, Dictionary<string, JsonNode?> payload) BuildExtras(
 		List<JsonObject> extras, List<JsonObject> headerObjects)
 	{
-		Dictionary<string, string> headers = new();
+		Dictionary<string, string>    headers = new();
 		Dictionary<string, JsonNode?> payload = new();
 
 		// Always inject OpenRouter identification headers — harmless on non-OpenRouter endpoints.
 		// The model's own headers can override these.
-		headers["HTTP-Referer"] = OpenRouterReferer;
-		headers["X-Title"] = OpenRouterTitle;
-		headers["X-OpenRouter-Title"] = OpenRouterTitle;
+		headers["HTTP-Referer"]            = OpenRouterReferer;
+		headers["X-Title"]                 = OpenRouterTitle;
+		headers["X-OpenRouter-Title"]      = OpenRouterTitle;
 		headers["X-OpenRouter-Categories"] = OpenRouterCategories;
 
 		foreach (JsonObject headerObject in headerObjects)
 		{
 			foreach ((string name, JsonNode? value) in headerObject)
 			{
-				if (IsEmptyExtra(value))  // empty/null values are ignored, so the settings file can be self-documenting
+				if (IsEmptyExtra(value)) // empty/null values are ignored, so the settings file can be self-documenting
 					continue;
 
 				headers[name] = value!.ToString();

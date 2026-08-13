@@ -173,6 +173,53 @@ public class SettingsService
 		LoadSettings();
 	}
 
+	// Persists a durable reasoning fact about one model — the effort word chosen with /effort, or a
+	// capability the provider taught us mid-run (an endpoint that refuses thinking summaries, a model
+	// that refuses to reason at all). Only the arguments supplied are written; null leaves that field
+	// as it is. The model is looked up in both tiers, since it may be configured either way.
+	// Returns false when no entry exists to write to: the fact still holds for this run (the registry
+	// applies it in memory), it simply has nowhere on disk to live.
+	public bool SaveModelReasoning(string modelId, string? effort, bool? summaries)
+	{
+		BeastSettings home  = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+		bool          found = false;
+
+		foreach (AutoProviderConfig auto in home.Auto)
+		{
+			foreach (AutoModelConfig model in auto.Models)
+			{
+				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					continue;
+				if (effort != null)
+					model.ReasoningEffort = effort;
+				if (summaries.HasValue)
+					model.ReasoningSummaries = summaries.Value;
+				found = true;
+			}
+		}
+
+		foreach (ProviderConfig provider in home.Providers)
+		{
+			foreach (ModelConfig model in provider.Models)
+			{
+				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					continue;
+				if (effort != null)
+					model.ReasoningEffort = effort;
+				if (summaries.HasValue)
+					model.ReasoningSummaries = summaries.Value;
+				found = true;
+			}
+		}
+
+		if (found)
+		{
+			WriteSettings(_homeDirSettingsPath, home);
+			LoadSettings();
+		}
+		return found;
+	}
+
 	// Persists the /config web-search provider selection into the USER settings file, alongside the
 	// endpoints — one setup, every project. No API keys are written: each provider resolves its key
 	// at load time from the endpoint sharing its domain.

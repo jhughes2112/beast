@@ -92,6 +92,12 @@ internal class ConfigOverlay
 		public decimal       OvrCostOut = -1m;
 		public List<string>? OvrModalities;
 		public string        OvrEffort = string.Empty;
+		// Send the model its own reasoning back on later turns. Nothing discovers this, so unlike
+		// the fields above there is no "auto" state behind the blank — off is off.
+		public bool OvrRetainReasoning;
+		// Ask the provider to summarize this model's thinking. On unless turned off here, or until an
+		// endpoint refuses and the agent writes it back as false.
+		public bool OvrSummaries = true;
 
 		public bool Enabled;
 		// True when a settings entry exists (even disabled) — disabling never forgets overrides.
@@ -271,8 +277,10 @@ internal class ConfigOverlay
 								row.OvrCostIn  = cost["input"]?.GetValue<decimal>() ?? -1m;
 								row.OvrCostOut = cost["output"]?.GetValue<decimal>() ?? -1m;
 							}
-							row.OvrModalities = ReadStringList(over["modalities"]);
-							row.OvrEffort     = over["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
+							row.OvrModalities      = ReadStringList(over["modalities"]);
+							row.OvrEffort          = over["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
+							row.OvrRetainReasoning = over["retainReasoning"]?.GetValue<bool>() ?? false;
+							row.OvrSummaries       = over["reasoningSummaries"]?.GetValue<bool>() ?? true;
 						}
 						_models.Add(row);
 					}
@@ -774,15 +782,17 @@ internal class ConfigOverlay
 	// visible as unconfigured; a vanished one has nothing left to show and leaves the list.
 	private void ForgetModel(int modelIdx)
 	{
-		ModelRow row      = _models[modelIdx];
-		row.Enabled       = false;
-		row.Configured    = false;
-		row.OvrWindow     = 0;
-		row.OvrCostIn     = -1m;
-		row.OvrCostOut    = -1m;
-		row.OvrModalities = null;
-		row.OvrEffort     = string.Empty;
-		_dirty            = true;
+		ModelRow row           = _models[modelIdx];
+		row.Enabled            = false;
+		row.Configured         = false;
+		row.OvrWindow          = 0;
+		row.OvrCostIn          = -1m;
+		row.OvrCostOut         = -1m;
+		row.OvrModalities      = null;
+		row.OvrEffort          = string.Empty;
+		row.OvrRetainReasoning = false;
+		row.OvrSummaries       = true;
+		_dirty                 = true;
 
 		if (row.Missing)
 		{
@@ -814,7 +824,11 @@ internal class ConfigOverlay
 		if (!requiredOnly || modalitiesRequired)
 			_detailFields.Add(("modalities", modalitiesRequired));
 		if (!requiredOnly)
+		{
 			_detailFields.Add(("effort", false));
+			_detailFields.Add(("summaries", false));
+			_detailFields.Add(("retain", false));
+		}
 
 		if (_detailFields.Count == 0)
 		{
@@ -884,6 +898,10 @@ internal class ConfigOverlay
 				return row.OvrCostOut >= 0 ? row.OvrCostOut.ToString("0.####") : string.Empty;
 			case "modalities":
 				return row.OvrModalities != null ? string.Join(",", row.OvrModalities) : string.Empty;
+			case "retain":
+				return row.OvrRetainReasoning ? "on" : "off";
+			case "summaries":
+				return row.OvrSummaries ? "on" : "off";
 			default:
 				return row.OvrEffort;
 		}
@@ -913,14 +931,30 @@ internal class ConfigOverlay
 				name       = "Input modalities (text,image,audio)";
 				discovered = row.DiscModalities != null ? string.Join(",", row.DiscModalities) : string.Empty;
 				break;
+			case "retain":
+				name       = "Send reasoning back to the model (on/off)";
+				discovered = string.Empty;
+				break;
+			case "summaries":
+				name       = "Show thinking summaries (on/off)";
+				discovered = string.Empty;
+				break;
 			default:
 				name       = "Reasoning effort (none/minimal/low/medium/high/max)";
 				discovered = string.Empty;
 				break;
 		}
 
+		// Blank is no longer "whatever the provider does": an unset model reasons at medium, and a
+		// model that should not reason has to say "none" — which /effort can also set mid-session.
 		if (field == "effort")
-			return $"{name}  [blank = provider default]";
+			return $"{name}  [blank = medium; 'none' to turn thinking off]";
+		// Nothing to discover and nothing to fall back to: this one is on only if the user says so.
+		if (field == "retain")
+			return $"{name}  [blank = off; on only for models that need their own thinking replayed]";
+		// The only one of these that defaults ON, so blank has to mean on — and it costs tokens.
+		if (field == "summaries")
+			return $"{name}  [blank = on; off stops paying for summary tokens on this model]";
 		return discovered.Length > 0
 			? $"{name}  [discovered: {discovered}; blank = auto]"
 			: required ? $"{name}  [not discoverable — value required]" : $"{name}  [blank = auto]";
@@ -944,6 +978,10 @@ internal class ConfigOverlay
 					row.OvrCostOut = -1m;
 				else if (field == "modalities")
 					row.OvrModalities = null;
+				else if (field == "retain")
+					row.OvrRetainReasoning = false;
+				else if (field == "summaries")
+					row.OvrSummaries = true;
 				else
 					row.OvrEffort = string.Empty;
 				_dirty = true;
@@ -985,6 +1023,23 @@ internal class ConfigOverlay
 				row.OvrModalities = modalities;
 				_dirty            = true;
 				ok                = true;
+			}
+		}
+		else if (field == "retain" || field == "summaries")
+		{
+			// A wrong word here would silently mean "off", so only the yes/no words this accepts
+			// commit — anything else holds the prompt rather than guessing.
+			string word = value.ToLowerInvariant();
+			bool   on   = word == "on" || word == "true" || word == "yes" || word == "1";
+			bool   off  = word == "off" || word == "false" || word == "no" || word == "0";
+			if (on || off)
+			{
+				if (field == "retain")
+					row.OvrRetainReasoning = on;
+				else
+					row.OvrSummaries = on;
+				_dirty = true;
+				ok     = true;
 			}
 		}
 		else
@@ -1041,6 +1096,12 @@ internal class ConfigOverlay
 			}
 			if (!string.IsNullOrEmpty(row.OvrEffort))
 				entry["reasoningEffort"] = row.OvrEffort;
+			if (row.OvrRetainReasoning)
+				entry["retainReasoning"] = true;
+			// Written only when OFF: on is the default, and an absent field is what the agent
+			// rewrites when an endpoint refuses summaries mid-run.
+			if (!row.OvrSummaries)
+				entry["reasoningSummaries"] = false;
 			models.Add(entry);
 		}
 

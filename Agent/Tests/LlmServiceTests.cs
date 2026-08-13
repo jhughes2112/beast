@@ -26,18 +26,18 @@ public static class LlmServiceTests
 		Type[] types = [typeof(long)];
 
 		// Future epoch should return positive seconds.
-		long futureEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60;
-		int futureResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [futureEpoch])!;
+		long futureEpoch  = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60;
+		int  futureResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [futureEpoch])!;
 		ctx.Assert(futureResult >= 59 && futureResult <= 62, "EpochToSecondsFromNow: future epoch returns ~61");
 
 		// Past epoch should return 0.
-		long pastEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 60;
-		int pastResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [pastEpoch])!;
+		long pastEpoch  = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 60;
+		int  pastResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [pastEpoch])!;
 		ctx.AssertEqual(0, pastResult, "EpochToSecondsFromNow: past epoch returns 0");
 
 		// Millisecond epoch should be normalized to seconds.
-		long msEpoch = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 120) * 1000;
-		int msResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [msEpoch])!;
+		long msEpoch  = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 120) * 1000;
+		int  msResult = (int)Reflect.Static(typeof(ProtocolHelpers), "EpochToSecondsFromNow", types, [msEpoch])!;
 		ctx.Assert(msResult >= 119 && msResult <= 122, "EpochToSecondsFromNow: millisecond epoch normalized");
 	}
 
@@ -60,8 +60,8 @@ public static class LlmServiceTests
 		Type[] types = [typeof(HttpResponseMessage), typeof(string)];
 
 		// 429 status code.
-		HttpResponseMessage r429 = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-		bool is429 = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [r429, ""])!;
+		HttpResponseMessage r429  = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+		bool                is429 = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [r429, ""])!;
 		ctx.Assert(is429, "IsRateLimited: 429 status detected");
 
 		// Retry-After header present.
@@ -71,13 +71,13 @@ public static class LlmServiceTests
 		ctx.Assert(isRetry, "IsRateLimited: Retry-After header detected");
 
 		// Normal 200 is not rate limited.
-		HttpResponseMessage rOk = new HttpResponseMessage(HttpStatusCode.OK);
-		bool isOk = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rOk, ""])!;
+		HttpResponseMessage rOk  = new HttpResponseMessage(HttpStatusCode.OK);
+		bool                isOk = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rOk, ""])!;
 		ctx.Assert(!isOk, "IsRateLimited: normal 200 not rate limited");
 
 		// Body containing code 429.
-		HttpResponseMessage rBody = new HttpResponseMessage(HttpStatusCode.OK);
-		bool isBody = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rBody, "{\"code\":429}"])!;
+		HttpResponseMessage rBody  = new HttpResponseMessage(HttpStatusCode.OK);
+		bool                isBody = (bool)Reflect.Static(typeof(ProtocolHelpers), "IsRateLimited", types, [rBody, "{\"code\":429}"])!;
 		ctx.Assert(isBody, "IsRateLimited: body code 429 detected");
 
 		// X-RateLimit-Remaining = 0.
@@ -92,9 +92,9 @@ public static class LlmServiceTests
 		Type[] types = [typeof(string)];
 
 		// Valid nested error body with X-RateLimit-Reset.
-		long futureEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60;
-		string validBody = $"{{\"error\":{{\"metadata\":{{\"headers\":{{\"X-RateLimit-Reset\":\"{futureEpoch}\"}}}}}}}}";
-		int validResult = (int)Reflect.Static(typeof(ProtocolHelpers), "ParseRateLimitSecondsFromBody", types, [validBody])!;
+		long   futureEpoch = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60;
+		string validBody   = $"{{\"error\":{{\"metadata\":{{\"headers\":{{\"X-RateLimit-Reset\":\"{futureEpoch}\"}}}}}}}}";
+		int    validResult = (int)Reflect.Static(typeof(ProtocolHelpers), "ParseRateLimitSecondsFromBody", types, [validBody])!;
 		ctx.Assert(validResult >= 59 && validResult <= 62, "ParseRateLimitSecondsFromBody: valid body parsed");
 
 		// Invalid JSON returns 0.
@@ -108,15 +108,15 @@ public static class LlmServiceTests
 
 	private static void TestTryAdaptToError(TestContext ctx)
 	{
-		ProtocolChatCompletions protocol = new ProtocolChatCompletions();
-		Type[] types = new Type[] { typeof(HttpResponseMessage), typeof(string), typeof(bool) };
+		ProtocolChatCompletions protocol = new ProtocolChatCompletions(false, "test-model", null);
+		Type[]                  types    = new Type[] { typeof(HttpResponseMessage), typeof(string), typeof(bool) };
 
 		// reasoningConfigured is false throughout: these cases exercise the parallel-tool-calls adaptation,
 		// not the reasoning-hint fallback.
 		// 400 with parallel_tool_calls triggers adaptation
-		HttpResponseMessage r400 = new HttpResponseMessage(HttpStatusCode.BadRequest);
-		string parallelBody = "{\"error\": \"parallel_tool_calls not supported\"}";
-		bool adapted = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody, false })!;
+		HttpResponseMessage r400         = new HttpResponseMessage(HttpStatusCode.BadRequest);
+		string              parallelBody = "{\"error\": \"parallel_tool_calls not supported\"}";
+		bool                adapted      = (bool)Reflect.Instance(protocol, "TryAdaptToError", types, new object[] { r400, parallelBody, false })!;
 		ctx.Assert(adapted, "TryAdaptToError: disables parallel_tool_calls on 400");
 
 		// Subsequent call with same error returns false (already disabled)
@@ -124,19 +124,19 @@ public static class LlmServiceTests
 		ctx.Assert(!second, "TryAdaptToError: already disabled returns false");
 
 		// 400 with upstream_error triggers adaptation
-		ProtocolChatCompletions fresh = new ProtocolChatCompletions();
-		string upstreamBody = "{\"error\": \"upstream_error occurred\"}";
-		bool upstream = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, upstreamBody, false })!;
+		ProtocolChatCompletions fresh        = new ProtocolChatCompletions(false, "test-model", null);
+		string                  upstreamBody = "{\"error\": \"upstream_error occurred\"}";
+		bool                    upstream     = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r400, upstreamBody, false })!;
 		ctx.Assert(upstream, "TryAdaptToError: disables parallel_tool_calls on upstream_error");
 
 		// 500 returns false
-		HttpResponseMessage r500 = new HttpResponseMessage(HttpStatusCode.InternalServerError);
-		bool serverErr = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r500, upstreamBody, false })!;
+		HttpResponseMessage r500      = new HttpResponseMessage(HttpStatusCode.InternalServerError);
+		bool                serverErr = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r500, upstreamBody, false })!;
 		ctx.Assert(!serverErr, "TryAdaptToError: 500 status returns false");
 
 		// 429 returns false
-		HttpResponseMessage r429 = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
-		bool rateLimit = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r429, upstreamBody, false })!;
+		HttpResponseMessage r429      = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+		bool                rateLimit = (bool)Reflect.Instance(fresh, "TryAdaptToError", types, new object[] { r429, upstreamBody, false })!;
 		ctx.Assert(!rateLimit, "TryAdaptToError: 429 status returns false");
 
 		// 400 without parallel_tool_calls or upstream_error returns false

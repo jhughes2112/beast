@@ -67,8 +67,46 @@ public class LlmRegistry
 	// fresh work on a model the system already routed around.
 	private readonly ConcurrentDictionary<string, string> _rolePreferredModel = new(StringComparer.OrdinalIgnoreCase);
 
+	// Captured by LoadFromConfigs so a reasoning change learned mid-run (or asked for with /effort)
+	// can be written back to disk. Null only before the first load, which nothing outruns.
+	private SettingsService? _settings;
+
 	public LlmRegistry()
 	{
+	}
+
+	// Applies a durable reasoning change for one model and persists it.
+	//
+	// The live ModelConfig is edited IN PLACE rather than swapped for a new one. Every session, and
+	// every protocol instance inside it, holds this same object: mutating it is what makes /effort
+	// take hold on the next turn everywhere the model is in use, which is the point — the setting
+	// belongs to the model, not to the session or role that happened to change it. Both fields are
+	// single writes of atomic types, so a session reading one mid-write sees the old value or the
+	// new one, never a torn one.
+	//
+	// A model with no settings entry (a manual provider defined outside the user file) still gets
+	// the in-memory change; only the write is skipped. Returns what actually happened so callers
+	// can say so rather than promising a save that did not occur.
+	public bool UpdateModelReasoning(string configId, string? effort, bool? summaries)
+	{
+		if (!_models.TryGetValue(configId, out LlmModel? model))
+			return false;
+
+		if (effort != null)
+			model.Config.ReasoningEffort = effort;
+		if (summaries.HasValue)
+			model.Config.ReasoningSummaries = summaries.Value;
+
+		return _settings != null && _settings.SaveModelReasoning(configId, effort, summaries);
+	}
+
+	// The ModelReasoningSink handed to every service this registry builds. Swallows nothing: a fact
+	// learned from a provider that could not be written down is worth a line on stderr, because the
+	// next run will pay to learn it again.
+	private void ApplyLearnedReasoning(string configId, string? effort, bool? summaries)
+	{
+		if (!UpdateModelReasoning(configId, effort, summaries))
+			Console.Error.WriteLine($"[LlmRegistry] '{configId}': reasoning capability learned at runtime could not be saved; it applies for this run only.");
 	}
 
 	// Last successfully fetched catalog per auto endpoint (keyed by configured baseUrl). Never
@@ -81,6 +119,10 @@ public class LlmRegistry
 	// their existing down/rate-limit state across reloads.
 	public void LoadFromConfigs(SettingsService settings, RoleService roles)
 	{
+		// Held for the durable writes made later by UpdateModelReasoning. LoadFromConfigs is the
+		// documented first call, so nothing can reach that path before this is set.
+		_settings = settings;
+
 		// Build aside and publish with one reference swap, so a session picking a model during a
 		// /reload sees the complete old set or the complete new one — never an empty dictionary.
 		Dictionary<string, LlmModel> fresh = new(StringComparer.OrdinalIgnoreCase);
@@ -92,6 +134,10 @@ public class LlmRegistry
 			{
 				if (!modelConfig.Enabled)
 					continue;
+
+				// Settle the blank into the default here, once, so no reader downstream has to know
+				// that "unconfigured" and "explicitly none" are different words for different things.
+				modelConfig.ReasoningEffort = ReasoningEffort.Effective(modelConfig.ReasoningEffort);
 
 				LlmModel model        = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, modelConfig.Extras, modelConfig.Headers, modelConfig);
 				fresh[modelConfig.Id] = model;
@@ -193,9 +239,13 @@ public class LlmRegistry
 			Enabled         = true,
 			ContextWindow   = window,
 			MaxOutputTokens = enabled.MaxOutputTokens > 0 ? enabled.MaxOutputTokens : found.MaxOutputTokens,
-			ReasoningEffort = enabled.ReasoningEffort,
-			Cost            = cost,
-			Input           = input
+			// Blank settles into the default here (see ReasoningEffort.DefaultWord), so an auto model
+			// nobody has configured still reasons rather than silently running with thinking off.
+			ReasoningEffort    = ReasoningEffort.Effective(enabled.ReasoningEffort),
+			ReasoningSummaries = enabled.ReasoningSummaries,
+			RetainReasoning    = enabled.RetainReasoning,
+			Cost               = cost,
+			Input              = input
 		};
 	}
 
@@ -289,7 +339,7 @@ public class LlmRegistry
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
 		if (withoutReasoning)
 			model = model.WithoutReasoning();
-		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models);
+		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models, ApplyLearnedReasoning);
 	}
 
 	// Builds a service for the next model below the current one in its role list — the automatic equivalent
@@ -324,7 +374,7 @@ public class LlmRegistry
 
 			DetectedProtocol protocol = DetectedProtocol.Unknown;
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
-			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds);
+			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds, ApplyLearnedReasoning);
 		}
 
 		return null;
@@ -346,7 +396,7 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
-		return new LlmService(model, protocol, avail, new List<string> { modelId });
+		return new LlmService(model, protocol, avail, new List<string> { modelId }, ApplyLearnedReasoning);
 	}
 
 	// Returns the best available model for the role without creating a service.

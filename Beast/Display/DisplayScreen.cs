@@ -17,7 +17,7 @@ using TextCopy;
 // Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
-	private const string HelpText     = "Commands: /compact, /config, /role, /reload, /model <id>, /finish, /verbose, /test, /quit  ·  Alt+V pastes images and files";
+	private const string HelpText     = "Commands: /compact, /config, /role, /reload, /model <id>, /effort <level>, /finish, /verbose, /test, /quit  ·  Alt+V pastes images and files";
 	private const int    MaxInputRows = 10;
 
 	// Slash verbs forwarded to the agent; anything else is refused locally. The orchestrator's own
@@ -31,7 +31,7 @@ public class DisplayScreen : IDisplay
 		// Per-session verbs, handled by the session's own command loop rather than the orchestrator.
 		HashSet<string> verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			"compact", "model", "cancel", "attach"
+			"compact", "model", "effort", "cancel", "attach"
 		};
 		foreach (string verb in AgentOrchestrator.GlobalCommands)
 			verbs.Add(verb);

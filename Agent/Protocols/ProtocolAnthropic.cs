@@ -46,12 +46,39 @@ public class ProtocolAnthropic
 	// once per session, not once per turn.
 	private bool _adaptiveThinking;
 
+	// False once this model has refused to think in either shape. Effort defaults to medium for models
+	// nobody has configured (see ReasoningEffort.DefaultWord), so it now reaches the small and older
+	// models that have no extended thinking at all; their refusal is recorded rather than re-earned.
+	private bool _thinkingSupported = true;
+
+	// Where a refusal is reported so it outlives this instance. Null in tests.
+	private readonly ModelReasoningSink? _onReasoningLearned;
+
+	public ProtocolAnthropic(ModelReasoningSink? onReasoningLearned)
+	{
+		_onReasoningLearned = onReasoningLearned;
+	}
+
 	// True when a 400 says this model wants the adaptive thinking shape. Matched on the field names
 	// Anthropic quotes back rather than on prose, so a reworded message still lands.
 	private static bool WantsAdaptiveThinking(string responseBody)
 	{
 		return responseBody.Contains("thinking.type.enabled", StringComparison.OrdinalIgnoreCase)
 			|| responseBody.Contains("thinking.type.adaptive", StringComparison.OrdinalIgnoreCase);
+	}
+
+	// True when a 400 rejects thinking outright rather than asking for a different shape — the model
+	// has none to offer. Checked only AFTER the shape switch has been tried, so a model that merely
+	// wanted the other form is never written off as unable to think.
+	private static bool RejectsThinking(string responseBody)
+	{
+		if (!responseBody.Contains("thinking", StringComparison.OrdinalIgnoreCase))
+			return false;
+
+		return responseBody.Contains("unsupported", StringComparison.OrdinalIgnoreCase)
+			|| responseBody.Contains("not supported",    StringComparison.OrdinalIgnoreCase)
+			|| responseBody.Contains("does not support", StringComparison.OrdinalIgnoreCase)
+			|| responseBody.Contains("unexpected",       StringComparison.OrdinalIgnoreCase);
 	}
 
 	// Rebuilds the native wire-format message chain from canonical, stripping thinking and
@@ -206,8 +233,9 @@ public class ProtocolAnthropic
 			if (maxTokens <= 0)
 				maxTokens = 8192;
 
-			// At most two attempts: the second exists only to re-send after learning that this model
-			// wants the adaptive thinking shape. Anything else returns on the first pass.
+			// Extra attempts exist only to re-send after learning something about this model's thinking:
+			// that it wants the adaptive shape, or that it has no thinking at all. Both are one-way
+			// flags, so the loop can turn at most twice before every path returns.
 			for (int attempt = 0; ; attempt++)
 			{
 				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxTokens, true, extraPayload);
@@ -236,6 +264,17 @@ public class ProtocolAnthropic
 					{
 						_adaptiveThinking = true;
 						logger.Write(model.Config.Name, model.Endpoint, "[thinking] model rejected budget_tokens; retrying with adaptive thinking + output_config.effort");
+						continue;
+					}
+
+					// Neither shape is the problem — this model cannot think at all. Same reasoning as
+					// the shape switch: a request-shape refusal must not mark a working model dead. It
+					// is recorded as "none" so no later turn, session, or run pays for it again.
+					if (_thinkingSupported && RejectsThinking(responseBody))
+					{
+						_thinkingSupported = false;
+						logger.Write(model.Config.Name, model.Endpoint, "[thinking] model does not support extended thinking; recording it as none and re-sending without it");
+						_onReasoningLearned?.Invoke(model.ConfigId, "none", null);
 						continue;
 					}
 
@@ -734,7 +773,7 @@ public class ProtocolAnthropic
 
 		// Thinking is incompatible with a forced tool_choice ("any"/"tool") at the API level, so a
 		// wind-down turn that forces the terminator runs without it rather than 400ing.
-		if (withThinking && string.IsNullOrEmpty(forcedToolName))
+		if (withThinking && _thinkingSupported && string.IsNullOrEmpty(forcedToolName))
 		{
 			if (_adaptiveThinking)
 			{

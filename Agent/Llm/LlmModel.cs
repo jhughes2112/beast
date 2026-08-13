@@ -30,7 +30,10 @@ public class LlmModel
 	// tokens would only spend the output budget on deliberation nobody reads.
 	public LlmModel WithoutReasoning()
 	{
-		if (string.IsNullOrEmpty(Config.ReasoningEffort))
+		// Blank no longer means "off" — it means "nobody configured this", which now reads as the
+		// default level (see ReasoningEffort.DefaultWord). Off is the explicit word, both in the test
+		// below and in the copy, or a model with no configured effort would keep right on thinking.
+		if (ReasoningEffort.Parse(Config.ReasoningEffort) == ReasoningLevel.None)
 			return this;
 
 		ModelConfig quiet = new ModelConfig
@@ -40,7 +43,11 @@ public class LlmModel
 			Enabled         = Config.Enabled,
 			ContextWindow   = Config.ContextWindow,
 			MaxOutputTokens = Config.MaxOutputTokens,
-			ReasoningEffort = string.Empty,
+			ReasoningEffort = "none",
+			// Nobody reads the thinking on a mechanical call, so do not pay to have it summarized.
+			ReasoningSummaries = false,
+			// Carried: a model that needs its own reasoning replayed needs it on every call.
+			RetainReasoning = Config.RetainReasoning,
 			Cost            = Config.Cost,
 			Input           = Config.Input,
 			Extras          = Config.Extras,

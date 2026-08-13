@@ -31,6 +31,31 @@ public class ProtocolResponses
 
 	private bool _streamingSupported = true;
 
+	// Whether to ask for reasoning summaries. A reasoning model spends most of a turn thinking and
+	// emits nothing observable while it does — no text, no events the display can show — so the
+	// client sits silent through the slowest and most expensive part of the turn. Summaries are the
+	// only window the API offers into that (the raw chain of thought is never exposed), they stream
+	// as they are produced, and they cost nothing beyond the reasoning tokens already billed.
+	// Not every endpoint offers them: non-reasoning models reject the field outright, and OpenAI
+	// gates them behind organization verification. Both refusals are a 400 naming the parameter, so
+	// this is advertised optimistically and switched off for the life of the instance on rejection —
+	// see IsSummaryRejection.
+	private bool _summarySupported = true;
+
+	// Set when a request is rejected over a reasoning feature rather than on its merits: the turn is
+	// rebuilt without that feature and re-sent, instead of failing the model over it.
+	private bool _retryAfterRefusal;
+
+	// Whether this model accepts a reasoning effort at all. Effort now defaults to medium for models
+	// nobody has configured (see ReasoningEffort.DefaultWord), which means it also reaches models that
+	// cannot reason — they answer with a 400 naming the parameter. That refusal is the answer to a
+	// question no catalog can answer, so it is honored here and written back as "none".
+	private bool _reasoningSupported = true;
+
+	// Whether the request just built actually carried a reasoning field. A 400 mentioning reasoning
+	// cannot be blamed on a request that never asked for any.
+	private bool _sentReasoning;
+
 	// Native runtime state: the last server-issued response id. In-memory only, reset by Rehydrate.
 	private string? _previousResponseId;
 	// Full input array built once during Rehydrate for the first post-rehydration turn.
@@ -45,9 +70,14 @@ public class ProtocolResponses
 	// an interrupted turn, a replay, a turn from a response that carried no id — is still recorded.
 	private bool _assistantTurnOnServer;
 
-	public ProtocolResponses()
+	// Where a refusal learned from the provider is reported so it outlives this instance. Null in
+	// tests, which exercise the request shapes without a registry behind them.
+	private readonly ModelReasoningSink? _onReasoningLearned;
+
+	public ProtocolResponses(ModelReasoningSink? onReasoningLearned)
 	{
-		_deltaInput = new JsonArray();
+		_deltaInput         = new JsonArray();
+		_onReasoningLearned = onReasoningLearned;
 	}
 
 	// Clears native chaining state so the next turn replays the full canonical history once.
@@ -194,84 +224,99 @@ public class ProtocolResponses
 	{
 		try
 		{
-			JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
-			logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+			// Loops only to re-send a turn the server refused over reasoning.summary. _summarySupported
+			// is one-way, so the rebuilt request cannot be refused for the same reason twice.
+			for (; ; )
+			{
+				JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
+				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
-			if (_streamingSupported)
-			{
-				ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, logger, cancellationToken);
-				if (streamResult != null)
-					return streamResult;
-			}
-
-			string requestJson = body.ToJsonString();
-
-			HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
-			req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
-			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
-			foreach ((string name, string value) in extraHeaders)
-			{
-				req.Headers.TryAddWithoutValidation(name, value);
-			}
-
-			HttpResponseMessage httpResponse;
-			string              responseBody;
-			try
-			{
-				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
-				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-			}
-			catch (OperationCanceledException)
-			{
-				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
-				if (timeout != null)
-					return timeout;
-				throw;
-			}
-			catch (HttpRequestException ex)
-			{
-				logger.ProtocolFailure(
-					model, DetectedProtocol.Responses, "NetworkError",
-					ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null, ex.Message, null, ex);
-				return ProtocolResult.Transient(ex.ToString(), null);
-			}
-			catch (Exception ex)
-			{
-				logger.ProtocolFailure(model, DetectedProtocol.Responses, "Exception", null, ex.Message, null, ex);
-				return ProtocolResult.Transient(ex.ToString(), null);
-			}
-
-			if (httpResponse.IsSuccessStatusCode)
-			{
-				JsonNode? root = JsonNode.Parse(responseBody);
-				if (root == null)
-					return ProtocolResult.Transient("Empty response from Responses API", null);
-
-				return CommitResponse(bundle, root, model);
-			}
-
-			if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
-			{
-				logger.ProtocolFailure(
-					model, DetectedProtocol.Responses, "RateLimited",
-					(int)httpResponse.StatusCode, responseBody, responseBody, null);
-				return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
-			}
-
-			int statusCode = (int)httpResponse.StatusCode;
-			// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
-			// client error: the request itself is bad, so retrying just burns the transient budget and then
-			// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
-			// 5xx and the retryable 4xx stay transient.
-			if (ProtocolHelpers.IsPermanentClientError(statusCode))
-			{
-				if (ProtocolHelpers.IsContextOverflow(responseBody))
+				if (_streamingSupported)
 				{
-					return ProtocolHelpers.ContextOverflowFailure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, extraHeaders, bundle, onProgress, logger, cancellationToken);
+					if (_retryAfterRefusal)
+					{
+						_retryAfterRefusal = false;
+						continue;
+					}
+					if (streamResult != null)
+						return streamResult;
 				}
-				return ProtocolHelpers.Failure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+
+				string requestJson = body.ToJsonString();
+
+				HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
+				req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
+				req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+				foreach ((string name, string value) in extraHeaders)
+				{
+					req.Headers.TryAddWithoutValidation(name, value);
+				}
+
+				HttpResponseMessage httpResponse;
+				string              responseBody;
+				try
+				{
+					httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
+					responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+				}
+				catch (OperationCanceledException)
+				{
+					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+					if (timeout != null)
+						return timeout;
+					throw;
+				}
+				catch (HttpRequestException ex)
+				{
+					logger.ProtocolFailure(
+						model, DetectedProtocol.Responses, "NetworkError",
+						ex.StatusCode.HasValue ? (int)ex.StatusCode.Value : null, ex.Message, null, ex);
+					return ProtocolResult.Transient(ex.ToString(), null);
+				}
+				catch (Exception ex)
+				{
+					logger.ProtocolFailure(model, DetectedProtocol.Responses, "Exception", null, ex.Message, null, ex);
+					return ProtocolResult.Transient(ex.ToString(), null);
+				}
+
+				if (httpResponse.IsSuccessStatusCode)
+				{
+					JsonNode? root = JsonNode.Parse(responseBody);
+					if (root == null)
+						return ProtocolResult.Transient("Empty response from Responses API", null);
+
+					return CommitResponse(bundle, root, model);
+				}
+
+				if (ProtocolHelpers.IsRateLimited(httpResponse, responseBody))
+				{
+					logger.ProtocolFailure(
+						model, DetectedProtocol.Responses, "RateLimited",
+						(int)httpResponse.StatusCode, responseBody, responseBody, null);
+					return ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, responseBody));
+				}
+
+				int statusCode = (int)httpResponse.StatusCode;
+
+				// The server refused a reasoning feature, not the turn: drop it and re-send the turn.
+				if (LearnReasoningRefusal(model, statusCode, responseBody, logger))
+					continue;
+
+				// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
+				// client error: the request itself is bad, so retrying just burns the transient budget and then
+				// surfaces as a misleading "rate limited". Fail fast with the body so the real cause is visible;
+				// 5xx and the retryable 4xx stay transient.
+				if (ProtocolHelpers.IsPermanentClientError(statusCode))
+				{
+					if (ProtocolHelpers.IsContextOverflow(responseBody))
+					{
+						return ProtocolHelpers.ContextOverflowFailure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+					}
+					return ProtocolHelpers.Failure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+				}
+				return ProtocolHelpers.TransientFailure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, httpResponse);
 			}
-			return ProtocolHelpers.TransientFailure("Responses", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, httpResponse);
 		}
 		catch (Exception ex)
 		{
@@ -344,15 +389,20 @@ public class ProtocolResponses
 			}
 		}
 
-		// Translate the friendly reasoningEffort word into the Responses-native reasoning.effort object.
+		// Translate the friendly reasoningEffort word into the Responses-native reasoning.effort object,
+		// and ask for a summary of the thinking so the turn is not silent while it happens. The summary
+		// is requested even with no effort word configured: the reasoning models think at their default
+		// effort whether or not this asks them to, so leaving it out buys silence and nothing else.
 		// Applied before extras so an explicit "reasoning" block in extras can still override it.
-		string? effort = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort);
+		string?    effort    = _reasoningSupported ? ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) : null;
+		JsonObject reasoning = new JsonObject();
 		if (effort != null)
-		{
-			JsonObject reasoning = new JsonObject();
-			reasoning["effort"]  = effort;
-			body["reasoning"]    = reasoning;
-		}
+			reasoning["effort"] = effort;
+		if (_summarySupported && model.Config.ReasoningSummaries)
+			reasoning["summary"] = "auto";
+		if (reasoning.Count > 0)
+			body["reasoning"] = reasoning;
+		_sentReasoning = reasoning.Count > 0;
 
 		foreach ((string name, JsonNode? value) in extraPayload)
 		{
@@ -360,6 +410,76 @@ public class ProtocolResponses
 		}
 
 		return body;
+	}
+
+	// True when a 4xx is the server refusing reasoning summaries specifically, rather than rejecting
+	// the request on its merits. Two distinct refusals wear the same shape: a model that does not
+	// reason at all calls the parameter unsupported, and OpenAI tells unverified organizations they
+	// must verify before it will produce summaries. Either way the turn itself is fine — only the
+	// summary has to go. Matched narrowly on the parameter name so an unrelated 400 is never
+	// mistaken for one of these and silently retried.
+	// True when a 4xx is the server rejecting the reasoning parameter itself — a model that does not
+	// reason being asked to. Checked only after the summary case (which is narrower and shares the
+	// wording) and only when the request actually carried a reasoning field, so an unrelated 400 that
+	// happens to contain the word is never mistaken for one.
+	private static bool IsReasoningRejection(string errorBody)
+	{
+		if (string.IsNullOrEmpty(errorBody))
+			return false;
+
+		string lower = errorBody.ToLowerInvariant();
+		if (!lower.Contains("reasoning"))
+			return false;
+
+		return lower.Contains("unsupported")
+			|| lower.Contains("not supported")
+			|| lower.Contains("does not support")
+			|| lower.Contains("unknown parameter")
+			|| lower.Contains("unknown_parameter");
+	}
+
+	// Classifies a rejected request and, when the provider refused a reasoning feature rather than the
+	// turn, switches that feature off for this instance, reports it so the live config and settings
+	// carry it too, and says the turn should be re-sent. Returns false for every other 4xx, which the
+	// caller then handles as the real failure it is.
+	private bool LearnReasoningRefusal(LlmModel model, int statusCode, string errorBody, SessionLogger logger)
+	{
+		// Only a 4xx is the server refusing what was asked. A 5xx that happens to quote the request
+		// back is an outage, and switching a feature off over one would be learning the wrong lesson
+		// permanently.
+		if (statusCode < 400 || statusCode >= 500)
+			return false;
+
+		if (_summarySupported && model.Config.ReasoningSummaries && IsSummaryRejection(errorBody))
+		{
+			_summarySupported = false;
+			logger.Write(model.Config.Name, model.Endpoint, "[reasoning] endpoint refused thinking summaries; disabling them for this model and re-sending (its thinking will not be visible)");
+			_onReasoningLearned?.Invoke(model.ConfigId, null, false);
+			return true;
+		}
+
+		if (_reasoningSupported && _sentReasoning && IsReasoningRejection(errorBody))
+		{
+			_reasoningSupported = false;
+			logger.Write(model.Config.Name, model.Endpoint, "[reasoning] model does not accept a reasoning effort; recording it as none and re-sending");
+			_onReasoningLearned?.Invoke(model.ConfigId, "none", null);
+			return true;
+		}
+
+		return false;
+	}
+
+	private static bool IsSummaryRejection(string errorBody)
+	{
+		if (string.IsNullOrEmpty(errorBody))
+			return false;
+
+		string lower = errorBody.ToLowerInvariant();
+		return lower.Contains("reasoning.summary")
+			|| lower.Contains("'summary'")
+			|| lower.Contains("\"summary\"")
+			|| lower.Contains("reasoning summaries")
+			|| lower.Contains("reasoning summary");
 	}
 
 	private static JsonObject BuildMessageItem(string role, string blockType, string text)
@@ -421,6 +541,16 @@ public class ProtocolResponses
 		{
 			string errorBody  = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
 			int    statusCode = (int)httpResponse.StatusCode;
+
+			// Checked before the streaming-support verdict below: a request refused for asking after
+			// thinking summaries (or for offering an effort the model cannot take) says nothing about
+			// whether this endpoint can stream, and permanently giving up streaming over it would cost
+			// far more than either was worth.
+			if (LearnReasoningRefusal(model, statusCode, errorBody, logger))
+			{
+				_retryAfterRefusal = true;
+				return null;
+			}
 
 			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
 			// the provider rejects streaming for this model, so we disable it and fall through to
@@ -519,7 +649,12 @@ public class ProtocolResponses
 							EmitProgress(model, liveInputTokens, onProgress, liveCachedTokens);
 						}
 					}
-					else if (eventType == "response.reasoning_summary_text.delta")
+					// Two spellings of the same thing: hosted reasoning models emit a summary of their
+					// thinking (the raw chain of thought is never exposed), while open-weight models
+					// served over this API — gpt-oss and the local servers that imitate it — emit the
+					// raw reasoning text directly. Both are the model thinking out loud, so both stream
+					// to the same block.
+					else if (eventType == "response.reasoning_summary_text.delta" || eventType == "response.reasoning_text.delta")
 					{
 						string? delta = eventNode["delta"]?.GetValue<string>();
 						if (!string.IsNullOrEmpty(delta))
@@ -536,6 +671,12 @@ public class ProtocolResponses
 							bundle.Transport?.OnStreamChunk(StreamTag.Thinking, delta);
 							EmitProgress(model, liveInputTokens, onProgress, liveCachedTokens);
 						}
+					}
+					// A long think arrives as several summary parts. They carry no separator of their
+					// own, so without this the parts run together into one wall of text.
+					else if (eventType == "response.reasoning_summary_part.added" && openStreamTag == StreamTag.Thinking)
+					{
+						bundle.Transport?.OnStreamChunk(StreamTag.Thinking, "\n\n");
 					}
 					else if (eventType == "response.completed" || eventType == "response.done")
 					{
@@ -631,16 +772,12 @@ public class ProtocolResponses
 			}
 			else if (type == "reasoning")
 			{
-				JsonArray? content = item["content"]?.AsArray();
-				if (content != null)
-				{
-					foreach (JsonNode? block in content)
-					{
-						string? text = block?["text"]?.GetValue<string>();
-						if (!string.IsNullOrEmpty(text))
-							thinkingBuilder.Append(text);
-					}
-				}
+				// A reasoning item carries its text in "summary" (hosted models, summarizing a chain of
+				// thought that is never itself exposed) or in "content" (open-weight models, which return
+				// the raw reasoning). Reading only content left the committed thinking empty for every
+				// hosted reasoning model, so both are collected.
+				AppendReasoningText(item["summary"]?.AsArray(), thinkingBuilder);
+				AppendReasoningText(item["content"]?.AsArray(), thinkingBuilder);
 			}
 		}
 
@@ -672,6 +809,24 @@ public class ProtocolResponses
 
 		List<ToolResult> emptyResults = new List<ToolResult>();
 		return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+	}
+
+	// Appends every text block of a reasoning item's part array, blank-line separated so multiple
+	// parts read as the paragraphs they are — the same separation the stream inserts live.
+	private static void AppendReasoningText(JsonArray? parts, StringBuilder builder)
+	{
+		if (parts == null)
+			return;
+
+		foreach (JsonNode? part in parts)
+		{
+			string? text = part?["text"]?.GetValue<string>();
+			if (string.IsNullOrEmpty(text))
+				continue;
+			if (builder.Length > 0)
+				builder.Append("\n\n");
+			builder.Append(text);
+		}
 	}
 
 	private static (TokenUsageInfo usage, decimal cost) ExtractUsage(JsonNode responseRoot, LlmModel model)
@@ -847,7 +1002,9 @@ public class ProtocolResponses
 		}
 
 		// Translate the friendly reasoningEffort word into the Responses-native reasoning.effort object.
-		string? effort = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort);
+		// Summaries are never requested here: this endpoint only counts tokens, so there is no thinking
+		// to watch and nothing to show.
+		string? effort = _reasoningSupported ? ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) : null;
 		if (effort != null)
 		{
 			JsonObject reasoning = new JsonObject();

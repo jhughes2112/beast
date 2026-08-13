@@ -26,6 +26,9 @@ public static class ModelCatalogTests
 		TestUnansweredToolCallRepair(ctx);
 		TestAttachmentsSurviveFlush(ctx);
 		TestTextAfterMediaMerge(ctx);
+		TestRetainReasoning(ctx);
+		TestReasoningSummaryRequest(ctx);
+		TestEffortDefaultAndRefusal(ctx);
 		TestSelectiveMarkerStrip(ctx);
 		TestStagedNameTraversal(ctx);
 	}
@@ -64,7 +67,7 @@ public static class ModelCatalogTests
 	// drained before an assistant reply.
 	private static void TestTextAfterMediaMerge(TestContext ctx)
 	{
-		ProtocolChatCompletions protocol = new ProtocolChatCompletions();
+		ProtocolChatCompletions protocol = new ProtocolChatCompletions(false, "test-model", null);
 		protocol.OnUserMessage("look at this", new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") });
 		protocol.OnUserMessage("and tell me more");
 
@@ -78,13 +81,168 @@ public static class ModelCatalogTests
 		ctx.AssertEqual("image_url", parts[1]?["type"]?.GetValue<string>(), "MediaMerge: the image part is untouched");
 
 		// A media-only message gains a text part at the front when text merges in later.
-		ProtocolChatCompletions wordless = new ProtocolChatCompletions();
+		ProtocolChatCompletions wordless = new ProtocolChatCompletions(false, "test-model", null);
 		wordless.OnUserMessage(string.Empty, new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") });
 		wordless.OnUserMessage("what is this?");
 		JsonArray wordlessNative = (JsonArray)Reflect.GetField(wordless, "_native")!;
 		JsonArray? wordlessParts = wordlessNative[0]?["content"] as JsonArray;
 		ctx.AssertEqual("text", wordlessParts![0]?["type"]?.GetValue<string>(), "MediaMerge: a wordless media turn gains a leading text part");
 		ctx.AssertEqual("what is this?", wordlessParts[0]?["text"]?.GetValue<string>(), "MediaMerge: with the merged text");
+	}
+
+	// Thinking is stripped from the ChatCompletions chain unless the model is configured to retain
+	// it — and when it is retained, it goes back in the field and shape the server emitted, because
+	// the models that ask for this (Kimi K3) require the assistant message returned unchanged.
+	private static void TestRetainReasoning(TestContext ctx)
+	{
+		List<SemanticToolCall> noCalls = new List<SemanticToolCall>();
+
+		ProtocolChatCompletions off = new ProtocolChatCompletions(false, "test-model", null);
+		off.OnAssistantTurn("done", "first I considered", noCalls);
+		JsonArray offNative = (JsonArray)Reflect.GetField(off, "_native")!;
+		ctx.Assert(offNative[0]?["reasoning_content"] == null, "RetainReasoning: off is the default — no thinking reaches the wire");
+
+		ProtocolChatCompletions on = new ProtocolChatCompletions(true, "test-model", null);
+		on.OnAssistantTurn("done", "first I considered", noCalls);
+		JsonArray onNative = (JsonArray)Reflect.GetField(on, "_native")!;
+		ctx.AssertEqual("first I considered", onNative[0]?["reasoning_content"]?.GetValue<string>(),
+			"RetainReasoning: a turn with no captured wire shape replays as reasoning_content");
+
+		// A turn parsed off the wire replays under its own field name, structure intact: an
+		// OpenRouter reasoning_details array must not be flattened into a reasoning_content string.
+		JsonObject wire = new JsonObject
+		{
+			["reasoning_details"] = new JsonArray((JsonNode)new JsonObject { ["type"] = "reasoning.text", ["text"] = "step", ["signature"] = "sig-abc" })
+		};
+		object? captured = Reflect.Static(typeof(ProtocolChatCompletions), "CaptureReasoning", new Type[] { typeof(JsonObject) }, new object[] { wire });
+		ctx.AssertNotNull(captured, "RetainReasoning: reasoning_details is recognized as emitted reasoning");
+
+		ProtocolChatCompletions structured = new ProtocolChatCompletions(true, "test-model", null);
+		Reflect.SetField(structured, "_pendingReasoning", captured);
+		structured.OnAssistantTurn("done", "step", noCalls);
+		JsonArray structuredNative = (JsonArray)Reflect.GetField(structured, "_native")!;
+		JsonArray? details         = structuredNative[0]?["reasoning_details"] as JsonArray;
+		ctx.AssertNotNull(details, "RetainReasoning: the emitted field name is the one replayed");
+		ctx.AssertEqual("sig-abc", details![0]?["signature"]?.GetValue<string>(), "RetainReasoning: the entry replays verbatim, signature and all");
+		ctx.Assert(structuredNative[0]?["reasoning_content"] == null, "RetainReasoning: and is not also flattened into reasoning_content");
+
+		// The captured shape belongs to exactly one turn: a second turn must not inherit it.
+		structured.OnAssistantTurn("more", string.Empty, noCalls);
+		ctx.Assert(structuredNative[1]?["reasoning_details"] == null, "RetainReasoning: the captured shape is consumed by the turn it came from");
+	}
+
+	// A reasoning model that is never asked for a summary spends the whole turn thinking silently,
+	// which is what made long, expensive turns look like a hang. The summary has to be requested
+	// even when no effort word is configured (the model reasons at its default either way), and an
+	// endpoint that refuses it must cost the summary only — not the turn, and not streaming.
+	private static void TestReasoningSummaryRequest(TestContext ctx)
+	{
+		ModelConfig config = new ModelConfig { Id = "gpt-5.6-sol", Name = "gpt-5.6-sol", ContextWindow = 200000 };
+		LlmModel    model  = new LlmModel("gpt-5.6-sol", "https://api.openai.com/v1/responses", "key",
+			new List<JsonObject>(), new List<JsonObject>(), config);
+
+		ProtocolResponses protocol = new ProtocolResponses(null);
+		Type[] types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };
+		object[] args = new object[] { model, new List<ToolDefinition>(), null!, null!, new Dictionary<string, JsonNode?>() };
+
+		JsonObject body = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		ctx.AssertEqual("auto", body["reasoning"]?["summary"]?.GetValue<string>(),
+			"ReasoningSummary: requested even with no reasoning effort configured");
+
+		// Once the endpoint has refused, the field is gone for the life of the instance.
+		Reflect.SetField(protocol, "_summarySupported", false);
+		JsonObject after = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		ctx.Assert(after["reasoning"]?["summary"] == null, "ReasoningSummary: dropped after the endpoint refuses it");
+		ctx.Assert(after["reasoning"] == null, "ReasoningSummary: and no empty reasoning object is left behind");
+
+		// The refusal is recognized from what the two servers that issue it actually say — and an
+		// unrelated 400 must NOT be swallowed as one, or a real error would be retried and hidden.
+		Type[] one = new Type[] { typeof(string) };
+		ctx.Assert((bool)Reflect.Static(typeof(ProtocolResponses), "IsSummaryRejection", one,
+			["{\"error\":{\"message\":\"Unsupported parameter: 'reasoning.summary' is not supported with this model.\"}}"])!,
+			"ReasoningSummary: an unsupported-parameter refusal is recognized");
+		ctx.Assert((bool)Reflect.Static(typeof(ProtocolResponses), "IsSummaryRejection", one,
+			["{\"error\":{\"message\":\"Your organization must be verified to generate reasoning summaries.\"}}"])!,
+			"ReasoningSummary: the unverified-organization refusal is recognized");
+		ctx.Assert(!(bool)Reflect.Static(typeof(ProtocolResponses), "IsSummaryRejection", one,
+			["{\"error\":{\"message\":\"No tool output found for function call call_abc.\"}}"])!,
+			"ReasoningSummary: an unrelated 400 is left alone");
+
+		// Thinking committed off a finished response: hosted models put it in summary, open-weight
+		// models in content. Reading only content left every hosted reasoning turn with no thinking.
+		System.Text.StringBuilder builder = new System.Text.StringBuilder();
+		JsonArray summary = new JsonArray(
+			(JsonNode)new JsonObject { ["type"] = "summary_text", ["text"] = "First I read the file." },
+			(JsonNode)new JsonObject { ["type"] = "summary_text", ["text"] = "Then I checked the caller." });
+		Reflect.Static(typeof(ProtocolResponses), "AppendReasoningText",
+			new Type[] { typeof(JsonArray), typeof(System.Text.StringBuilder) }, new object[] { summary, builder });
+		ctx.AssertEqual("First I read the file.\n\nThen I checked the caller.", builder.ToString(),
+			"ReasoningSummary: summary parts commit blank-line separated");
+	}
+
+	// An unconfigured model thinks at the default rather than not at all, which means the effort now
+	// also reaches models that cannot reason. Their refusal has to be recognized, applied, and
+	// reported exactly once — that report is what keeps it from being re-earned every run.
+	private static void TestEffortDefaultAndRefusal(TestContext ctx)
+	{
+		ctx.AssertEqual("medium", ReasoningEffort.Effective(string.Empty), "Effort: a blank setting means the default, not silence");
+		ctx.AssertEqual("medium", ReasoningEffort.Effective(null), "Effort: so does a missing one");
+		ctx.AssertEqual("low", ReasoningEffort.Effective("low"), "Effort: a configured word wins");
+		ctx.AssertEqual("none", ReasoningEffort.Effective("none"), "Effort: 'none' is a choice and survives — it is not 'unset'");
+		ctx.AssertEqual(ReasoningLevel.None, ReasoningEffort.Parse("none"), "Effort: and it still parses as no thinking");
+
+		ctx.Assert(ReasoningEffort.IsKnownWord("max"), "Effort: known words are accepted by /effort");
+		ctx.Assert(ReasoningEffort.IsKnownWord("none"), "Effort: including the one that turns thinking off");
+		ctx.Assert(!ReasoningEffort.IsKnownWord("mediun"), "Effort: a typo is refused rather than silently read as none");
+
+		// The refusal path: the first 400 naming the parameter switches reasoning off for the
+		// instance and reports it, so nothing pays to discover it a second time.
+		// Built the way the registry builds one: the blank has already settled into the default.
+		ModelConfig config = new ModelConfig
+		{
+			Id              = "gpt-4o-mini",
+			Name            = "gpt-4o-mini",
+			ContextWindow   = 128000,
+			ReasoningEffort = ReasoningEffort.Effective(string.Empty)
+		};
+		LlmModel    model  = new LlmModel("gpt-4o-mini", "https://api.openai.com/v1/responses", "key",
+			new List<JsonObject>(), new List<JsonObject>(), config);
+
+		List<(string Id, string? Effort, bool? Summaries)> learned = new List<(string, string?, bool?)>();
+		ModelReasoningSink sink = (id, effort, summaries) => learned.Add((id, effort, summaries));
+
+		ProtocolResponses protocol = new ProtocolResponses(sink);
+		Type[]   types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };
+		object[] args  = new object[] { model, new List<ToolDefinition>(), null!, null!, new Dictionary<string, JsonNode?>() };
+		JsonObject body = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		ctx.AssertEqual("medium", body["reasoning"]?["effort"]?.GetValue<string>(), "Effort: an unconfigured model is asked to think at the default");
+
+		Type[] learnTypes = new Type[] { typeof(LlmModel), typeof(int), typeof(string), typeof(SessionLogger) };
+		SessionLogger logger = new SessionLogger("effort-refusal-test");
+		bool handled = (bool)Reflect.Instance(protocol, "LearnReasoningRefusal", learnTypes,
+			new object[] { model, 400, "{\"error\":{\"message\":\"Unsupported parameter: reasoning.effort is not supported with this model.\"}}", logger })!;
+		ctx.Assert(handled, "Effort: a model refusing the parameter is recognized");
+		ctx.AssertEqual(1, learned.Count, "Effort: and reported once");
+		ctx.AssertEqual("none", learned[0].Effort, "Effort: recorded as none, which is what stops the next run repeating it");
+		ctx.Assert(learned[0].Summaries == null, "Effort: the summary setting is left alone by a reasoning refusal");
+
+		JsonObject after = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		ctx.Assert(after["reasoning"]?["effort"] == null, "Effort: the re-sent turn carries no effort");
+
+		// A second refusal must not report again — one 400 per model is the whole budget.
+		bool twice = (bool)Reflect.Instance(protocol, "LearnReasoningRefusal", learnTypes,
+			new object[] { model, 400, "{\"error\":{\"message\":\"Unsupported parameter: reasoning.effort.\"}}", logger })!;
+		ctx.Assert(!twice, "Effort: the refusal is learned once, not re-learned every turn");
+		ctx.AssertEqual(1, learned.Count, "Effort: and reported once");
+
+		// A 5xx quoting the request back is an outage, not a refusal — learning from one would switch
+		// a working feature off permanently on a bad afternoon.
+		ProtocolResponses outage = new ProtocolResponses(sink);
+		Reflect.Instance(outage, "BuildBody", types, args);
+		bool fromOutage = (bool)Reflect.Instance(outage, "LearnReasoningRefusal", learnTypes,
+			new object[] { model, 503, "{\"error\":{\"message\":\"upstream: reasoning is not supported right now\"}}", logger })!;
+		ctx.Assert(!fromOutage, "Effort: a 5xx teaches nothing durable");
+		ctx.AssertEqual(1, learned.Count, "Effort: and reports nothing");
 	}
 
 	// Only markers whose file actually staged are stripped; one that failed to stage stays in the
@@ -192,7 +350,7 @@ public static class ModelCatalogTests
 
 		// An image dropped with no words must not produce an empty text block beside the media.
 		UserMessage wordless = new UserMessage(string.Empty, new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") });
-		JsonObject native = (JsonObject)Reflect.Static(typeof(ProtocolChatCompletions), "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { wordless })!;
+		JsonObject native = (JsonObject)Reflect.Instance(new ProtocolChatCompletions(false, "test-model", null), "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { wordless })!;
 		JsonArray? parts = native["content"] as JsonArray;
 		ctx.AssertNotNull(parts, "Wordless attachment: content is a part array");
 		ctx.AssertEqual(1, parts!.Count, "Wordless attachment: only the image part, no empty text block");
@@ -426,7 +584,8 @@ public static class ModelCatalogTests
 			new MediaAttachment("image/png", "QUJD"),
 			new MediaAttachment("audio/wav", "REVG")
 		});
-		JsonObject native = (JsonObject)Reflect.Static(typeof(ProtocolChatCompletions), "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { media })!;
+		ProtocolChatCompletions protocol = new ProtocolChatCompletions(false, "test-model", null);
+		JsonObject native = (JsonObject)Reflect.Instance(protocol, "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { media })!;
 
 		ctx.AssertEqual("user", native["role"]?.GetValue<string>(), "AttachmentParts: role");
 		JsonArray? parts = native["content"] as JsonArray;
@@ -439,7 +598,7 @@ public static class ModelCatalogTests
 		ctx.AssertEqual("wav", parts[2]?["input_audio"]?["format"]?.GetValue<string>(), "AttachmentParts: audio format from mime");
 
 		// A plain user message keeps the simple string content shape.
-		JsonObject plain = (JsonObject)Reflect.Static(typeof(ProtocolChatCompletions), "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { new UserMessage("hi") })!;
+		JsonObject plain = (JsonObject)Reflect.Instance(protocol, "ToNativeMessage", new[] { typeof(CanonicalMessage) }, new object[] { new UserMessage("hi") })!;
 		ctx.Assert(plain["content"] is JsonValue, "AttachmentParts: plain message stays string content");
 	}
 }

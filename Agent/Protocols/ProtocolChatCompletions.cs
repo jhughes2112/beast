@@ -16,11 +16,37 @@ using System.Threading.Tasks;
 // that issued the tool call - the ordering is load-bearing.
 //
 // This protocol maintains its own separate copy of messages (_native) that are sent to the
-// server each turn. It must never retain thinking blocks. The native state is rebuilt from
-// canonical by Rehydrate and kept in sync through the IProtocolListener events. Thinking is
-// intentionally stripped because the server should not see unsigned thinking blocks.
+// server each turn. The native state is rebuilt from canonical by Rehydrate and kept in sync
+// through the IProtocolListener events. Thinking is stripped by default because the server
+// should not see unsigned thinking blocks — unless the model is configured with
+// retainReasoning, which the constructor takes and which reverses that for this instance only.
 public class ProtocolChatCompletions
 {
+	// Model config: replay this model's reasoning back to it (see ModelConfig.RetainReasoning).
+	// Fixed for the life of the instance because the proxy builds one protocol per model, and it
+	// has to be known at Rehydrate time — the native chain is built before the first turn runs.
+	private readonly bool _retainReasoning;
+
+	// The reasoning field of the turn most recently parsed off the wire, held verbatim so it can be
+	// replayed in the exact shape the server emitted rather than a normalized rebuild. Set by both
+	// the streaming and non-streaming parse (to null when the turn carried none, so a discarded-and-
+	// retried turn can never inherit the previous one's) and consumed by the OnAssistantTurn that
+	// fans that same turn back in. Null on every other path — a replayed or foreign turn has only
+	// the canonical thinking string to offer.
+	private (string Field, JsonNode Value)? _pendingReasoning;
+
+	// The model this instance speaks for, and where a capability learned from its provider is reported.
+	// Both are fixed for the instance's life: the proxy builds one protocol per model.
+	private readonly string              _configId;
+	private readonly ModelReasoningSink? _onReasoningLearned;
+
+	public ProtocolChatCompletions(bool retainReasoning, string configId, ModelReasoningSink? onReasoningLearned)
+	{
+		_retainReasoning    = retainReasoning;
+		_configId           = configId;
+		_onReasoningLearned = onReasoningLearned;
+	}
+
 	private bool _parallelToolCallsSupported = true;
 	private bool _streamingSupported         = true;
 
@@ -66,7 +92,7 @@ public class ProtocolChatCompletions
 
 	// Converts a typed canonical message to an OpenAI ChatCompletions wire object.
 	// Returns null for message types that have no native representation (none currently).
-	private static JsonObject? ToNativeMessage(CanonicalMessage msg)
+	private JsonObject? ToNativeMessage(CanonicalMessage msg)
 	{
 		if (msg is SystemMessage sm)
 		{
@@ -128,6 +154,13 @@ public class ProtocolChatCompletions
 			JsonObject obj = new JsonObject();
 			obj["role"]    = "assistant";
 			obj["content"] = am.Text ?? string.Empty;
+
+			// Rehydration (session load, protocol switch) has only canonical's flattened thinking
+			// string to work with, so the emitted shape is gone. reasoning_content is the field the
+			// models that ask for this replay it in, and the one they emit it in.
+			if (_retainReasoning && !string.IsNullOrEmpty(am.Thinking))
+				obj["reasoning_content"] = am.Thinking;
+
 			if (am.ToolCalls.Count > 0)
 			{
 				JsonArray tcArr = new JsonArray();
@@ -222,13 +255,27 @@ public class ProtocolChatCompletions
 			_native.Add((JsonNode)msg);
 	}
 
-	// A completed assistant turn from replay or another protocol. Thinking is dropped because
-	// it must never be sent to the server.
+	// A completed assistant turn, either the one this protocol just parsed or one from replay or
+	// another protocol. Thinking is dropped unless the model is configured to retain it.
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
 	{
+		(string Field, JsonNode Value)? emitted = _pendingReasoning;
+		_pendingReasoning                       = null;
+
 		JsonObject msg = new JsonObject();
 		msg["role"]    = "assistant";
 		msg["content"] = text ?? string.Empty;
+
+		if (_retainReasoning)
+		{
+			// Prefer the node captured off the wire: it is the turn's own reasoning in the field and
+			// shape the server used, which is what a model trained on preserved thinking expects back.
+			// The flattened string is the fallback for turns that reached this protocol some other way.
+			if (emitted.HasValue)
+				msg[emitted.Value.Field] = emitted.Value.Value.DeepClone();
+			else if (!string.IsNullOrEmpty(thinking))
+				msg["reasoning_content"] = thinking;
+		}
 
 		if (toolCalls.Count > 0)
 		{
@@ -368,7 +415,8 @@ public class ProtocolChatCompletions
 					}
 
 					(string assistantText, List<SemanticToolCall> toolCalls) = ExtractSemantic(messageObj);
-					string thinking = ExtractThinking(messageObj);
+					string thinking   = ExtractThinking(messageObj);
+					_pendingReasoning = CaptureReasoning(messageObj);
 
 					// Salvage tool calls a template-mismatched local model emitted as literal
 					// <tool_call> text instead of the native tool_calls array. Only blocks naming
@@ -729,8 +777,10 @@ httpResponse);
 			return ProtocolResult.Transient($"HTTP {statusCode}: {errorBody}", ProtocolHelpers.TryGetRetryAfter(httpResponse, errorBody));
 		}
 
-		StringBuilder           contentBuilder       = new StringBuilder();
-		StringBuilder           reasoningBuilder     = new StringBuilder();
+		StringBuilder contentBuilder   = new StringBuilder();
+		StringBuilder reasoningBuilder = new StringBuilder();
+		// Which spelling the deltas arrived under, so the replay uses the same one.
+		string                  reasoningField       = string.Empty;
 		List<StreamingToolCall> toolCallAccumulators = new List<StreamingToolCall>();
 		string                  finishReason         = string.Empty;
 		JsonNode?               usageNodeFinal       = null;
@@ -792,6 +842,9 @@ httpResponse);
 										  ?? delta["reasoning"]?.GetValue<string>();
 					if (!string.IsNullOrEmpty(reasoningDelta))
 					{
+						if (reasoningField.Length == 0)
+							reasoningField = delta["reasoning_content"] != null ? "reasoning_content" : "reasoning";
+
 						if (openStreamTag != StreamTag.Thinking)
 						{
 							if (openStreamTag != null)
@@ -880,6 +933,14 @@ httpResponse);
 
 		string assistantText = contentBuilder.ToString();
 		string thinking      = reasoningBuilder.ToString();
+
+		// A stream delivers reasoning as text deltas under one field name, so the emitted shape is
+		// that field carrying the joined text. (Providers that stream structured reasoning_details
+		// instead are not reassembled here — this protocol does not parse those deltas at all, so
+		// such a turn arrives with no reasoning and replays nothing.)
+		_pendingReasoning = reasoningField.Length > 0 && thinking.Length > 0
+			? (reasoningField, (JsonNode)JsonValue.Create(thinking))
+			: null;
 
 		List<SemanticToolCall> semanticToolCalls = new List<SemanticToolCall>();
 		if (toolCallAccumulators.Count > 0)
@@ -1135,6 +1196,29 @@ httpResponse);
 		return (text, tcs);
 	}
 
+	// The turn's reasoning exactly as the server sent it, or null when it sent none. Providers use
+	// three spellings — Moonshot and DeepSeek-style servers send a reasoning_content string, some
+	// gateways a plain reasoning string, OpenRouter a reasoning_details array whose entries carry
+	// ids and signatures that only survive a verbatim round trip — so the field name is kept
+	// alongside the value rather than normalized away.
+	private static (string Field, JsonNode Value)? CaptureReasoning(JsonObject messageObj)
+	{
+		string[] fields = new string[] { "reasoning_content", "reasoning", "reasoning_details" };
+		foreach (string field in fields)
+		{
+			JsonNode? node = messageObj[field];
+			if (node == null)
+				continue;
+			if (node is JsonValue value && value.TryGetValue<string>(out string? text) && string.IsNullOrEmpty(text))
+				continue;
+			if (node is JsonArray array && array.Count == 0)
+				continue;
+			return (field, node.DeepClone());
+		}
+
+		return null;
+	}
+
 	private static string ExtractThinking(JsonObject messageObj)
 	{
 		string? reasoningContent = messageObj["reasoning_content"]?.GetValue<string>();
@@ -1214,6 +1298,12 @@ httpResponse);
 		if (reasoningConfigured && _reasoningMode < 2 && lowerBody.Contains("reasoning"))
 		{
 			_reasoningMode++;
+
+			// Both encodings refused: this model does not reason, whatever it was configured with (and
+			// effort now defaults to medium for models nobody configured). Record it so the next run —
+			// and every other session on this model — stops paying a rejected request to find out.
+			if (_reasoningMode == 2)
+				_onReasoningLearned?.Invoke(_configId, "none", null);
 			return true;
 		}
 

@@ -12,11 +12,18 @@ public enum LlmExitReason
 // turn while a response streams. Provisional; superseded at commit by the authoritative payload.
 public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost, int cachedTokens);
 
+// Raised by a protocol when a provider teaches it something durable about a model's reasoning: an
+// endpoint that refuses thinking summaries, or a model that rejects reasoning parameters outright.
+// The registry applies it to the live config and writes it to settings, so the next run — and every
+// other session using that model right now — starts from what was learned instead of rediscovering
+// it one rejected request at a time. Null fields mean "unchanged"; effort is a ReasoningEffort word.
+public delegate void ModelReasoningSink(string configId, string? effort, bool? summaries);
+
 // Result returned by LlmService after running a conversation to completion.
 public class LlmResult
 {
-	public LlmExitReason ExitReason { get; }
-	public string ErrorMessage { get; }
+	public LlmExitReason ExitReason   { get; }
+	public string        ErrorMessage { get; }
 	// Provider finish/stop reason of the completing turn ("length"/"max_tokens" when the response
 	// was cut off by the output limit). Empty for non-completing exits.
 	public string FinishReason { get; }
@@ -28,7 +35,7 @@ public class LlmResult
 
 	public LlmResult(LlmExitReason exitReason, string errorMessage, string finishReason)
 	{
-		ExitReason = exitReason;
+		ExitReason   = exitReason;
 		ErrorMessage = errorMessage;
 		FinishReason = finishReason;
 	}
@@ -40,8 +47,8 @@ public class LlmResult
 // dispatching tools, handling XML-tool-call fallback, and surfacing terminal results.
 public class LlmService
 {
-	private readonly ProtocolProxy _handler;
-	private readonly LlmModel _model;
+	private readonly ProtocolProxy     _handler;
+	private readonly LlmModel          _model;
 	private readonly ModelAvailability _availability;
 
 	// The role's flat model list this service belongs to. The service still represents exactly one model
@@ -50,8 +57,8 @@ public class LlmService
 	// single-model service (e.g. web search) carries just its own id, so it never falls back.
 	private readonly IReadOnlyList<string> _roleModelIds;
 
-	public LlmModel Model => _model;
-	public bool IsDown => _availability.IsDown;
+	public LlmModel Model  => _model;
+	public bool     IsDown => _availability.IsDown;
 
 	// The role's model list, read by the registry to find this service's slot and build the next fallback.
 	public IReadOnlyList<string> RoleModelIds => _roleModelIds;
@@ -60,18 +67,19 @@ public class LlmService
 	// availability is shared across all service instances for the same model so rate-limit and
 	// down state set by one session are visible to others picking that model next. roleModelIds is the
 	// role's priority list this model came from, so fallback can advance past it.
-	public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability, IReadOnlyList<string> roleModelIds)
+	public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability, IReadOnlyList<string> roleModelIds,
+		ModelReasoningSink onReasoningLearned)
 	{
-		_model = model;
+		_model        = model;
 		_availability = availability;
-		_handler = new ProtocolProxy(model, detectedProtocol);
+		_handler      = new ProtocolProxy(model, detectedProtocol, onReasoningLearned);
 		_roleModelIds = roleModelIds;
 	}
 
 	// Tracer call: probe the provider with the dedicated token-counting endpoint (Anthropic /count_tokens,
-// OpenAI Responses /responses/input_tokens/count) to get accurate input/cached token counts
-// without generating a response. Falls back to max_output_tokens=1 for Chat Completions.
-// Returns TracerResult with token counts or error status. Used before the real call to decide whether compaction is needed.
+	// OpenAI Responses /responses/input_tokens/count) to get accurate input/cached token counts
+	// without generating a response. Falls back to max_output_tokens=1 for Chat Completions.
+	// Returns TracerResult with token counts or error status. Used before the real call to decide whether compaction is needed.
 	public async Task<TracerResult> RunTracerAsync(Session conversation, Tool[] tools, string? forcedToolName, CancellationToken cancellationToken)
 	{
 		if (_availability.IsDown)
@@ -101,8 +109,8 @@ public class LlmService
 
 		if (_availability.IsDown == false)
 		{
-			CancellationToken turnToken = conversation.BeginTurn();
-			bool interrupted = false;
+			CancellationToken turnToken          = conversation.BeginTurn();
+			bool              interrupted        = false;
 			using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, cancellationToken);
 			try
 			{
@@ -141,7 +149,7 @@ public class LlmService
 								break;
 							}
 							TimeSpan remaining = _availability.AvailableAt - DateTimeOffset.UtcNow;
-							TimeSpan slice = remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250);
+							TimeSpan slice     = remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250);
 							if (slice > TimeSpan.Zero)
 								await Task.Delay(slice, linked.Token);
 						}
@@ -173,14 +181,14 @@ public class LlmService
 					// the in-flight turn on top of the persisted cumulative baselines; contextTokens
 					// stays as the current context occupancy. These are superseded at commit by the
 					// authoritative cumulative values.
-					decimal costBaseline = conversation.TotalCost; // locals captured by closure for provisional stats
-					int contextBaseline = conversation.ContextLength;
-					int inputBaseline = conversation.CumulativeInputTokens;
-					int outputBaseline = conversation.CumulativeOutputTokens;
-					string modelId = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
-					string role = conversation.Role;
-					int contextWindow = _model.Config.ContextWindow;
-					LiveUsageProgress onProgress = (inputTokens, outputTokens, turnCost, cachedTokens) =>
+					decimal           costBaseline    = conversation.TotalCost; // locals captured by closure for provisional stats
+					int               contextBaseline = conversation.ContextLength;
+					int               inputBaseline   = conversation.CumulativeInputTokens;
+					int               outputBaseline  = conversation.CumulativeOutputTokens;
+					string            modelId         = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
+					string            role            = conversation.Role;
+					int               contextWindow   = _model.Config.ContextWindow;
+					LiveUsageProgress onProgress      = (inputTokens, outputTokens, turnCost, cachedTokens) =>
 						{
 							transport.Stats(conversation.Id, modelId, role, inputBaseline + inputTokens, outputBaseline + outputTokens, costBaseline + turnCost, contextWindow, contextBaseline, cachedTokens);
 						};
@@ -309,7 +317,7 @@ public class LlmService
 					conversation.QueryLog.ModelFailure(_model, _handler, "Interrupted", null, "Interrupted by user", 0, 0, null, false);
 					result = result.Outcome == ProtocolCallOutcome.Success
 						? ProtocolResult.Interrupted("Interrupted by user", result.Payload)
-						: ProtocolResult.Interrupted("Interrupted by user", null);
+						: ProtocolResult.Interrupted("Interrupted by user",           null);
 				}
 				else
 				{
@@ -317,8 +325,8 @@ public class LlmService
 					// the HttpClient timeout elapsing while a slow or queued model never started responding.
 					// Surface it explicitly as a timeout (Transient, so the caller retries/falls back) instead
 					// of an opaque "cancelled". A TimeoutException inner confirms the HttpClient.Timeout case.
-					bool timedOut = ex is TaskCanceledException && ex.InnerException is TimeoutException;
-					string message = timedOut ?
+					bool   timedOut = ex is TaskCanceledException && ex.InnerException is TimeoutException;
+					string message  = timedOut ?
 						"LLM request timed out: the model did not respond before the HTTP client timeout elapsed (too slow, or queued behind other requests)." :
 						$"LLM request was cancelled by the transport (not by the user): {ex}";
 					conversation.QueryLog.ModelFailure(_model, _handler, timedOut ? "Timeout" : "TransportCancelled", null, message, 0, 0, null, true);
