@@ -101,7 +101,9 @@ public class SessionHandler
 				if (_wantsCompact)
 				{
 					_wantsCompact = false;
-					if (!await CompactAsync(role, registry, roleService, transport, orchestrator, ct))
+					// User-requested /compact: the successor picks up wherever the predecessor stood,
+					// so nothing is injected to restart it — it runs only if the history calls for it.
+					if (!await CompactAsync(role, false, registry, roleService, transport, orchestrator, ct))
 						_service = null;
 				}
 
@@ -150,7 +152,8 @@ public class SessionHandler
 				// 5. Compact when the context filled mid-cluster. When that fails the session cannot
 				// make further progress on this model: report it (which also unblocks a waiting
 				// caller) and force a service re-check so the loop parks instead of spinning.
-				if (contextFull && !await CompactAsync(role, registry, roleService, transport, orchestrator, ct))
+				// The context filled mid-cluster: the turn was cut short, so the successor resumes.
+				if (contextFull && !await CompactAsync(role, true, registry, roleService, transport, orchestrator, ct))
 				{
 					transport.Alert(_activeSession.Id, "The context window is full and compaction failed — this session cannot continue by itself. Use /model to switch to a larger model, or /compact to retry once one is available.");
 					_service = null;
@@ -317,9 +320,7 @@ public class SessionHandler
 			if (budget > 0 && _terminatorTokens > budget && !lastTurn)
 			{
 				_terminatorCalled = false;
-				_activeSession.AddUserMessage(
-					$"That output is about {_terminatorTokens} tokens but must fit within {budget} tokens. "
-					+ $"Call {_activeSession.TerminatorName} again with a shorter output, preserving the key details (file paths, line numbers, names, key output).");
+				_activeSession.AddUserMessage(Nudges.ReplyOverBudget(_terminatorTokens, budget, _activeSession.TerminatorName));
 				complete = false;
 			}
 			else
@@ -329,9 +330,7 @@ public class SessionHandler
 		}
 		else if (windDown)
 		{
-			_activeSession.AddUserMessage(
-				$"You are out of working turns. Call the {_activeSession.TerminatorName} tool now with your final result, "
-				+ "preserving the key details (file paths, line numbers, names, key output).");
+			_activeSession.AddUserMessage(Nudges.OutOfTurns(_activeSession.TerminatorName));
 			complete = true;
 		}
 		else if (_activeSession.HasPending)
@@ -352,7 +351,7 @@ public class SessionHandler
 			if (_activeSession.OwesReply)
 			{
 				nudge = string.IsNullOrEmpty(role.EndOfTurnPrompt)
-					? $"Continue the task, then call the {_activeSession.TerminatorName} tool with your final result to finish."
+					? Nudges.ContinueTask(_activeSession.TerminatorName)
 					: role.EndOfTurnPrompt;
 			}
 			else if (_activeSession.WorkInProgress && !string.IsNullOrEmpty(role.EndOfTurnPrompt))
@@ -405,8 +404,14 @@ public class SessionHandler
 				// CachedTokens on top double-counted the cache and compacted prematurely.
 				_activeSession.Budget.RecordMeasurement(tracer.InputTokens);
 				_lastInputTokens = tracer.InputTokens;
+				// Same current-context reading as Session.SendStats. The tracer measured the entire
+				// prompt the next call would send, so cached plus the fresh remainder IS the whole
+				// context here — including the previous turn's output, which the prompt now contains.
+				// Reporting that output again as its own figure would count it twice, so it reads 0
+				// until the turn about to start streams its own.
+				int tracerFresh = tracer.InputTokens > tracer.CachedTokens ? tracer.InputTokens - tracer.CachedTokens : 0;
 				transport.Stats(_activeSession.Id, _activeSession.Model + ReasoningEffort.DisplaySuffix(service.Model.Config.ReasoningEffort), _activeSession.Role,
-					_activeSession.CumulativeInputTokens, _activeSession.CumulativeOutputTokens,
+					tracerFresh, 0,
 					_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens);
 				if (_lastInputTokens >= threshold)
 				{
@@ -469,24 +474,58 @@ public class SessionHandler
 
 	// ---- Compaction ----
 
-	// Summarizes the active session into a fresh successor appended to the chain, then advances
-	// _activeSession/_service to it. The reply obligation is handed to the successor — the
-	// predecessor can no longer answer as a tool but is otherwise left intact: saved, registered,
-	// and replayable as forensics. Returns false when no summary could be produced or no service
-	// was available for the successor.
-	private async Task<bool> CompactAsync(Role? role, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
+	// Compacts the active session into a fresh successor appended to the chain, then advances
+	// _activeSession/_service to it. A mechanical elision pass runs first — no LLM call, real user
+	// messages kept verbatim — and only when it cannot reclaim enough space does the full staged
+	// summarization run. Both successor shapes are headed by the deterministic file ledger. The
+	// reply obligation is handed to the successor — the predecessor can no longer answer as a tool
+	// but is otherwise left intact: saved, registered, and replayable as forensics. Returns false
+	// when no successor history could be produced or no service was available for the successor.
+	private async Task<bool> CompactAsync(Role? role, bool resumeWork, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
 		bool compacted = false;
-		if (role == null || string.IsNullOrEmpty(role.SummaryPrompt))
+		if (role == null)
 		{
-			transport.Status(_activeSession.Id, "[Compaction] No role or summary prompt available.");
+			transport.Status(_activeSession.Id, "[Compaction] No role available.");
 		}
 		else
 		{
 			transport.Status(_activeSession.Id, "[Compaction] Started.");
-			string?     summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, registry, roleService, transport, ct);
-			LlmService? service = string.IsNullOrWhiteSpace(summary) ? null : registry.CreateService(role, _activeSession.Model, 0, false);
-			if (summary == null || service == null)
+
+			List<CanonicalMessage>? seed = MechanicalCompaction.TryBuild(_activeSession.Data.Messages, role.EndOfTurnPrompt);
+			if (seed != null)
+			{
+				transport.Status(_activeSession.Id, "[Compaction] Stale tool traffic elided mechanically; no summarization needed.");
+			}
+			else if (!string.IsNullOrEmpty(role.SummaryPrompt))
+			{
+				string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, registry, roleService, transport, ct);
+				if (!string.IsNullOrWhiteSpace(summary))
+					seed = new List<CanonicalMessage> { new UserMessage(summary!) };
+			}
+			else
+			{
+				transport.Status(_activeSession.Id, "[Compaction] No summary prompt available.");
+			}
+
+			// The ledger heads both successor shapes: files touched, with ranges, rebuilt fresh
+			// from the predecessor's actual tool calls so repeated compactions never stack it up.
+			if (seed != null)
+			{
+				string ledger = MechanicalCompaction.BuildLedger(_activeSession.Data.Messages);
+				if (ledger.Length > 0)
+					seed.Insert(0, new UserMessage(ledger));
+
+				// Compaction interrupted work in progress, so the successor must pick it straight
+				// back up. The mechanical pass hands over history ending on satisfied tool results —
+				// nothing there asks the model for anything — so a resume message is appended unless
+				// the seed already ends on user text (the summarize path always does).
+				if (resumeWork && MechanicalCompaction.NeedsResumePrompt(seed))
+					seed.Add(new UserMessage(Nudges.ResumeAfterCompaction()));
+			}
+
+			LlmService? service = seed == null ? null : registry.CreateService(role, _activeSession.Model, 0, false);
+			if (seed == null || service == null)
 			{
 				transport.Status(_activeSession.Id, "[Compaction] Failed.");
 			}
@@ -523,16 +562,20 @@ public class SessionHandler
 					successorId = Guid.NewGuid().ToString();
 				}
 
+				// The successor's history is seeded directly as its message list — the mechanical
+				// pass hands over the full elided conversation, the summarize path a single summary
+				// message, both possibly headed by the ledger. Seeding the list verbatim (rather
+				// than through OnUserMessage) keeps the ledger its own strippable message instead
+				// of merging into adjacent user text.
 				BeastSession successorData = new BeastSession(successorId, Session.IncrementDisplayName(predecessor.DisplayName),
 					service.Model.ConfigId, role.Name, terminatorName, outputBudgetTokens,
-					new List<CanonicalMessage>(), null, 0m, 0, 0, 0, predecessor.Ephemeral);
+					seed, null, 0m, 0, 0, 0, predecessor.Ephemeral);
 				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
 				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.UpdateModel(service.Model);
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
 				successor.SetDispatchScope(_scope);
-				successor.Bundle.Canonical.OnUserMessage(summary);
 
 				// SessionReset FIRST for a root: it wipes the client's whole session view, so
 				// anything announced or replayed before it is lost. The old order (announce, then

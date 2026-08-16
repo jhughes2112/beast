@@ -10,6 +10,11 @@ public enum LlmExitReason
 
 // Reports running token counts and protocol-computed cost for the current in-flight assistant
 // turn while a response streams. Provisional; superseded at commit by the authoritative payload.
+//
+// inputTokens is the WHOLE prompt the provider read, cached portion included, matching what the
+// committed payload reports as PromptTokens; cachedTokens is the part of that prompt served from
+// cache, never a separate addend. The protocols disagreed on this once (Anthropic reported only the
+// fresh remainder) and the subtraction downstream then ran twice, so the split is stated here.
 public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost, int cachedTokens);
 
 // Raised by a protocol when a provider teaches it something durable about a model's reasoning: an
@@ -177,20 +182,34 @@ public class LlmService
 					// whole-conversation input the provider bills this turn (Anthropic via StreamStart
 					// usage, Responses via response.created usage), which is exactly what the committed
 					// frame reports as promptTokens. outputTokens is the per-turn completion count. The
-					// displayed in/out counters are the absolute session totals, so the live frame adds
-					// the in-flight turn on top of the persisted cumulative baselines; contextTokens
-					// stays as the current context occupancy. These are superseded at commit by the
-					// authoritative cumulative values.
+					// displayed cached/in/out counters describe the CURRENT context (matching what
+					// Session.SendStats commits), so the in-flight turn's own numbers are reported as
+					// they arrive rather than added to lifetime baselines; contextTokens tracks the live
+					// occupancy (see below). Cost is the one cumulative figure, so it keeps its baseline.
 					decimal           costBaseline    = conversation.TotalCost; // locals captured by closure for provisional stats
 					int               contextBaseline = conversation.ContextLength;
-					int               inputBaseline   = conversation.CumulativeInputTokens;
-					int               outputBaseline  = conversation.CumulativeOutputTokens;
+					int               cachedBaseline  = conversation.LastTokenUsage?.CachedTokens ?? 0;
 					string            modelId         = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
 					string            role            = conversation.Role;
 					int               contextWindow   = _model.Config.ContextWindow;
 					LiveUsageProgress onProgress      = (inputTokens, outputTokens, turnCost, cachedTokens) =>
 						{
-							transport.Stats(conversation.Id, modelId, role, inputBaseline + inputTokens, outputBaseline + outputTokens, costBaseline + turnCost, contextWindow, contextBaseline, cachedTokens);
+							// Not every provider states the prompt size up front: Anthropic and Responses
+							// report it as the stream opens, but ChatCompletions only sends usage in the
+							// final chunk. Reporting the zeros it carries until then blanked the cached and
+							// input figures for the whole of a turn, so the last measured prompt stands in
+							// until this turn's own measurement lands. That is a carried-forward
+							// measurement, not an estimate: it is the same figure the fullness percentage
+							// has always been computed from, and the commit replaces it either way.
+							int livePrompt = inputTokens > 0 ? inputTokens : contextBaseline;
+							int liveCached = inputTokens > 0 ? cachedTokens : cachedBaseline;
+							if (liveCached > livePrompt)
+								liveCached = livePrompt;
+
+							// The three reported counts are a partition of the live context, so they always
+							// add back up to the occupancy shown beside them.
+							int liveContext = livePrompt + outputTokens;
+							transport.Stats(conversation.Id, modelId, role, livePrompt - liveCached, outputTokens, costBaseline + turnCost, contextWindow, liveContext, liveCached);
 						};
 
 					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
@@ -214,7 +233,7 @@ public class LlmService
 						// Tell the model what was wrong before the retry, so it corrects the call instead of
 						// blindly re-rolling the same mistake. It goes in as a user message: the broken assistant
 						// turn was never committed, so there is no tool call to answer with a tool result.
-						conversation.Bundle.OnUserMessage($"A tool call in your previous response was invalid and was discarded — it never ran. {unrepairable}. Call the tool again with every required argument supplied correctly.");
+						conversation.Bundle.OnUserMessage(Nudges.InvalidToolCall(unrepairable));
 						result = ProtocolResult.Transient(unrepairable, null);
 					}
 
@@ -278,7 +297,7 @@ public class LlmService
 					}
 					else if (result.Outcome == ProtocolCallOutcome.Failed
 						&& ProtocolHelpers.IsOverflowStatusCandidate(result.HttpStatus)
-						&& budget.OverflowPlausible())
+						&& (budget.OverflowPlausible() || conversation.Ephemeral))
 					{
 						// Structural overflow evidence: the body text was not a recognized overflow
 						// phrasing (IsContextOverflow already routed those to ContextFull upstream),
@@ -286,6 +305,12 @@ public class LlmService
 						// window is overflow whatever the server chose to say — local servers word
 						// it every which way. Reclassify so the caller compacts instead of marking
 						// a healthy model down and silently switching to another one.
+						// Ephemeral sessions (summarizer stages, sub-session prompts) carry no
+						// provider measurement, so OverflowPlausible can never fire for them — but
+						// their prompt was sized by the caller deliberately near the window, so a
+						// client rejection means the same thing: too big, retry smaller. Without
+						// this leg an oversized compaction stage marked the model permanently down
+						// and alerted the human instead of letting the summarizer halve the chunk.
 						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", result.HttpStatus, $"Client rejection on a near-full context, treated as overflow: {result.ErrorMessage}", 0, 0, null, false);
 						result = ProtocolResult.ContextFull(result.ErrorMessage);
 						break;

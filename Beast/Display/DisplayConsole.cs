@@ -38,6 +38,11 @@ public class DisplayConsole : IDisplay
 	{
 		// No persistent status bar in non-interactive mode.
 	}
+	public void SetActiveTime(long activeMs)
+	{
+		// No persistent status bar in non-interactive mode.
+	}
+
 	public void SetCompletions(IReadOnlyList<string> completions)
 	{
 	}

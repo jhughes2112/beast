@@ -56,10 +56,16 @@ public static class ContextBudgetTests
 		c.Configure(100000, 8192, 0, 2000, 1000);
 		ctx.AssertEqual<int?>(2000, c.MaxCompletionTokens(), "MaxCompletionTokens: clamps to sub-session cap");
 
-		// No output ceiling and no cap: unbounded, let the provider decide.
+		// No output ceiling and no cap: still bounded — a quarter of the window — so a reasoning
+		// model can never run unbounded through the compaction reserve.
 		ContextBudget d = new ContextBudget();
 		d.Configure(100000, 0, 0, 0, 1000);
-		ctx.AssertNull(d.MaxCompletionTokens(), "MaxCompletionTokens: null when unbounded");
+		ctx.AssertEqual<int?>(25000, d.MaxCompletionTokens(), "MaxCompletionTokens: quarter-window fallback when no ceiling is configured");
+
+		// The fallback still tightens to the available room when the window is nearly full.
+		ContextBudget dTight = new ContextBudget();
+		dTight.Configure(100000, 0, 0, 0, 90000);
+		ctx.AssertEqual<int?>(10000, dTight.MaxCompletionTokens(), "MaxCompletionTokens: fallback clamps to remaining room");
 
 		// No room left: zero, never negative.
 		ContextBudget e = new ContextBudget();

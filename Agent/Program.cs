@@ -8,7 +8,7 @@ public class Program
 	public static async Task<int> Main(string[] args)
 	{
 		using CancellationTokenSource cts = new CancellationTokenSource();
-		Console.CancelKeyPress += (sender, e) =>
+		Console.CancelKeyPress           += (sender, e) =>
 		{
 			e.Cancel = true;
 			cts.Cancel();
@@ -18,16 +18,18 @@ public class Program
 		if (args.Length > 0 && args[0] == "--test")
 		{
 			ITransportServer consoleTransport = new TransportConsoleDebug();
-			TestContext ctx = new TestContext(consoleTransport);
+			TestContext      ctx              = new TestContext(consoleTransport);
 			FixJson.ResetCounters();
 			LlmServiceTests.Test(ctx);
 			ContextBudgetTests.Test(ctx);
 			SummarizerTests.Test(ctx);
+			MechanicalCompactionTests.Test(ctx);
 			ModelCatalogTests.Test(ctx);
 			WebToolsTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);
 			ShellToolsTests.Test(ctx);
+			await FakeLlmTests.TestAsync(ctx);
 			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
 		}
@@ -38,7 +40,7 @@ public class Program
 		string worktreeBranch = ArgValue(args, "--worktree-branch");
 		// No worktree branch means an ephemeral, current-folder launch: the session is not saved and no git
 		// worktree is set up. A named worktree launch passes its branch and gets a persisted session.
-		bool ephemeral = string.IsNullOrEmpty(worktreeBranch);
+		bool ephemeral               = string.IsNullOrEmpty(worktreeBranch);
 		(bool wtOk, string wtDetail) = await WorktreeBootstrap.EnsureAsync(worktreeBranch, cts.Token);
 		if (!wtOk)
 		{
@@ -48,12 +50,22 @@ public class Program
 		}
 
 		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
-		RoleService roleService = new RoleService(Environment.CurrentDirectory);
+		RoleService     roleService     = new RoleService(Environment.CurrentDirectory);
+
+		// Free local chaos model, always available for driving the stack without spending money:
+		// add an endpoint with baseUrl http://localhost:13137/v1 and its "fake-chaos" model appears
+		// like any provider's. A taken port just means another agent instance already hosts it.
+		FakeLlm fakeLlm = new FakeLlm(FakeLlm.DefaultPort);
+		if (fakeLlm.TryStart())
+		{
+			_ = fakeLlm.RunAsync(cts.Token);
+			Console.Error.WriteLine($"[FakeLlm] Chaos model '{FakeLlm.ModelId}' listening at {fakeLlm.BaseUrl} ({FakeLlm.ContextWindow} token window).");
+		}
 
 		LlmRegistry registry = new LlmRegistry();
 		await using TransportWebSocketServer wsServer = new TransportWebSocketServer(13131);
 		await wsServer.AcceptAsync(cts.Token);
-		ITransportServer transport = wsServer;
+		ITransportServer  transport    = wsServer;
 		AgentOrchestrator orchestrator = new AgentOrchestrator(registry, roleService, settingsService, transport, cts, ephemeral);
 
 		try

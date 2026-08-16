@@ -367,10 +367,18 @@ public class ProtocolAnthropic
 
 				if (type == "message_start")
 				{
-					JsonNode? usage     = evt!["message"]?["usage"];
-					freshInputTokens    = usage?["input_tokens"]?.GetValue<int>() ?? 0;
-					cacheCreationTokens = usage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
-					cacheReadTokens     = usage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+					// Kept only when actually reported: a proxy that omits a count here must not
+					// erase one, and the same counts can be restated on message_delta below.
+					JsonNode? usage         = evt!["message"]?["usage"];
+					int       reportedInput = usage?["input_tokens"]?.GetValue<int>() ?? 0;
+					int       reportedWrite = usage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
+					int       reportedRead  = usage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+					if (reportedInput > 0)
+						freshInputTokens = reportedInput;
+					if (reportedWrite > 0)
+						cacheCreationTokens = reportedWrite;
+					if (reportedRead > 0)
+						cacheReadTokens = reportedRead;
 				}
 				else if (type == "content_block_start")
 				{
@@ -439,9 +447,22 @@ public class ProtocolAnthropic
 					string? reason = evt!["delta"]?["stop_reason"]?.GetValue<string>();
 					if (reason != null)
 						stopReason = reason;
-					int reported = evt["usage"]?["output_tokens"]?.GetValue<int>() ?? 0;
+					// message_delta carries the turn's final usage, which on current models restates
+					// the input side as well as the output. Every count it reports is taken, so a
+					// stream whose message_start usage was thin still commits fully measured.
+					JsonNode? deltaUsage = evt["usage"];
+					int       reported   = deltaUsage?["output_tokens"]?.GetValue<int>() ?? 0;
 					if (reported > 0)
 						outputTokens = reported;
+					int deltaInput = deltaUsage?["input_tokens"]?.GetValue<int>() ?? 0;
+					if (deltaInput > 0)
+						freshInputTokens = deltaInput;
+					int deltaWrite = deltaUsage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
+					if (deltaWrite > 0)
+						cacheCreationTokens = deltaWrite;
+					int deltaRead = deltaUsage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+					if (deltaRead > 0)
+						cacheReadTokens = deltaRead;
 				}
 				else if (type == "error")
 				{
@@ -467,7 +488,10 @@ public class ProtocolAnthropic
 				int     liveCached = cacheReadTokens + cacheCreationTokens;
 				decimal liveCost   = (freshInputTokens / 1_000_000m) * model.Config.Cost.Input
 								 + (liveOutput / 1_000_000m) * model.Config.Cost.Output;
-				onProgress(freshInputTokens, liveOutput, liveCost, liveCached);
+				// Anthropic splits the prompt across input_tokens and the two cache counters, but
+				// LiveUsageProgress takes the whole prompt with the cached part called out inside it
+				// (as every other protocol reports it), so the pieces are added back together here.
+				onProgress(freshInputTokens + liveCached, liveOutput, liveCost, liveCached);
 			}
 		}
 		catch (OperationCanceledException)

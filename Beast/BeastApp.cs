@@ -27,6 +27,11 @@ public class BeastApp : IAsyncDisposable
 		// of when the user started viewing it. 0 when the session is idle.
 		public long BusyStartTick;
 
+		// Total time this session has spent working, summed over its finished turns. The turn in
+		// flight is not folded in until its Idle frame arrives; the display adds it live from
+		// BusyStartTick. Shown permanently in the status bar, so it survives going idle.
+		public long ActiveMs;
+
 		// Last stats reported by the agent for this session. Pushed to the display whenever
 		// this session becomes the actively viewed one.
 		public string  StatsModel = "";
@@ -259,6 +264,7 @@ public class BeastApp : IAsyncDisposable
 		_activeSessionId = sessionId;
 		_display.OnStreamEnd();
 		_display.SetAgentBusy(_busySessions.Contains(sessionId), state.BusyStartTick);
+		_display.SetActiveTime(state.ActiveMs);
 		_display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext,
 state.StatsContextTokens, state.StatsCachedTokens);
 		_display.Attach(state.Model);
@@ -431,6 +437,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				_display.SetAgentBusy(false, 0);
 				SessionState reset = EnsureSession(sessionId);
 				reset.Status       = SessionStatus.Ongoing;
+				_display.SetActiveTime(0);
 				_display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0, 0);
 				return;
 
@@ -487,6 +494,8 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				if (!_busySessions.Contains(effectiveId))
 					session.BusyStartTick = Environment.TickCount64;
 				_busySessions.Add(effectiveId);
+				if (isActive)
+					_display.SetActiveTime(session.ActiveMs);
 				// Status is the agent's to report (SessionStatus frames), not inferred from busyness:
 				// a busy session may be Working (owes its caller a reply) or plain Ongoing chat.
 				// The separator busy animation reflects the viewed session only; the F10 overlay
@@ -498,9 +507,16 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 			case FrameType.Idle:
 				_busySessions.Remove(effectiveId);
+				// Bank the turn that just ended before clearing its start tick, so the permanent
+				// duration keeps growing across turns instead of resetting with each one.
+				if (session.BusyStartTick > 0)
+					session.ActiveMs += Environment.TickCount64 - session.BusyStartTick;
 				session.BusyStartTick = 0;
 				if (isActive)
+				{
+					_display.SetActiveTime(session.ActiveMs);
 					_display.SetAgentBusy(false, 0);
+				}
 				// Content "subagent" marks a sub-session completion; it gets its own sound.
 				PlaySound(content == "subagent" ? _subagentSoundFile : _idleSoundFile);
 				NotifySessionList();

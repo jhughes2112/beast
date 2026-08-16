@@ -27,10 +27,16 @@ public static class ToolDispatch
 		return Math.Max(1, (text.Length + CharsPerToken - 1) / CharsPerToken);
 	}
 
+	// Sanity ceiling on any single raw tool output, independent of how much window room the round's
+	// reservation offers. The reservation exists to prevent overflow, but early in a big-window
+	// conversation it can hand one tool nearly the whole window — a grep over a huge log would
+	// legally return 190k tokens and flood the context. No raw output is worth more than this.
+	public const int MaxRawOutputTokens = 16000;
+
 	// Stamps a raw (server-unmeasured) tool result with an estimated token count and, only here,
-	// truncates it to maxOutputTokens. Results produced by a sub-session carry the provider's exact
-	// measurement and never pass through this. The estimate is taken over the content exactly as
-	// CanonicalConversation renders it, so it matches the context cost.
+	// truncates it to maxOutputTokens tightened by the sanity ceiling. Results produced by a
+	// sub-session carry the provider's exact measurement and never pass through this. The estimate is
+	// taken over the content exactly as CanonicalConversation renders it, so it matches the context cost.
 	public static ToolResult MeasureRawResult(ToolResult raw, int maxOutputTokens)
 	{
 		string content = raw.StdOut;
@@ -38,13 +44,14 @@ public static class ToolDispatch
 			content = content + "\nstderr: " + raw.StdErr;
 
 		int estimated = EstimateTokens(content);
+		int cap       = maxOutputTokens > 0 ? Math.Min(maxOutputTokens, MaxRawOutputTokens) : MaxRawOutputTokens;
 
-		if (maxOutputTokens > 0 && estimated > maxOutputTokens)
+		if (estimated > cap)
 		{
-			// Over the caller's budget and unmeasurable: fold the rendered content into StdOut,
-			// clip it to the budget, and flag the clip so the model knows the output is partial.
-			const string notice = "\n[truncated to fit caller budget]";
-			int    charBudget = maxOutputTokens * CharsPerToken;
+			// Over the budget and unmeasurable: fold the rendered content into StdOut, clip it to
+			// the budget, and flag the clip so the model knows the output is partial and why.
+			const string notice = "\n[Output truncated — narrow the request (fewer lines, a tighter pattern, head/tail the output) to see the rest.]";
+			int    charBudget = cap * CharsPerToken;
 			int    keep       = Math.Max(0, charBudget - notice.Length);
 			string clipped    = (content.Length > keep ? content.Substring(0, keep) : content) + notice;
 			return new ToolResult(raw.Id, clipped, string.Empty, raw.ExitCode, EstimateTokens(clipped));

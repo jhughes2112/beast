@@ -19,6 +19,30 @@ public static class LlmServiceTests
 		TestIsRateLimited(ctx);
 		TestParseRateLimitSecondsFromErrorBody(ctx);
 		TestTryAdaptToError(ctx);
+		TestMeasureRawResult(ctx);
+	}
+
+	private static void TestMeasureRawResult(TestContext ctx)
+	{
+		// A small result passes through untouched.
+		ToolResult small = ToolDispatch.MeasureRawResult(new ToolResult("t1", "hello", string.Empty, 0, 0), 1000);
+		ctx.AssertEqual("hello", small.StdOut, "MeasureRawResult: small output untouched");
+
+		// A result over the caller budget is clipped to it.
+		string     big     = new string('a', 100 * ToolDispatch.CharsPerToken);
+		ToolResult clipped = ToolDispatch.MeasureRawResult(new ToolResult("t2", big, string.Empty, 0, 0), 50);
+		ctx.Assert(clipped.StdOut.Length <= 50 * ToolDispatch.CharsPerToken, "MeasureRawResult: clipped to caller budget");
+		ctx.AssertContains(clipped.StdOut, "[Output truncated", "MeasureRawResult: clip is flagged");
+
+		// The sanity ceiling binds even when the caller budget is huge (a near-empty big window).
+		string     flood  = new string('b', (ToolDispatch.MaxRawOutputTokens + 1000) * ToolDispatch.CharsPerToken);
+		ToolResult capped = ToolDispatch.MeasureRawResult(new ToolResult("t3", flood, string.Empty, 0, 0), 190000);
+		ctx.Assert(capped.StdOut.Length <= ToolDispatch.MaxRawOutputTokens * ToolDispatch.CharsPerToken, "MeasureRawResult: sanity ceiling binds under a huge budget");
+		ctx.AssertContains(capped.StdOut, "[Output truncated", "MeasureRawResult: ceiling clip is flagged");
+
+		// The ceiling also binds when no caller budget is set at all.
+		ToolResult unbudgeted = ToolDispatch.MeasureRawResult(new ToolResult("t4", flood, string.Empty, 0, 0), 0);
+		ctx.Assert(unbudgeted.StdOut.Length <= ToolDispatch.MaxRawOutputTokens * ToolDispatch.CharsPerToken, "MeasureRawResult: ceiling binds with no caller budget");
 	}
 
 	private static void TestEpochToSecondsFromNow(TestContext ctx)

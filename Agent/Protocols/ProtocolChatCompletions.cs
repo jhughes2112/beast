@@ -788,6 +788,7 @@ httpResponse);
 		int                     streamedCharCount    = 0;
 		int                     livePromptTokens     = 0;
 		int                     liveCachedTokens     = 0;
+		int                     liveCompletionTokens = 0;
 
 		try
 		{
@@ -824,6 +825,16 @@ httpResponse);
 						{
 							liveCachedTokens = cached.Value;
 						}
+						int? completionTokens = usageNode["completion_tokens"]?.GetValue<int?>();
+						if (completionTokens.HasValue && completionTokens.Value > 0)
+						{
+							liveCompletionTokens = completionTokens.Value;
+						}
+
+						// A usage chunk carries no delta, so without this the counts it just reported
+						// would not reach the client until the turn committed — and the usage chunk is
+						// precisely where most providers first state the prompt size.
+						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens, liveCompletionTokens);
 					}
 
 					JsonArray? choices = chunkNode["choices"]?.AsArray();
@@ -858,7 +869,7 @@ httpResponse);
 						reasoningBuilder.Append(reasoningDelta);
 						bundle.Transport?.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
 						streamedCharCount += reasoningDelta.Length;
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens);
+						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens, liveCompletionTokens);
 					}
 
 					string? contentDelta = delta["content"]?.GetValue<string>();
@@ -867,7 +878,7 @@ httpResponse);
 						// Always accumulate the committed text and progress; only gate what reaches the client.
 						contentBuilder.Append(contentDelta);
 						streamedCharCount += contentDelta.Length;
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens);
+						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens, liveCompletionTokens);
 
 						// Don't open the assistant output block on leading whitespace: a thinking+tool-call
 						// turn that emits a stray newline would otherwise leave an empty block. Wait for the
@@ -965,10 +976,50 @@ httpResponse);
 
 
 
-		(TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(usageNodeFinal, model);
+		// Usage does not always arrive in one piece. Providers spread it across the stream — a prompt
+		// count with an early chunk, the completion count at the end — and some close with a usage
+		// object carrying only part of it. Committing whichever node happened to arrive LAST threw
+		// away counts that had already been reported, and a lost prompt count reads downstream as an
+		// empty context: the session measures itself at output size alone, the fullness percentage
+		// collapses, and the status bar shows no input at all. So the turn commits the best counts
+		// seen anywhere in the stream, not the last node's.
+		JsonNode? mergedUsage = MergeStreamedUsage(usageNodeFinal, livePromptTokens, liveCachedTokens, liveCompletionTokens);
+
+		(TokenUsageInfo tokenUsage, decimal cost) = ExtractUsageFromNode(mergedUsage, model);
 
 		List<ToolResult> emptyResults = new List<ToolResult>();
 		return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, semanticToolCalls, emptyResults, finishReason, tokenUsage, cost));
+	}
+
+	// Folds the best counts observed across the stream into the usage node the turn commits with.
+	// Only counts the final node is missing (or reports lower) are filled in, so a provider that
+	// does send one complete usage object is committed exactly as it stated it. Returns null when
+	// nothing anywhere in the stream reported usage — that turn is genuinely unmeasured.
+	private static JsonNode? MergeStreamedUsage(JsonNode? finalNode, int promptTokens, int cachedTokens, int completionTokens)
+	{
+		JsonNode? merged = null;
+		if (finalNode != null || promptTokens > 0 || completionTokens > 0)
+		{
+			JsonObject obj = finalNode is JsonObject final ? (JsonObject)final.DeepClone() : new JsonObject();
+
+			if (promptTokens > (obj["prompt_tokens"]?.GetValue<int?>() ?? 0))
+				obj["prompt_tokens"] = promptTokens;
+			if (completionTokens > (obj["completion_tokens"]?.GetValue<int?>() ?? 0))
+				obj["completion_tokens"] = completionTokens;
+
+			if (cachedTokens > (obj["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int?>() ?? 0))
+			{
+				// Mutated in place when it already exists: re-assigning a node that already has a
+				// parent throws, and the details object may carry other fields worth keeping.
+				if (obj["prompt_tokens_details"] is JsonObject details)
+					details["cached_tokens"] = cachedTokens;
+				else
+					obj["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cachedTokens };
+			}
+
+			merged = obj;
+		}
+		return merged;
 	}
 
 	private sealed class StreamingToolCall
@@ -980,14 +1031,15 @@ httpResponse);
 
 	// Emits live usage progress during streaming. ChatCompletions reports prompt_tokens in
 	// the usage object (when stream_options.include_usage is set), typically in the final
-	// chunk. Until then, livePromptTokens is 0. Output tokens are estimated from streamed
-	// character count (chars/4). The committed usage will correct both at end-of-turn.
-	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress, int liveCachedTokens = 0)
+	// chunk. Until then, livePromptTokens is 0. Output is the provider's own completion count
+	// once it has stated one, and a streamed-character estimate (chars/4) only until then.
+	// The committed usage corrects both at end-of-turn.
+	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress, int liveCachedTokens, int liveCompletionTokens)
 	{
-		int     estimatedOutputTokens = streamedCharCount / 4;
-		decimal estimatedCost         = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
-							  + (estimatedOutputTokens / 1_000_000m) * model.Config.Cost.Output;
-		onProgress(livePromptTokens, estimatedOutputTokens, estimatedCost, liveCachedTokens);
+		int     outputTokens  = liveCompletionTokens > 0 ? liveCompletionTokens : streamedCharCount / 4;
+		decimal estimatedCost = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
+							  + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
+		onProgress(livePromptTokens, outputTokens, estimatedCost, liveCachedTokens);
 	}
 
 	// A successful turn that produced no tool call and no assistant text — only thinking, or nothing.

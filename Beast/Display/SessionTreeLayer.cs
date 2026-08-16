@@ -9,22 +9,22 @@ internal static class SessionTreeLayer
 {
 	internal static Screen Build(
 		List<SessionDisplayInfo> sessions,
-		int selected,
-		int scroll,
-		int panelW,
-		int h,
-		string activeId)
+		int                      selected,
+		int                      scroll,
+		int                      panelW,
+		int                      h,
+		string                   activeId)
 	{
-		Rgb panelBg      = new Rgb(28, 28, 28);
-		Rgb borderFg     = new Rgb(65, 65, 65);
+		Rgb panelBg      = new Rgb( 28,  28,  28);
+		Rgb borderFg     = new Rgb( 65,  65,  65);
 		Rgb headerFg     = new Rgb(138, 138, 138);
 		Rgb busyFg       = new Rgb(110, 168, 210);
 		Rgb idleFg       = new Rgb(100, 100, 100);
-		Rgb selBg        = new Rgb(55, 55, 55);
-		Rgb successFg    = new Rgb(130, 170, 210);   // soft blue
-		Rgb failureFg    = new Rgb(210, 140, 140);   // muted red
-		Rgb incompleteFg = new Rgb(140, 140, 140);   // gray
-		Rgb workingFg    = new Rgb(206, 178, 108);   // amber — still owes its caller a reply
+		Rgb selBg        = new Rgb( 55,  55,  55);
+		Rgb successFg    = new Rgb(130, 170, 210); // soft blue
+		Rgb failureFg    = new Rgb(210, 140, 140); // muted red
+		Rgb incompleteFg = new Rgb(140, 140, 140); // gray
+		Rgb workingFg    = new Rgb(206, 178, 108); // amber — still owes its caller a reply
 
 		Screen s = new Screen(panelW, h, new Cell(' ', headerFg, panelBg, CellStyle.None));
 
@@ -42,11 +42,17 @@ internal static class SessionTreeLayer
 			if (idx >= sessions.Count)
 				break;
 
-			SessionDisplayInfo info = sessions[idx];
-			bool isSel    = idx == selected;
-			bool isActive = string.Equals(info.Id, activeId, StringComparison.Ordinal);
-			Rgb bg    = isSel ? selBg : panelBg;
-			Rgb dotFg = info.IsBusy ? busyFg : idleFg;
+			SessionDisplayInfo info     = sessions[idx];
+			bool               isSel    = idx == selected;
+			bool               isActive = string.Equals(info.Id, activeId, StringComparison.Ordinal);
+			Rgb                bg       = isSel ? selBg : panelBg;
+			Rgb                dotFg    = info.IsBusy ? busyFg : idleFg;
+
+			// The dot is an activity indicator, not a busy light: a live conversation reads solid
+			// whether or not it happens to be mid-turn, including one that finished and was then
+			// picked back up by the user (the agent reports it Ongoing again). Only a session that
+			// is genuinely done — terminated and idle — hollows out.
+			bool isLive = info.IsBusy || info.Status == SessionStatus.Ongoing || info.Status == SessionStatus.Working;
 
 			// Name color always derives from the termination status; nothing may replace it.
 			// The active row brightens its own status color, and selection shows only through
@@ -67,7 +73,7 @@ internal static class SessionTreeLayer
 
 			string indent = new string(' ', info.Depth * 2);
 			string marker = isActive ? "▶ " : "  ";
-			string dot    = info.IsBusy ? "●" : "○";
+			string dot    = isLive ? "●" : "○";
 
 			int col = 1; // start after border
 			AnsiToScreen.WriteLine(s, col, r + 1, indent, nameFg, bg);

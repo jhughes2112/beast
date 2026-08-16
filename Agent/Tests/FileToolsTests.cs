@@ -18,6 +18,7 @@ public static class FileToolsTests
 			TestWriteAndRead(ctx, tempDir);
 			TestAppend(ctx, tempDir);
 			await TestReadAsync(ctx, tempDir);
+			await TestReadReflowAsync(ctx, tempDir);
 			await TestEditExactAsync(ctx, tempDir);
 			await TestEditFuzzyAsync(ctx, tempDir);
 			await TestEditEchoInterleavedAsync(ctx, tempDir);
@@ -58,7 +59,7 @@ public static class FileToolsTests
 		// Full read returns raw content
 		ToolResult full = await FileTools.ReadFileAsync("testId1", path, string.Empty, string.Empty, 500, false, cts.Token);
 		ctx.Assert(full.ExitCode == 0, "Read full: success");
-		ctx.AssertContains(full.StdOut, "line one", "Read full: has line one");
+		ctx.AssertContains(full.StdOut, "line one",   "Read full: has line one");
 		ctx.AssertContains(full.StdOut, "line three", "Read full: has line three");
 		ctx.Assert(!full.StdOut.Contains(":"), "Read full: no hash anchors");
 
@@ -67,6 +68,34 @@ public static class FileToolsTests
 		ctx.Assert(windowed.ExitCode == 0, "Read windowed: success");
 		ctx.AssertContains(windowed.StdOut, "line two", "Read windowed: has line two");
 		ctx.Assert(!windowed.StdOut.Contains("line one"), "Read windowed: no line one");
+	}
+
+	private static async Task TestReadReflowAsync(TestContext ctx, string tempDir)
+	{
+		using CancellationTokenSource cts = new CancellationTokenSource();
+
+		// A long-but-ordinary code line inside an .html file must come back intact, not reflowed.
+		string codeLine = "    [[0,0],[width-1,0],[0,depth-1],[width-1,depth-1],[Math.floor(width/2),0],[Math.floor(width/2),depth-1],[0,Math.floor(depth/2)],[width-1,Math.floor(depth/2)]].forEach(([ox, oz]) => {";
+		string htmlPath = Path.Combine(tempDir, "reflow.html");
+		File.WriteAllText(htmlPath, $"<html><script>\n{codeLine}\n</script></html>\n");
+
+		ToolResult code = await FileTools.ReadFileAsync("reflow1", htmlPath, string.Empty, string.Empty, 500, false, cts.Token);
+		ctx.Assert(code.ExitCode == 0, "Reflow code line: success");
+		ctx.AssertContains(code.StdOut, codeLine, "Reflow code line: line survives unsplit");
+
+		// A genuinely enormous single line still reflows, and no chunk is whitespace-only.
+		string longLine = "    " + string.Join(" ", new string('x', 40), new string('y', 40), new string('z', 40));
+		while (longLine.Length < 5000)
+			longLine = $"{longLine} {longLine.Substring(4)}";
+		string dumpPath = Path.Combine(tempDir, "reflow_dump.txt");
+		File.WriteAllText(dumpPath, longLine);
+
+		ToolResult dump = await FileTools.ReadFileAsync("reflow2", dumpPath, string.Empty, string.Empty, 500, false, cts.Token);
+		ctx.Assert(dump.ExitCode == 0, "Reflow dump line: success");
+		string[] dumpLines = dump.StdOut.Split(Environment.NewLine);
+		ctx.Assert(dumpLines.Length > 1, "Reflow dump line: was split into chunks");
+		foreach (string chunk in dumpLines)
+			ctx.Assert(chunk.Trim().Length > 0, "Reflow dump line: no whitespace-only chunk");
 	}
 
 	private static async Task TestEditExactAsync(TestContext ctx, string tempDir)
@@ -99,8 +128,8 @@ public static class FileToolsTests
 		using CancellationTokenSource cts = new CancellationTokenSource();
 
 		// old_text has different indentation — fuzzy match should still work
-		string oldText = "public void Foo()\n{\nreturn;\n}";
-		ToolResult rep = await FileTools.EditFileAsync("edittool3", path, oldText, "public void Bar() { }", cts.Token);
+		string     oldText = "public void Foo()\n{\nreturn;\n}";
+		ToolResult rep     = await FileTools.EditFileAsync("edittool3", path, oldText, "public void Bar() { }", cts.Token);
 		ctx.AssertContains(rep.StdOut, "Edit applied", $"Edit fuzzy: applied (err: {rep.StdErr})");
 		string after = File.ReadAllText(path);
 		ctx.AssertContains(after, "Bar", "Edit fuzzy: replacement applied");
@@ -115,13 +144,13 @@ public static class FileToolsTests
 
 		// Only 'three' and 'five' change; 'four' between them must come back as context ('|'), not as a
 		// removed-then-re-added line — the echo interleaves changes where they sit.
-		string oldText = "two\nthree\nfour\nfive\nsix";
-		string newText = "two\nTHREE\nfour\nFIVE\nsix";
-		ToolResult rep = await FileTools.EditFileAsync("edittool5", path, oldText, newText, cts.Token);
+		string     oldText = "two\nthree\nfour\nfive\nsix";
+		string     newText = "two\nTHREE\nfour\nFIVE\nsix";
+		ToolResult rep     = await FileTools.EditFileAsync("edittool5", path, oldText, newText, cts.Token);
 		ctx.AssertContains(rep.StdOut, "Edit applied at line 3", $"Edit echo: applied at first changed line (err: {rep.StdErr})");
 		ctx.AssertContains(rep.StdOut, "- three", "Edit echo: old line removed");
 		ctx.AssertContains(rep.StdOut, "+ THREE", "Edit echo: new line added");
-		ctx.AssertContains(rep.StdOut, "| four", "Edit echo: shared interior line is context");
+		ctx.AssertContains(rep.StdOut, "| four",  "Edit echo: shared interior line is context");
 		ctx.Assert(!rep.StdOut.Contains("- four"), "Edit echo: shared interior line not removed");
 		ctx.AssertContains(rep.StdOut, "- five", "Edit echo: second old line removed");
 		ctx.AssertContains(rep.StdOut, "+ FIVE", "Edit echo: second new line added");

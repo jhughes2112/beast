@@ -150,7 +150,17 @@ public class DisplayScreen : IDisplay
 	private          string _statusText = "";
 	// Status bar is laid out as three segments: left (path + mode), center (token/cost metrics),
 	// right (model name). They're stored separately so each can be positioned independently.
-	private string _statsMetrics   = "";
+	// The center segment is composed at draw time rather than stored as text, because the active
+	// duration in it ticks between stats frames.
+	private int     _statsCached     = 0;
+	private int     _statsInput      = 0;
+	private int     _statsOutput     = 0;
+	private decimal _statsCost       = 0m;
+	private int     _statsMaxContext = 0;
+	private bool    _statsHaveTokens = false;
+	// Time the viewed session has spent working, accumulated over its finished turns. The turn in
+	// flight is added at draw time from the busy tick, so the figure ticks live and then stays put.
+	private long   _statsActiveMs  = 0;
 	private string _statsModelName = "";
 	// Role of the most recent stats frame; shown in yellow at the right end of the separator line.
 	private string _currentRole = "";
@@ -297,21 +307,68 @@ public class DisplayScreen : IDisplay
 
 	public void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
 	{
-		string contextInfo = maxContext > 0 && contextTokens > 0
-			? $"  {(int)((double)contextTokens / maxContext * 100)}%/{maxContext}"
-			: "";
-		string metrics = promptTokens > 0 || completionTokens > 0
-			? $"c:{cachedTokens} i:{promptTokens} o:{completionTokens} ${totalCost:F4}{contextInfo}"
-			: "";
 		lock (_consoleLock)
 		{
-			_statsMetrics   = metrics;
-			_statsModelName = model;
-			_currentRole    = role;
+			_statsCached     = cachedTokens;
+			_statsInput      = promptTokens;
+			_statsOutput     = completionTokens;
+			_statsCost       = totalCost;
+			_statsMaxContext = maxContext;
+			_statsHaveTokens = promptTokens > 0 || completionTokens > 0 || cachedTokens > 0;
+			_statsModelName  = model;
+			_currentRole     = role;
 			// A real stats frame supersedes any optimistic /model override.
 			_modelOverride = "";
 			Redraw();
 		}
+	}
+
+	// Working time the viewed session has banked across its finished turns. Pushed on every busy/idle
+	// transition and whenever the viewed session changes, so the bar always shows that session's own
+	// total rather than the client's uptime.
+	public void SetActiveTime(long activeMs)
+	{
+		lock (_consoleLock)
+		{
+			_statsActiveMs = activeMs;
+			Redraw();
+		}
+	}
+
+	// The center status segment: [duration] [cached] [input] [output] [%/total] [cost]. The three
+	// token counts are a partition of the current context — cached prompt, fresh prompt, and what
+	// the model has produced into it — so the fullness is summed from those same three numbers
+	// rather than taken from the frame's own occupancy figure. Displaying a percentage the visible
+	// counts could not account for is the whole complaint this layout exists to answer. Cost is the
+	// lifetime, child-inclusive figure and trails the group.
+	private string BuildStatsMetrics()
+	{
+		string metrics = "";
+		if (_statsHaveTokens)
+		{
+			long   liveMs   = _statsActiveMs + (_agentBusy && _busyStartTick > 0 ? Environment.TickCount64 - _busyStartTick : 0);
+			string duration = FormatActive(liveMs);
+			int    used     = _statsCached + _statsInput + _statsOutput;
+			string context  = _statsMaxContext > 0 && used > 0
+				? $"  {(int)((double)used / _statsMaxContext * 100)}%/{_statsMaxContext}"
+				: "";
+			metrics = $"{duration} c:{_statsCached} i:{_statsInput} o:{_statsOutput}{context}  ${_statsCost:F4}";
+		}
+		return metrics;
+	}
+
+	// Compact, non-jittering duration: seconds under a minute, m:ss under an hour, h:mm:ss beyond.
+	private static string FormatActive(long ms)
+	{
+		TimeSpan ts = TimeSpan.FromMilliseconds(ms);
+		string   text;
+		if (ts.TotalHours >= 1)
+			text = $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}";
+		else if (ts.TotalMinutes >= 1)
+			text = $"{ts.Minutes}:{ts.Seconds:D2}";
+		else
+			text = $"{(int)ts.TotalSeconds}s";
+		return text;
 	}
 
 	public void SetCompletions(IReadOnlyList<string> completions)
@@ -848,7 +905,7 @@ public class DisplayScreen : IDisplay
 		string modeName     = _model != null ? _model.Mode.ToString() : "";
 		string left         = string.IsNullOrEmpty(modeName) ? _statusText : $"{_statusText}  {modeName}";
 		string right        = !string.IsNullOrEmpty(_modelOverride) ? _modelOverride : _statsModelName;
-		string center       = _statsMetrics;
+		string center       = BuildStatsMetrics();
 		Screen statusScreen = StatusBarLayer.Build(left, center, right, w);
 		frame.Blit(statusScreen, 0, statusRow, BlendMode.Normal, null);
 

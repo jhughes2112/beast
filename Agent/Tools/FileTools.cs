@@ -9,20 +9,20 @@ using System.Threading.Tasks;
 // Tools for LLM to read and write files.
 public static class FileTools
 {
-	private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
-	private static readonly SemaphoreSlim FileLock = new SemaphoreSlim(1, 1);
+	private static readonly TimeSpan      DefaultTimeout = TimeSpan.FromSeconds(30);
+	private static readonly SemaphoreSlim FileLock       = new SemaphoreSlim(1, 1);
 
 	// A single line is never returned longer than this, regardless of caller — a lone enormous (e.g.
 	// minified) line would otherwise flood the context. The line count is capped by the caller's maxLines.
 	private const int MaxLineLength = 2000;
 
 	public static async Task<ToolResult> ReadFileAsync(
-		string toolCallId,
-		string filePath,
-		string offset,
-		string lines,
-		int maxLines,
-		bool numberLines,
+		string            toolCallId,
+		string            filePath,
+		string            offset,
+		string            lines,
+		int               maxLines,
+		bool              numberLines,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -39,10 +39,10 @@ public static class FileTools
 			{
 				if (File.Exists(fullPath))
 				{
-					int offsetValue = 0;
+					int  offsetValue = 0;
 					bool offsetValid = string.IsNullOrWhiteSpace(offset) || int.TryParse(offset, out offsetValue);
-					int linesValue = 0;
-					bool linesValid = string.IsNullOrWhiteSpace(lines) || int.TryParse(lines, out linesValue);
+					int  linesValue  = 0;
+					bool linesValid  = string.IsNullOrWhiteSpace(lines) || int.TryParse(lines, out linesValue);
 
 					if (offsetValid && linesValid && offsetValue >= 0 && linesValue >= 0)
 					{
@@ -73,11 +73,11 @@ public static class FileTools
 								if (!numberLines)
 								{
 									bool isHtml = IsHtmlContent(fullPath, fileContent);
-									allLines = ReflowLongLines(allLines, isHtml);
+									allLines    = ReflowLongLines(allLines, isHtml);
 								}
 
 								int startLine = offsetValue <= 0 ? 1 : offsetValue;
-								int startIdx = startLine - 1;
+								int startIdx  = startLine - 1;
 
 								if (startIdx >= allLines.Length)
 								{
@@ -87,16 +87,16 @@ public static class FileTools
 								{
 									int available = allLines.Length - startIdx;
 									int requested = linesValue > 0 ? Math.Min(linesValue, available) : available;
-									int count = Math.Min(requested, maxLines);
+									int count     = Math.Min(requested, maxLines);
 
-									bool lineTruncated = false;
-									StringBuilder sb = new StringBuilder();
+									bool          lineTruncated = false;
+									StringBuilder sb            = new StringBuilder();
 									for (int i = 0; i < count; i++)
 									{
 										string line = allLines[startIdx + i];
 										if (line.Length > MaxLineLength)
 										{
-											line = line.Substring(0, MaxLineLength) + "...truncated";
+											line          = line.Substring(0, MaxLineLength) + "...truncated";
 											lineTruncated = true;
 										}
 										if (i > 0)
@@ -162,20 +162,21 @@ public static class FileTools
 		return result;
 	}
 
-	// On a raw read, any line longer than this is broken into multiple lines so newline-less content stays
-	// readable. Well under MaxLineLength, so a reflowed line is never additionally truncated.
-	private const int MaxRawLineLength = 160;
+	// Protective measure only: reflow must never alter the model's view of a normally-authored file, so
+	// nothing below this stupidly-long threshold is touched. Only newline-less dumps (minified HTML/JSON,
+	// single-line blobs) reflow. Chunks are at most this long, so a reflowed line is never also truncated.
+	private const int MaxRawLineLength = 2000;
 
 	// Decides whether content should reflow on a tag boundary rather than at whitespace: true for HTML/XML by
 	// extension, or when the body opens with a tag (covers raw fetch files saved without a telling extension).
 	private static bool IsHtmlContent(string fullPath, string fileContent)
 	{
 		string extension = Path.GetExtension(fullPath).ToLowerInvariant();
-		bool isHtml = extension == ".html" || extension == ".htm" || extension == ".xml";
+		bool   isHtml    = extension == ".html" || extension == ".htm" || extension == ".xml";
 		if (!isHtml)
 		{
 			string head = fileContent.TrimStart();
-			isHtml = head.StartsWith("<", StringComparison.Ordinal);
+			isHtml      = head.StartsWith("<", StringComparison.Ordinal);
 		}
 		return isHtml;
 	}
@@ -204,7 +205,7 @@ public static class FileTools
 					break;
 				}
 
-				int limit = start + MaxRawLineLength;
+				int limit   = start + MaxRawLineLength;
 				int breakAt = -1;
 
 				if (isHtml)
@@ -221,7 +222,13 @@ public static class FileTools
 
 				if (breakAt < 0)
 				{
-					for (int i = limit - 1; i > start; i--)
+					// Never break inside the chunk's leading whitespace — that would emit a
+					// whitespace-only line and strand the content unindented on the next one.
+					int firstContent = start;
+					while (firstContent < limit && char.IsWhiteSpace(line[firstContent]))
+						firstContent++;
+
+					for (int i = limit - 1; i > firstContent; i--)
 					{
 						if (char.IsWhiteSpace(line[i]))
 						{
@@ -242,10 +249,10 @@ public static class FileTools
 	}
 
 	public static async Task<ToolResult> EditFileAsync(
-		string toolCallId,
-		string filePath,
-		string oldText,
-		string newText,
+		string            toolCallId,
+		string            filePath,
+		string            oldText,
+		string            newText,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -287,7 +294,7 @@ public static class FileTools
 						{
 							// Fuzzy match: strip all whitespace from old_text and file, find the span,
 							// map back to original positions and replace.
-							List<int> posMap = new List<int>(fileContent.Length);
+							List<int>     posMap              = new List<int>(fileContent.Length);
 							StringBuilder strippedFileBuilder = new StringBuilder(fileContent.Length);
 							for (int i = 0; i < fileContent.Length; i++)
 							{
@@ -319,11 +326,11 @@ public static class FileTools
 								if (matchIdx >= 0)
 								{
 									int origStart = posMap[matchIdx];
-									int origEnd = posMap[matchIdx + strippedOld.Length - 1] + 1;
+									int origEnd   = posMap[matchIdx + strippedOld.Length - 1] + 1;
 									// Fuzzy match ignores whitespace, so the span actually removed from the file can
 									// differ from the model's old_text. Diff against what was really there.
 									string removedText = fileContent.Substring(origStart, origEnd - origStart);
-									string newContent = fileContent.Substring(0, origStart) + replacement + fileContent.Substring(origEnd);
+									string newContent  = fileContent.Substring(        0,           origStart) + replacement + fileContent.Substring(origEnd);
 									await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
 									result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, removedText, replacement), string.Empty, 0, 0);
 								}
@@ -386,13 +393,13 @@ public static class FileTools
 		// same number in each. Numbers track the new file; removed lines carry the number of the
 		// position they were removed from.
 		int changeStartLine = LineOfIndex(newContent, replaceStart);
-		int realStart = changeStartLine + prefix;
-		int removedCount = oldLines.Length - prefix - suffix;
-		int addedCount = newLines.Length - prefix - suffix;
+		int realStart       = changeStartLine + prefix;
+		int removedCount    = oldLines.Length - prefix - suffix;
+		int addedCount      = newLines.Length - prefix - suffix;
 
 		int firstBefore = Math.Max(0, realStart - contextLines);
-		int afterStart = realStart + addedCount;
-		int lastAfter = Math.Min(allLines.Length - 1, afterStart - 1 + contextLines);
+		int afterStart  = realStart + addedCount;
+		int lastAfter   = Math.Min(allLines.Length - 1, afterStart - 1 + contextLines);
 
 		StringBuilder sb = new StringBuilder();
 		sb.Append($"Edit applied at line {realStart + 1}:\n");
@@ -514,9 +521,9 @@ public static class FileTools
 	}
 
 	public static async Task<ToolResult> WriteFileAsync(
-	string toolCallId,
-	string filePath,
-	string content,
+	string            toolCallId,
+	string            filePath,
+	string            content,
 	CancellationToken cancellationToken)
 	{
 		ToolResult result;

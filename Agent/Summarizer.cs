@@ -100,6 +100,7 @@ public static class Summarizer
 						if (result.Outcome == ProtocolCallOutcome.Failed)
 							registry.ResetAvailability(service.Model.ConfigId);
 						attemptBudget /= 2;
+						transport.Status(session.Id, $"[Compaction] Segment too large for {service.Model.Config.Name}; retrying with a smaller chunk ({attemptBudget} chars).");
 					}
 					else if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
 					{
@@ -115,13 +116,16 @@ public static class Summarizer
 						}
 						else
 						{
+							transport.Status(session.Id, $"[Compaction] {service.Model.Config.Name} is rate limited and no fallback model is available.");
 							failed = true;
 						}
 					}
 					else
 					{
 						// Transient errors were already retried inside RunToCompletionAsync; what
-						// reaches here is terminal for this compaction attempt.
+						// reaches here is terminal for this compaction attempt. Say why, so a dead
+						// compaction is diagnosable instead of a bare "Failed".
+						transport.Status(session.Id, $"[Compaction] Stage failed on {service.Model.Config.Name}: {result.ErrorMessage}");
 						failed = true;
 					}
 				}
@@ -129,6 +133,10 @@ public static class Summarizer
 
 			if (failed)
 				summary = null;
+		}
+		else
+		{
+			transport.Status(session.Id, "[Compaction] No usable model is available to summarize with.");
 		}
 
 		return summary;

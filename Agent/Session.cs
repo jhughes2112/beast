@@ -95,11 +95,18 @@ public class Session
 	private SessionStatus EffectiveStatus => _status == SessionStatus.Ongoing && OwesReply ? SessionStatus.Working : _status;
 
 	// Sends current session stats and termination status to the client.
+	//
+	// The token counts describe THIS conversation's current context, not the session's lifetime
+	// totals: cached + fresh input + output is exactly what the provider processed last turn, which
+	// is the context the next turn starts from — so the three numbers add up to the fullness figure
+	// shown beside them. Cost is the one lifetime number, and it alone rolls up child sessions.
 	public void SendStats()
 	{
 		int cachedTokens = _data.LastTokenUsage?.CachedTokens ?? 0;
+		int inputTokens  = (_data.LastTokenUsage?.PromptTokens ?? 0) - cachedTokens;
+		int outputTokens = _data.LastTokenUsage?.CompletionTokens ?? 0;
 		_transport.Stats(_data.Id, _data.Model + _modelDisplaySuffix, _data.Role,
-			_data.CumulativeInputTokens, _data.CumulativeOutputTokens,
+			inputTokens, outputTokens,
 			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens);
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}

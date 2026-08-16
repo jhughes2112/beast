@@ -43,12 +43,12 @@ public class ContextBudget
 	// reservation: a fresh turn begins with no outstanding tool outputs.
 	public void Configure(int windowSize, int maxOutputTokens, int compactionReserve, int outputCap, int measuredContextSize)
 	{
-		_windowSize = windowSize;
-		_maxOutputTokens = maxOutputTokens;
+		_windowSize        = windowSize;
+		_maxOutputTokens   = maxOutputTokens;
 		_compactionReserve = compactionReserve;
-		_outputCap = outputCap;
-		_measured = measuredContextSize;
-		_pendingReserve = 0;
+		_outputCap         = outputCap;
+		_measured          = measuredContextSize;
+		_pendingReserve    = 0;
 	}
 
 	// The input we would send next — the measured conversation plus any not-yet-measured tool
@@ -73,8 +73,10 @@ public class ContextBudget
 	// Max output tokens to request next: whatever the window has left after the measured conversation,
 	// any pending tool outputs, AND the compaction reserve, tightened by the model's output ceiling and
 	// the sub-session cap. Subtracting the compaction reserve is what keeps it genuinely free, so input
-	// + output always lands at least that far inside the window. Null means "unbounded" — let the
-	// provider use its own default — and only happens when neither bound is configured.
+	// + output always lands at least that far inside the window. A model with no configured ceiling is
+	// still bounded — a quarter of its window, tightened to the available room — because an unbounded
+	// response lets a long-reasoning model fill the remaining window straight through the compaction
+	// reserve before the provider ever stops it. Never returns null: every request carries a limit.
 	public int? MaxCompletionTokens()
 	{
 		long available = _windowSize - _measured - _pendingReserve - _compactionReserve;
@@ -86,6 +88,8 @@ public class ContextBudget
 			result = (int)Math.Min(available, _maxOutputTokens);
 		if (_outputCap > 0)
 			result = result.HasValue ? Math.Min(result.Value, _outputCap) : (int)Math.Min(available, _outputCap);
+		if (!result.HasValue)
+			result = (int)Math.Min(available, _windowSize / 4);
 
 		return result;
 	}
@@ -106,7 +110,7 @@ public class ContextBudget
 			return 0;
 
 		int available = Math.Max(0, _windowSize - _measured - _compactionReserve);
-		int round = available - ResponseReserve;
+		int round     = available - ResponseReserve;
 
 		// The response reserve is a SOFT claim. A model whose configured output ceiling is large
 		// relative to its window (common for local models: e.g. 30k output on a 32k window) would
@@ -117,7 +121,7 @@ public class ContextBudget
 		if (round < count * kMinPerToolBudget && available > 0)
 			round = available / 2;
 
-		int perTool = Math.Max(0, round) / count;
+		int perTool      = Math.Max(0, round) / count;
 		_pendingReserve += perTool * count;
 		return perTool;
 	}
@@ -126,7 +130,7 @@ public class ContextBudget
 	// appended since the last one. The pending reservations are now fully accounted for.
 	public void RecordMeasurement(int exactContextSize)
 	{
-		_measured = exactContextSize;
+		_measured       = exactContextSize;
 		_pendingReserve = 0;
 	}
 

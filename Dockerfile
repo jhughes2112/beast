@@ -56,8 +56,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     # Archive, document, and text-handling tools — all light. The WebFetch role and agent bash use
     # these to inspect/extract fetched files: 7z + extra (de)compressors, xmllint, document->text via
-    # pandoc, line-ending fixups. (tar/gzip ship with the base image; no heavy media tools by design.)
+    # pandoc, line-ending fixups. (tar/gzip ship with the base image.)
     xz-utils bzip2 p7zip-full libxml2-utils pandoc dos2unix \
+    # Audio/video transcoding and probing (ffprobe) for media-handling tasks
+    ffmpeg \
     # ICU/SSL/zlib: the AOT Agent itself needs only libssl3/zlib1g (it is InvariantGlobalization);
     # libicu74 stays for the .NET SDK below and any user projects that need globalization
     libicu74 libssl3 zlib1g \
@@ -98,6 +100,17 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
 RUN npm install -g playwright@1.62.1 \
     && playwright install --with-deps chromium-headless-shell \
     && rm -rf /var/lib/apt/lists/*
+
+# The agent runs as root, and Chromium refuses to start as root with its sandbox enabled. Playwright
+# and Puppeteer launch with the sandbox on by default, so the browser died before the CDP endpoint
+# appeared and both timed out at launch. Wrap the real binary in place so every launcher (node/python
+# Playwright, Puppeteer, the CLI wrapper below) gets --no-sandbox and --disable-dev-shm-usage (the
+# 64MB /dev/shm crashes it) without scripts having to pass them. `exec` preserves the pid and
+# inherited fds, so Playwright's --remote-debugging-pipe (fds 3/4) still reaches the browser.
+RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell) \
+    && mv "$BIN" "$BIN.real" \
+    && printf '#!/bin/bash\nexec "%s.real" --no-sandbox --disable-dev-shm-usage "$@"\n' "$BIN" > "$BIN" \
+    && chmod +x "$BIN"
 
 # Plain `chromium` for script-free checks: --dump-dom, --screenshot=out.png, --print-to-pdf.
 # --no-sandbox (won't start as root) and --disable-dev-shm-usage (64MB /dev/shm crashes it).

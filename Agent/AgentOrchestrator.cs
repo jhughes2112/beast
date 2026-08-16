@@ -1426,9 +1426,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 		TestContext ctx = new TestContext(_transport);
 		LlmServiceTests.Test(ctx);
 		ContextBudgetTests.Test(ctx);
+		MechanicalCompactionTests.Test(ctx);
 		FixJsonTests.Test(ctx);
 		await FileToolsTests.TestAsync(ctx);
 		ShellToolsTests.Test(ctx);
+		await FakeLlmTests.TestAsync(ctx);
 
 		Session? any;
 		lock (_sessionLock)

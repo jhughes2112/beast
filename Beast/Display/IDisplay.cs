@@ -8,9 +8,12 @@ using System.Threading.Tasks;
 // SetSendAsync wires up the user input path (no-op for non-interactive displays).
 public interface IDisplay
 {
-	void Attach        (ConversationModel model);
-	void SetStatus     (string text);
-	void SetStatsInfo  (string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens);
+	void Attach      (ConversationModel model);
+	void SetStatus   (string text);
+	void SetStatsInfo(string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens);
+	// Working time banked by the viewed session across its finished turns; the turn in flight is
+	// added by the display itself so the shown duration ticks live.
+	void SetActiveTime (long activeMs);
 	void SetCompletions(IReadOnlyList<string> completions);
 	void OnStreamStart (int streamIndex, FrameType type);
 	void OnStreamChunk (string chunk);
