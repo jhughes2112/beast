@@ -347,7 +347,10 @@ public class LlmRegistry
 	// model and skips any that is gone, too small, or itself down/backing off, so the fallback lands on one
 	// that can serve now. The new service carries the same list, so it can fall back again. Returns null when
 	// the list is exhausted, at which point the caller surfaces the rate-limit failure.
-	public LlmService? CreateFallbackService(LlmService current, int minContextRequired)
+	// withoutReasoning carries the caller's intent across the switch, exactly as CreateService takes it.
+	// Compaction asks for a quiet model and then falls back when one is rate-limited or too small; without
+	// this the replacement thought again, spending the summary's output budget on deliberation nobody reads.
+	public LlmService? CreateFallbackService(LlmService current, int minContextRequired, bool withoutReasoning)
 	{
 		IReadOnlyList<string> modelIds = current.RoleModelIds;
 		DateTimeOffset        now      = DateTimeOffset.UtcNow;
@@ -374,6 +377,8 @@ public class LlmRegistry
 
 			DetectedProtocol protocol = DetectedProtocol.Unknown;
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
+			if (withoutReasoning)
+				model = model.WithoutReasoning();
 			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds, ApplyLearnedReasoning);
 		}
 

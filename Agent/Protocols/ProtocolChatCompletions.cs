@@ -50,6 +50,11 @@ public class ProtocolChatCompletions
 	private bool _parallelToolCallsSupported = true;
 	private bool _streamingSupported         = true;
 
+	// Whether this backend accepts chat_template_kwargs, the lever that turns a local template's
+	// thinking OFF. Cleared by TryAdaptToError when a server rejects it, so a provider that has never
+	// heard of the field (the hosted APIs) falls back to simply omitting it after one refusal.
+	private bool _thinkingKwargsSupported = true;
+
 	// Server-stated affordable completion cap, learned from an OpenRouter 402 ("can only afford
 	// N tokens"). 0 = no cap known. Applied to every subsequent request of this instance so a
 	// low credit balance shrinks max_tokens instead of killing the model outright.
@@ -511,6 +516,19 @@ public class ProtocolChatCompletions
 httpResponse);
 			}
 		}
+		catch (OperationCanceledException)
+		{
+			// The human pressed escape. Without this it fell into the generic handler below and was
+			// logged as a ProtocolFailure with a socket stack trace, returned Transient, and burned a
+			// retry before the caller noticed the token — three error entries for one keystroke.
+			// TimeoutOrRethrow sorts the two cases the exception covers: token signalled means the
+			// human cancelled and it propagates, token clear means the HTTP client timed out, which
+			// is genuinely transient and retries with a message that says so.
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			if (timeout != null)
+				return logger.ProtocolFailure(timeout, model, DetectedProtocol.ChatCompletions, "Timeout", null, timeout.ErrorMessage, null, null);
+			throw;
+		}
 		catch (Exception ex)
 		{
 			return logger.ProtocolFailure(
@@ -633,6 +651,18 @@ httpResponse);
 				reasoning["effort"]  = effort;
 				body["reasoning"]    = reasoning;
 			}
+		}
+		else if (_thinkingKwargsSupported)
+		{
+			// "None" has to be STATED, not implied by silence. OpenAiEffort maps None to null, and the
+			// guard above then sent nothing at all — which leaves a local server's chat template at its
+			// own default, and for the Qwen-derived templates that default is thinking ON. So a
+			// compaction that explicitly asked for a quiet model reasoned anyway and spent the summary's
+			// output budget on deliberation nobody reads. enable_thinking is the lever llama.cpp, vLLM
+			// and SGLang all expose for this.
+			JsonObject kwargs            = new JsonObject();
+			kwargs["enable_thinking"]    = false;
+			body["chat_template_kwargs"] = kwargs;
 		}
 
 		return body;
@@ -1386,6 +1416,14 @@ httpResponse);
 			// and every other session on this model — stops paying a rejected request to find out.
 			if (_reasoningMode == 2)
 				_onReasoningLearned?.Invoke(_configId, "none", null);
+			return true;
+		}
+
+		// A backend that has never heard of chat_template_kwargs (the hosted APIs) refuses it once and
+		// then never sees it again — thinking-off goes back to being expressed as silence there.
+		if (_thinkingKwargsSupported && (lowerBody.Contains("chat_template_kwargs") || lowerBody.Contains("enable_thinking")))
+		{
+			_thinkingKwargsSupported = false;
 			return true;
 		}
 

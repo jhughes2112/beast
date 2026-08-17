@@ -105,7 +105,7 @@ public static class Summarizer
 						// another model rather than abandon the compaction — and the new model starts
 						// from its own full budget, since the ratchet described what the OLD one could
 						// not take.
-						LlmService? smaller = registry.CreateFallbackService(service, 0);
+						LlmService? smaller = registry.CreateFallbackService(service, 0, true);
 						if (smaller != null)
 						{
 							service       = smaller;
@@ -156,7 +156,7 @@ public static class Summarizer
 						// Sustained-rate-limited: fall back to the next usable model in the role's
 						// list (like /model) and retry this stage. Window size is no constraint —
 						// the chunk budget is recomputed for the new model.
-						LlmService? fallback = registry.CreateFallbackService(service, 0);
+						LlmService? fallback = registry.CreateFallbackService(service, 0, true);
 						if (fallback != null)
 						{
 							service       = fallback;

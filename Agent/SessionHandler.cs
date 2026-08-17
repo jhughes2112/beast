@@ -464,7 +464,7 @@ public class SessionHandler
 
 		// PendingReserve covers tool outputs appended since the last measurement — without it a
 		// tool-heavy round can pick a fallback model the real conversation no longer fits in.
-		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve());
+		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve(), false);
 		if (fallback != null)
 		{
 			_activeSession.QueryLog.FallbackTransition(service, fallback,

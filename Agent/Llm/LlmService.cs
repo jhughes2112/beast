@@ -250,23 +250,13 @@ public class LlmService
 					{
 						conversation.RecordCost(result.Payload!.Cost);
 
-						// The response was cut off at a ceiling the window forced us to shrink. That is a
-						// context problem wearing a success's clothes: the model was mid-sentence, mid-file,
-						// mid-thought, and committing it feeds it back its own truncated work to be confused
-						// by — the half-written file, the reasoning that never reached a conclusion, the
-						// retry that produces another truncated version of the same thing. So the turn is
-						// NOT committed; the caller compacts and the model gets to answer properly with a
-						// whole window in front of it. A response that hits the model's FULL ceiling is a
-						// different thing entirely — the model simply ran long, and no amount of compacting
-						// buys it more room — so that one commits as it always did.
-						if (string.Equals(result.Payload!.FinishReason, "length", StringComparison.OrdinalIgnoreCase)
-							&& maxCompletionTokens.HasValue && maxCompletionTokens.Value < budget.OutputAllowance)
-						{
-							string cut = $"Response truncated at {maxCompletionTokens.Value} tokens, below this model's {budget.OutputAllowance}-token ceiling — the window is too full to answer in.";
-							conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", null, cut, 0, 0, null, false);
-							result = ProtocolResult.ContextFull(cut);
-							break;
-						}
+						// A response cut off at "length" commits like any other. It used to be discarded and
+						// reclassified as ContextFull whenever the window had shrunk max_out below the model's
+						// own ceiling, on the theory that truncated work confuses the model on replay. What that
+						// actually bought was a conversation that could not advance: the turn never entered the
+						// history, so nothing aged out of the fresh-turn window compaction keeps verbatim, and
+						// the successor re-entered the same state and truncated again. The server emits only
+						// what it was told it could; asking for less is the lever, not refusing what came back.
 
 						// Repair the response's tool calls in place (fuzzy name correction, argument fixups),
 						// writing them back into the payload so the committed turn carries clean calls. A call

@@ -61,7 +61,7 @@ public static class ContextBudgetTests
 		ContextBudget nearFull = new ContextBudget();
 		nearFull.Configure(32768, 8192, 3276, 0, 29000);
 		ctx.AssertEqual<int?>(3768, nearFull.MaxCompletionTokens(), "MaxCompletionTokens: clamped to the physical remainder near the top of the window");
-		ctx.Assert(nearFull.MaxCompletionTokens() < nearFull.OutputAllowance, "MaxCompletionTokens: the shortfall is detectable, which is what flags a truncated reply");
+		ctx.Assert(nearFull.MaxCompletionTokens() < nearFull.OutputAllowance, "MaxCompletionTokens: the window squeezes the ask below the model's own preference");
 
 		// An explicit caller cap only lowers the model's own preference; it cannot lower the floor,
 		// which exists to stop truncation rather than to express anyone's preference.
