@@ -23,6 +23,68 @@ public class FakeLlm
 	public const int    ContextWindow = 50000;
 	public const int    DefaultPort   = 13137;
 
+	// Put this anywhere in a conversation and every request for it is rejected with the account
+	// error below, so the "unpaid account looks exactly like an over-window prompt" case can be
+	// driven on demand. Chosen to be something no real conversation would contain.
+	public const string BillingSentinel  = "[[fake-llm-out-of-credit]]";
+	public const string BillingRejection = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_fake\"}";
+
+	// Ask for this model id and every request is rejected as over-window, however small it really
+	// is: the provider whose real limit is nothing like the configured one, so compacting never
+	// satisfies it. Keyed on the requested MODEL rather than on anything in the conversation, so a
+	// caller that chops the conversation into pieces can never accidentally escape it.
+	public const string AlwaysFullModelId = "fake-chaos-always-full";
+
+	// A server that dies on a big prompt instead of complaining about it: over the threshold it drops
+	// the connection mid-response, which reaches the client as a plain transient network failure with
+	// no status and no "too long" text anywhere. This is what a real llama-server did, and treating
+	// it as terminal killed a compaction that only needed a smaller chunk. Under the threshold it
+	// answers normally, so a caller that shrinks its way down still gets its summary.
+	public const string ChokesOnBigPromptModelId = "fake-chaos-chokes";
+	public const int    ChokeThresholdChars      = 20000;
+
+	// A server that counts the completion RESERVATION against the window the way llama-server does:
+	// prompt plus max_tokens must fit inside -c, or the request is rejected as over-window before a
+	// single token is generated. Answers normally otherwise.
+	public const string ReservationModelId = "fake-chaos-reservation";
+
+	// A server that reports usage ONLY in the trailing chunk, which is what plain OpenAI does. Every
+	// other id here states the prompt size as the stream opens, so this is the only one on which the
+	// caller's provisional (pre-usage) reporting is observable at all.
+	public const string LateUsageModelId = "fake-chaos-late-usage";
+
+	// Requests actually served since start. A caller that is supposed to have stopped can be checked
+	// against it — "no further requests arrived" is the only honest way to assert a loop ended.
+	private int _requestsServed;
+
+	public int RequestsServed => Volatile.Read(ref _requestsServed);
+
+	// Opt-in capture of the request bodies actually received. Off by default because the soak moves
+	// millions of tokens through here and keeping them all would dwarf the test process. Turned on
+	// around a single scenario, it answers the question no other assertion can: not "did the caller
+	// think it sent something", but "what did the server actually get".
+	private readonly List<string> _recorded   = new List<string>();
+	private readonly object       _recordGate = new object();
+	private          bool         _recording;
+
+	public void StartRecording()
+	{
+		lock (_recordGate)
+		{
+			_recorded.Clear();
+			_recording = true;
+		}
+	}
+
+	public List<string> StopRecording()
+	{
+		lock (_recordGate)
+		{
+			_recording = false;
+			return new List<string>(_recorded);
+		}
+	}
+
 	// Percent chances for each behavior roll, together shaping a plausibly chatty agent model.
 	private const int kReasoningChance  = 60;
 	private const int kToolCallChance   = 55;
@@ -145,8 +207,64 @@ public class FakeLlm
 			return;
 		}
 
-		int promptTokens = EstimatePromptTokens(body);
-		if (promptTokens >= ContextWindow)
+		Interlocked.Increment(ref _requestsServed);
+
+		lock (_recordGate)
+		{
+			if (_recording)
+				_recorded.Add(bodyText);
+		}
+
+		// A conversation carrying the sentinel gets the account rejection a provider sends when the
+		// bill is unpaid: a plain 400 whose body — not its status — is the only thing separating it
+		// from an over-window rejection. Verbatim from a real Anthropic response.
+		if (bodyText.Contains(BillingSentinel, StringComparison.Ordinal))
+		{
+			await WriteJsonAsync(context.Response, 400, BillingRejection, ct);
+			return;
+		}
+
+		int    promptTokens   = EstimatePromptTokens(body);
+		string requestedModel = body["model"]?.GetValue<string>() ?? string.Empty;
+
+		// Choke: fail the oversized request with a bare server error. No status the client can read as
+		// an overflow, no "too long" anywhere in the body — the shape of failure a local server gives
+		// when a prompt kills it, where nothing but trying something smaller tells you what was wrong.
+		if (string.Equals(requestedModel, ChokesOnBigPromptModelId, StringComparison.Ordinal) && bodyText.Length > ChokeThresholdChars)
+		{
+			await WriteJsonAsync(context.Response, 500, "{\"error\":{\"message\":\"internal server error\"}}", ct);
+			return;
+		}
+
+		int maxTokens = ReadInt(body, "max_completion_tokens");
+		if (maxTokens <= 0)
+			maxTokens = ReadInt(body, "max_tokens");
+		if (maxTokens <= 0)
+			maxTokens = 4096;
+
+		// llama-server charges the RESERVATION, not just the prompt: it refuses when prompt plus
+		// max_tokens overruns -c, even though the prompt on its own fits with room to spare. A caller
+		// that sizes its ceiling from a context length it has not measured yet trips this on the very
+		// first request of every session, and the rejection is worded as overflow — which compacts,
+		// which starts another unmeasured session, which trips it again.
+		if (string.Equals(requestedModel, ReservationModelId, StringComparison.Ordinal) && promptTokens + maxTokens > ContextWindow)
+		{
+			JsonObject reject = new JsonObject
+			{
+				["error"] = new JsonObject
+				{
+					["code"]            = 400,
+					["message"]         = $"request ({promptTokens + maxTokens} tokens) exceeds the available context size ({ContextWindow} tokens), try increasing it",
+					["type"]            = "exceed_context_size_error",
+					["n_prompt_tokens"] = promptTokens + maxTokens,
+					["n_ctx"]           = ContextWindow,
+				}
+			};
+			await WriteJsonAsync(context.Response, 400, reject.ToJsonString(), ct);
+			return;
+		}
+
+		if (promptTokens >= ContextWindow || string.Equals(requestedModel, AlwaysFullModelId, StringComparison.Ordinal))
 		{
 			// The standard OpenAI overflow phrasing — ProtocolHelpers.IsContextOverflow matches
 			// "maximum context length" and routes the caller into compaction, exactly as a real
@@ -165,16 +283,10 @@ public class FakeLlm
 			return;
 		}
 
-		int maxTokens = ReadInt(body, "max_completion_tokens");
-		if (maxTokens <= 0)
-			maxTokens = ReadInt(body, "max_tokens");
-		if (maxTokens <= 0)
-			maxTokens = 4096;
-
 		Turn turn   = BuildTurn(body, maxTokens);
 		bool stream = body["stream"]?.GetValue<bool?>() ?? false;
 		if (stream)
-			await WriteSseAsync(context.Response, turn, promptTokens, ct);
+			await WriteSseAsync(context.Response, turn, promptTokens, !string.Equals(requestedModel, LateUsageModelId, StringComparison.Ordinal), ct);
 		else
 			await WriteCompletionAsync(context.Response, turn, promptTokens, ct);
 	}
@@ -334,7 +446,7 @@ public class FakeLlm
 
 	// ---- Response writers ----
 
-	private static async Task WriteSseAsync(HttpListenerResponse response, Turn turn, int promptTokens, CancellationToken ct)
+	private static async Task WriteSseAsync(HttpListenerResponse response, Turn turn, int promptTokens, bool openingUsage, CancellationToken ct)
 	{
 		response.StatusCode       = 200;
 		response.ContentType      = "text/event-stream";
@@ -347,14 +459,21 @@ public class FakeLlm
 		// client's accounting: the prompt size is stated up front here, and the trailing usage chunk
 		// below reports only what it learned at the end. A reader that keeps just the LAST usage
 		// object it saw loses the prompt count entirely — so this shape is the regression test.
-		JsonObject openingUsage = new JsonObject
+		// Plain OpenAI does NOT do this — it reports usage only in the trailing chunk — so a caller
+		// that needs to show something during the stream has nothing but its own last measurement to
+		// show. LateUsageModelId is that server, and it is the only one the provisional path is
+		// visible on.
+		if (openingUsage)
 		{
-			["id"]      = "chatcmpl-fake",
-			["object"]  = "chat.completion.chunk",
-			["choices"] = new JsonArray(),
-			["usage"]   = new JsonObject { ["prompt_tokens"] = promptTokens, ["total_tokens"] = promptTokens },
-		};
-		await writer.WriteAsync($"data: {openingUsage.ToJsonString()}\n\n");
+			JsonObject opening = new JsonObject
+			{
+				["id"]      = "chatcmpl-fake",
+				["object"]  = "chat.completion.chunk",
+				["choices"] = new JsonArray(),
+				["usage"]   = new JsonObject { ["prompt_tokens"] = promptTokens, ["total_tokens"] = promptTokens },
+			};
+			await writer.WriteAsync($"data: {opening.ToJsonString()}\n\n");
+		}
 
 		foreach (string slice in Slices(turn.Reasoning))
 			await WriteChunkAsync(writer, Chunk(new JsonObject { ["reasoning_content"] = slice }, null), ct);

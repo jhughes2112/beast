@@ -28,8 +28,8 @@ public class FunctionDefinition
 }
 
 // Internal tool representation used by LlmService's execution loop.
-// The trailing int is maxOutputTokens: the token budget this call's output must fit into, set by
-// LlmService from the remaining context space divided among the round's parallel tool calls.
+// The trailing int is maxOutputTokens: the fixed ceiling on this call's raw output
+// (ToolDispatch.MaxRawOutputTokens), never derived from how much window the caller has left.
 public class Tool
 {
 	public ToolDefinition Definition { get; set; } = new();

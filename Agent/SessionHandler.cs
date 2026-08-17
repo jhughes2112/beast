@@ -44,6 +44,7 @@ public class SessionHandler
 	// Used to compute whether the context window is full without a live model call.
 	private int _lastInputTokens;
 
+
 	// Cancellation scope for the current turn cluster; replaced by ResetScope at each cluster
 	// start and after a steering resume. The session's /cancel handler cancels the installed scope.
 	private CancellationTokenSource _scope;
@@ -130,11 +131,10 @@ public class SessionHandler
 
 				// Wind-down only makes sense while the session still owes a reply to force out.
 				bool windDown    = turn >= maxWork && _activeSession.OwesReply;
-				bool lastTurn    = turn == maxTotal - 1;
 				bool contextFull = false;
 				try
 				{
-					contextFull = await RunTurnClusterAsync(role, windDown, lastTurn, registry, roleService, settings, transport, webSearchConfig, orchestrator, ct);
+					contextFull = await RunTurnClusterAsync(role, windDown, registry, roleService, settings, transport, webSearchConfig, orchestrator, ct);
 				}
 				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
 				{
@@ -149,16 +149,26 @@ public class SessionHandler
 						SaveSession(_activeSession);
 				}
 
-				// 5. Compact when the context filled mid-cluster. When that fails the session cannot
-				// make further progress on this model: report it (which also unblocks a waiting
-				// caller) and force a service re-check so the loop parks instead of spinning.
-				// The context filled mid-cluster: the turn was cut short, so the successor resumes.
+				// 5. Compact when the context filled mid-cluster (the turn was cut short, so the
+				// successor resumes). Compaction sizes its work to the summarizing model's own
+				// window, so no conversation is too large for it — reaching the failure path means
+				// there was no usable model to compact WITH, or that compaction already ran and the
+				// result STILL does not fit. Either way only a human can resolve it.
 				if (contextFull && !await CompactAsync(role, true, registry, roleService, transport, orchestrator, ct))
 				{
-					transport.Alert(_activeSession.Id, "The context window is full and compaction failed — this session cannot continue by itself. Use /model to switch to a larger model, or /compact to retry once one is available.");
+					transport.Alert(_activeSession.Id, "The context window is full and compaction could not fix it — either no usable model was available to summarize with, or the conversation still does not fit after compacting. Use /model to switch to a model with a larger window, or /compact to retry.");
 					_service = null;
 					if (_lastFailure == null)
-						_lastFailure = "the context window filled and compaction failed";
+						_lastFailure = "the context window filled and compaction could not run";
+
+					// Park until a human actually answers the alert. Dropping the service was not
+					// enough on its own: the next iteration rebuilds one from the role, finds the
+					// conversation still owing a turn, and runs straight back into the same wall —
+					// which, against a provider that rejects instantly, is a spin that emits an
+					// alert per pass and grew a session log to hundreds of megabytes before the app
+					// died. The latch clears the moment any input arrives, including the /model and
+					// /compact the alert asks for.
+					_activeSession.MarkInterrupted();
 				}
 
 				// 6. Answer the caller at the first terminator call or failure. NotifyComplete clears
@@ -207,11 +217,10 @@ public class SessionHandler
 
 	// Runs assistant turns and tool dispatch until the model stops calling tools, the user steers,
 	// or the run fails. Returns true when the context is full and the caller must compact.
-	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, bool lastTurn, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator, CancellationToken ct)
+	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
 		Tool[]  tools           = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
 		string? forcedTool      = windDown ? _activeSession.TerminatorName : null;
-		int     outputCap       = windDown ? _activeSession.OutputBudgetTokens : 0;
 		bool    workToolsActive = _activeSession.WorkInProgress;
 		bool    contextFull     = false;
 		bool    turnComplete    = false;
@@ -230,7 +239,9 @@ public class SessionHandler
 			if (contextFull)
 				break;
 
-			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, GetCompactionReserve(), outputCap, true, transport, _scope.Token);
+			// No caller-imposed output cap: a session answers at the size its work warrants, and the
+			// model's own ceiling (or the window remainder) is the only bound.
+			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, GetCompactionReserve(), 0, true, transport, _scope.Token);
 
 			if (result.Outcome == ProtocolCallOutcome.ContextFull)
 			{
@@ -293,7 +304,7 @@ public class SessionHandler
 				// effect before the next LLM call rather than waiting for the turn to end.
 				await DrainInput(roleService, registry, transport, ct);
 
-				turnComplete = TurnComplete(role, windDown, lastTurn, hasToolCalls);
+				turnComplete = TurnComplete(role, windDown, hasToolCalls);
 
 				// Rebuild the toolset when a tool toggled the work-in-progress state this round.
 				if (!turnComplete && _activeSession.WorkInProgress != workToolsActive)
@@ -310,23 +321,16 @@ public class SessionHandler
 
 	// Decides whether the turn cluster is finished after a successful assistant round. One policy
 	// for every session; terminator behaviour engages only while the session owes a reply.
-	private bool TurnComplete(Role role, bool windDown, bool lastTurn, bool hasToolCalls)
+	private bool TurnComplete(Role role, bool windDown, bool hasToolCalls)
 	{
 		bool complete;
 		if (_terminatorCalled)
 		{
+			// The reply is accepted at whatever size it is. Making a subagent rewrite its answer to
+			// fit the caller's leftover room degraded the answer to protect a window the caller can
+			// simply compact — the caller deals with the size when the reply lands.
 			_terminatorTokens = _activeSession.LastTokenUsage?.CompletionTokens ?? 0;
-			int budget        = _activeSession.OutputBudgetTokens;
-			if (budget > 0 && _terminatorTokens > budget && !lastTurn)
-			{
-				_terminatorCalled = false;
-				_activeSession.AddUserMessage(Nudges.ReplyOverBudget(_terminatorTokens, budget, _activeSession.TerminatorName));
-				complete = false;
-			}
-			else
-			{
-				complete = true;
-			}
+			complete          = true;
 		}
 		else if (windDown)
 		{
@@ -395,14 +399,25 @@ public class SessionHandler
 		}
 		int estimate = _activeSession.ContextLength + (pendingBytes / 3) + _activeSession.Budget.PendingReserve;
 
-		if (estimate >= threshold)
+		// A session nobody has measured yet must be counted before it is sized, not after it fails.
+		// The chars/3 figure above is a gate, not a number to size a request from: it only decides
+		// whether the real count is worth asking for, and on a fresh session — a compaction successor
+		// especially — it reads near zero while the conversation holds a full summary. Sizing the
+		// request from that produced a max_out of 29492 on top of an uncounted 7438-token prompt,
+		// which the provider rejected as overflow, which compacted, which built another unmeasured
+		// session. Counting first costs one call and makes every number after it real.
+		bool unmeasured = _activeSession.ContextLength <= 0 && messages.Count > 0;
+
+		if (estimate >= threshold || unmeasured)
 		{
 			TracerResult tracer = await service.RunTracerAsync(_activeSession, tools, null, token);
 			if (tracer.Succeeded)
 			{
 				// TracerResult.InputTokens is the total prompt size (cached included) — adding
-				// CachedTokens on top double-counted the cache and compacted prematurely.
-				_activeSession.Budget.RecordMeasurement(tracer.InputTokens);
+				// CachedTokens on top double-counted the cache and compacted prematurely. It lands
+				// on the session as well as the budget: the two disagreeing is what let a counted
+				// session still report ContextLength 0 to everything that reads it.
+				_activeSession.RecordCountedContext(tracer.InputTokens, tracer.CachedTokens);
 				_lastInputTokens = tracer.InputTokens;
 				// Same current-context reading as Session.SendStats. The tracer measured the entire
 				// prompt the next call would send, so cached plus the fresh remainder IS the whole
@@ -419,12 +434,16 @@ public class SessionHandler
 					full = true;
 				}
 			}
-			else if (tracer.ContextBlown || ProtocolHelpers.IsOverflowStatusCandidate(tracer.HttpStatus))
+			else if (tracer.ContextBlown
+				|| (estimate >= threshold && ProtocolHelpers.IsOverflowStatusCandidate(tracer.HttpStatus) && !ProtocolHelpers.IsAccountError(tracer.ErrorMessage ?? string.Empty)))
 			{
-				// ContextBlown means the body text matched a known overflow phrasing. The status
-				// check is the structural fallback: this tracer only ran because the estimate is
-				// already at the compaction threshold, so a client rejection here is overflow
-				// evidence regardless of how the server worded it.
+				// ContextBlown means the body text matched a known overflow phrasing, which is
+				// evidence on its own. The status check is the structural fallback and it rests
+				// entirely on the estimate already standing at the compaction threshold: THERE a
+				// client rejection is overflow however the server worded it. It says nothing of the
+				// kind on a count of a session nobody has measured yet, which is why that case is
+				// excluded — reading it as overflow would compact a conversation on no evidence
+				// beyond "a request failed". An account error is never overflow either way.
 				transport.Status(_activeSession.Id, $"Context exceeds limit ({tracer.ErrorMessage}), compacting...");
 				full = true;
 			}
@@ -477,10 +496,60 @@ public class SessionHandler
 	// Compacts the active session into a fresh successor appended to the chain, then advances
 	// _activeSession/_service to it. A mechanical elision pass runs first — no LLM call, real user
 	// messages kept verbatim — and only when it cannot reclaim enough space does the full staged
-	// summarization run. Both successor shapes are headed by the deterministic file ledger. The
+	// summarization run. Neither sees a tool round still in flight: unanswered calls are held aside
+	// and re-attached once compaction is done. Both successor shapes are headed by the ledger. The
 	// reply obligation is handed to the successor — the predecessor can no longer answer as a tool
 	// but is otherwise left intact: saved, registered, and replayable as forensics. Returns false
 	// when no successor history could be produced or no service was available for the successor.
+	// How many recent assistant turns to leave verbatim, tried in order. The first attempt summarizes
+	// everything but the last couple of turns — the most reclaimed space — and each retreat hands the
+	// summarizer LESS history to fold while keeping more of the recent conversation untouched. So a
+	// summarize that cannot complete over the whole backlog is offered a smaller and smaller job
+	// instead of simply failing, and whatever it does summarize is replaced wholesale.
+	private static readonly int[] kRetreatTurns = new int[] { 2, 4, 8, 16, 32 };
+
+	// Summarizes the conversation up to a retreat point and returns [summary] + the verbatim tail.
+	// Keeping the tail is the point: a summary is a description of work, and the model still needs the
+	// last few turns as they actually happened to carry on from them. Returns null only when every
+	// retreat has been tried and none produced a summary.
+	private async Task<List<CanonicalMessage>?> SummarizeWithRetreatAsync(List<CanonicalMessage> settled, Role role, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
+	{
+		List<CanonicalMessage>? seed = null;
+
+		for (int attempt = 0; attempt < kRetreatTurns.Length && seed == null; attempt++)
+		{
+			int split = MechanicalCompaction.TailStart(settled, kRetreatTurns[attempt]);
+			if (split <= 0)
+			{
+				// The conversation has fewer turns than this retreat keeps, so there is nothing left
+				// in front of the tail to summarize. Retreating further can only be emptier still.
+				transport.Status(_activeSession.Id, "[Compaction] Nothing left to summarize ahead of the recent turns.");
+				break;
+			}
+
+			List<CanonicalMessage> prefix = settled.GetRange(    0,                 split);
+			List<CanonicalMessage> tail   = settled.GetRange(split, settled.Count - split);
+
+			transport.Status(_activeSession.Id, $"[Compaction] Summarizing everything but the last {kRetreatTurns[attempt]} turns ({prefix.Count} messages)...");
+			string? summary = await Summarizer.SummarizeAsync(_activeSession, prefix, role.SummaryPrompt, registry, roleService, transport, ct);
+
+			if (!string.IsNullOrWhiteSpace(summary))
+			{
+				seed = new List<CanonicalMessage> { new UserMessage(summary!) };
+				seed.AddRange(tail);
+			}
+			else if (attempt + 1 < kRetreatTurns.Length)
+			{
+				transport.Status(_activeSession.Id, $"[Compaction] That summarize did not complete; retreating to keep the last {kRetreatTurns[attempt + 1]} turns and summarize less.");
+			}
+		}
+
+		if (seed == null)
+			transport.Status(_activeSession.Id, "[Compaction] Summarization could not complete at any retreat point.");
+
+		return seed;
+	}
+
 	private async Task<bool> CompactAsync(Role? role, bool resumeWork, LlmRegistry registry, RoleService roleService, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
 		bool compacted = false;
@@ -488,20 +557,36 @@ public class SessionHandler
 		{
 			transport.Status(_activeSession.Id, "[Compaction] No role available.");
 		}
+		else if (_activeSession.IsUncompactableSuccessor)
+		{
+			// Compaction just built this session and it has not managed a single turn since. Whatever
+			// rejected its first request will reject the next successor identically, so compacting
+			// again only spends a summarizer pass to arrive back here. Fail out to the caller, which
+			// parks the session and asks a human for a model that fits.
+			transport.Status(_activeSession.Id, "[Compaction] The freshly compacted conversation still does not fit — compacting again cannot help.");
+		}
 		else
 		{
 			transport.Status(_activeSession.Id, "[Compaction] Started.");
 
-			List<CanonicalMessage>? seed = MechanicalCompaction.TryBuild(_activeSession.Data.Messages, role.EndOfTurnPrompt);
+			// A tool round still in flight is not history yet: neither pass may rewrite half of a
+			// call/result pair. Hold that tail aside, compact only the settled prefix, and re-attach
+			// the tail verbatim afterwards. Ordinarily the tail is empty — the turn loop commits every
+			// result before it ever compacts — but a session restored from an interrupted save, or one
+			// the user compacts by hand mid-round, arrives here with calls still open.
+			(List<CanonicalMessage> settled, List<CanonicalMessage> pending) = MechanicalCompaction.SplitPending(_activeSession.Data.Messages);
+			if (pending.Count > 0)
+				transport.Status(_activeSession.Id, $"[Compaction] Holding {pending.Count} in-flight message(s) aside.");
+
+			List<CanonicalMessage>? seed = MechanicalCompaction.TryBuild(settled, role.EndOfTurnPrompt,
+				_activeSession.ContextLength, _activeSession.ContextWindow);
 			if (seed != null)
 			{
 				transport.Status(_activeSession.Id, "[Compaction] Stale tool traffic elided mechanically; no summarization needed.");
 			}
 			else if (!string.IsNullOrEmpty(role.SummaryPrompt))
 			{
-				string? summary = await Summarizer.SummarizeAsync(_activeSession, role.SummaryPrompt, registry, roleService, transport, ct);
-				if (!string.IsNullOrWhiteSpace(summary))
-					seed = new List<CanonicalMessage> { new UserMessage(summary!) };
+				seed = await SummarizeWithRetreatAsync(settled, role, registry, roleService, transport, ct);
 			}
 			else
 			{
@@ -516,10 +601,21 @@ public class SessionHandler
 				if (ledger.Length > 0)
 					seed.Insert(0, new UserMessage(ledger));
 
+				// The held-aside tail goes back on the end, after everything compaction produced, so
+				// the calls sit in the same order the model made them. Any still unanswered is closed
+				// with a note — its result is never coming, and a successor carrying an open call is
+				// rejected by every protocol on its first request.
+				if (pending.Count > 0)
+				{
+					MechanicalCompaction.CloseOpenCalls(pending);
+					seed.AddRange(pending);
+				}
+
 				// Compaction interrupted work in progress, so the successor must pick it straight
-				// back up. The mechanical pass hands over history ending on satisfied tool results —
+				// back up. Both shapes now hand over history that can end on satisfied tool results —
 				// nothing there asks the model for anything — so a resume message is appended unless
-				// the seed already ends on user text (the summarize path always does).
+				// the seed already ends on user text. Checked last, once the verbatim tail and any
+				// held-aside round are back in place, since those are what the seed ends on.
 				if (resumeWork && MechanicalCompaction.NeedsResumePrompt(seed))
 					seed.Add(new UserMessage(Nudges.ResumeAfterCompaction()));
 			}
@@ -534,12 +630,11 @@ public class SessionHandler
 				Session  predecessor = _activeSession;
 				Session? parent      = orchestrator.FindParent(predecessor);
 
-				// Hand the reply obligation (terminator, output budget, turn budget) to the successor
-				// before the predecessor is saved, so a reload never resurrects two sessions both
-				// claiming to answer the same caller.
-				string terminatorName     = predecessor.TerminatorName;
-				int    outputBudgetTokens = predecessor.OutputBudgetTokens;
-				int    maxWorkTurns       = predecessor.MaxWorkTurns;
+				// Hand the reply obligation (terminator, turn budget) to the successor before the
+				// predecessor is saved, so a reload never resurrects two sessions both claiming to
+				// answer the same caller.
+				string terminatorName = predecessor.TerminatorName;
+				int    maxWorkTurns   = predecessor.MaxWorkTurns;
 				predecessor.ClearReplyObligation();
 
 				predecessor.SetDispatchScope(null);
@@ -568,34 +663,32 @@ public class SessionHandler
 				// than through OnUserMessage) keeps the ledger its own strippable message instead
 				// of merging into adjacent user text.
 				BeastSession successorData = new BeastSession(successorId, Session.IncrementDisplayName(predecessor.DisplayName),
-					service.Model.ConfigId, role.Name, terminatorName, outputBudgetTokens,
+					service.Model.ConfigId, role.Name, terminatorName,
 					seed, null, 0m, 0, 0, 0, predecessor.Ephemeral);
 				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
+				successor.MarkCompactionSuccessor();
 				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.UpdateModel(service.Model);
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
 				successor.SetDispatchScope(_scope);
 
-				// SessionReset FIRST for a root: it wipes the client's whole session view, so
-				// anything announced or replayed before it is lost. The old order (announce, then
-				// reset, then never replay a root successor) left the compacted chat displaying as
-				// a raw GUID over an empty transcript, beside a named-but-empty predecessor.
-				if (parent == null)
-					transport.SessionReset(successor.Id);
+				// Announce the successor like any other new session, then ask the client to show it.
+				// Nothing is torn down: compaction ADDS a session, it does not replace one, so the
+				// client has nothing to invalidate and everything it already knows stays put. This
+				// used to send a SessionReset first, which cleared the client's entire session list —
+				// and since only the predecessor was re-announced behind it, every other live session
+				// (sibling subagents, predecessors from earlier compactions) vanished from the client
+				// while still running in the agent.
+				//
+				// Only a root asks for focus. A child compaction leaves the user wherever they were
+				// looking; the successor simply appears in the tree.
 				successor.AnnounceToClient();
 				successor.ReplayToTransport();
-				if (parent != null)
-					parent.AddChild(successor);
-
-				// The reset also erased the predecessor from the client; re-announce and replay it
-				// so its full history remains browsable from the F10 tree.
 				if (parent == null)
-				{
-					predecessor.AnnounceToClient();
-					predecessor.SendStats();
-					predecessor.ReplayToTransport();
-				}
+					transport.SessionActivate(successor.Id);
+				else
+					parent.AddChild(successor);
 				if (!successor.Ephemeral)
 					SaveSession(successor);
 				orchestrator.RegisterSession(successor);
@@ -964,8 +1057,8 @@ public class SessionHandler
 			_activeSession,
 			webSearchConfig,
 			_activeSession.WorkInProgress,
-			(roleName, displayName, prompt, maxWorkTurns, budget, spawnCt) =>
-				orchestrator.SpawnChildAsync(beastSettings, _activeSession, roleName, displayName, prompt, maxWorkTurns, budget, spawnCt),
+			(roleName, displayName, prompt, maxWorkTurns, spawnCt) =>
+				orchestrator.SpawnChildAsync(beastSettings, _activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
 			() => _activeSession.BeginWork(),
 			() => _activeSession.EndWork(),
 			_activeSession.OwesReply ? Terminate : null);

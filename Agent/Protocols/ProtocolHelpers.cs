@@ -172,6 +172,35 @@ static class ProtocolHelpers
 		return statusCode == 400 || statusCode == 413 || statusCode == 422;
 	}
 
+	// Account-level rejections: no money, no quota, no key, no access. Providers return these as a
+	// plain 400 with the reason only in the body, which makes them indistinguishable by status from
+	// an over-window rejection — and the structural "a 400 on a near-full context IS overflow"
+	// inference then swallows them whole. That inference is right about servers whose overflow
+	// wording we don't recognize and catastrophically wrong here: compaction cannot buy credit, so
+	// the session compacts, fails, retries, and spins on the provider forever instead of telling the
+	// human the one thing that would fix it. Checked BEFORE any overflow reclassification, so these
+	// keep routing to the permanent-failure path that marks the model down and raises an alert.
+	public static bool IsAccountError(string errorText)
+	{
+		if (string.IsNullOrEmpty(errorText))
+			return false;
+
+		string lower = errorText.ToLowerInvariant();
+		return lower.Contains("credit balance")
+			|| lower.Contains("insufficient_quota")
+			|| lower.Contains("insufficient credit")
+			|| lower.Contains("insufficient balance")
+			|| lower.Contains("exceeded your current quota")
+			|| lower.Contains("billing")
+			|| lower.Contains("payment")
+			|| lower.Contains("purchase credits")
+			|| lower.Contains("invalid api key")
+			|| lower.Contains("invalid_api_key")
+			|| lower.Contains("incorrect api key")
+			|| lower.Contains("authentication_error")
+			|| lower.Contains("unauthorized");
+	}
+
 	public static bool IsContextOverflow(string errorText)
 	{
 		if (string.IsNullOrEmpty(errorText))

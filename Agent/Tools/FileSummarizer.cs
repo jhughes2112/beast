@@ -30,13 +30,13 @@ public class FileSummarizer
 	// the Explorer cite the parts relevant to the goal. A small file (or a failed read) is returned raw.
 	// explorerRole is pre-resolved by BuildForRole; the spawn delegate runs the Explorer as a child session.
 	public async Task<ToolResult> SummarizeAsync(
-		string toolCallId,
-		string filePath,
-		string offset,
-		string goal,
-		Role explorerRole,
-		SpawnSubagent spawn,
-		int maxOutputTokens,
+		string            toolCallId,
+		string            filePath,
+		string            offset,
+		string            goal,
+		Role              explorerRole,
+		SpawnSubagent     spawn,
+		int               maxOutputTokens,
 		CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(filePath))
@@ -59,7 +59,7 @@ public class FileSummarizer
 		if (fileBytes < SmallFileMaxBytes || CountLines(raw.StdOut) < SmallFileMaxLines)
 			return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 
-		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, explorerRole, spawn, maxOutputTokens, cancellationToken);
+		return await ExploreAsync(toolCallId, filePath, raw.StdOut, goal, explorerRole, spawn, cancellationToken);
 	}
 
 	// Counts physical lines in already-read content; used only for the small-file threshold.
@@ -80,18 +80,17 @@ public class FileSummarizer
 	// Interprets the line-numbered window with the Explorer role, which returns its citations (file, line,
 	// line count) via return_to_caller. Cost rolls up into the calling session.
 	private async Task<ToolResult> ExploreAsync(
-		string toolCallId,
-		string filePath,
-		string content,
-		string goal,
-		Role explorerRole,
-		SpawnSubagent spawn,
-		int maxOutputTokens,
+		string            toolCallId,
+		string            filePath,
+		string            content,
+		string            goal,
+		Role              explorerRole,
+		SpawnSubagent     spawn,
 		CancellationToken cancellationToken)
 	{
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await spawn(explorerRole.Name, $"find_relevant_file_sections {filePath}", seed, MaxWorkTurns, maxOutputTokens, cancellationToken);
+		(bool ok, string answer, int tokens) = await spawn(explorerRole.Name, $"find_relevant_file_sections {filePath}", seed, MaxWorkTurns, cancellationToken);
 		if (!ok)
 		{
 			string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

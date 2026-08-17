@@ -21,11 +21,11 @@ public static class WebToolsTests
 	// exercised without touching the network.
 	private class StubProvider : WebSearchProvider
 	{
-		private readonly string _id;
+		private readonly string  _id;
 		private readonly decimal _price;
-		private readonly bool _succeeds;
-		private readonly bool _throws;
-		private readonly int _status;
+		private readonly bool    _succeeds;
+		private readonly bool    _throws;
+		private readonly int     _status;
 
 		public int Calls;
 
@@ -36,19 +36,19 @@ public static class WebToolsTests
 
 		public StubProvider(string id, decimal price, bool succeeds, bool throws, int status)
 		{
-			_id = id;
-			_price = price;
+			_id       = id;
+			_price    = price;
 			_succeeds = succeeds;
-			_throws = throws;
-			_status = status;
-			Calls = 0;
+			_throws   = throws;
+			_status   = status;
+			Calls     = 0;
 		}
 
-		public override string Id => _id;
-		public override string DisplayName => _id;
-		public override string Domain => _id + ".test";
+		public override string  Id               => _id;
+		public override string  DisplayName      => _id;
+		public override string  Domain           => _id + ".test";
 		public override decimal PricePerThousand => _price;
-		public override string DefaultModel => "stub";
+		public override string  DefaultModel     => "stub";
 
 		public override Task<WebSearchAnswer> SearchAsync(string query, string goal, string systemPrompt, string apiKey, string model, int maxOutputTokens, CancellationToken ct)
 		{
@@ -70,23 +70,23 @@ public static class WebToolsTests
 		// Cheapest first, and a provider that fails hands off to the next rather than failing the
 		// whole call. The throwing provider must be contained the same way an error return is.
 		StubProvider cheapBroken = new StubProvider("cheap", 1m, false, false);
-		StubProvider midThrows = new StubProvider("mid", 2m, false, true);
-		StubProvider dearWorks = new StubProvider("dear", 3m, true, false);
+		StubProvider midThrows   = new StubProvider("mid",   2m, false,  true);
+		StubProvider dearWorks   = new StubProvider("dear",  3m,  true, false);
 		List<(WebSearchProvider Provider, string ApiKey, string Model)> providers = new List<(WebSearchProvider, string, string)>
 		{
 			(cheapBroken, "k", "stub"),
-			(midThrows, "k", "stub"),
-			(dearWorks, "k", "stub")
+			(  midThrows, "k", "stub"),
+			(  dearWorks, "k", "stub")
 		};
 
 		ToolResult result = new WebSearchTool(providers, "test").SearchAsync("id", "q", "g", parent, new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
 
 		ctx.AssertEqual(0, result.ExitCode, "WebSearchTool: falls through to a provider that works");
-		ctx.AssertContains(result.StdOut, "answer from dear", "WebSearchTool: returns the working provider's answer");
+		ctx.AssertContains(result.StdOut, "answer from dear",  "WebSearchTool: returns the working provider's answer");
 		ctx.AssertContains(result.StdOut, "searched via dear", "WebSearchTool: names the provider that answered");
 		ctx.AssertEqual(1, cheapBroken.Calls, "WebSearchTool: cheapest is tried first");
-		ctx.AssertEqual(1, midThrows.Calls, "WebSearchTool: a throwing provider is contained, not fatal");
-		ctx.AssertEqual(1, dearWorks.Calls, "WebSearchTool: the working provider is reached");
+		ctx.AssertEqual(1,   midThrows.Calls, "WebSearchTool: a throwing provider is contained, not fatal");
+		ctx.AssertEqual(1,   dearWorks.Calls, "WebSearchTool: the working provider is reached");
 		ctx.AssertEqual(0.003m, parent.Data.TotalCost, "WebSearchTool: the answering provider's fee rolls up to the caller");
 
 		// Every provider failing is a tool error naming each reason, not an exception.
@@ -101,16 +101,16 @@ public static class WebToolsTests
 
 		// Credits exhausted on one provider: the human is alerted (a fallback cannot fix a billing
 		// problem) AND the search still completes on the next provider.
-		StubProvider brokeProvider = new StubProvider("broke", 1m, false, false, 402);
-		StubProvider payingProvider = new StubProvider("paying", 2m, true, false);
-		TestCaptureTransport transport = new TestCaptureTransport();
+		StubProvider         brokeProvider  = new StubProvider("broke", 1m, false, false, 402);
+		StubProvider         payingProvider = new StubProvider("paying", 2m, true, false);
+		TestCaptureTransport transport      = new TestCaptureTransport();
 		List<(WebSearchProvider Provider, string ApiKey, string Model)> creditCase = new List<(WebSearchProvider, string, string)>
 		{
-			(brokeProvider, "k", "stub"),
+			( brokeProvider, "k", "stub"),
 			(payingProvider, "k", "stub")
 		};
 		WebSearchTool creditTool = new WebSearchTool(creditCase, "test");
-		ToolResult recovered = creditTool.SearchAsync("id", "q", "g", NewParentSession(), transport, "s", 0, CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult    recovered  = creditTool.SearchAsync("id", "q", "g", NewParentSession(), transport, "s", 0, CancellationToken.None).GetAwaiter().GetResult();
 
 		ctx.AssertEqual(0, recovered.ExitCode, "WebSearchTool: a 402 still falls back to the next provider");
 		ctx.AssertContains(recovered.StdOut, "answer from paying", "WebSearchTool: the fallback provider's answer is returned");
@@ -139,7 +139,7 @@ public static class WebToolsTests
 
 	private static Session NewParentSession()
 	{
-		BeastSession data = new BeastSession("ws-test", "ws-test", "model", "role", string.Empty, 0,
+		BeastSession data = new BeastSession("ws-test", "ws-test", "model", "role", string.Empty,
 			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
 		return new Session(data, string.Empty, new TestCaptureTransport(), false);
 	}
@@ -176,9 +176,9 @@ public static class WebToolsTests
 		List<(WebSearchProvider Provider, string ApiKey, string Model)> usable = WebSearchRegistry.ResolveUsable(settings);
 		ctx.AssertEqual(2, usable.Count, "WebSearch: only enabled providers with resolvable keys are usable");
 		ctx.AssertEqual("openrouter", usable[0].Provider.Id, "WebSearch: cheapest provider comes first");
-		ctx.AssertEqual("or-key", usable[0].ApiKey, "WebSearch: key resolved from the matching auto endpoint");
-		ctx.AssertEqual("anthropic", usable[1].Provider.Id, "WebSearch: dearer provider ranks second");
-		ctx.AssertEqual("ant-key", usable[1].ApiKey, "WebSearch: key resolved from the matching manual provider");
+		ctx.AssertEqual("or-key",          usable[0].ApiKey, "WebSearch: key resolved from the matching auto endpoint");
+		ctx.AssertEqual("anthropic",  usable[1].Provider.Id, "WebSearch: dearer provider ranks second");
+		ctx.AssertEqual("ant-key",         usable[1].ApiKey, "WebSearch: key resolved from the matching manual provider");
 		ctx.AssertEqual(usable[0].Provider.DefaultModel, usable[0].Model, "WebSearch: blank model override falls back to the provider default");
 
 		// A domain with no key at all resolves to empty rather than throwing.
@@ -188,7 +188,7 @@ public static class WebToolsTests
 
 		// The legacy openrouter block still supplies a key and an implicit entry for upgraders.
 		BeastSettings legacy = new BeastSettings();
-		legacy.WebSearch = new WebSearchConfig
+		legacy.WebSearch     = new WebSearchConfig
 		{
 			Openrouter = new OpenrouterSearchConfig { ApiKey = "legacy-key", Enabled = true, Model = "openrouter/free" }
 		};
@@ -198,7 +198,7 @@ public static class WebToolsTests
 
 		// A placeholder key is not a key.
 		BeastSettings placeholder = new BeastSettings();
-		placeholder.WebSearch = new WebSearchConfig
+		placeholder.WebSearch     = new WebSearchConfig
 		{
 			Openrouter = new OpenrouterSearchConfig { ApiKey = "YOUR_OPENROUTER_KEY_HERE", Enabled = true }
 		};
@@ -214,8 +214,8 @@ public static class WebToolsTests
 			WebSearchTool searcher = new WebSearchTool(usable, string.Empty);
 
 			using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-			ToolResult result = await searcher.SearchAsync("testSearchId", "What is the capital of France?", "State the capital city of France in one short sentence.", parent, new TestCaptureTransport(), parent.Id, 0, cts.Token);
+			using CancellationTokenSource cts        = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+			ToolResult result                        = await searcher.SearchAsync("testSearchId", "What is the capital of France?", "State the capital city of France in one short sentence.", parent, new TestCaptureTransport(), parent.Id, 0, cts.Token);
 
 			string response = result.ExitCode == 0 ? result.StdOut : result.StdErr;
 			ctx.Log($"    response: {response}");
@@ -239,18 +239,18 @@ public static class WebToolsTests
 		// Basic tag stripping.
 		string basic = (string)Reflect.Static(typeof(WebFetch), "StripHtmlTags", types, new object[] { "<p>Hello World</p>" })!;
 		ctx.Assert(basic.Contains("Hello World"), "StripHtmlTags: basic tags stripped");
-		ctx.Assert(!basic.Contains("<p>"), "StripHtmlTags: no tags remain");
+		ctx.Assert(       !basic.Contains("<p>"), "StripHtmlTags: no tags remain");
 
 		// Script tags removed entirely.
 		string script = (string)Reflect.Static(typeof(WebFetch), "StripHtmlTags", types, new object[] { "before<script>alert('xss')</script>after" })!;
 		ctx.Assert(!script.Contains("alert"), "StripHtmlTags: script content removed");
 		ctx.Assert(script.Contains("before"), "StripHtmlTags: text before script preserved");
-		ctx.Assert(script.Contains("after"), "StripHtmlTags: text after script preserved");
+		ctx.Assert( script.Contains("after"), "StripHtmlTags: text after script preserved");
 
 		// Style tags removed entirely.
 		string style = (string)Reflect.Static(typeof(WebFetch), "StripHtmlTags", types, new object[] { "text<style>.x{color:red}</style>more" })!;
 		ctx.Assert(!style.Contains("color"), "StripHtmlTags: style content removed");
-		ctx.Assert(style.Contains("text"), "StripHtmlTags: text around style preserved");
+		ctx.Assert(  style.Contains("text"), "StripHtmlTags: text around style preserved");
 
 		// HTML entity decoding.
 		string entity = (string)Reflect.Static(typeof(WebFetch), "StripHtmlTags", types, new object[] { "<span>&amp; &lt; &gt;</span>" })!;
@@ -268,7 +268,7 @@ public static class WebToolsTests
 		// Nested tags.
 		string nested = (string)Reflect.Static(typeof(WebFetch), "StripHtmlTags", types, new object[] { "<div><p><b>deep</b></p></div>" })!;
 		ctx.Assert(nested.Contains("deep"), "StripHtmlTags: nested tags stripped");
-		ctx.Assert(!nested.Contains("<"), "StripHtmlTags: no angle brackets in output");
+		ctx.Assert(  !nested.Contains("<"), "StripHtmlTags: no angle brackets in output");
 	}
 
 }

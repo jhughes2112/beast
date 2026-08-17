@@ -2,14 +2,16 @@ using System;
 
 
 // The steering strings the system injects as user messages to keep a model working: end-of-turn
-// nudges, wind-down orders, over-budget reply retries, and invalid-tool-call corrections. They
+// nudges, wind-down orders, and invalid-tool-call corrections. They
 // exist to whip the CURRENT turn along and carry no information once that turn is past, so
 // mechanical compaction strips them from a successor's history. Builders and recognizers live
 // together here so a reworded template can never desynchronize from the matcher that identifies it.
 public static class Nudges
 {
 	// Stable prefixes of the generated templates below; matching is StartsWith because the full
-	// strings embed terminator names and token counts.
+	// strings embed terminator names and token counts. "That output is about " no longer has a
+	// builder — replies are no longer rewritten to fit a caller's budget — but sessions written by
+	// earlier versions still carry it, and it is just as strippable now as it was then.
 	private static readonly string[] kPrefixes = new string[]
 	{
 		"Continue the task, then call the ",
@@ -28,12 +30,6 @@ public static class Nudges
 	{
 		return $"You are out of working turns. Call the {terminatorName} tool now with your final result, "
 			+ "preserving the key details (file paths, line numbers, names, key output).";
-	}
-
-	public static string ReplyOverBudget(int tokens, int budget, string terminatorName)
-	{
-		return $"That output is about {tokens} tokens but must fit within {budget} tokens. "
-			+ $"Call {terminatorName} again with a shorter output, preserving the key details (file paths, line numbers, names, key output).";
 	}
 
 	// Injected as the last message of a compaction successor that was mid-work: the elided history

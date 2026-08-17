@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 public class WebFetch
 {
 	private static readonly HttpClient SharedHttpClient = new();
-	private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(30);
 
 	// The WebFetch role now does real work — reading and parsing the saved files — so it gets several turns;
 	// the session's wind-down forces the terminator once these run out so the run always finishes.
@@ -30,12 +30,11 @@ public class WebFetch
 	// return_to_caller. Cost rolls up into the calling session.
 	// webFetchRole is pre-resolved by BuildForRole; the spawn delegate runs it as a child session.
 	public async Task<ToolResult> FetchRawAsync(
-		string toolCallId,
-		string url,
-		string objective,
-		Role webFetchRole,
-		SpawnSubagent spawn,
-		int maxOutputTokens,
+		string            toolCallId,
+		string            url,
+		string            objective,
+		Role              webFetchRole,
+		SpawnSubagent     spawn,
 		CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(url))
@@ -57,8 +56,8 @@ public class WebFetch
 			if (!response.IsSuccessStatusCode)
 				return new ToolResult(toolCallId, string.Empty, "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, 1, 0);
 
-			string? contentType = response.Content.Headers.ContentType?.MediaType;
-			long? declaredLength = response.Content.Headers.ContentLength;
+			string? contentType    = response.Content.Headers.ContentType?.MediaType;
+			long?   declaredLength = response.Content.Headers.ContentLength;
 
 			string seed;
 			if (declaredLength.HasValue && declaredLength.Value > MaxAutoDownloadBytes)
@@ -82,7 +81,7 @@ public class WebFetch
 				}
 			}
 
-			(bool ok, string answer, int tokens) = await spawn(webFetchRole.Name, $"fetch_url {url}", seed, MaxWorkTurns, maxOutputTokens, cancellationToken);
+			(bool ok, string answer, int tokens) = await spawn(webFetchRole.Name, $"fetch_url {url}", seed, MaxWorkTurns, cancellationToken);
 			if (!ok)
 			{
 				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;
@@ -124,10 +123,10 @@ public class WebFetch
 	// unbounded resource can never be pulled in full. Returns the bytes when within the cap, or tooBig=true.
 	private static async Task<(byte[]? bytes, bool tooBig)> ReadCappedAsync(HttpResponseMessage response, CancellationToken cancellationToken)
 	{
-		using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+		using Stream stream       = await response.Content.ReadAsStreamAsync(cancellationToken);
 		using MemoryStream buffer = new MemoryStream();
-		byte[] chunk = new byte[81920];
-		long total = 0;
+		byte[] chunk              = new byte[81920];
+		long   total              = 0;
 
 		int read;
 		while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
@@ -147,7 +146,7 @@ public class WebFetch
 	private static string BuildFilesSeed(string url, string objective, string? contentType, byte[] bytes, string? suggestedName)
 	{
 		string classification = ClassifyContent(contentType, url, bytes);
-		string directory = Path.Combine("/tmp", "fetch_" + Guid.NewGuid().ToString("N").Substring(0, 12));
+		string directory      = Path.Combine("/tmp", "fetch_" + Guid.NewGuid().ToString("N").Substring(0, 12));
 		Directory.CreateDirectory(directory);
 
 		StringBuilder manifest = new StringBuilder();
@@ -161,12 +160,12 @@ public class WebFetch
 		{
 			string html = Encoding.UTF8.GetString(bytes);
 
-			string stripped = WrapAtWhitespace(StripHtmlTags(html));
+			string stripped     = WrapAtWhitespace(StripHtmlTags(html));
 			string strippedPath = Path.Combine(directory, "stripped.txt");
 			File.WriteAllText(strippedPath, stripped);
 			manifest.Append($"- {strippedPath}  ({stripped.Length} chars) — tags removed, entities decoded, whitespace collapsed; best for reading prose\n");
 
-			string structure = BuildHtmlStructure(html);
+			string structure     = BuildHtmlStructure(html);
 			string structurePath = Path.Combine(directory, "structure.html");
 			File.WriteAllText(structurePath, structure);
 			manifest.Append($"- {structurePath}  ({structure.Length} chars) — tag skeleton with text removed; best for understanding layout or locating a section\n");
@@ -218,8 +217,8 @@ public class WebFetch
 				return "text";
 		}
 
-		string path = url;
-		int query = path.IndexOf('?');
+		string path  = url;
+		int    query = path.IndexOf('?');
 		if (query >= 0)
 			path = path.Substring(0, query);
 		string extension = Path.GetExtension(path).ToLowerInvariant();
@@ -302,8 +301,8 @@ public class WebFetch
 	// slash or has no path (e.g. "https://host/"), in which case the caller synthesizes a name.
 	private static string UrlLastSegment(string url)
 	{
-		string path = url;
-		int query = path.IndexOf('?');
+		string path  = url;
+		int    query = path.IndexOf('?');
 		if (query >= 0)
 			path = path.Substring(0, query);
 		int fragment = path.IndexOf('#');
@@ -343,8 +342,8 @@ public class WebFetch
 			return string.Empty;
 
 		StringBuilder sb = new StringBuilder(html.Length);
-		int i = 0;
-		int n = html.Length;
+		int           i  = 0;
+		int           n  = html.Length;
 		while (i < n)
 		{
 			if (html[i] == '<')
@@ -386,8 +385,8 @@ public class WebFetch
 			return string.Empty;
 
 		StringBuilder sb = new StringBuilder();
-		int i = 0;
-		int n = html.Length;
+		int           i  = 0;
+		int           n  = html.Length;
 		while (i < n)
 		{
 			if (html[i] == '<')
@@ -443,8 +442,8 @@ public class WebFetch
 	// string when no closing tag is found. Both the opening tag and its body are skipped by the caller.
 	private static int SkipToEndTag(string html, int openIndex, string tagName)
 	{
-		string closeTag = "</" + tagName;
-		int closeIndex = html.IndexOf(closeTag, openIndex, StringComparison.OrdinalIgnoreCase);
+		string closeTag   = "</" + tagName;
+		int    closeIndex = html.IndexOf(closeTag, openIndex, StringComparison.OrdinalIgnoreCase);
 		if (closeIndex < 0)
 			return html.Length;
 
@@ -457,8 +456,8 @@ public class WebFetch
 	// Collapses every run of whitespace to a single space and trims the ends.
 	private static string CollapseWhitespace(string text)
 	{
-		StringBuilder sb = new StringBuilder(text.Length);
-		bool pendingSpace = false;
+		StringBuilder sb           = new StringBuilder(text.Length);
+		bool          pendingSpace = false;
 		foreach (char c in text)
 		{
 			if (char.IsWhiteSpace(c))
@@ -486,9 +485,9 @@ public class WebFetch
 		if (string.IsNullOrEmpty(text))
 			return text;
 
-		StringBuilder sb = new StringBuilder(text.Length + text.Length / MaxLineLength + 1);
-		int start = 0;
-		int n = text.Length;
+		StringBuilder sb    = new StringBuilder(text.Length + text.Length / MaxLineLength + 1);
+		int           start = 0;
+		int           n     = text.Length;
 		while (start < n)
 		{
 			int remaining = n - start;
@@ -498,7 +497,7 @@ public class WebFetch
 				break;
 			}
 
-			int limit = start + MaxLineLength;
+			int limit   = start + MaxLineLength;
 			int breakAt = -1;
 			for (int i = limit - 1; i > start; i--)
 			{

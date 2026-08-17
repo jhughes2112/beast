@@ -328,7 +328,7 @@ public static class ModelCatalogTests
 
 	private static Session NewSession()
 	{
-		BeastSession data = new BeastSession("repair", "repair", "model", "role", string.Empty, 0,
+		BeastSession data = new BeastSession("repair", "repair", "model", "role", string.Empty,
 			new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
 		return new Session(data, string.Empty, new TestCaptureTransport(), false);
 	}
@@ -563,7 +563,7 @@ public static class ModelCatalogTests
 			new UserMessage("plain"),
 			new UserMessage("with media", new List<MediaAttachment> { new MediaAttachment("image/png", "QUJD") })
 		};
-		BeastSession session = new BeastSession("id", "name", "model", "role", "", 0, messages, null, 0m, 0, 0, 0, false);
+		BeastSession session = new BeastSession("id", "name", "model", "role", "", messages, null, 0m, 0, 0, 0, false);
 
 		string json = JsonSerializer.Serialize(session, BeastJson.Persist.BeastSession);
 		BeastSession? loaded = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);

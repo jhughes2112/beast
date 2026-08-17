@@ -22,16 +22,16 @@ public static class ToolFactory
 	private const int SubagentMaxWorkTurns = 75;
 
 	public static Tool[] BuildForRole(
-		BeastSettings settings,
-		Role role,
-		LlmRegistry? registry,
-		RoleService? roleService,
-		Session? session,
-		WebSearchConfig? webSearchConfig,
-		bool workInProgress,
-		SpawnSubagent? spawnSubagent,
-		Action? onWorkAssigned,
-		Action? onStopWork,
+		BeastSettings         settings,
+		Role                  role,
+		LlmRegistry?          registry,
+		RoleService?          roleService,
+		Session?              session,
+		WebSearchConfig?      webSearchConfig,
+		bool                  workInProgress,
+		SpawnSubagent?        spawnSubagent,
+		Action?               onWorkAssigned,
+		Action?               onStopWork,
 		Action<bool, string>? onTerminate)
 	{
 		List<Tool> tools = new List<Tool>();
@@ -39,20 +39,20 @@ public static class ToolFactory
 		// Resolve helper roles and check model availability upfront. A tool is omitted when its role is
 		// unconfigured or no model is available. GetModelForRole is a lightweight availability check —
 		// the actual LlmService is created when the tool spawns its child session.
-		Role? explorerRole = roleService?.GetRole("Explorer");
-		bool explorerReady = explorerRole != null && registry?.GetModelForRole(explorerRole, string.Empty, 0) != null;
-		Role? webFetchRole = roleService?.GetRole("WebFetch");
-		bool webFetchReady = webFetchRole != null && registry?.GetModelForRole(webFetchRole, string.Empty, 0) != null;
+		Role? explorerRole  = roleService?.GetRole("Explorer");
+		bool  explorerReady = explorerRole != null && registry?.GetModelForRole(explorerRole, string.Empty, 0) != null;
+		Role? webFetchRole  = roleService?.GetRole("WebFetch");
+		bool  webFetchReady = webFetchRole != null && registry?.GetModelForRole(webFetchRole, string.Empty, 0) != null;
 		Role? webSearchRole = roleService?.GetRole("WebSearch");
 
 		if (role.Tools.Contains("bash"))
 		{
 			ToolConfig tc = settings.Tools["bash"];
-			Register(tools, "bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])), 
+			Register(tools, "bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
-					string command = Str(args, "command");
-					int? timeoutSeconds = IntOpt(args, "timeout_seconds");
+					string command        = Str(args, "command");
+					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
 					return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
 				});
 		}
@@ -60,11 +60,11 @@ public static class ToolFactory
 		if (role.Tools.Contains("readonly_bash"))
 		{
 			ToolConfig tc = settings.Tools["readonly_bash"];
-			Register(tools, "readonly_bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])), 
+			Register(tools, "readonly_bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
-					string command = Str(args, "command");
-					int? timeoutSeconds = IntOpt(args, "timeout_seconds");
+					string command        = Str(args, "command");
+					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
 					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, ct);
 				});
 		}
@@ -72,11 +72,11 @@ public static class ToolFactory
 		if (role.Tools.Contains("write_file"))
 		{
 			ToolConfig tc = settings.Tools["write_file"];
-			Register(tools, "write_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("content", "string", tc.Parameters["content"])), 
+			Register(tools, "write_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("content", "string", tc.Parameters["content"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
-					string content = Str(args, "content");
+					string content  = Str(args, "content");
 					return await FileTools.WriteFileAsync(toolCallId, filePath, content, ct);
 				});
 		}
@@ -84,19 +84,19 @@ public static class ToolFactory
 		if (role.Tools.Contains("edit_file"))
 		{
 			ToolConfig tc = settings.Tools["edit_file"];
-			Register(tools, "edit_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("old_text", "string", tc.Parameters["old_text"]), Req("new_text", "string", tc.Parameters["new_text"])), 
+			Register(tools, "edit_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("old_text", "string", tc.Parameters["old_text"]), Req("new_text", "string", tc.Parameters["new_text"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
-					string oldText = Str(args, "old_text");
-					string newText = Str(args, "new_text");
+					string oldText  = Str(args, "old_text");
+					string newText  = Str(args, "new_text");
 					return await FileTools.EditFileAsync(toolCallId, filePath, oldText, newText, ct);
 				});
 		}
 		if (role.Tools.Contains("ls"))
 		{
 			ToolConfig tc = settings.Tools["ls"];
-			Register(tools, "ls", tc.Description, Params(Req("folder", "string", tc.Parameters["folder"])), 
+			Register(tools, "ls", tc.Description, Params(Req("folder", "string", tc.Parameters["folder"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string folder = Str(args, "folder");
@@ -111,23 +111,23 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "read_file",
+						Name        = "read_file",
 						Description = tc.Description,
-						Parameters = Params(
-							Req("file_path", "string", tc.Parameters["file_path"]),
-							Opt("offset", "integer", tc.Parameters["offset"]),
-							Opt("lines", "integer", tc.Parameters["lines"])),
+						Parameters  = Params(
+							Req("file_path", "string",  tc.Parameters["file_path"]),
+							Opt("offset",    "integer",    tc.Parameters["offset"]),
+							Opt("lines",     "integer",     tc.Parameters["lines"])),
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
-					string filePath = Str(args, "file_path");
-					string offset = Str(args, "offset");
-					string lines = Str(args, "lines");
-					ToolResult raw = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ReadFileMaxLines, false, ct);
+					string     filePath = Str(args, "file_path");
+					string     offset   = Str(args, "offset");
+					string     lines    = Str(args, "lines");
+					ToolResult raw      = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ReadFileMaxLines, false, ct);
 					return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 				}
 			});
@@ -135,28 +135,28 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && spawnSubagent != null)
 		{
-			ToolConfig tc = settings.Tools["find_relevant_file_sections"];
+			ToolConfig     tc         = settings.Tools["find_relevant_file_sections"];
 			FileSummarizer summarizer = new FileSummarizer();
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "find_relevant_file_sections",
+						Name        = "find_relevant_file_sections",
 						Description = tc.Description,
-						Parameters = Params(
-							Req("file_path", "string", tc.Parameters["file_path"]),
-							Req("goal", "string", tc.Parameters["goal"]),
-							Opt("offset", "integer", tc.Parameters["offset"]))
+						Parameters  = Params(
+							Req("file_path", "string",  tc.Parameters["file_path"]),
+							Req("goal",      "string",       tc.Parameters["goal"]),
+							Opt("offset",    "integer",    tc.Parameters["offset"]))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
 					string filePath = Str(args, "file_path");
-					string goal = Str(args, "goal");
-					string offset = Str(args, "offset");
+					string goal     = Str(args, "goal");
+					string offset   = Str(args, "offset");
 					// explorerRole! is safe: explorerReady implies it was resolved at build time.
 					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, explorerRole!, spawnSubagent, maxOutputTokens, ct);
 				}
@@ -165,28 +165,28 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("fetch_url") && webFetchReady && spawnSubagent != null)
 		{
-			ToolConfig tc = settings.Tools["fetch_url"];
-			WebFetch webFetch = new WebFetch();
+			ToolConfig tc       = settings.Tools["fetch_url"];
+			WebFetch   webFetch = new WebFetch();
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "fetch_url",
+						Name        = "fetch_url",
 						Description = tc.Description,
-						Parameters = Params(
-							Req("url", "string", tc.Parameters["url"]),
+						Parameters  = Params(
+							Req("url",  "string",  tc.Parameters["url"]),
 							Req("goal", "string", tc.Parameters["goal"]))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
-					string url = Str(args, "url");
+					string url  = Str(args, "url");
 					string goal = Str(args, "goal");
 					// webFetchRole! is safe: webFetchReady implies it was resolved at build time.
-					return await webFetch.FetchRawAsync(toolCallId, url, goal, webFetchRole!, spawnSubagent, maxOutputTokens, ct);
+					return await webFetch.FetchRawAsync(toolCallId, url, goal, webFetchRole!, spawnSubagent, ct);
 				}
 			});
 		}
@@ -203,7 +203,7 @@ public static class ToolFactory
 					mediaTc = new ToolConfig
 					{
 						Description = "Interpret an image or audio file with a media-capable model and get back only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. CWD is the repo root at /workspace/.",
-						Parameters = new Dictionary<string, string>
+						Parameters  = new Dictionary<string, string>
 						{
 							{ "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac)." },
 							{ "goal", "Exactly what to extract or answer from the media; only this is returned." }
@@ -215,20 +215,20 @@ public static class ToolFactory
 				{
 					Definition = new ToolDefinition
 					{
-						Type = "function",
+						Type     = "function",
 						Function = new FunctionDefinition
 						{
-							Name = "inspect_media",
+							Name        = "inspect_media",
 							Description = mediaTc.Description,
-							Parameters = Params(
+							Parameters  = Params(
 								Req("file_path", "string", mediaTc.Parameters["file_path"]),
-								Req("goal", "string", mediaTc.Parameters["goal"]))
+								Req("goal",      "string",      mediaTc.Parameters["goal"]))
 						}
 					},
 					Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 					{
 						string filePath = Str(args, "file_path");
-						string goal = Str(args, "goal");
+						string goal     = Str(args, "goal");
 						return await inspector.InspectAsync(toolCallId, filePath, goal, mediaRole, registry, session, transport, maxOutputTokens, ct);
 					}
 				});
@@ -243,26 +243,26 @@ public static class ToolFactory
 			List<(WebSearchProvider Provider, string ApiKey, string Model)> searchProviders = WebSearchRegistry.ResolveUsable(settings);
 			if (searchProviders.Count > 0)
 			{
-				ToolConfig tc = settings.Tools["internet_search"];
+				ToolConfig    tc        = settings.Tools["internet_search"];
 				WebSearchTool webSearch = new WebSearchTool(searchProviders, webSearchRole != null ? webSearchRole.SystemPrompt : string.Empty);
 				tools.Add(new Tool
 				{
 					Definition = new ToolDefinition
 					{
-						Type = "function",
+						Type     = "function",
 						Function = new FunctionDefinition
 						{
-							Name = "internet_search",
+							Name        = "internet_search",
 							Description = tc.Description,
-							Parameters = Params(
+							Parameters  = Params(
 								Req("query", "string", tc.Parameters["query"]),
-								Req("goal", "string", tc.Parameters["goal"]))
+								Req("goal",  "string",  tc.Parameters["goal"]))
 						}
 					},
 					Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 					{
 						string query = Str(args, "query");
-						string goal = Str(args, "goal");
+						string goal  = Str(args, "goal");
 						return await webSearch.SearchAsync(toolCallId, query, goal, session, transport, sessionId, maxOutputTokens, ct);
 					}
 				});
@@ -276,12 +276,12 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "assign_work",
+						Name        = "assign_work",
 						Description = tc.Description,
-						Parameters = Params(
+						Parameters  = Params(
 							Req("prompt", "string", tc.Parameters["prompt"]))
 					}
 				},
@@ -293,7 +293,7 @@ public static class ToolFactory
 
 					onWorkAssigned();
 
-					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, SubagentMaxWorkTurns, maxOutputTokens, ct);
+					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, SubagentMaxWorkTurns, ct);
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -311,12 +311,12 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "stop_work",
+						Name        = "stop_work",
 						Description = tc.Description,
-						Parameters = Params(
+						Parameters  = Params(
 							Req("summary", "string", tc.Parameters["summary"]))
 					}
 				},
@@ -336,12 +336,12 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "review_work",
+						Name        = "review_work",
 						Description = tc.Description,
-						Parameters = Params(
+						Parameters  = Params(
 							Req("prompt", "string", tc.Parameters["prompt"]))
 					}
 				},
@@ -351,7 +351,7 @@ public static class ToolFactory
 					if (string.IsNullOrWhiteSpace(prompt))
 						return new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0);
 
-					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, SubagentMaxWorkTurns, maxOutputTokens, ct);
+					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, SubagentMaxWorkTurns, ct);
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -367,12 +367,12 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "commit_and_rebase",
+						Name        = "commit_and_rebase",
 						Description = tc.Description,
-						Parameters = Params(
+						Parameters  = Params(
 							Req("message", "string", tc.Parameters["message"]))
 					}
 				},
@@ -383,7 +383,7 @@ public static class ToolFactory
 						return new ToolResult(toolCallId, string.Empty, "Error: commit_and_rebase requires a commit 'message'.", 1, 0);
 
 					(bool ok, string transcript) = await GitTools.CommitAndRebaseAsync(message, ct);
-					int tokens = Math.Max(1, ToolDispatch.EstimateTokens(transcript));
+					int tokens                   = Math.Max(1, ToolDispatch.EstimateTokens(transcript));
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, transcript, 1, tokens);
 
@@ -404,20 +404,20 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "task_complete",
+						Name        = "task_complete",
 						Description = tc.Description,
-						Parameters = Params(
-							Req("results_of_review_work", "string", tc.Parameters["results_of_review_work"]),
-							Req("success", "boolean", tc.Parameters["success"]))
+						Parameters  = Params(
+							Req("results_of_review_work", "string",  tc.Parameters["results_of_review_work"]),
+							Req("success",                "boolean",                tc.Parameters["success"]))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
 					string results = Str(args, "results_of_review_work");
-					bool success = BoolOpt(args, "success") ?? true;
+					bool   success = BoolOpt(args, "success") ?? true;
 					onTerminate(success, results);
 					string ack = "Task marked complete.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
@@ -431,14 +431,14 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "finish_review",
+						Name        = "finish_review",
 						Description = tc.Description,
-						Parameters = Params(
+						Parameters  = Params(
 							Req("approved", "boolean", tc.Parameters["approved"]),
-							Req("comments", "string", tc.Parameters["comments"]))
+							Req("comments", "string",  tc.Parameters["comments"]))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -461,20 +461,20 @@ public static class ToolFactory
 			{
 				Definition = new ToolDefinition
 				{
-					Type = "function",
+					Type     = "function",
 					Function = new FunctionDefinition
 					{
-						Name = "return_to_caller",
+						Name        = "return_to_caller",
 						Description = tc.Description,
-						Parameters = Params(
-							Req("output", "string", tc.Parameters["output"]),
+						Parameters  = Params(
+							Req("output",  "string",   tc.Parameters["output"]),
 							Req("success", "boolean", tc.Parameters["success"]))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
-					string output = Str(args, "output");
-					bool success = BoolOpt(args, "success") ?? true;
+					string output  = Str(args, "output");
+					bool   success = BoolOpt(args, "success") ?? true;
 					onTerminate(success, output);
 					string ack = "Returned to caller.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
@@ -493,7 +493,7 @@ public static class ToolFactory
 		{
 			Definition = new ToolDefinition
 			{
-				Type = "function",
+				Type     = "function",
 				Function = new FunctionDefinition { Name = name, Description = description, Parameters = parameters }
 			},
 			Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -507,12 +507,12 @@ public static class ToolFactory
 	private static JsonObject Params(params JsonObject[] props)
 	{
 		JsonObject properties = new();
-		JsonArray required = new();
+		JsonArray  required   = new();
 
 		foreach (JsonObject prop in props)
 		{
-			string name = (string)prop["_name"]!;
-			bool isRequired = (bool)prop["_required"]!;
+			string name       = (string)prop["_name"]!;
+			bool   isRequired = (bool)prop["_required"]!;
 			prop.Remove("_name");
 			prop.Remove("_required");
 			properties[name] = prop;
@@ -522,7 +522,7 @@ public static class ToolFactory
 
 		JsonObject schema = new()
 		{
-			["type"] = "object",
+			["type"]       = "object",
 			["properties"] = properties
 		};
 

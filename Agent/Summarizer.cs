@@ -5,7 +5,9 @@ using System.Threading.Tasks;
 
 
 // Staged, chunked summarization that works with ANY summarizing model on ANY conversation, no
-// matter how the sizes compare. The canonical history is rendered to a plain-text transcript,
+// matter how the sizes compare. The history is put through the mechanical elision pass first — the
+// summary of an elided transcript is the same summary for a fraction of the stages — then the
+// result is rendered to a plain-text transcript,
 // split into chunks sized to the summarizing model's window, and folded into a running summary
 // one stage at a time — so a 32k local model can compact a conversation far larger than its own
 // window, and awkward shapes (split tool call/result pairs, huge tool outputs, long assistant
@@ -24,16 +26,35 @@ public static class Summarizer
 	// the provider's own overflow rejection is what actually enforces the window, via halving.
 	private const int kCharsPerToken = 3;
 
+	// Upper bound used the other way round: when converting a token ALLOWANCE into the chars it
+	// could occupy, over-estimating is the safe direction, so this is deliberately higher.
+	private const int kMaxCharsPerToken = 4;
+
 	// Chars reserved for the stage scaffolding text on top of the role's summary prompt.
 	private const int kScaffoldChars = 1024;
 
-	// A chunk budget below this means the model's window is too small to make progress.
-	private const int kMinChunkChars = 2048;
+	// Progress floor. Any positive chunk advances through the transcript, so this only needs to be
+	// big enough that a stage is worth its round trip — NOT big enough to hold a conversation. A
+	// budget under it can only ever mean the model's own window is too small, which is a static
+	// property of the model: no conversation, however large, can push the budget down to it.
+	private const int kMinChunkChars = 256;
 
-	// Ceiling on a stage's summary output; small windows use a quarter of the window instead.
+	// The transcript may occupy at most this fraction of the summarizing model's window, leaving
+	// the rest for the stage's output, its scaffolding, and the running summary carried into it.
+	// This is the guarantee that a stage prompt is sized by the MODEL, never by the conversation.
+	private const int kChunkWindowPercent = 75;
+
+	// Ceiling on a stage's summary output; small windows use a fraction of the window instead. The
+	// running summary IS a previous stage's output, so this doubles as the bound that keeps the
+	// summary from crowding out the transcript as stages accumulate.
 	private const int kMaxSummaryOutputTokens = 8192;
+	private const int kMinSummaryOutputTokens = 512;
+	private const int kSummaryOutputDivisor   = 8;
 
-	public static async Task<string?> SummarizeAsync(Session session, string prompt, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken appToken)
+	// history is the SETTLED part of the conversation — the caller holds any in-flight tool round
+	// aside and re-attaches it afterwards, so a call/result pair still being formed is never folded
+	// into a summary that would swallow half of it.
+	public static async Task<string?> SummarizeAsync(Session session, IReadOnlyList<CanonicalMessage> history, string prompt, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken appToken)
 	{
 		string? summary = null;
 
@@ -43,21 +64,56 @@ public static class Summarizer
 		LlmService? service = registry.CreateService(role, session.Model, 0, true);
 		if (service != null)
 		{
-			List<string> blocks  = RenderTranscript(session.Data.Messages);
-			string       running = string.Empty;
-			int          index   = 0;
-			int          offset  = 0;
-			int          stage   = 0;
-			bool         failed  = false;
+			// Elide mechanically FIRST, always. The caller only reaches the summarizer when the
+			// elision alone did not free enough room — but "not enough to skip summarizing" is not
+			// "not worth doing": a 100k-char tool result and its one-line note summarize to the same
+			// few sentences, so folding the elided history costs a fraction of the stages and the
+			// provider spend, and leaves more of the running summary's allowance for content that
+			// actually says something. The protected recent turns pass through verbatim either way.
+			List<CanonicalMessage> elided  = MechanicalCompaction.Elide(history, role != null ? role.EndOfTurnPrompt : string.Empty);
+			List<string>           blocks  = RenderTranscript(elided);
+			string                 running = string.Empty;
+			int                    index   = 0;
+			int                    offset  = 0;
+			int                    stage   = 0;
+			bool                   failed  = false;
+
+			// A ceiling that only ever ratchets DOWN, carried across stages. Once a chunk size has
+			// failed against this model there is no sense offering the next stage the same size again:
+			// whatever the server could not take, it still cannot take. Without this the shrink was
+			// per-stage and every stage restarted at full size, so a server that chokes at 68k chars
+			// pays for a fresh round of doomed attempts on every segment of the transcript.
+			int budgetCeiling = int.MaxValue;
 
 			while (!failed && (index < blocks.Count || stage == 0))
 			{
-				int  attemptBudget = ChunkCharBudget(service, prompt.Length + running.Length);
+				// A stage never carries more running summary than the budget reserved for it: an
+				// oversized summary is folded down to size first. Without this the summary grows
+				// with the conversation, eats the chunk budget stage by stage, and compaction dies
+				// on exactly the long conversations it exists to rescue.
+				if (running.Length > RunningSummaryAllowance(service))
+					running = await CompressRunningAsync(session, service, running, transport, appToken);
+
+				int  attemptBudget = StageBudget(service, prompt.Length, budgetCeiling);
 				bool stageDone     = false;
 				while (!stageDone && !failed)
 				{
 					if (attemptBudget < kMinChunkChars)
 					{
+						// Either the model's own window cannot hold a minimum stage, or this model has
+						// refused everything down to the progress floor. Both are reasons to move to
+						// another model rather than abandon the compaction — and the new model starts
+						// from its own full budget, since the ratchet described what the OLD one could
+						// not take.
+						LlmService? smaller = registry.CreateFallbackService(service, 0);
+						if (smaller != null)
+						{
+							service       = smaller;
+							budgetCeiling = int.MaxValue;
+							attemptBudget = StageBudget(service, prompt.Length, budgetCeiling);
+							transport.Status(session.Id, $"[Compaction] {service.Model.Config.Name} could not summarize at any chunk size; switching models.");
+							continue;
+						}
 						transport.Status(session.Id, $"[Compaction] Model {service.Model.Config.Name} window is too small to summarize with.");
 						failed = true;
 						continue;
@@ -87,20 +143,13 @@ public static class Summarizer
 						if (isFinal)
 							summary = running;
 					}
-					else if (result.Outcome == ProtocolCallOutcome.ContextFull
-						|| (result.Outcome == ProtocolCallOutcome.Failed && ProtocolHelpers.IsOverflowStatusCandidate(result.HttpStatus)))
+					else if (ProtocolHelpers.IsAccountError(result.ErrorMessage ?? string.Empty))
 					{
-						// The chars-per-token estimate ran hot for this content; let the provider's
-						// own rejection drive the split and try again with half the chunk. The
-						// Failed leg is structural evidence for stage sessions, which carry no
-						// provider measurement for LlmService's own overflow check: this request is
-						// a single transcript chunk we sized ourselves, so a client-rejection
-						// status on it means size whatever the body text says. That Failed path
-						// already marked the model down — restore it before retrying smaller.
-						if (result.Outcome == ProtocolCallOutcome.Failed)
-							registry.ResetAvailability(service.Model.ConfigId);
-						attemptBudget /= 2;
-						transport.Status(session.Id, $"[Compaction] Segment too large for {service.Model.Config.Name}; retrying with a smaller chunk ({attemptBudget} chars).");
+						// The one failure a smaller chunk cannot fix: no amount of shrinking buys
+						// credit or repairs a key. Stop immediately rather than burning a descending
+						// series of requests against a provider that will refuse every one of them.
+						transport.Status(session.Id, $"[Compaction] {service.Model.Config.Name} rejected the request for account reasons: {result.ErrorMessage}");
+						failed = true;
 					}
 					else if (result.Outcome == ProtocolCallOutcome.TooManyRetries)
 					{
@@ -110,9 +159,10 @@ public static class Summarizer
 						LlmService? fallback = registry.CreateFallbackService(service, 0);
 						if (fallback != null)
 						{
-							service = fallback;
+							service       = fallback;
+							budgetCeiling = int.MaxValue;
 							transport.Status(session.Id, $"Rate limited; falling back to {service.Model.Config.Name}");
-							attemptBudget = ChunkCharBudget(service, prompt.Length + running.Length);
+							attemptBudget = StageBudget(service, prompt.Length, budgetCeiling);
 						}
 						else
 						{
@@ -122,11 +172,22 @@ public static class Summarizer
 					}
 					else
 					{
-						// Transient errors were already retried inside RunToCompletionAsync; what
-						// reaches here is terminal for this compaction attempt. Say why, so a dead
-						// compaction is diagnosable instead of a bare "Failed".
-						transport.Status(session.Id, $"[Compaction] Stage failed on {service.Model.Config.Name}: {result.ErrorMessage}");
-						failed = true;
+						// EVERY other failure retries with less source context. A stage prompt is the
+						// one thing here we chose the size of, so shrinking it is always worth trying
+						// before declaring compaction dead — and the reason a server gives is not
+						// reliable evidence of what went wrong. A local server handed a chunk it cannot
+						// take does not politely report an overflow: it drops the connection, and that
+						// arrives as a plain transient failure after its retries are spent. Treating
+						// that as terminal is what killed a real compaction after three attempts at the
+						// SAME 71k-char chunk, leaving the session with nowhere to go. Halving is
+						// geometric, so this bottoms out at the progress floor in a handful of tries
+						// rather than looping. A Failed outcome already marked the model down; restore
+						// it, since the model is not what was broken.
+						if (result.Outcome == ProtocolCallOutcome.Failed)
+							registry.ResetAvailability(service.Model.ConfigId);
+						attemptBudget /= 2;
+						budgetCeiling  = attemptBudget;
+						transport.Status(session.Id, $"[Compaction] Segment failed on {service.Model.Config.Name} ({result.ErrorMessage}); retrying with less source context ({attemptBudget} chars).");
 					}
 				}
 			}
@@ -140,6 +201,33 @@ public static class Summarizer
 		}
 
 		return summary;
+	}
+
+	// Folds an over-long running summary back inside its allowance so the next stage keeps its full
+	// chunk budget. The condensed text is a stage output like any other, so the model's own output
+	// ceiling bounds it. If the model cannot do it, the summary is cut to fit instead: losing the
+	// tail of a summary costs detail, whereas failing here costs the whole compaction — and a
+	// compaction that cannot run leaves the session with nowhere to go.
+	private static async Task<string> CompressRunningAsync(Session session, LlmService service, string running, ITransportServer transport, CancellationToken appToken)
+	{
+		int allowance = RunningSummaryAllowance(service);
+
+		transport.Status(session.Id, "[Compaction] Condensing the running summary...");
+		string compressPrompt = "The running summary below has grown too long to carry forward. Rewrite it shorter while preserving the user's explicit requests and intents, key decisions, technical concepts, file names and code sections, problems solved, and unfinished work, in chronological order. Respond with ONLY the rewritten summary.\n<summary>\n"
+			+ running + "\n</summary>";
+
+		Session        stageSession = BuildStageSession(session, service, compressPrompt, transport);
+		ProtocolResult result       = await service.RunToCompletionAsync(stageSession, System.Array.Empty<Tool>(), null, 0, SummaryOutputTokens(service), false, transport, appToken);
+		session.RecordCost(stageSession.TotalCost);
+
+		string compressed = running;
+		if (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.AssistantText.Length > 0)
+			compressed = result.Payload.AssistantText;
+
+		if (compressed.Length > allowance)
+			compressed = compressed.Substring(0, allowance);
+
+		return compressed;
 	}
 
 	// Renders the canonical history to per-message text blocks. System prompts are skipped (the
@@ -241,24 +329,53 @@ public static class Summarizer
 		return sb.ToString();
 	}
 
-	// Transcript chars a stage may carry: the window minus the stage's output reserve, converted
-	// at the conservative chars-per-token rate, minus the scaffolding, role prompt, and running
-	// summary the stage input also carries. Can go negative for absurdly small windows — the
-	// caller treats anything under the minimum as "this model cannot summarize".
-	private static int ChunkCharBudget(LlmService service, int overheadChars)
+	// The chunk size to attempt next: the model-sized budget, held under any ceiling earlier failures
+	// ratcheted down during this run. Separating the two keeps ChunkCharBudget a pure statement about
+	// the model while still letting a run learn, request by request, what this server will actually
+	// accept — which is the only way to find out when it reports "connection closed" instead of a
+	// window size.
+	private static int StageBudget(LlmService service, int promptChars, int ceiling)
 	{
-		long inputChars = (long)(service.Model.Config.ContextWindow - SummaryOutputTokens(service)) * kCharsPerToken;
-		long budget     = inputChars - overheadChars - kScaffoldChars;
+		int budget = ChunkCharBudget(service, promptChars);
+		return budget > ceiling ? ceiling : budget;
+	}
+
+	// Transcript chars a stage may carry. Every term is derived from the MODEL's window and the
+	// role's prompt — nothing here scales with the conversation — so the budget a stage gets is the
+	// same on stage one and stage five hundred. The running summary is charged at its full
+	// allowance rather than its current length, so a stage can never be squeezed by how much the
+	// summary happens to have grown; CompressRunningAsync keeps it inside that allowance.
+	internal static int ChunkCharBudget(LlmService service, int promptChars)
+	{
+		int  window     = service.Model.Config.ContextWindow;
+		long inputChars = (long)(window - SummaryOutputTokens(service)) * kCharsPerToken;
+		long budget     = inputChars - RunningSummaryAllowance(service) - promptChars - kScaffoldChars;
+
+		// The transcript never takes more than its share of the window, however much room the
+		// arithmetic above says is free.
+		long ceiling = (long)window * kChunkWindowPercent / 100 * kCharsPerToken;
+		if (budget > ceiling)
+			budget = ceiling;
+
 		return budget > int.MaxValue ? int.MaxValue : (int)budget;
 	}
 
-	// Output tokens reserved for a stage's summary: a quarter of small windows, capped for large
-	// ones, and never above the model's own output ceiling.
+	// Chars the running summary may occupy going into a stage. It is a previous stage's output, so
+	// its own token ceiling bounds it — converted at the pessimistic rate, since under-estimating
+	// here would let it overrun the space the chunk budget reserved for it.
+	internal static int RunningSummaryAllowance(LlmService service)
+	{
+		return SummaryOutputTokens(service) * kMaxCharsPerToken;
+	}
+
+	// Output tokens reserved for a stage's summary: a fraction of the window (so the summary and
+	// the transcript can both fit alongside each other), floored so tiny windows still produce a
+	// usable summary, capped for large ones, and never above the model's own output ceiling.
 	private static int SummaryOutputTokens(LlmService service)
 	{
-		int output = service.Model.Config.ContextWindow / 4;
-		if (output < 1024)
-			output = 1024;
+		int output = service.Model.Config.ContextWindow / kSummaryOutputDivisor;
+		if (output < kMinSummaryOutputTokens)
+			output = kMinSummaryOutputTokens;
 		if (output > kMaxSummaryOutputTokens)
 			output = kMaxSummaryOutputTokens;
 		int modelMax = service.Model.Config.MaxOutputTokens;
@@ -273,8 +390,9 @@ public static class Summarizer
 	private static Session BuildStageSession(Session session, LlmService service, string stagePrompt, ITransportServer transport)
 	{
 		BeastSession data = new BeastSession(session.Id, session.DisplayName, service.Model.ConfigId, session.Role,
-			string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+			string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
 		Session stage = new Session(data, string.Empty, transport, session.IsSubagent);
+		stage.MarkStagePrompt();
 		stage.UpdateModel(service.Model);
 		stage.Bundle.Canonical.OnUserMessage(stagePrompt);
 		return stage;

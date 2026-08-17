@@ -27,15 +27,12 @@ public class BeastSession
 	public string Role { get; internal set; }
 
 	// The reply obligation this session carries: the terminator tool it must call to answer the
-	// caller that spawned it, and the token budget for that answer. Empty when no caller is
-	// waiting — root sessions, sessions that already replied, and compaction predecessors that
-	// handed the obligation to their successor. Persisted so a reloaded session still knows
-	// whether it may respond as a tool.
+	// caller that spawned it. Empty when no caller is waiting — root sessions, sessions that already
+	// replied, and compaction predecessors that handed the obligation to their successor. Persisted
+	// so a reloaded session still knows whether it may respond as a tool. There is deliberately no
+	// size budget alongside it: the answer is as long as it needs to be.
 	[JsonPropertyName("terminatorName")]
 	public string TerminatorName { get; internal set; }
-
-	[JsonPropertyName("outputBudgetTokens")]
-	public int OutputBudgetTokens { get; internal set; }
 
 	// Working-turn budget carried with the reply obligation: how many turns the session may work
 	// before wind-down forces the terminator. 0 = unlimited (root sessions). Travels to a
@@ -100,37 +97,35 @@ public class BeastSession
 
 	[JsonConstructor]
 	public BeastSession(
-		string id,
-		string displayName,
-		string model,
-		string role,
-		string terminatorName,
-		int outputBudgetTokens,
+		string                 id,
+		string                 displayName,
+		string                 model,
+		string                 role,
+		string                 terminatorName,
 		List<CanonicalMessage> messages,
-		TokenUsageInfo? lastTokenUsage,
-		decimal totalCost,
-		int cumulativeInputTokens,
-		int cumulativeOutputTokens,
-		int currentContextSize,
-		bool ephemeral)
+		TokenUsageInfo?        lastTokenUsage,
+		decimal                totalCost,
+		int                    cumulativeInputTokens,
+		int                    cumulativeOutputTokens,
+		int                    currentContextSize,
+		bool                   ephemeral)
 	{
-		Id = id;
+		Id          = id;
 		DisplayName = displayName;
-		Model = model;
-		Role = role;
+		Model       = model;
+		Role        = role;
 		// Null-coalesced so session files written before the obligation existed still load.
-		TerminatorName = terminatorName ?? string.Empty;
-		OutputBudgetTokens = outputBudgetTokens;
-		Messages = messages ?? new List<CanonicalMessage>();
-		LastTokenUsage = lastTokenUsage;
-		TotalCost = totalCost;
-		CumulativeInputTokens = cumulativeInputTokens;
+		TerminatorName         = terminatorName ?? string.Empty;
+		Messages               = messages ?? new List<CanonicalMessage>();
+		LastTokenUsage         = lastTokenUsage;
+		TotalCost              = totalCost;
+		CumulativeInputTokens  = cumulativeInputTokens;
 		CumulativeOutputTokens = cumulativeOutputTokens;
-		CurrentContextSize = currentContextSize;
-		Ephemeral = ephemeral;
-		MaxWorkTurns = 0;
-		ChildCounter = 0;
-		TerminalStatus = "Ongoing";
-		CreationOrder = 0;
+		CurrentContextSize     = currentContextSize;
+		Ephemeral              = ephemeral;
+		MaxWorkTurns           = 0;
+		ChildCounter           = 0;
+		TerminalStatus         = "Ongoing";
+		CreationOrder          = 0;
 	}
 }

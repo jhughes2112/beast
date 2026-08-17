@@ -3,13 +3,24 @@ using System.IO;
 using System.Text;
 
 // Per-session logger. One instance per Session.
-// Logs LLM request wire payloads to {sessionId}.log and failures to errors.log + stderr.
+// The session's log is meant to be a COMPLETE timeline of that session: every request actually sent
+// (with the context sizing that shaped it), every mid-turn event the client was told about, and
+// every failure. Failures are additionally collected in the shared errors.log for a quick sweep
+// across sessions, but nothing lives only there — a log with the failures removed reads as a series
+// of unexplained repeats.
 public class SessionLogger
 {
 	private static string LogsDir => Path.Combine(Environment.CurrentDirectory, ".beast", "logs");
 
-	private readonly string _path;
+	private readonly        string _path;
 	private static readonly object _fileLock = new object();
+
+	// The turn's context accounting, stamped on every request header. Reading a log without these
+	// means reconstructing occupancy by measuring the JSON — which is how a starved output ceiling
+	// and a chunk that never actually shrank both stayed invisible for as long as they did.
+	private int _contextTokens;
+	private int _windowTokens;
+	private int _maxOutputTokens;
 
 	public SessionLogger(string sessionId)
 	{
@@ -17,6 +28,15 @@ public class SessionLogger
 		{ Directory.CreateDirectory(LogsDir); }
 		catch { }
 		_path = Path.Combine(LogsDir, $"{sessionId}.log");
+	}
+
+	// Records what the next request is being sized against. Called by LlmService before each attempt;
+	// the values are provider-measured (or zero before the first response has measured anything).
+	public void SetTurnContext(int contextTokens, int windowTokens, int maxOutputTokens)
+	{
+		_contextTokens   = contextTokens;
+		_windowTokens    = windowTokens;
+		_maxOutputTokens = maxOutputTokens;
 	}
 
 	// Appends one LLM request entry. json is the exact wire payload sent to the provider.
@@ -29,6 +49,13 @@ public class SessionLogger
 			sb.AppendLine($"time:     {DateTimeOffset.UtcNow:u}");
 			sb.AppendLine($"model:    {modelName}");
 			sb.AppendLine($"endpoint: {endpoint}");
+			if (_windowTokens > 0)
+			{
+				int percent = (int)((long)_contextTokens * 100 / _windowTokens);
+				sb.AppendLine($"context:  {_contextTokens} / {_windowTokens} tokens ({percent}%)");
+			}
+			if (_maxOutputTokens > 0)
+				sb.AppendLine($"max_out:  {_maxOutputTokens}");
 			sb.AppendLine();
 			sb.AppendLine(json);
 			sb.AppendLine();
@@ -147,6 +174,68 @@ public class SessionLogger
 		return sb.ToString();
 	}
 
+	// How the request that was just logged actually turned out. Written for EVERY attempt, success
+	// included: a request entry with no outcome beside it tells you what was asked and nothing about
+	// what came back, which is how a stream that died mid-reasoning looked identical in the log to
+	// one that answered fine.
+	public void WriteOutcome(string outcome, int? httpStatus, string? error)
+	{
+		try
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.AppendLine("----------------------------------------------------------");
+			sb.AppendLine($"time:     {DateTimeOffset.UtcNow:u}");
+			sb.AppendLine($"outcome:  {outcome}");
+			if (httpStatus.HasValue && httpStatus.Value > 0)
+				sb.AppendLine($"http:     {httpStatus.Value}");
+			if (!string.IsNullOrEmpty(error))
+			{
+				string trimmed = error!.Length > 2000 ? error.Substring(0, 2000) + "... [truncated]" : error;
+				sb.AppendLine($"error:    {trimmed}");
+			}
+			sb.AppendLine();
+
+			lock (_fileLock)
+			{
+				File.AppendAllText(_path, sb.ToString());
+			}
+		}
+		catch (Exception ex)
+		{
+			Console.Error.WriteLine($"[SessionLogger] WriteOutcome failed: {ex}");
+		}
+	}
+
+	// A one-line event in this session's own timeline: the things the client is told about a turn
+	// mid-flight — an empty response being retried, a forced tool call not honored, a reasoning
+	// feature being switched off — which otherwise reach the user and vanish. Without them the log
+	// shows two identical requests with nothing between them, and no way to tell that the model
+	// answered in between with reasoning and nothing else.
+	public void Note(string text)
+	{
+		try
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.AppendLine("----------------------------------------------------------");
+			sb.AppendLine($"time:     {DateTimeOffset.UtcNow:u}");
+			sb.AppendLine($"note:     {text}");
+			sb.AppendLine();
+
+			lock (_fileLock)
+			{
+				File.AppendAllText(_path, sb.ToString());
+			}
+		}
+		catch (Exception ex)
+		{
+			Console.Error.WriteLine($"[SessionLogger] Note failed: {ex}");
+		}
+	}
+
+	// Failures go to stderr, to the shared errors.log, AND to this session's own log. The session
+	// log is the timeline someone actually reads to understand what a session did; a failure that
+	// only lands in errors.log leaves an unexplained gap in it, and correlating the two by timestamp
+	// is work the log should have done itself.
 	private void Log(string entry)
 	{
 		Console.Error.Write(entry);
@@ -158,6 +247,7 @@ public class SessionLogger
 			lock (_fileLock)
 			{
 				File.AppendAllText(errPath, entry);
+				File.AppendAllText(  _path, entry);
 			}
 		}
 		catch { }

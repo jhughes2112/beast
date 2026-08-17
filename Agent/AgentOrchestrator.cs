@@ -132,12 +132,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string?           displayName,
 		string            prompt,
 		int               maxWorkTurns,
-		int               outputBudgetTokens,
 		CancellationToken ct)
 	{
-		if (outputBudgetTokens <= 0)
-			return (false, "No context space remains for a subagent's reply — the caller's context window is effectively full. Compact (/compact) or switch to a larger model, then retry.", 0);
-
 		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
 		// user deleted this tree — either way new work would race the teardown.
 		if (parent.Deleted || _quiescing)
@@ -174,9 +170,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string seededPrompt = string.IsNullOrEmpty(banner) ? prompt : $"{banner}\n\n{prompt}";
 
 		// The reply obligation is written onto the session itself so it survives save/load and can
-		// travel to a compaction successor: the child knows which tool answers the caller.
+		// travel to a compaction successor: the child knows which tool answers the caller. It carries
+		// no output budget — the child answers at whatever size the work warrants, and the caller
+		// compacts if that no longer fits.
 		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
-			role.TerminatorName, outputBudgetTokens, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+			role.TerminatorName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
 		// Claim the session before registering it so no Deliver can slip in and start a second,
 		// generic handler ahead of the configured one below.
@@ -342,13 +340,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 	}
 
-	// Starts a fresh root session and announces it with SessionReset — the client's contract when
-	// its root was deleted is that the agent supplies the replacement and names it in this frame.
+	// Starts a fresh root session when the last one was deleted: the client's contract is that the
+	// agent supplies the replacement and names it. Announce it, then ask for it to be shown —
+	// whatever else the client still holds (the user's other sessions, orphaned children the restore
+	// pass revived) is the client's own business and is left alone.
 	private void StartReplacementRoot()
 	{
 		Session replacement = CreateFreshRootSession(string.Empty, _ephemeral);
 		RegisterSession(replacement);
-		_transport.SessionReset(replacement.Id);
+		replacement.AnnounceToClient();
+		_transport.SessionActivate(replacement.Id);
 		EnsureHandler(replacement);
 	}
 
@@ -449,7 +450,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		LlmModel?    model        = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
 		string       modelId      = model?.ConfigId ?? string.Empty;
 		BeastSession fresh        = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName,
-			string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
+			string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
 	}
 
@@ -1268,7 +1269,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 					// If that removed the last root, the client is now showing nothing and waiting
 					// for the replacement the agent is contracted to provide: start a fresh root
-					// and announce it via SessionReset so the user can keep working.
+					// and ask the client to show it so the user can keep working.
 					if (!AnyRootRegistered())
 						StartReplacementRoot();
 				}

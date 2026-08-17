@@ -89,8 +89,9 @@ public class MediaInspector
 			// Throwaway stage session reusing the caller's ID: nothing is announced or saved, and
 			// cost rolls up to the real session.
 			BeastSession stageData = new BeastSession(session.Id, session.DisplayName, service.Model.ConfigId, mediaRole.Name,
-				string.Empty, 0, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+				string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
 			Session stage = new Session(stageData, mediaRole.SystemPrompt, quiet, session.IsSubagent);
+			stage.MarkStagePrompt();
 			stage.UpdateModel(service.Model);
 			string prompt = $"Goal: {goal}\nFile: {filePath}\n\nThe media file is attached.";
 			stage.Bundle.Canonical.OnUserMessageWithAttachments(prompt, new List<MediaAttachment> { new MediaAttachment(mimeType, data) });

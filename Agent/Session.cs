@@ -257,6 +257,32 @@ public class Session
 	// decide whether to re-prompt with the end-of-turn prompt and whether to expose stop_work.
 	public bool WorkInProgress => _workInProgress;
 
+	// True when this session is a prompt the CALLER built and can rebuild differently — a summarizer
+	// stage, a media probe — rather than a conversation someone is having. Such a prompt is cheap to
+	// reshape and retry smaller, so a failure is better handed straight back than retried verbatim.
+	// Deliberately NOT the same thing as Ephemeral: that only means "not saved to disk", which is
+	// true of every session in a current-folder launch, including the real ones doing the work.
+	// Conflating them cut a working Developer session down to a single retry.
+	public bool IsStagePrompt => _isStagePrompt;
+
+	private bool _isStagePrompt;
+
+	// Marks this session as a caller-built stage prompt. Set at construction by the summarizer and
+	// the media inspector; never set on a session a user or subagent converses in.
+	public void MarkStagePrompt() => _isStagePrompt = true;
+
+	// True when this session was produced by compaction and has not yet completed a turn of its own
+	// (ContextLength stays 0 until a provider response measures it). Compacting such a session cannot
+	// help: its history is whatever compaction just decided was small enough, so summarizing it again
+	// yields another session of the same shape, and the loop repeats forever. Seen in the field as
+	// eleven successors in nine minutes, each one dying on its very first request.
+	public bool IsUncompactableSuccessor => _bornOfCompaction && _data.CurrentContextSize == 0;
+
+	private bool _bornOfCompaction;
+
+	// Marks this session as the product of a compaction. Set by SessionHandler on every successor.
+	public void MarkCompactionSuccessor() => _bornOfCompaction = true;
+
 	// Enters the delegation loop. Called from the assign_work tool handler.
 	public void BeginWork() => _workInProgress = true;
 
@@ -269,9 +295,6 @@ public class Session
 	// no caller is waiting. Lives on the persisted data so it survives a save/load cycle and can
 	// be handed to a compaction successor.
 	public string TerminatorName => _data.TerminatorName;
-
-	// Token budget for the terminator reply. 0 = no limit.
-	public int OutputBudgetTokens => _data.OutputBudgetTokens;
 
 	// Working-turn budget before wind-down forces the terminator. 0 = unlimited. Part of the
 	// reply obligation: set at spawn, handed to a compaction successor, cleared with the reply.
@@ -288,9 +311,8 @@ public class Session
 	// the client since Working derives from the obligation that just cleared.
 	public void ClearReplyObligation()
 	{
-		_data.TerminatorName     = string.Empty;
-		_data.OutputBudgetTokens = 0;
-		_data.MaxWorkTurns       = 0;
+		_data.TerminatorName = string.Empty;
+		_data.MaxWorkTurns   = 0;
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
@@ -362,6 +384,19 @@ public class Session
 	{
 		lock (_costLock)
 			_data.TotalCost += cost;
+	}
+
+	// Records a standalone token count of the prompt as it stands right now — no turn has run, so
+	// there is no completion and nothing has been cached yet: (cached 0, input X, output 0). This is
+	// a provider measurement, the same authority as a turn's usage, so it sets the context size the
+	// budget sizes the next request from. Cumulative totals are deliberately untouched: nothing was
+	// billed for the conversation itself, and the next real turn reports this same prompt in its
+	// PromptTokens, where it would be counted a second time.
+	internal void RecordCountedContext(int promptTokens, int cachedTokens)
+	{
+		_data.LastTokenUsage     = new TokenUsageInfo { PromptTokens = promptTokens, CompletionTokens = 0, CachedTokens = cachedTokens };
+		_data.CurrentContextSize = promptTokens;
+		_budget.RecordMeasurement(promptTokens);
 	}
 
 	// Commits one turn's usage and cost into the monotonic session totals.
@@ -692,7 +727,6 @@ public class Session
 			_data.Model,
 			_data.Role,
 			_data.TerminatorName,
-			_data.OutputBudgetTokens,
 			forkedMessages,
 			_data.LastTokenUsage,
 			_data.TotalCost,

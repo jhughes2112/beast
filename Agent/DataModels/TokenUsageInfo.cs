@@ -3,14 +3,14 @@ using System.Text.Json.Serialization;
 // Used by LlmService for in-memory XML-tool-call parsing only. Not persisted; not a wire type.
 public class ConversationToolCall
 {
-	public string Id { get; set; } = string.Empty;
-	public string Type { get; set; } = "function";
+	public string                   Id       { get; set; } = string.Empty;
+	public string                   Type     { get; set; } = "function";
 	public ConversationFunctionCall Function { get; set; } = new ConversationFunctionCall();
 }
 
 public class ConversationFunctionCall
 {
-	public string Name { get; set; } = string.Empty;
+	public string Name      { get; set; } = string.Empty;
 	public string Arguments { get; set; } = string.Empty;
 }
 
@@ -18,8 +18,8 @@ public class ConversationFunctionCall
 // listener translates this into the native shape its wire format expects.
 public class SemanticToolCall
 {
-	public string Id { get; set; } = string.Empty;
-	public string Name { get; set; } = string.Empty;
+	public string Id            { get; set; } = string.Empty;
+	public string Name          { get; set; } = string.Empty;
 	public string ArgumentsJson { get; set; } = string.Empty;
 }
 
@@ -29,22 +29,22 @@ public class SemanticToolCall
 // StdErr: Error message when exitCode is non-zero (or both stdout and stderr may be present)
 public class ToolResult
 {
-	public string Id { get; }
-	public string StdOut { get; }
-	public string StdErr { get; }
-	public int ExitCode { get; }
+	public string Id       { get; }
+	public string StdOut   { get; }
+	public string StdErr   { get; }
+	public int    ExitCode { get; }
 
 	// Token size of this result. A sub-session reply carries its provider's exact measurement; a raw
-	// handler's output has no server count, so it is estimated (~4 chars/token) and truncated to the
-	// caller's budget at that point. Always a real positive count — never a zero placeholder.
+	// handler's output has no server count, so it is estimated (~4 chars/token) and clipped to the
+	// fixed raw-output ceiling. Always a real positive count — never a zero placeholder.
 	public int MeasuredOutputTokens { get; }
 
 	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens)
 	{
-		Id = id;
-		StdOut = stdOut;
-		StdErr = stdErr;
-		ExitCode = exitCode;
+		Id                   = id;
+		StdOut               = stdOut;
+		StdErr               = stdErr;
+		ExitCode             = exitCode;
 		MeasuredOutputTokens = measuredOutputTokens;
 	}
 }

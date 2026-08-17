@@ -325,8 +325,6 @@ public class ProtocolChatCompletions
 	{
 		try
 		{
-			bool logged = false;
-
 			// A successful response that carries neither assistant text nor a tool call is a dead turn: the
 			// model emitted only thinking — typically an XML tool call buried in its reasoning that this
 			// protocol never parsed as a real call. Some local/open ChatCompletions models do this; the
@@ -339,9 +337,12 @@ public class ProtocolChatCompletions
 
 			for (; ; )
 			{
+				// Every attempt is logged, not just the first. The one-shot guard here made an
+				// in-protocol retry invisible: the model answered with reasoning and nothing else,
+				// this loop quietly asked again, and the log showed one request where the user
+				// watched three separate thinking blocks go by.
 				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
-				if (!logged)
-				{ logged = true; logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
+				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				if (_streamingSupported)
 				{
@@ -352,12 +353,16 @@ public class ProtocolChatCompletions
 						{
 							_toolChoiceMode = 1;
 							bundle.Transport?.Status("Forced tool call not honored; retrying with tool_choice=required");
+							logger.Note("Forced tool call not honored; retrying with tool_choice=required");
 							continue;
 						}
 						if (IsEmptyTurn(streamResult) && emptyRetries < kMaxEmptyRetries)
 						{
 							emptyRetries++;
 							bundle.Transport?.Status($"Empty response, retrying ({emptyRetries}/{kMaxEmptyRetries})");
+							// The turn produced no text and no tool call — usually reasoning only. The
+							// user sees that thinking on screen, so the log has to show the discard too.
+							logger.Note($"Model returned an empty turn (no text, no tool calls); retrying ({emptyRetries}/{kMaxEmptyRetries})");
 							continue;
 						}
 						return streamResult;
@@ -786,6 +791,7 @@ httpResponse);
 		JsonNode?               usageNodeFinal       = null;
 		string?                 openStreamTag        = null;
 		int                     streamedCharCount    = 0;
+		int                     streamedToolChars    = 0;
 		int                     livePromptTokens     = 0;
 		int                     liveCachedTokens     = 0;
 		int                     liveCompletionTokens = 0;
@@ -834,7 +840,7 @@ httpResponse);
 						// A usage chunk carries no delta, so without this the counts it just reported
 						// would not reach the client until the turn committed — and the usage chunk is
 						// precisely where most providers first state the prompt size.
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens, liveCompletionTokens);
+						EmitProgress(model, livePromptTokens, streamedCharCount, streamedToolChars, onProgress, liveCachedTokens, liveCompletionTokens);
 					}
 
 					JsonArray? choices = chunkNode["choices"]?.AsArray();
@@ -869,7 +875,7 @@ httpResponse);
 						reasoningBuilder.Append(reasoningDelta);
 						bundle.Transport?.OnStreamChunk(StreamTag.Thinking, reasoningDelta);
 						streamedCharCount += reasoningDelta.Length;
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens, liveCompletionTokens);
+						EmitProgress(model, livePromptTokens, streamedCharCount, streamedToolChars, onProgress, liveCachedTokens, liveCompletionTokens);
 					}
 
 					string? contentDelta = delta["content"]?.GetValue<string>();
@@ -878,7 +884,7 @@ httpResponse);
 						// Always accumulate the committed text and progress; only gate what reaches the client.
 						contentBuilder.Append(contentDelta);
 						streamedCharCount += contentDelta.Length;
-						EmitProgress(model, livePromptTokens, streamedCharCount, onProgress, liveCachedTokens, liveCompletionTokens);
+						EmitProgress(model, livePromptTokens, streamedCharCount, streamedToolChars, onProgress, liveCachedTokens, liveCompletionTokens);
 
 						// Don't open the assistant output block on leading whitespace: a thinking+tool-call
 						// turn that emits a stray newline would otherwise leave an empty block. Wait for the
@@ -917,11 +923,25 @@ httpResponse);
 							if (tcNode["id"] != null)
 								acc.Id = tcNode["id"]!.GetValue<string>();
 							if (tcNode["function"]?["name"] != null)
+							{
 								acc.Name = tcNode["function"]!["name"]!.GetValue<string>();
+								// The call's own framing — name, id, the JSON envelope around the arguments —
+								// is output the model paid for but the deltas never spell out. A flat per-call
+								// allowance keeps a turn that is all tool calls from reading as near-zero.
+								streamedToolChars += acc.Name.Length + ToolCallFramingChars;
+							}
 							string? argDelta = tcNode["function"]?["arguments"]?.GetValue<string>();
 							if (argDelta != null)
+							{
 								acc.Arguments.Append(argDelta);
+								streamedToolChars += argDelta.Length;
+							}
 						}
+
+						// Tool-call deltas carry no content, so without this a turn whose output is entirely
+						// a tool call — a whole file being written — showed no live output at all and then
+						// snapped to the committed count at end-of-turn.
+						EmitProgress(model, livePromptTokens, streamedCharCount, streamedToolChars, onProgress, liveCachedTokens, liveCompletionTokens);
 					}
 				}
 			}
@@ -1029,14 +1049,24 @@ httpResponse);
 		public StringBuilder Arguments = new StringBuilder();
 	}
 
+	// Chars charged to a tool call over and above its name and arguments: the id, the JSON envelope,
+	// the per-call delimiters. Approximate by construction — it exists so an all-tool-calls turn
+	// estimates as output rather than as nothing.
+	private const int ToolCallFramingChars = 24;
+
 	// Emits live usage progress during streaming. ChatCompletions reports prompt_tokens in
 	// the usage object (when stream_options.include_usage is set), typically in the final
 	// chunk. Until then, livePromptTokens is 0. Output is the provider's own completion count
-	// once it has stated one, and a streamed-character estimate (chars/4) only until then.
+	// once it has stated one, and a streamed-character estimate only until then.
 	// The committed usage corrects both at end-of-turn.
-	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, LiveUsageProgress onProgress, int liveCachedTokens, int liveCompletionTokens)
+	//
+	// Prose and reasoning tokenize near 4 chars/token; tool-call JSON does not — braces, quotes,
+	// escapes and identifiers run closer to 3, and a turn's arguments are usually its bulk. Running
+	// them through the same divisor is what made the live figure read a third of the committed one.
+	private static void EmitProgress(LlmModel model, int livePromptTokens, int streamedCharCount, int streamedToolChars, LiveUsageProgress onProgress, int liveCachedTokens, int liveCompletionTokens)
 	{
-		int     outputTokens  = liveCompletionTokens > 0 ? liveCompletionTokens : streamedCharCount / 4;
+		int     estimated     = streamedCharCount / 4 + streamedToolChars / 3;
+		int     outputTokens  = liveCompletionTokens > 0 ? liveCompletionTokens : estimated;
 		decimal estimatedCost = (livePromptTokens / 1_000_000m) * model.Config.Cost.Input
 							  + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
 		onProgress(livePromptTokens, outputTokens, estimatedCost, liveCachedTokens);

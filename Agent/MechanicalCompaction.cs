@@ -37,23 +37,56 @@ public static class MechanicalCompaction
 	// long conversation of uniformly small results is not shredded for marginal savings.
 	private const int kSizeFractionDenominator = 200;
 
-	// The pass replaces a full summarization only when it reclaims at least this percent of the
-	// conversation's chars; below that the successor would refill almost immediately.
-	private const int kMinSavingsPercent = 30;
+	// What "far enough" means for the mechanical pass: it stands in for a full summarization only if
+	// it leaves the conversation at or under this share of the window. Anything more than this and
+	// the successor is born nearly full and comes straight back for another compaction.
+	private const int kTargetWindowPercent = 50;
 
-	// Builds the elided successor history, or returns null when the reclaimable space is too small
-	// to matter and the caller should run the full summarization instead. endOfTurnPrompt is the
-	// role's own nudge text so injected copies of it can be recognized and dropped.
-	public static List<CanonicalMessage>? TryBuild(IReadOnlyList<CanonicalMessage> messages, string endOfTurnPrompt)
+	// Builds the elided successor history, or returns null when the elision alone would not get the
+	// conversation under kTargetWindowPercent of the window and the caller should summarize instead.
+	// measuredTokens is the provider's count for this conversation and windowTokens the model's
+	// window; both come from real measurements, and the char ratio only scales one into a projection
+	// of the other — an elision that removes half the characters removes about half the tokens.
+	// endOfTurnPrompt is the role's own nudge text so injected copies of it can be recognized.
+	public static List<CanonicalMessage>? TryBuild(IReadOnlyList<CanonicalMessage> messages, string endOfTurnPrompt, int measuredTokens, int windowTokens)
 	{
 		List<CanonicalMessage>? result = null;
+
+		// Thinking chars are deliberately excluded from the accounting: unsigned reasoning is not
+		// resent to most providers, so counting it would overstate the savings and let a pass
+		// "succeed" without actually freeing window space.
+		List<CanonicalMessage> rebuilt = Elide(messages, endOfTurnPrompt);
+		int                    total   = CountChars(messages);
+		int                    kept    = CountChars(rebuilt);
+
+		if (total > 0 && windowTokens > 0 && measuredTokens > 0)
+		{
+			long projected = (long)measuredTokens * kept / total;
+			if (projected * 100 <= (long)windowTokens * kTargetWindowPercent)
+				result = rebuilt;
+		}
+		else if (total > 0 && kept * 2 <= total)
+		{
+			// No measurement to project from (a conversation the provider has not sized yet). Fall
+			// back to the same question asked of the text alone: did this halve the conversation?
+			result = rebuilt;
+		}
+
+		return result;
+	}
+
+	// The elision itself, with no savings gate: always returns the rewritten history, which equals
+	// the input when there is nothing stale enough to elide. Summarization runs this first — the
+	// transcript it folds through the model is worth the same whether the bulky tool results are
+	// present or replaced by their notes, and eliding them means far fewer stages to get there.
+	public static List<CanonicalMessage> Elide(IReadOnlyList<CanonicalMessage> messages, string endOfTurnPrompt)
+	{
+		List<CanonicalMessage> rebuilt = new List<CanonicalMessage>(messages.Count);
 
 		int protectStart = ProtectedStart(messages);
 		if (protectStart > 0)
 		{
-			// Thinking chars are deliberately excluded from the accounting: unsigned reasoning is
-			// not resent to most providers, so counting it would overstate the savings and let a
-			// pass "succeed" without actually freeing window space.
+			// A block must be a meaningful fraction of the whole to be worth eliding.
 			int totalChars = CountChars(messages);
 			int threshold  = totalChars / kSizeFractionDenominator;
 
@@ -68,7 +101,6 @@ public static class MechanicalCompaction
 				}
 			}
 
-			List<CanonicalMessage> rebuilt = new List<CanonicalMessage>(messages.Count);
 			for (int i = 0; i < messages.Count; i++)
 			{
 				CanonicalMessage msg = messages[i];
@@ -111,13 +143,19 @@ public static class MechanicalCompaction
 						rebuilt.Add(tr);
 				}
 			}
-
-			int savings = totalChars - CountChars(rebuilt);
-			if ((long)savings * 100 >= (long)totalChars * kMinSavingsPercent)
-				result = rebuilt;
+		}
+		else
+		{
+			// Too short to have a stale span: nothing is safely elidable, so the history stands as
+			// it is (minus the system prompt, which the successor's role re-injects).
+			foreach (CanonicalMessage msg in messages)
+			{
+				if (!(msg is SystemMessage))
+					rebuilt.Add(msg);
+			}
 		}
 
-		return result;
+		return rebuilt;
 	}
 
 	// Builds the concise file ledger from the tool calls in the history: which files were read,
@@ -164,6 +202,78 @@ public static class MechanicalCompaction
 			ledger = sb.ToString().TrimEnd('\n');
 		}
 		return ledger;
+	}
+
+	// Splits history into the settled prefix compaction may rewrite and the in-flight tail it must
+	// not touch. The tail starts at the FIRST assistant turn whose tool calls have no results yet, so
+	// whatever comes back from the split, the settled part is guaranteed to contain no unanswered
+	// call — neither pass may elide or summarize away half of a call/result pair that is still being
+	// formed. Returns the whole history as settled (and an empty tail) in the ordinary case where
+	// every call has been answered.
+	public static (List<CanonicalMessage> Settled, List<CanonicalMessage> Pending) SplitPending(IReadOnlyList<CanonicalMessage> messages)
+	{
+		HashSet<string> satisfied = new HashSet<string>(StringComparer.Ordinal);
+		foreach (CanonicalMessage msg in messages)
+		{
+			if (msg is ToolResultMessage tr)
+				satisfied.Add(tr.ToolCallId);
+		}
+
+		int split = messages.Count;
+		for (int i = 0; i < messages.Count && split == messages.Count; i++)
+		{
+			if (messages[i] is AssistantMessage am)
+			{
+				foreach (SemanticToolCall call in am.ToolCalls)
+				{
+					if (!satisfied.Contains(call.Id))
+					{
+						split = i;
+						break;
+					}
+				}
+			}
+		}
+
+		List<CanonicalMessage> settled = new List<CanonicalMessage>(split);
+		List<CanonicalMessage> pending = new List<CanonicalMessage>(messages.Count - split);
+		for (int i = 0; i < messages.Count; i++)
+		{
+			if (i < split)
+				settled.Add(messages[i]);
+			else
+				pending.Add(messages[i]);
+		}
+		return (settled, pending);
+	}
+
+	// Closes any tool call in the held-aside tail that is still unanswered once compaction is done.
+	// Re-attaching an open call verbatim would leave the successor malformed — every protocol rejects
+	// a call with no result — so each one gets a truthful note in its result slot instead. The model
+	// sees the call it made, sees that it never came back, and can reissue it; the pairing rules the
+	// providers enforce are satisfied either way.
+	public static void CloseOpenCalls(List<CanonicalMessage> pending)
+	{
+		HashSet<string> satisfied = new HashSet<string>(StringComparer.Ordinal);
+		foreach (CanonicalMessage msg in pending)
+		{
+			if (msg is ToolResultMessage tr)
+				satisfied.Add(tr.ToolCallId);
+		}
+
+		List<CanonicalMessage> closers = new List<CanonicalMessage>();
+		foreach (CanonicalMessage msg in pending)
+		{
+			if (msg is AssistantMessage am)
+			{
+				foreach (SemanticToolCall call in am.ToolCalls)
+				{
+					if (satisfied.Add(call.Id))
+						closers.Add(new ToolResultMessage(call.Id, $"[no result: the {call.Name} call was still open when the conversation was compacted — call it again if you still need it]"));
+				}
+			}
+		}
+		pending.AddRange(closers);
 	}
 
 	// True when a successor seeded with this history has nothing left to answer: it ends on a
@@ -253,6 +363,15 @@ public static class MechanicalCompaction
 	// a conversation that short has nothing safely elidable.
 	private static int ProtectedStart(IReadOnlyList<CanonicalMessage> messages)
 	{
+		return TailStart(messages, kFreshAssistantTurns);
+	}
+
+	// Index where the last `assistantTurns` turns begin, counting an assistant message as the head of
+	// a turn. Returns 0 when the conversation has fewer turns than asked for, which reads naturally as
+	// "all of it is tail" — a caller retreating its summarize point uses that to know it has run out
+	// of history to summarize.
+	public static int TailStart(IReadOnlyList<CanonicalMessage> messages, int assistantTurns)
+	{
 		int start = 0;
 		int seen  = 0;
 		for (int i = messages.Count - 1; i >= 0; i--)
@@ -260,7 +379,7 @@ public static class MechanicalCompaction
 			if (messages[i] is AssistantMessage)
 			{
 				seen++;
-				if (seen == kFreshAssistantTurns)
+				if (seen == assistantTurns)
 				{
 					start = i;
 					break;

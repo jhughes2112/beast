@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -43,12 +43,12 @@ public class TestCaptureTransport : ITransportServer
 	public void ToolCallWithId    (string sessionId, string callId, string text) => Send(       FrameType.ToolCall, sessionId,          text);
 	public void ToolResponseWithId(string sessionId, ToolResult result)          => Send(   FrameType.ToolResponse, sessionId, result.StdOut);
 	public void SessionAnnounce   (string sessionId,       string json)          => Send(FrameType.SessionAnnounce, sessionId,          json);
-	public void SessionReset      (string sessionId)                 => Send( FrameType.SessionReset, sessionId,             string.Empty);
-	public void SessionStatus     (string sessionId,  string status) => Send(FrameType.SessionStatus, sessionId,                   status);
-	public void PendingQueue      (string sessionId, string[] lines) => Send( FrameType.PendingQueue, sessionId, string.Join("\n", lines));
-	public void StreamStart       (string sessionId,     string tag) => Send(  FrameType.StreamStart, sessionId,                      tag);
-	public void StreamChunk       (string sessionId,   string chunk) => Send(  FrameType.StreamChunk, sessionId,                    chunk);
-	public void StreamEnd         (string sessionId,     string tag) => Send(    FrameType.StreamEnd, sessionId,                      tag);
+	public void SessionActivate   (string sessionId)                 => Send(FrameType.SessionActivate, sessionId,             string.Empty);
+	public void SessionStatus     (string sessionId,  string status) => Send(  FrameType.SessionStatus, sessionId,                   status);
+	public void PendingQueue      (string sessionId, string[] lines) => Send(   FrameType.PendingQueue, sessionId, string.Join("\n", lines));
+	public void StreamStart       (string sessionId,     string tag) => Send(    FrameType.StreamStart, sessionId,                      tag);
+	public void StreamChunk       (string sessionId,   string chunk) => Send(    FrameType.StreamChunk, sessionId,                    chunk);
+	public void StreamEnd         (string sessionId,     string tag) => Send(      FrameType.StreamEnd, sessionId,                      tag);
 
 	public Task<string?> ReadAsync(CancellationToken cancellationToken)
 	{

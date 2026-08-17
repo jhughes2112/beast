@@ -12,6 +12,41 @@ public static class ProtocolSwitchTests
 		ctx.Log("  ProtocolSwitchTests");
 		TestSameProtocolSwitch(ctx);
 		TestCrossProtocolSwitch(ctx);
+		TestNewConversationRebuildsNativeState(ctx);
+	}
+
+	// Native state mirrors ONE conversation. A single LlmService legitimately serves several in a row
+	// — every summarizer stage runs on its own throwaway session through the shared service — and the
+	// proxy used to rehydrate only on first use, so every later conversation went out carrying the
+	// FIRST one's messages. That is what made staged compaction useless: each stage re-sent the first
+	// chunk, so the retries were byte-identical and shrinking the chunk changed nothing on the wire.
+	private static void TestNewConversationRebuildsNativeState(TestContext ctx)
+	{
+		ctx.Log("    NewConversationRebuildsNativeState");
+
+		List<CanonicalMessage> first       = new List<CanonicalMessage>();
+		ListenerBundle         firstBundle = new ListenerBundle(new CanonicalConversation(first), null);
+		firstBundle.OnUserMessage("stage one: a very long transcript chunk");
+		firstBundle.OnAssistantTurn("summary one", "", new List<SemanticToolCall>());
+
+		ProtocolProxy           proxy = BuildTestProxy();
+		ProtocolChatCompletions one   = proxy.EnsureProtocolChatCompletions(first);
+		ctx.AssertEqual(2, NativeCount(one, "_native"), "NewConversation: first conversation rehydrated");
+
+		// Appending to the SAME conversation must NOT rebuild: the commit fan-out already keeps
+		// native state in step, and rebuilding on every turn would throw away provider-signed content.
+		firstBundle.OnUserMessage("still stage one");
+		ProtocolChatCompletions sameAgain = proxy.EnsureProtocolChatCompletions(first);
+		ctx.Assert(ReferenceEquals(one, sameAgain), "NewConversation: the same conversation keeps its native state");
+
+		// A DIFFERENT conversation must rebuild, and must carry only its own messages.
+		List<CanonicalMessage> second       = new List<CanonicalMessage>();
+		ListenerBundle         secondBundle = new ListenerBundle(new CanonicalConversation(second), null);
+		secondBundle.OnUserMessage("stage two: a much smaller chunk");
+
+		ProtocolChatCompletions two = proxy.EnsureProtocolChatCompletions(second);
+		ctx.Assert(!ReferenceEquals(one, two), "NewConversation: a different conversation gets fresh native state");
+		ctx.AssertEqual(1, NativeCount(two, "_native"), "NewConversation: it carries ONLY the new conversation's messages");
 	}
 
 	// Invalidating and re-ensuring the same protocol creates a fresh instance
@@ -21,16 +56,16 @@ public static class ProtocolSwitchTests
 		ctx.Log("    SameProtocolSwitch");
 
 		List<CanonicalMessage> messages = new List<CanonicalMessage>();
-		ListenerBundle bundle = new ListenerBundle(new CanonicalConversation(messages), null);
+		ListenerBundle         bundle   = new ListenerBundle(new CanonicalConversation(messages), null);
 
 		bundle.OnUserMessage("hello");
 		bundle.OnAssistantTurn("world", "", new List<SemanticToolCall>());
 
 		ctx.AssertEqual(2, messages.Count, "SameProtocol: canonical has 2 messages");
 
-		ProtocolProxy proxy = BuildTestProxy();
-		ProtocolChatCompletions first = proxy.EnsureProtocolChatCompletions(messages);
-		int firstCount = NativeCount(first, "_native");
+		ProtocolProxy           proxy      = BuildTestProxy();
+		ProtocolChatCompletions first      = proxy.EnsureProtocolChatCompletions(messages);
+		int                     firstCount = NativeCount(first, "_native");
 		ctx.AssertEqual(2, firstCount, "SameProtocol: first instance rehydrated from canonical");
 
 		proxy.Invalidate();
@@ -38,7 +73,7 @@ public static class ProtocolSwitchTests
 
 		ctx.Assert(!ReferenceEquals(first, second), "SameProtocol: invalidate yields new instance");
 		ctx.AssertEqual(2, NativeCount(second, "_native"), "SameProtocol: new instance rehydrated with same history");
-		ctx.AssertEqual(2, messages.Count, "SameProtocol: canonical unchanged through switch");
+		ctx.AssertEqual(2,                 messages.Count, "SameProtocol: canonical unchanged through switch");
 	}
 
 	// Switching from ChatCompletions to Anthropic rehydrates Anthropic from canonical
@@ -49,14 +84,14 @@ public static class ProtocolSwitchTests
 		ctx.Log("    CrossProtocolSwitch");
 
 		List<CanonicalMessage> messages = new List<CanonicalMessage>();
-		ListenerBundle bundle = new ListenerBundle(new CanonicalConversation(messages), null);
+		ListenerBundle         bundle   = new ListenerBundle(new CanonicalConversation(messages), null);
 
 		bundle.OnUserMessage("first");
 		bundle.OnAssistantTurn("reply1", "", new List<SemanticToolCall>());
-		int countAfterTurn1 = messages.Count;  // 2
+		int countAfterTurn1 = messages.Count; // 2
 
-		ProtocolProxy proxy = BuildTestProxy();
-		ProtocolChatCompletions cc1 = proxy.EnsureProtocolChatCompletions(messages);
+		ProtocolProxy           proxy = BuildTestProxy();
+		ProtocolChatCompletions cc1   = proxy.EnsureProtocolChatCompletions(messages);
 		ctx.AssertEqual(countAfterTurn1, NativeCount(cc1, "_native"), "CrossProtocol: ChatCompletions rehydrated");
 
 		// Switch to Anthropic — cc1 slot should be nulled, Anthropic rehydrated.

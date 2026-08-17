@@ -96,6 +96,10 @@ public class LlmService
 			toolDefs.Add(tools[i].Definition);
 		}
 
+		// A tracer generates nothing, so it carries no output ceiling — but its header still states
+		// the occupancy it was fired to measure.
+		conversation.QueryLog.SetTurnContext(conversation.ContextLength, _model.Config.ContextWindow, 0);
+
 		return await _handler.CountTokensAsync(conversation.Bundle, toolDefs, forcedToolName, conversation.QueryLog, cancellationToken);
 	}
 
@@ -129,6 +133,16 @@ public class LlmService
 				int transientRetries = 0;
 				const int kMaxRateLimitRetries = 10;
 				const int kMaxTransientRetries = 5;
+
+				// A stage prompt is one WE shaped — a summarizer stage, a media probe — and its caller
+				// can reshape it and try again far more cheaply than we can sit out a backoff.
+				// Retrying a byte-identical prompt five times is the wrong answer when the prompt
+				// itself may be what the server choked on. This must never be read from Ephemeral:
+				// that means "not saved to disk", which is true of every session in a current-folder
+				// launch, and cutting a real Developer session to one retry made it abandon a turn on
+				// the first dropped connection.
+				const int kMaxStagePromptTransientRetries = 1;
+				int maxTransientRetries = conversation.IsStagePrompt ? kMaxStagePromptTransientRetries : kMaxTransientRetries;
 
 				// Central context accounting for this turn. Seeded with the model's window and limits, the
 				// compaction reserve, and the sub-session output cap. It owns all "how much room is left"
@@ -178,6 +192,10 @@ public class LlmService
 					// so input + output stays within the window even right after a tool round.
 					int? maxCompletionTokens = budget.MaxCompletionTokens();
 
+					// Stamp the sizing onto the log header, so a request in the log carries the two
+					// numbers that explain its shape instead of leaving them to be inferred.
+					conversation.QueryLog.SetTurnContext(conversation.ContextLength, _model.Config.ContextWindow, maxCompletionTokens ?? 0);
+
 					// Provisional live stats while the turn streams. Protocols report inputTokens as the
 					// whole-conversation input the provider bills this turn (Anthropic via StreamStart
 					// usage, Responses via response.created usage), which is exactly what the committed
@@ -186,13 +204,24 @@ public class LlmService
 					// Session.SendStats commits), so the in-flight turn's own numbers are reported as
 					// they arrive rather than added to lifetime baselines; contextTokens tracks the live
 					// occupancy (see below). Cost is the one cumulative figure, so it keeps its baseline.
-					decimal           costBaseline    = conversation.TotalCost; // locals captured by closure for provisional stats
-					int               contextBaseline = conversation.ContextLength;
-					int               cachedBaseline  = conversation.LastTokenUsage?.CachedTokens ?? 0;
-					string            modelId         = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
-					string            role            = conversation.Role;
-					int               contextWindow   = _model.Config.ContextWindow;
-					LiveUsageProgress onProgress      = (inputTokens, outputTokens, turnCost, cachedTokens) =>
+					decimal costBaseline    = conversation.TotalCost; // locals captured by closure for provisional stats
+					int     contextBaseline = conversation.ContextLength;
+
+					// What the NEXT submission finds cached is everything the last turn read AND wrote:
+					// the prompt it sent plus the completion it produced are one contiguous prefix of
+					// the request now going out, which is exactly what a prefix cache matches on. So the
+					// baseline is the whole context size, not the previous turn's own cached FIGURE —
+					// carrying that forward said a 5800-token conversation was submitting 5800 tokens of
+					// fresh input on every turn, when nearly all of it was a cache hit. Wrong in the
+					// direction that matters, since fresh input is the part that is paid for in full.
+					// A session that has only been COUNTED has no completion and nothing cached yet: the
+					// whole measurement is input, which is the (c:0 i:X o:0) a new session opens on.
+					bool              turnCompleted  = (conversation.LastTokenUsage?.CompletionTokens ?? 0) > 0;
+					int               cachedBaseline = turnCompleted ? contextBaseline : (conversation.LastTokenUsage?.CachedTokens ?? 0);
+					string            modelId        = conversation.Model + ReasoningEffort.DisplaySuffix(_model.Config.ReasoningEffort);
+					string            role           = conversation.Role;
+					int               contextWindow  = _model.Config.ContextWindow;
+					LiveUsageProgress onProgress     = (inputTokens, outputTokens, turnCost, cachedTokens) =>
 						{
 							// Not every provider states the prompt size up front: Anthropic and Responses
 							// report it as the stream opens, but ChatCompletions only sends usage in the
@@ -214,9 +243,30 @@ public class LlmService
 
 					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
 
+					// Record how it came back, next to the request that produced it.
+					conversation.QueryLog.WriteOutcome(result.Outcome.ToString(), result.HttpStatus, result.ErrorMessage);
+
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{
 						conversation.RecordCost(result.Payload!.Cost);
+
+						// The response was cut off at a ceiling the window forced us to shrink. That is a
+						// context problem wearing a success's clothes: the model was mid-sentence, mid-file,
+						// mid-thought, and committing it feeds it back its own truncated work to be confused
+						// by — the half-written file, the reasoning that never reached a conclusion, the
+						// retry that produces another truncated version of the same thing. So the turn is
+						// NOT committed; the caller compacts and the model gets to answer properly with a
+						// whole window in front of it. A response that hits the model's FULL ceiling is a
+						// different thing entirely — the model simply ran long, and no amount of compacting
+						// buys it more room — so that one commits as it always did.
+						if (string.Equals(result.Payload!.FinishReason, "length", StringComparison.OrdinalIgnoreCase)
+							&& maxCompletionTokens.HasValue && maxCompletionTokens.Value < budget.OutputAllowance)
+						{
+							string cut = $"Response truncated at {maxCompletionTokens.Value} tokens, below this model's {budget.OutputAllowance}-token ceiling — the window is too full to answer in.";
+							conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", null, cut, 0, 0, null, false);
+							result = ProtocolResult.ContextFull(cut);
+							break;
+						}
 
 						// Repair the response's tool calls in place (fuzzy name correction, argument fixups),
 						// writing them back into the payload so the committed turn carries clean calls. A call
@@ -271,7 +321,7 @@ public class LlmService
 						// retries are spent do we give up — the caller then falls back to the next model in the
 						// role's list instead of the model being killed outright.
 						transientRetries++;
-						if (transientRetries > kMaxTransientRetries)
+						if (transientRetries > maxTransientRetries)
 						{
 							// Surface the actual last error (e.g. "HTTP 500: ...") as a failure rather than
 							// collapsing it into TooManyRetries, which the caller would otherwise report as
@@ -279,8 +329,8 @@ public class LlmService
 							// TooManyRetries; this transient path carries its reason.
 							string message = string.IsNullOrEmpty(result.ErrorMessage) ?
 								"Transient errors persisted after repeated retries." :
-								$"Transient errors persisted after {kMaxTransientRetries} retries: {result.ErrorMessage}";
-							conversation.QueryLog.ModelFailure(_model, _handler, "Failed", null, message, transientRetries, kMaxTransientRetries, result.RetryAfter, true);
+								$"Transient errors persisted after {maxTransientRetries} retries: {result.ErrorMessage}";
+							conversation.QueryLog.ModelFailure(_model, _handler, "Failed", null, message, transientRetries, maxTransientRetries, result.RetryAfter, true);
 							result = ProtocolResult.Failed(message);
 							break;
 						}
@@ -291,13 +341,14 @@ public class LlmService
 						else
 							_availability.ExtendBackoff(DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1))));
 						int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
-						transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{kMaxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
-						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, kMaxTransientRetries, result.RetryAfter, false);
+						transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{maxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
+						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, maxTransientRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}
 					else if (result.Outcome == ProtocolCallOutcome.Failed
 						&& ProtocolHelpers.IsOverflowStatusCandidate(result.HttpStatus)
-						&& (budget.OverflowPlausible() || conversation.Ephemeral))
+						&& !ProtocolHelpers.IsAccountError(result.ErrorMessage ?? string.Empty)
+						&& (budget.OverflowPlausible() || conversation.IsStagePrompt))
 					{
 						// Structural overflow evidence: the body text was not a recognized overflow
 						// phrasing (IsContextOverflow already routed those to ContextFull upstream),
@@ -305,14 +356,21 @@ public class LlmService
 						// window is overflow whatever the server chose to say — local servers word
 						// it every which way. Reclassify so the caller compacts instead of marking
 						// a healthy model down and silently switching to another one.
-						// Ephemeral sessions (summarizer stages, sub-session prompts) carry no
-						// provider measurement, so OverflowPlausible can never fire for them — but
-						// their prompt was sized by the caller deliberately near the window, so a
-						// client rejection means the same thing: too big, retry smaller. Without
-						// this leg an oversized compaction stage marked the model permanently down
-						// and alerted the human instead of letting the summarizer halve the chunk.
-						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", result.HttpStatus, $"Client rejection on a near-full context, treated as overflow: {result.ErrorMessage}", 0, 0, null, false);
-						result = ProtocolResult.ContextFull(result.ErrorMessage);
+						// Stage prompts (summarizer stages, media probes) carry no provider
+						// measurement, so OverflowPlausible can never fire for them — but their
+						// prompt was sized by the caller deliberately near the window, so a client
+						// rejection means the same thing: too big, retry smaller. Without this leg
+						// an oversized compaction stage marked the model permanently down and
+						// alerted the human instead of letting the summarizer halve the chunk. This
+						// asks IsStagePrompt, not Ephemeral: reading "not saved to disk" here would
+						// reclassify an ordinary bad request in a current-folder session as an
+						// overflow and send a perfectly roomy conversation off to compact.
+						// Account errors are excluded above: they arrive as the same status with the
+						// reason only in the body, and treating one as overflow hides the single
+						// failure a human must fix behind an endless compact-and-retry loop.
+						string rejection = result.ErrorMessage ?? "client rejection";
+						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", result.HttpStatus, $"Client rejection on a near-full context, treated as overflow: {rejection}", 0, 0, null, false);
+						result = ProtocolResult.ContextFull(rejection);
 						break;
 					}
 					else

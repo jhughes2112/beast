@@ -98,6 +98,23 @@ public static class FixJsonTests
 			ctx.AssertContains(qwen[0].ArgumentsJson, "/workspace/Design", "XmlToolCall: qwen parameter value");
 		ctx.AssertEqual("Listing now.", qwenCleaned, "XmlToolCall: qwen block stripped");
 
+		// Observed verbatim from a local coder model: the Qwen form wrapped in <tool_call>, with a
+		// shell pipeline whose backslash alternations and quotes must survive into the arguments.
+		List<ToolDefinition> withBash = new List<ToolDefinition>
+		{
+			new ToolDefinition { Function = new FunctionDefinition { Name = "bash" } }
+		};
+		const string observedInner = "<function=bash>\n<parameter=command>\ngrep -n 'ambient\\|DirectionalLight\\|sunLight\\|directionalLight\\|directional' /workspace/garden.html | head -20\n</parameter>\n</function>";
+
+		List<SemanticToolCall> wrapped        = new List<SemanticToolCall>();
+		string                 wrappedCleaned = (string)Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls",
+			signature, new object[] { "<tool_call> \n" + observedInner + "\n</tool_call>", withBash, wrapped })!;
+		ctx.AssertEqual(1, wrapped.Count, "XmlToolCall: observed wrapped block extracted");
+		ctx.AssertEqual("bash", wrapped.Count > 0 ? wrapped[0].Name : "", "XmlToolCall: observed wrapped name");
+		if (wrapped.Count > 0)
+			ctx.AssertContains(wrapped[0].ArgumentsJson, "garden.html", "XmlToolCall: observed wrapped command survives");
+		ctx.AssertEqual("", wrappedCleaned, "XmlToolCall: observed wrapped block leaves no prose");
+
 		// A well-formed block naming a tool that is NOT offered this turn stays as prose — no
 		// call, no error; a quoted example or hallucinated tool must never round-trip to dispatch.
 		List<SemanticToolCall> unknown     = new List<SemanticToolCall>();

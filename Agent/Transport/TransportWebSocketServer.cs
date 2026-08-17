@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
@@ -14,12 +14,12 @@ using System.Threading.Tasks;
 // and exposes the ITransportServer interface for the orchestrator.
 public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 {
-	private readonly int _port;
-	private HttpListener _listener = new HttpListener();
-	private WebSocket? _ws;
-	private readonly Channel<string> _frames = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
-	private readonly Channel<string> _outbound = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
-	private Task? _writeTask;
+	private readonly int                     _port;
+	private          HttpListener            _listener = new HttpListener();
+	private          WebSocket?              _ws;
+	private readonly Channel<string>         _frames   = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+	private readonly Channel<string>         _outbound = Channel.CreateUnbounded<string>(new UnboundedChannelOptions { SingleReader = true });
+	private          Task?                   _writeTask;
 	private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
 	public TransportWebSocketServer(int port)
@@ -33,12 +33,12 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 	{
 		ProcessStartInfo psi = new ProcessStartInfo
 		{
-			FileName = "netsh",
-			Arguments = $"http add urlacl url=http://*:{_port}/ user=Everyone",
-			Verb = "runas",
+			FileName        = "netsh",
+			Arguments       = $"http add urlacl url=http://*:{_port}/ user=Everyone",
+			Verb            = "runas",
 			UseShellExecute = true,
-			CreateNoWindow = true,
-			WindowStyle = ProcessWindowStyle.Hidden,
+			CreateNoWindow  = true,
+			WindowStyle     = ProcessWindowStyle.Hidden,
 		};
 		try
 		{
@@ -63,7 +63,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 		}
 		catch (HttpListenerException ex) when (ex.ErrorCode == 5 && OperatingSystem.IsWindows())
 		{
-			Console.Error.WriteLine("[ws-server] Access denied — requesting URL ACL registration (UAC prompt)...");
+			Console.Error.WriteLine("[ws-server] Access denied â€” requesting URL ACL registration (UAC prompt)...");
 			if (!EnsureUrlAcl())
 				throw new InvalidOperationException($"Could not register URL ACL for port {_port}. User cancelled UAC prompt.");
 			// The failed Start() leaves the listener in a broken state; replace it.
@@ -85,7 +85,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 		_ws = wsCtx.WebSocket;
 		Console.Error.WriteLine($"[ws-server] Client connected from {ctx.Request.RemoteEndPoint}");
 
-		_ = RecvLoop(_cts.Token);
+		_          = RecvLoop(_cts.Token);
 		_writeTask = WriteLoop(_cts.Token);
 	}
 
@@ -128,41 +128,41 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 		_outbound.Writer.TryWrite($"{(byte)type}|{sessionId}|{text}");
 	}
 
-	public void Output(string sessionId, string text) => Send(FrameType.Output, sessionId, text);
-	public void Error(string sessionId, string text) => Send(FrameType.Error, sessionId, text);
-	public void Alert(string sessionId, string text) => Send(FrameType.Alert, sessionId, text);
-	public void Status(string sessionId, string text) => Send(FrameType.Status, sessionId, text);
+	public void Output  (string sessionId, string text) => Send(  FrameType.Output, sessionId, text);
+	public void Error   (string sessionId, string text) => Send(   FrameType.Error, sessionId, text);
+	public void Alert   (string sessionId, string text) => Send(   FrameType.Alert, sessionId, text);
+	public void Status  (string sessionId, string text) => Send(  FrameType.Status, sessionId, text);
 	public void Thinking(string sessionId, string text) => Send(FrameType.Thinking, sessionId, text);
-	public void System(string sessionId, string text) => Send(FrameType.System, sessionId, text);
-	public void User(string sessionId, string text) => Send(FrameType.User, sessionId, text);
-	public void Debug(string sessionId, string text) => Send(FrameType.Debug, sessionId, text);
+	public void System  (string sessionId, string text) => Send(  FrameType.System, sessionId, text);
+	public void User    (string sessionId, string text) => Send(    FrameType.User, sessionId, text);
+	public void Debug   (string sessionId, string text) => Send(   FrameType.Debug, sessionId, text);
 	// Hand-built node instead of an anonymous type: anonymous types have no source-generated
 	// metadata and would need the reflection serializer, which Native AOT does not have.
 	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
 		=> Send(FrameType.Stats, sessionId, new JsonObject
 		{
-			["model"] = model,
-			["role"] = role,
-			["promptTokens"] = promptTokens,
+			["model"]            = model,
+			["role"]             = role,
+			["promptTokens"]     = promptTokens,
 			["completionTokens"] = completionTokens,
-			["totalCost"] = totalCost,
-			["maxContext"] = maxContext,
-			["contextTokens"] = contextTokens,
-			["cachedTokens"] = cachedTokens
+			["totalCost"]        = totalCost,
+			["maxContext"]       = maxContext,
+			["contextTokens"]    = contextTokens,
+			["cachedTokens"]     = cachedTokens
 		}.ToJsonString());
-	public void Completions(string sessionId, string json) => Send(FrameType.Completions, sessionId, json);
-	public void Config(string sessionId, string json) => Send(FrameType.Config, sessionId, json);
-	public void Idle(string sessionId, bool subagent) => Send(FrameType.Idle, sessionId, subagent ? "subagent" : string.Empty);
-	public void Busy(string sessionId) => Send(FrameType.Busy, sessionId, string.Empty);
-	public void ToolCallWithId(string sessionId, string callId, string text) => Send(FrameType.ToolCall, sessionId, callId + "\x01" + text);
-	public void ToolResponseWithId(string sessionId, ToolResult result) => Send(FrameType.ToolResponse, sessionId, result.Id + "\x01" + result.ExitCode + "\x01" + result.StdOut + "\x01" + result.StdErr);
-	public void SessionAnnounce(string sessionId, string json) => Send(FrameType.SessionAnnounce, sessionId, json);
-	public void SessionReset(string sessionId) => Send(FrameType.SessionReset, sessionId, string.Empty);
-	public void SessionStatus(string sessionId, string status) => Send(FrameType.SessionStatus, sessionId, status);
-	public void PendingQueue(string sessionId, string[] lines) => Send(FrameType.PendingQueue, sessionId, string.Join("\n", lines));
-	public void StreamStart(string sessionId, string tag) => Send(FrameType.StreamStart, sessionId, tag);
-	public void StreamChunk(string sessionId, string chunk) => Send(FrameType.StreamChunk, sessionId, chunk);
-	public void StreamEnd(string sessionId, string tag) => Send(FrameType.StreamEnd, sessionId, tag);
+	public void Completions       (string sessionId,   string json) => Send(FrameType.Completions, sessionId, json);
+	public void Config            (string sessionId,   string json) => Send(     FrameType.Config, sessionId, json);
+	public void Idle              (string sessionId, bool subagent) => Send(FrameType.Idle, sessionId, subagent ? "subagent" : string.Empty);
+	public void Busy              (string sessionId)                => Send(FrameType.Busy, sessionId,                         string.Empty);
+	public void ToolCallWithId    (string sessionId, string callId, string text) => Send(FrameType.ToolCall, sessionId, callId + "\x01" + text);
+	public void ToolResponseWithId(string sessionId, ToolResult result)          => Send(FrameType.ToolResponse, sessionId, result.Id + "\x01" + result.ExitCode + "\x01" + result.StdOut + "\x01" + result.StdErr);
+	public void SessionAnnounce   (string sessionId,       string json)          => Send(FrameType.SessionAnnounce, sessionId, json);
+	public void SessionActivate   (string sessionId)                 => Send(FrameType.SessionActivate, sessionId,             string.Empty);
+	public void SessionStatus     (string sessionId,  string status) => Send(  FrameType.SessionStatus, sessionId,                   status);
+	public void PendingQueue      (string sessionId, string[] lines) => Send(   FrameType.PendingQueue, sessionId, string.Join("\n", lines));
+	public void StreamStart       (string sessionId,     string tag) => Send(    FrameType.StreamStart, sessionId,                      tag);
+	public void StreamChunk       (string sessionId,   string chunk) => Send(    FrameType.StreamChunk, sessionId,                    chunk);
+	public void StreamEnd         (string sessionId,     string tag) => Send(      FrameType.StreamEnd, sessionId,                      tag);
 
 	private async Task WriteLoop(CancellationToken token)
 	{

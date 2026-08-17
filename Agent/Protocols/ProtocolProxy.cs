@@ -1,11 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
-// The wire protocol spoken by an endpoint — detected once per endpoint and cached in LlmRegistry.
+// The wire protocol spoken by an endpoint â€” detected once per endpoint and cached in LlmRegistry.
 public enum DetectedProtocol
 {
 	Unknown,
@@ -16,11 +16,11 @@ public enum DetectedProtocol
 
 // Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
 // The lifetime of a ProtocolProxy is tied to the LLMService it is created for.
-// Protocol is inferred from the endpoint URL path (/messages → Anthropic, /chat/completions → ChatCompletions, /responses → Responses).
+// Protocol is inferred from the endpoint URL path (/messages â†’ Anthropic, /chat/completions â†’ ChatCompletions, /responses â†’ Responses).
 // This class also routes calls to the appropriate protocol implementation and injects the model's
 // headers and body extras onto the outgoing request.
 //
-// Extras and headers are replicated verbatim — no key interpretation. The model's "extras" entries
+// Extras and headers are replicated verbatim â€” no key interpretation. The model's "extras" entries
 // are merged as top-level JSON body fields (strings, arrays, objects, numbers, booleans) and its
 // "headers" entries become HTTP request headers. To steer OpenRouter routing, declare a "provider"
 // object directly in extras; we no longer translate any or_* shorthand. Null and empty-string values
@@ -47,6 +47,18 @@ public class ProtocolProxy
 	private ProtocolResponses?       _protocolResponses;
 	private ProtocolAnthropic?       _protocolAnthropic;
 
+	// The canonical message list the live protocol's native state was built from. Native state is a
+	// MIRROR of one conversation, so it is only reusable for that same conversation: handed a
+	// different one, it must be rebuilt or the request carries the previous conversation's messages.
+	// One LlmService legitimately serves several conversations in a row â€” every summarizer stage runs
+	// on its own throwaway session through the shared service â€” and without this check the proxy
+	// answered all of them with the first one's history. Compaction was the visible casualty: each
+	// stage re-sent the FIRST chunk, so every retry was byte-identical and shrinking the chunk changed
+	// nothing on the wire. Reference identity is the right test: appending to a conversation keeps the
+	// same list (and the commit fan-out keeps native state in step), while a new conversation is
+	// always a new list.
+	private IReadOnlyList<CanonicalMessage>? _nativeSource;
+
 	// Where a protocol reports a durable reasoning fact it learned from the provider. Null for the
 	// bare test constructor, where there is no registry to tell and nothing to persist to.
 	private readonly ModelReasoningSink? _onReasoningLearned;
@@ -58,7 +70,7 @@ public class ProtocolProxy
 		_onReasoningLearned = null;
 	}
 
-	// Create with a known protocol — skips the per-turn probe in ExecuteAsync.
+	// Create with a known protocol â€” skips the per-turn probe in ExecuteAsync.
 	// Always prefer this constructor; use the no-protocol overload only as a fallback.
 	public ProtocolProxy(LlmModel model, DetectedProtocol detected, ModelReasoningSink onReasoningLearned)
 	{
@@ -82,7 +94,7 @@ public class ProtocolProxy
 	// Plain client for reachability probes. A bare GET is enough to tell whether a server is listening.
 	private static readonly HttpClient _probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-	// True if a server answers at the address. We send a deliberately wrong request — a bare GET — so
+	// True if a server answers at the address. We send a deliberately wrong request â€” a bare GET â€” so
 	// the server rejects it fast (e.g. 404); ANY HTTP response means a server is there. Only a
 	// connection-level failure (refused, unreachable, timeout) counts as nothing listening.
 	private static async Task<bool> CanReachEndpointAsync(string endpoint)
@@ -130,6 +142,7 @@ public class ProtocolProxy
 		_protocolChatCompletions = null;
 		_protocolResponses       = null;
 		_protocolAnthropic       = null;
+		_nativeSource            = null;
 	}
 
 	// Fan-out methods called by ListenerBundle for external events (user input, tool results,
@@ -242,36 +255,39 @@ SessionLogger logger, CancellationToken cancellationToken)
 
 	internal ProtocolChatCompletions EnsureProtocolChatCompletions(IReadOnlyList<CanonicalMessage> canonical)
 	{
-		if (_protocolChatCompletions == null)
+		if (_protocolChatCompletions == null || !ReferenceEquals(_nativeSource, canonical))
 		{
 			_protocolChatCompletions = new ProtocolChatCompletions(_model.Config.RetainReasoning, _model.ConfigId, _onReasoningLearned);
 			_protocolChatCompletions.Rehydrate(canonical);
 			_protocolResponses = null;
 			_protocolAnthropic = null;
+			_nativeSource      = canonical;
 		}
 		return _protocolChatCompletions;
 	}
 
 	internal ProtocolResponses EnsureProtocolResponses(IReadOnlyList<CanonicalMessage> canonical)
 	{
-		if (_protocolResponses == null)
+		if (_protocolResponses == null || !ReferenceEquals(_nativeSource, canonical))
 		{
 			_protocolResponses = new ProtocolResponses(_onReasoningLearned);
 			_protocolResponses.Rehydrate(canonical);
 			_protocolChatCompletions = null;
 			_protocolAnthropic       = null;
+			_nativeSource            = canonical;
 		}
 		return _protocolResponses;
 	}
 
 	internal ProtocolAnthropic EnsureProtocolAnthropic(IReadOnlyList<CanonicalMessage> canonical)
 	{
-		if (_protocolAnthropic == null)
+		if (_protocolAnthropic == null || !ReferenceEquals(_nativeSource, canonical))
 		{
 			_protocolAnthropic = new ProtocolAnthropic(_onReasoningLearned);
 			_protocolAnthropic.Rehydrate(canonical);
 			_protocolChatCompletions = null;
 			_protocolResponses       = null;
+			_nativeSource            = canonical;
 		}
 		return _protocolAnthropic;
 	}
@@ -286,7 +302,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 	// Returns true if a JsonNode represents an "empty" extra value that should be skipped.
 	// Null nodes and empty-string JsonValues are skipped so settings files can contain
 	// self-documenting placeholder keys. Non-string nodes (arrays, objects, numbers) are
-	// never skipped — they are always intentional.
+	// never skipped â€” they are always intentional.
 	private static bool IsEmptyExtra(JsonNode? node) =>
 		node is null ||
 		(node is JsonValue jv && jv.TryGetValue<string>(out string? s) && string.IsNullOrEmpty(s));
@@ -301,7 +317,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 		Dictionary<string, string>    headers = new();
 		Dictionary<string, JsonNode?> payload = new();
 
-		// Always inject OpenRouter identification headers — harmless on non-OpenRouter endpoints.
+		// Always inject OpenRouter identification headers â€” harmless on non-OpenRouter endpoints.
 		// The model's own headers can override these.
 		headers["HTTP-Referer"]            = OpenRouterReferer;
 		headers["X-Title"]                 = OpenRouterTitle;

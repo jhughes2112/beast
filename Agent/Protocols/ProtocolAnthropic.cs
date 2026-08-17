@@ -344,6 +344,7 @@ public class ProtocolAnthropic
 		int     outputTokens        = 0;
 		string  stopReason          = "end_turn";
 		int     streamedChars       = 0;
+		int     streamedToolChars   = 0;
 		bool    sawEvent            = false;
 
 		try
@@ -439,7 +440,7 @@ public class ProtocolAnthropic
 					{
 						string partial = delta?["partial_json"]?.GetValue<string>() ?? string.Empty;
 						block.InputJson.Append(partial);
-						streamedChars += partial.Length;
+						streamedToolChars += partial.Length;
 					}
 				}
 				else if (type == "message_delta")
@@ -483,8 +484,10 @@ public class ProtocolAnthropic
 
 				// Provisional running usage for this turn. Anthropic only reports output tokens on
 				// the final message_delta, so during the body of the stream we estimate from
-				// accumulated streamed characters (~4 chars/token) for continuous motion.
-				int     liveOutput = outputTokens > 0 ? outputTokens : streamedChars / 4;
+				// accumulated streamed characters for continuous motion. Prose and thinking run near
+				// 4 chars/token; tool-call JSON is denser (braces, quotes, escapes) and estimates
+				// closer to 3, which is why the two are counted apart.
+				int     liveOutput = outputTokens > 0 ? outputTokens : streamedChars / 4 + streamedToolChars / 3;
 				int     liveCached = cacheReadTokens + cacheCreationTokens;
 				decimal liveCost   = (freshInputTokens / 1_000_000m) * model.Config.Cost.Input
 								 + (liveOutput / 1_000_000m) * model.Config.Cost.Output;
@@ -755,6 +758,17 @@ public class ProtocolAnthropic
 			// only legal on the real /messages call.
 			body["max_tokens"]  = maxTokens;
 			body["temperature"] = 1.0;
+
+			// Caching is OPT-IN on this API: without this field nothing is cached and every turn pays
+			// full input price for the entire conversation again. The top-level form is the automatic
+			// one — the server places the breakpoint on the last cacheable block and walks it forward
+			// as the conversation grows, which is exactly the shape a chat has. Placing breakpoints by
+			// hand buys nothing here and goes stale the moment the tail changes. The cached prefix is
+			// tools -> system -> messages, all of which are stable turn to turn. Prompts under the
+			// model's minimum (512-4096 tokens depending on model) are simply not cached, with no
+			// error. Default TTL is 5 minutes, refreshed on every hit; the 1-hour TTL costs double the
+			// base input rate, so it is deliberately not requested.
+			body["cache_control"] = new JsonObject { ["type"] = "ephemeral" };
 		}
 		body["messages"] = CloneMessages();
 

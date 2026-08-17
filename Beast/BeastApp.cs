@@ -274,9 +274,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 	// Deletes a session and its whole descendant subtree from the client's memory and tells the agent to
 	// drop the matching .json files from the session folder. Invoked from the F10 overlay (under the
 	// display lock, like ProcessFrame). A still-running session (or one with a running descendant) is left
-	// alone. Deleting the active root tears the tree down and the agent starts a fresh session in its
-	// place, announced back via SessionReset — so for the root we just send the command and let that frame
-	// rebuild the client state.
+	// alone. Removal is the CLIENT'S job — it owns the session list and prunes it here; the agent is only
+	// told to drop the files. Deleting the last root leaves nothing to show, and the agent answers that by
+	// standing up a fresh session and asking for it with SessionActivate.
 	private void DeleteSession(string sessionId)
 	{
 		if (string.IsNullOrEmpty(sessionId))
@@ -295,8 +295,8 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
 		{
 			// Root: remove its subtree locally and adopt another root when one remains. Only when
-			// nothing remains does the agent start a fresh root and announce it via SessionReset —
-			// that frame then rebuilds the client state from scratch.
+			// nothing remains does the agent start a fresh root and ask for it with SessionActivate;
+			// the pruning has already happened here, which is why the agent never needs to order a wipe.
 			(bool rootWasActive, string rootPrefix) = SessionTree.CollectSubtreeIds(sessionId, _sessions.Keys, _activeSessionId);
 			SessionTree.RemoveSessionFromLists(rootPrefix, sessionId, _sessions, _busySessions, _sessionDisplayNames);
 			string remaining = SessionTree.GetRootSessionId(_sessions);
@@ -426,19 +426,16 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				}
 				return;
 
-			case FrameType.SessionReset:
-				// The agent started a fresh root (e.g. after the active root was deleted from the F10 tree).
-				// Forget every session we knew so the F10 list and the active view collapse to just the new one.
-				_sessions.Clear();
-				_busySessions.Clear();
-				_sessionDisplayNames.Clear();
-				_activeSessionId = "";
-				_display.OnStreamEnd();
-				_display.SetAgentBusy(false, 0);
-				SessionState reset = EnsureSession(sessionId);
-				reset.Status       = SessionStatus.Ongoing;
-				_display.SetActiveTime(0);
-				_display.SetStatsInfo(reset.StatsModel, reset.StatsRole, 0, 0, 0m, 0, 0, 0);
+			case FrameType.SessionActivate:
+				// The agent stood up a session it wants on screen — a compaction successor, or a fresh
+				// root after the active one was deleted. Everything else the client knows is KEPT: the
+				// client owns its own session list, and it removes sessions when the user deletes them,
+				// which it already does locally before the agent ever hears about it. This frame used
+				// to clear that list, which quietly erased every other session — sibling subagents,
+				// earlier compaction predecessors — that were still alive in the agent.
+				SessionState activated = EnsureSession(sessionId);
+				activated.Status       = SessionStatus.Ongoing;
+				SwitchActiveSession(sessionId);
 				return;
 
 			case FrameType.SessionStatus:
@@ -607,6 +604,15 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				{
 					slotIndex = pendingSlot;
 					session.PendingCommit.Remove(type);
+				}
+				else if (type == FrameType.ToolCall && session.PendingCommit.TryGetValue(FrameType.Output, out int orphanedSlot))
+				{
+					// A turn whose whole output was a literal <tool_call> block streamed that raw text
+					// into an Output slot, then committed with the text stripped and the call salvaged —
+					// so no Output frame ever came to overwrite it and the raw XML sat there looking
+					// unprocessed. The call it became claims the slot instead.
+					slotIndex = orphanedSlot;
+					session.PendingCommit.Remove(FrameType.Output);
 				}
 				else
 				{

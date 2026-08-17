@@ -27,10 +27,10 @@ public static class ToolDispatch
 		return Math.Max(1, (text.Length + CharsPerToken - 1) / CharsPerToken);
 	}
 
-	// Sanity ceiling on any single raw tool output, independent of how much window room the round's
-	// reservation offers. The reservation exists to prevent overflow, but early in a big-window
-	// conversation it can hand one tool nearly the whole window — a grep over a huge log would
-	// legally return 190k tokens and flood the context. No raw output is worth more than this.
+	// The ONLY ceiling on a single raw tool output, and deliberately a fixed one: no grep over a huge
+	// log is worth 190k tokens whatever the window has free. It is a statement about the output's own
+	// worth, not about the caller's remaining room — sizing it from the room left is what produced
+	// impossible demands ("answer in six tokens") near the top of the window.
 	public const int MaxRawOutputTokens = 16000;
 
 	// Stamps a raw (server-unmeasured) tool result with an estimated token count and, only here,
@@ -76,16 +76,14 @@ public static class ToolDispatch
 
 		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
 
-		// Allocate this round's tool-response budget from the window; the budget splits it evenly
-		// across the parallel calls and records the whole round as pending.
-		int perToolBudget = session.Budget.ReserveToolResponses(toolCalls.Count);
-
-		// Run every call in parallel. ExecuteToolAsync owns each call's outcome and returns a real
-		// ToolResult for every non-cancel failure; it throws only on a genuine cancel (ct cancelled).
+		// Every call gets the same fixed ceiling — a property of what any single raw output is worth,
+		// not of how much room the caller happens to have left. Sizing outputs from the remaining
+		// window is what asked a review to fit in six tokens; the round is charged to the budget
+		// after the fact instead, and an over-window conversation compacts on the next pass.
 		Task<ToolResult>[] tasks = new Task<ToolResult>[toolCalls.Count];
 		for (int i = 0; i < toolCalls.Count; i++)
 		{
-			tasks[i] = ExecuteToolAsync(toolCalls[i], toolLookup, session.Id, perToolBudget, transport, ct);
+			tasks[i] = ExecuteToolAsync(toolCalls[i], toolLookup, session.Id, MaxRawOutputTokens, transport, ct);
 		}
 
 		// Drain each call independently rather than letting Task.WhenAll make the whole round hostage to
@@ -123,6 +121,14 @@ public static class ToolDispatch
 				payload.ToolResults.Add(Error(toolCalls[i].Id, $"Tool '{toolCalls[i].Name}' threw exception:\n{ex}"));
 			}
 		}
+
+		// Charge the round at the size it actually came back, so the next request is sized against
+		// what the conversation now really holds. A sub-session's reply carries its provider's exact
+		// measurement; a raw handler's output carries its own estimate.
+		int roundTokens = 0;
+		foreach (ToolResult settled in payload.ToolResults)
+			roundTokens += settled.MeasuredOutputTokens;
+		session.Budget.ChargeToolResults(roundTokens);
 
 		// Every task is drained now, so no tool is still touching the session. Only a genuine cancel
 		// propagates — after all siblings are settled — so the caller's cancellation guard parks/unwinds

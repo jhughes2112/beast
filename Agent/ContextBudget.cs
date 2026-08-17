@@ -7,16 +7,22 @@ using System;
 // one obvious place that knows how much room the session has, instead of the math being re-derived
 // inline at every call site.
 //
-// Every number the budget reasons about is either a provider-reported measurement (the context size)
-// or a reservation we ourselves allocated and truncated a tool output to fit — never a token-count
-// estimate. A tool output the provider has not measured yet is charged the FULL reservation it was
-// handed (a guaranteed upper bound) until the next response reports the exact new context size and
-// RecordMeasurement folds it in. So the figures used to decide whether a request fits are always
-// conservative: the real input can never exceed measured + pendingReserve.
+// The budget never dictates how big an OUTPUT may be — not a tool's, not a subagent's, and not the
+// model's own completion. It used to do all three by dividing up whatever room was left, which meant
+// a nearly-full conversation asked a subagent for a review in six tokens and asked the model to write
+// a file in 2,717. Both are impossible demands that produce useless work, and the truncated work then
+// re-enters the context and confuses the model that produced it. Sizes are now decided by what the
+// work needs; the budget's only job is to KNOW what that costs — ChargeToolResults records what came
+// back, OutputAllowance states what the next answer needs — and to say when the window can no longer
+// cover it, which is the signal to compact. Compaction exists precisely to make that room.
+//
+// A tool output the provider has not measured yet is charged the size stamped on the result (a
+// sub-session's exact provider measurement, or the raw handler's own estimate) until the next
+// response reports the true context size and RecordMeasurement folds it in.
 public class ContextBudget
 {
-	// Room kept free for the next response when neither an output limit nor a sub-session cap is set,
-	// so a round of tool outputs can never fill the window and size the next request to zero output.
+	// Output room assumed for a model that declares no ceiling of its own, so a response is always
+	// both bounded and big enough to be worth having.
 	private const int kDefaultOutputBudget = 4096;
 
 	// Config, set at turn start. The model (and therefore the window/limits) can change between turns.
@@ -28,8 +34,8 @@ public class ContextBudget
 	// Authoritative context size from the last provider response.
 	private int _measured;
 
-	// Sum of tool-response reservations appended since that response and not yet folded into a
-	// measurement. Carried into the next request's sizing so input + output stays inside the window.
+	// Sum of the tool outputs appended since that response and not yet folded into a measurement.
+	// Carried into the next request's sizing so input + output stays inside the window.
 	private int _pendingReserve;
 
 	public ContextBudget()
@@ -51,9 +57,12 @@ public class ContextBudget
 		_pendingReserve    = 0;
 	}
 
-	// The input we would send next — the measured conversation plus any not-yet-measured tool
-	// reservations — already leaves no room above the compaction reserve. Including the pending
-	// reservation here is what keeps a tool-heavy round from passing the gate and then overflowing.
+	// The input we would send next — the measured conversation plus any not-yet-measured tool output
+	// — already leaves no room above the compaction reserve. With a 10% reserve this is the 90% mark,
+	// and it stays there: reserving a whole response on top would compact around 65% and throw away
+	// a quarter of every window on turns that were only ever going to answer in a sentence. The rare
+	// turn that genuinely needs more room than is left is caught when it happens, by the truncation
+	// check in LlmService, rather than by making every turn pay for it in advance.
 	public bool IsExhausted()
 	{
 		return _measured + _pendingReserve + _compactionReserve >= _windowSize;
@@ -70,60 +79,70 @@ public class ContextBudget
 		return _measured + _pendingReserve >= _windowSize / 2;
 	}
 
-	// Max output tokens to request next: whatever the window has left after the measured conversation,
-	// any pending tool outputs, AND the compaction reserve, tightened by the model's output ceiling and
-	// the sub-session cap. Subtracting the compaction reserve is what keeps it genuinely free, so input
-	// + output always lands at least that far inside the window. A model with no configured ceiling is
-	// still bounded — a quarter of its window, tightened to the available room — because an unbounded
-	// response lets a long-reasoning model fill the remaining window straight through the compaction
-	// reserve before the provider ever stops it. Never returns null: every request carries a limit.
+	// Max output tokens to request next. The FLOOR is everything standing between the conversation
+	// and the compaction line: whatever room exists before this session compacts anyway is room the
+	// model may use in one answer, so the ceiling is never smaller than that. A configured ceiling
+	// only ever raises it, never lowers it — a model that declares no output limit was being handed
+	// the 4096-token default with 16k of window free, which truncates a large file write for no
+	// reason at all. Models cannot see their own context size, so a truncated write reads to them as
+	// a failed write: they start the file again from the top, the context grows, and the next attempt
+	// is truncated sooner. That loop is the thing this floor exists to prevent.
+	//
+	// The only hard limit above it is physical: providers reject a request whose prompt plus
+	// max_tokens overruns the window, so the result is clamped to what is genuinely left. Never
+	// null: every request carries a limit.
+	//
+	// The floor needs a real measurement to stand on, and the FIRST request of a session has none:
+	// _measured is 0 because only a provider response can set it, so "the room left" reads as the
+	// whole window while the prompt about to be sent is not empty at all. Asking for the window on
+	// top of that prompt is exactly the request providers reject (llama-server counts prompt +
+	// max_tokens against -c), and the rejection reads as overflow, which compacts, which starts a
+	// successor whose measurement is once again 0 — a compaction loop that never advances. Until a
+	// response says how big this conversation is, the model's own allowance is the whole story.
 	public int? MaxCompletionTokens()
 	{
-		long available = _windowSize - _measured - _pendingReserve - _compactionReserve;
-		if (available <= 0)
+		long physical = _windowSize - _measured - _pendingReserve;
+		if (physical <= 0)
 			return 0;
 
-		int? result = null;
-		if (_maxOutputTokens > 0)
-			result = (int)Math.Min(available, _maxOutputTokens);
-		if (_outputCap > 0)
-			result = result.HasValue ? Math.Min(result.Value, _outputCap) : (int)Math.Min(available, _outputCap);
-		if (!result.HasValue)
-			result = (int)Math.Min(available, _windowSize / 4);
+		long want = OutputAllowance;
+		if (_measured > 0)
+		{
+			// Room before the compaction line — the floor, since reaching that line compacts anyway.
+			long toCompactionLine = physical - _compactionReserve;
+			if (want < toCompactionLine)
+				want = toCompactionLine;
+		}
+		if (want > physical)
+			want = physical;
 
-		return result;
+		return (int)want;
 	}
 
-	// Floor for a useful per-tool budget. When honoring the full response reserve would leave the
-	// round below this, the reserve is treated as soft (see below) rather than starving the tools.
-	private const int kMinPerToolBudget = 1024;
-
-	// Allocates the round's tool-response budget out of the room left after the response reserve and
-	// the compaction reserve, split evenly across the calls so the combined outputs always fit. Returns
-	// the per-tool budget (which each tool output is truncated to fit) and records the WHOLE round as
-	// pending. The reservation is held in full — never reduced by an estimate of what a tool actually
-	// returned — until the next provider response measures the real size, so the budget can only ever
-	// over-count outstanding tool output, never under-count it.
-	public int ReserveToolResponses(int count)
+	// The answer size this model asks for on its own account: its configured ceiling (or the default
+	// when it has none), tightened by an explicit caller cap. A PREFERENCE, not a limit — the floor
+	// above overrides it upward whenever the window has more room to give. Nothing here depends on
+	// how full the conversation is, which is what makes it a usable reference point for "was that
+	// response cut short because the window was tight, or because the model simply ran long?".
+	public int OutputAllowance
 	{
-		if (count <= 0)
-			return 0;
+		get
+		{
+			int allowance = _maxOutputTokens > 0 ? _maxOutputTokens : kDefaultOutputBudget;
+			if (_outputCap > 0 && _outputCap < allowance)
+				allowance = _outputCap;
+			return allowance;
+		}
+	}
 
-		int available = Math.Max(0, _windowSize - _measured - _compactionReserve);
-		int round     = available - ResponseReserve;
-
-		// The response reserve is a SOFT claim. A model whose configured output ceiling is large
-		// relative to its window (common for local models: e.g. 30k output on a 32k window) would
-		// otherwise zero the round and every tool — including subagent spawns — would refuse with
-		// "no output budget" while plain chat kept working. Split the remaining space evenly
-		// between the tool round and the next response instead; MaxCompletionTokens sizes the
-		// response from what is genuinely left, so input + output still fits the window.
-		if (round < count * kMinPerToolBudget && available > 0)
-			round = available / 2;
-
-		int perTool      = Math.Max(0, round) / count;
-		_pendingReserve += perTool * count;
-		return perTool;
+	// Records a completed tool round's size against the window. Charging what actually came back can
+	// push the pending total past the window, and that is the honest reading: the conversation really
+	// is over its window, IsExhausted says so, and the turn loop compacts before the next request
+	// rather than pretending the output was smaller than it is.
+	public void ChargeToolResults(int tokens)
+	{
+		if (tokens > 0)
+			_pendingReserve += tokens;
 	}
 
 	// A provider response reported the new context size, which already includes every tool output
@@ -132,20 +151,5 @@ public class ContextBudget
 	{
 		_measured       = exactContextSize;
 		_pendingReserve = 0;
-	}
-
-	// Room held free for the model's next response: its configured output ceiling, tightened by the
-	// sub-session cap, falling back to the default floor when neither is usable.
-	private int ResponseReserve
-	{
-		get
-		{
-			int budget = _maxOutputTokens > 0 ? _maxOutputTokens : 0;
-			if (_outputCap > 0 && (budget == 0 || _outputCap < budget))
-				budget = _outputCap;
-			if (budget == 0 || budget >= _windowSize)
-				budget = kDefaultOutputBudget;
-			return budget;
-		}
 	}
 }
