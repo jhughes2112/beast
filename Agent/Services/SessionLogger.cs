@@ -111,8 +111,10 @@ public class SessionLogger
 		Log(BuildProtocolEntry(modelId, modelName, endpoint, protocol, failureType, statusCode, message, body, ex));
 	}
 
-	// Logs a fallback from one model to another. Called from SessionRunner.
-	public void FallbackTransition(LlmService from, LlmService to, string reason, int failedRetries)
+	// Logs a fallback from one model to another. Called from SessionRunner. `detail` is the error the
+	// model actually died on — a fixed retry budget used to be printed here instead, which claimed five
+	// attempts on a failure that fell back on its first.
+	public void FallbackTransition(LlmService from, LlmService to, string reason, string detail)
 	{
 		StringBuilder sb = new StringBuilder();
 		sb.AppendLine("============================================================");
@@ -122,7 +124,7 @@ public class SessionLogger
 		sb.AppendLine($"from:           {from.Model.ConfigId} ({from.Model.Config.Name})");
 		sb.AppendLine($"to:             {to.Model.ConfigId} ({to.Model.Config.Name})");
 		sb.AppendLine($"reason:         {reason}");
-		sb.AppendLine($"failed_retries: {failedRetries}");
+		sb.AppendLine($"detail:         {detail}");
 		sb.AppendLine();
 
 		Log(sb.ToString());

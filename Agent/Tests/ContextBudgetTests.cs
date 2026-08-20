@@ -41,26 +41,28 @@ public static class ContextBudgetTests
 
 	private static void TestMaxCompletionTokens(TestContext ctx)
 	{
-		// The floor: everything up to the compaction line is the model's to use in one answer. With a
-		// 32768 window, a 3276 reserve and 1000 measured, that is 28492 — and the model's own 8192
+		// The floor: everything up to the compaction line is the model's to use in one answer, less
+		// the overflow margin that is withheld from every request. With a 32768 window, a 3276
+		// reserve, 1000 measured and a 1024 margin, that is 27468 — and the model's own 8192
 		// preference does NOT lower it. A large file write gets the whole window it has coming.
 		ContextBudget filling = new ContextBudget();
 		filling.Configure(32768, 8192, 3276, 0, 1000);
-		ctx.AssertEqual<int?>(28492, filling.MaxCompletionTokens(), "MaxCompletionTokens: never less than the room before the compaction line");
+		ctx.AssertEqual<int?>(27468, filling.MaxCompletionTokens(), "MaxCompletionTokens: never less than the room before the compaction line");
 		ctx.AssertEqual(8192, filling.OutputAllowance, "OutputAllowance: the model's own preference, unchanged");
 
 		// The default ceiling is the case that actually bit: a model declaring no output limit was
 		// handed 4096 with most of a 32k window free, truncating large writes for no reason.
+		// The margin here is a tenth of the 13000 measured, so the free room is 15192.
 		ContextBudget noCeiling = new ContextBudget();
 		noCeiling.Configure(32768, 0, 3276, 0, 13000);
-		ctx.AssertEqual<int?>(16492, noCeiling.MaxCompletionTokens(), "MaxCompletionTokens: an unconfigured model gets the free window, not the 4096 default");
+		ctx.AssertEqual<int?>(15192, noCeiling.MaxCompletionTokens(), "MaxCompletionTokens: an unconfigured model gets the free window, not the 4096 default");
 		ctx.Assert(noCeiling.MaxCompletionTokens() > 4096, "MaxCompletionTokens: the default never caps below the free room");
 
 		// Close to the line, the floor shrinks with it and the model's own ceiling takes over —
 		// still clamped to what physically remains, because the provider rejects anything more.
 		ContextBudget nearFull = new ContextBudget();
 		nearFull.Configure(32768, 8192, 3276, 0, 29000);
-		ctx.AssertEqual<int?>(3768, nearFull.MaxCompletionTokens(), "MaxCompletionTokens: clamped to the physical remainder near the top of the window");
+		ctx.AssertEqual<int?>(868, nearFull.MaxCompletionTokens(), "MaxCompletionTokens: clamped to the physical remainder near the top of the window");
 		ctx.Assert(nearFull.MaxCompletionTokens() < nearFull.OutputAllowance, "MaxCompletionTokens: the window squeezes the ask below the model's own preference");
 
 		// An explicit caller cap only lowers the model's own preference; it cannot lower the floor,
@@ -81,7 +83,25 @@ public static class ContextBudgetTests
 
 		// The floor switches on as soon as a response says how big the conversation really is.
 		unmeasured.RecordMeasurement(1000);
-		ctx.AssertEqual<int?>(28492, unmeasured.MaxCompletionTokens(), "MaxCompletionTokens: the floor applies once the size is known");
+		ctx.AssertEqual<int?>(27468, unmeasured.MaxCompletionTokens(), "MaxCompletionTokens: the floor applies once the size is known");
+
+		// A request never claims the window's last token, however the numbers arrive. Catalogs report
+		// maxOutputTokens EQUAL to the context window for some models (OpenRouter does it for free
+		// ones), which made the model's own "preference" the entire window, so the ask was always
+		// clamped to whatever we thought was left — exactly the window, minus our own count of a
+		// prompt the provider counts differently. The provider rejected the sum as an overflow, the
+		// rejection compacted, the successor measured smaller, and the next ask was BIGGER: 22
+		// successor sessions in a minute, the last asking for all 512000 tokens on a 5500-token
+		// prompt. The margin is what keeps the sum inside the window on the very first request.
+		ContextBudget catalogLies = new ContextBudget();
+		catalogLies.Configure(512000, 512000, 7500, 0, 0);
+		int? asked = catalogLies.MaxCompletionTokens();
+		ctx.Assert(       asked < 512000, "MaxCompletionTokens: never asks for the entire window");
+		ctx.Assert(asked + 5496 < 512000, "MaxCompletionTokens: an unmeasured prompt still fits alongside the ask");
+
+		// And it stays fitting once a measurement lands that undercounts what the provider sees.
+		catalogLies.RecordMeasurement(5170);
+		ctx.Assert(catalogLies.MaxCompletionTokens() + 5496 < 512000, "MaxCompletionTokens: survives our count disagreeing with the provider's");
 
 		// A window with nothing left asks for nothing, rather than a negative number.
 		ContextBudget spent = new ContextBudget();

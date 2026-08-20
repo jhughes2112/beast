@@ -101,7 +101,7 @@ public class ContextBudget
 	// response says how big this conversation is, the model's own allowance is the whole story.
 	public int? MaxCompletionTokens()
 	{
-		long physical = _windowSize - _measured - _pendingReserve;
+		long physical = _windowSize - _measured - _pendingReserve - OverflowMargin();
 		if (physical <= 0)
 			return 0;
 
@@ -117,6 +117,30 @@ public class ContextBudget
 			want = physical;
 
 		return (int)want;
+	}
+
+	// Room withheld from every completion request so one can never claim the window's last tokens.
+	//
+	// _measured is OUR count of the prompt — from the previous response, from a different provider's
+	// tokenizer after a fallback, or absent entirely on a session nothing has sized yet. The provider
+	// counts the REAL prompt against the same window it counts max_tokens against, so asking for
+	// exactly "everything left by our reckoning" overruns by however far the two counts disagree,
+	// which on an unmeasured session is the entire prompt. The provider reports that as a context
+	// overflow; the caller compacts; the successor measures SMALLER, so the next request asks for
+	// MORE output and overruns by more. That loop does not merely fail to converge, it diverges —
+	// 22 successor sessions in one minute, the last of them measuring zero and asking for the whole
+	// 512000-token window on top of a 5500-token prompt.
+	//
+	// So the margin scales with what we do not know. With a measurement in hand only the tokenizers
+	// can disagree, and a tenth of the prompt covers that generously; with no measurement at all the
+	// prompt could be anything, so a quarter of the window is held back until a response says
+	// otherwise. Either way the request fits, which is the only thing that breaks the loop.
+	private long OverflowMargin()
+	{
+		if (_measured > 0)
+			return Math.Max(1024, _measured / 10);
+
+		return _windowSize / 4;
 	}
 
 	// The answer size this model asks for on its own account: its configured ceiling (or the default

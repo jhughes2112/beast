@@ -154,9 +154,19 @@ public class SessionHandler
 				// window, so no conversation is too large for it — reaching the failure path means
 				// there was no usable model to compact WITH, or that compaction already ran and the
 				// result STILL does not fit. Either way only a human can resolve it.
-				if (contextFull && !await CompactAsync(role, true, registry, roleService, transport, orchestrator, ct))
+				// A provider can report overflow on a conversation that occupies almost none of its
+				// window — a request sized wrong, or a configured window/output ceiling that does not
+				// match what the provider actually allows. Compaction has nothing to remove there, and
+				// running it anyway is worse than useless: the successor measures SMALLER, so the next
+				// request asks for MORE output and is rejected again. That spun out 22 successor
+				// sessions in a minute, each one a real API call and a session file. Compaction is only
+				// an answer when there is something to compact.
+				bool compactable = _activeSession.Budget.OverflowPlausible();
+				if (contextFull && (!compactable || !await CompactAsync(role, true, registry, roleService, transport, orchestrator, ct)))
 				{
-					transport.Alert(_activeSession.Id, "The context window is full and compaction could not fix it — either no usable model was available to summarize with, or the conversation still does not fit after compacting. Use /model to switch to a model with a larger window, or /compact to retry.");
+					transport.Alert(_activeSession.Id, compactable
+						? "The context window is full and compaction could not fix it — either no usable model was available to summarize with, or the conversation still does not fit after compacting. Use /model to switch to a model with a larger window, or /compact to retry."
+						: $"Model '{_service?.Model.Config.Name ?? _activeSession.Model}' rejected the request as too large, but this conversation fills almost none of its window — compaction cannot fix that. The model's contextWindow or maxOutputTokens in settings.json most likely does not match what the provider really allows. Correct it, then /reload or /model.");
 					_service = null;
 					if (_lastFailure == null)
 						_lastFailure = "the context window filled and compaction could not run";
@@ -469,7 +479,7 @@ public class SessionHandler
 		{
 			_activeSession.QueryLog.FallbackTransition(service, fallback,
 				rateLimited ? "Rate limited after retries" : "Model failed",
-				rateLimited ? 10 : 5);
+				string.IsNullOrEmpty(result.ErrorMessage) ? "(no error message)" : result.ErrorMessage);
 			_service = fallback;
 			_activeSession.UpdateModel(fallback.Model);
 			_activeSession.SendStats();

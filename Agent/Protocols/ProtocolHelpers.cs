@@ -9,9 +9,16 @@ static class ProtocolHelpers
 	// Single shared client. Authorization is set per-request on HttpRequestMessage so
 	// nothing on the client itself varies between models or calls.
 	// MaxResponseContentBufferSize caps buffered body size to guard against unbounded malformed responses.
+	// HttpClient.Timeout is a WHOLE-REQUEST wall clock, and that is the wrong measurement for an LLM
+	// call: a local llama.cpp spending four minutes on prompt processing before the first token is
+	// slow, not broken, and killing it there also leaves the server still working on the abandoned
+	// request — so the immediate retry lands on a busy slot and is rejected, which used to read as a
+	// permanent client error and mark a perfectly healthy model down. So the client's own timeout is
+	// disabled and every request carries its own deadline instead (CreateRequestTimeout below), which
+	// the streaming readers re-arm on each chunk. That makes the deadline a measure of SILENCE.
 	private static readonly HttpClient SharedClient = new HttpClient
 	{
-		Timeout                      = TimeSpan.FromMinutes(5),
+		Timeout                      = Timeout.InfiniteTimeSpan,
 		MaxResponseContentBufferSize = 2 * 1024 * 1024 // 2 MB
 	};
 
@@ -20,19 +27,36 @@ static class ProtocolHelpers
 		return SharedClient;
 	}
 
+	// The per-request deadline for this model, in seconds. Configurable because "how long may this
+	// endpoint stay silent" is a property of the machine behind it, not of the protocol.
+	public static int RequestTimeoutSeconds(LlmModel model)
+	{
+		return model.Config.RequestTimeoutSeconds > 0 ? model.Config.RequestTimeoutSeconds : 300;
+	}
+
+	// A linked source that trips on the caller's cancel OR on the request deadline. Streaming readers
+	// push the deadline out again with CancelAfter every time bytes arrive, so a turn that keeps
+	// producing tokens runs as long as it needs to and only a genuinely mute connection is cut.
+	public static CancellationTokenSource CreateRequestTimeout(LlmModel model, CancellationToken cancellationToken)
+	{
+		CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		cts.CancelAfter(TimeSpan.FromSeconds(RequestTimeoutSeconds(model)));
+		return cts;
+	}
+
 	// Classifies an OperationCanceledException raised by an HTTP call. When the caller's own token is NOT
-	// the one that tripped, the cancel came from the HttpClient timeout elapsing — the model was too slow
-	// to start responding, or it was queued behind other requests on a busy local endpoint. Returns a
+	// the one that tripped, the cancel came from the request deadline elapsing — the endpoint went silent
+	// past the timeout, or it was queued behind other requests on a busy local endpoint. Returns a
 	// Transient result that says so explicitly (and names the timeout) so the loop retries instead of the
 	// turn dying with an opaque "cancelled" message. Returns null when the caller genuinely cancelled, in
 	// which case the protocol must rethrow so the cancel propagates as a real interrupt.
-	public static ProtocolResult? TimeoutOrRethrow(CancellationToken cancellationToken, string modelName)
+	public static ProtocolResult? TimeoutOrRethrow(CancellationToken cancellationToken, LlmModel model)
 	{
 		if (cancellationToken.IsCancellationRequested)
 			return null;
 
-		int seconds = (int)Math.Round(SharedClient.Timeout.TotalSeconds);
-		return ProtocolResult.Transient($"Request to {modelName} timed out: the HTTP client timeout of {seconds}s elapsed before the model responded (too slow, or queued behind other requests). Retrying.", null);
+		int seconds = RequestTimeoutSeconds(model);
+		return ProtocolResult.Transient($"Request to {model.Config.Name} timed out: the endpoint sent nothing for {seconds}s (too slow, or queued behind other requests). Retrying.", null);
 	}
 
 	public static bool IsRateLimited(HttpResponseMessage response, string responseBody)
@@ -231,11 +255,20 @@ static class ProtocolHelpers
 	public static ProtocolResult Failure(string protocol, int statusCode, string responseBody, SessionLogger logger, string modelName, string endpoint, string
 modelId)
 	{
+		// A 4xx carrying NO body at all is not evidence that the request was bad — it is what a busy
+		// single-slot local server emits while it is still unwinding a previous (abandoned) request.
+		// Treating it as permanent marked a healthy llama.cpp down on the first collision and pushed
+		// the session onto paid cloud models for the rest of its life. There is nothing to diagnose in
+		// an empty body, so retry it; the transient budget runs out soon enough if it really is broken.
+		if (string.IsNullOrEmpty(responseBody))
+		{
+			string emptyMessage = $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}";
+			logger.ProtocolFailure(modelId, modelName, endpoint, protocol, "Transient", statusCode, emptyMessage, responseBody, null);
+			return ProtocolResult.Transient(emptyMessage, null);
+		}
+
 		string failureType = (statusCode == 401 || statusCode == 403) ? "AuthFailure" : "ClientError";
-		string message     = string.IsNullOrEmpty(responseBody)
-			? $"HTTP {statusCode} with empty response body. Endpoint: {endpoint}"
-			: responseBody;
-		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, message, responseBody, null);
+		logger.ProtocolFailure(modelId, modelName, endpoint, protocol, failureType, statusCode, responseBody, responseBody, null);
 		return ProtocolResult.FailedHttp($"HTTP {statusCode}: {responseBody}", statusCode);
 	}
 

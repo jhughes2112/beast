@@ -242,12 +242,15 @@ public class ProtocolAnthropic
 				body["stream"]  = true;
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
+				// Fresh deadline per attempt; ReadStreamAsync re-arms it as events arrive.
+				using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+
 				using HttpRequestMessage request   = BuildRequest(model.Endpoint, body, model, extraHeaders);
-				using HttpResponseMessage response = await ProtocolHelpers.GetClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+				using HttpResponseMessage response = await ProtocolHelpers.GetClient().SendAsync(request, HttpCompletionOption.ResponseHeadersRead, requestCts.Token);
 
 				if (!response.IsSuccessStatusCode)
 				{
-					string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+					string responseBody = await response.Content.ReadAsStringAsync(requestCts.Token);
 					int    statusCode   = (int)response.StatusCode;
 
 					if (statusCode == 429 || ProtocolHelpers.IsRateLimited(response, responseBody))
@@ -289,12 +292,12 @@ public class ProtocolAnthropic
 					return ProtocolHelpers.TransientFailure("Anthropic", statusCode, responseBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, response);
 				}
 
-				return await ReadStreamAsync(response, model, bundle, onProgress, logger, cancellationToken);
+				return await ReadStreamAsync(response, model, bundle, onProgress, logger, requestCts);
 			}
 		}
 		catch (OperationCanceledException)
 		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return timeout;
 			throw;
@@ -334,8 +337,13 @@ public class ProtocolAnthropic
 
 	// Reads the SSE stream, assembling the assistant message block-by-block while streaming text
 	// and thinking deltas to the client, then commits the turn.
-	private async Task<ProtocolResult> ReadStreamAsync(HttpResponseMessage response, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationToken cancellationToken)
+	// Takes the request's own deadline source rather than a bare token: every event that arrives pushes
+	// the deadline out again, so a long answer streams for as long as it keeps streaming.
+	private async Task<ProtocolResult> ReadStreamAsync(HttpResponseMessage response, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationTokenSource requestCts)
 	{
+		CancellationToken cancellationToken = requestCts.Token;
+		TimeSpan          idleTimeout       = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
+
 		SortedDictionary<int, BlockBuilder> blocks = new SortedDictionary<int, BlockBuilder>();
 		string? openStreamTag       = null;
 		int     freshInputTokens    = 0;
@@ -357,6 +365,9 @@ public class ProtocolAnthropic
 				string? line = await reader.ReadLineAsync(cancellationToken);
 				if (line == null)
 					break;
+
+				requestCts.CancelAfter(idleTimeout);
+
 				if (!line.StartsWith("data: ", StringComparison.Ordinal))
 					continue;
 
@@ -628,13 +639,14 @@ public class ProtocolAnthropic
 		string              responseBody;
 		try
 		{
-			using HttpRequestMessage req = BuildRequest(countEndpoint, body, model, extraHeaders);
-			httpResponse                 = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-			responseBody                 = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+			using HttpRequestMessage req             = BuildRequest(countEndpoint, body, model, extraHeaders);
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, requestCts.Token);
+			responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 		}
 		catch (OperationCanceledException)
 		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return TracerResult.Failed(timeout.ErrorMessage);
 			throw;
@@ -690,13 +702,14 @@ public class ProtocolAnthropic
 		string              responseBody;
 		try
 		{
-			using HttpRequestMessage req = BuildRequest(model.Endpoint, body, model, extraHeaders);
-			httpResponse                 = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-			responseBody                 = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+			using HttpRequestMessage req             = BuildRequest(model.Endpoint, body, model, extraHeaders);
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, requestCts.Token);
+			responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 		}
 		catch (OperationCanceledException)
 		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return TracerResult.Failed(timeout.ErrorMessage);
 			throw;

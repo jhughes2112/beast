@@ -379,12 +379,15 @@ public class ProtocolChatCompletions
 				string              responseBody;
 				try
 				{
-					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, cancellationToken);
-					responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+					// Non-streaming has no chunks to re-arm on, so this deadline really is the whole
+					// request — one more reason streaming is worth keeping alive on a slow endpoint.
+					using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, requestCts.Token);
+					responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 				}
 				catch (OperationCanceledException)
 				{
-					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 					if (timeout != null)
 						return timeout;
 					throw;
@@ -524,7 +527,7 @@ httpResponse);
 			// TimeoutOrRethrow sorts the two cases the exception covers: token signalled means the
 			// human cancelled and it propagates, token clear means the HTTP client timed out, which
 			// is genuinely transient and retries with a message that says so.
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return logger.ProtocolFailure(timeout, model, DetectedProtocol.ChatCompletions, "Timeout", null, timeout.ErrorMessage, null, null);
 			throw;
@@ -744,14 +747,18 @@ httpResponse);
 			req.Headers.TryAddWithoutValidation(name, value);
 		}
 
+		// The streaming reader pushes this deadline out on every chunk, so it bounds silence only.
+		using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+		TimeSpan idleTimeout                     = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
+
 		HttpResponseMessage httpResponse;
 		try
 		{
-			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, requestCts.Token);
 		}
 		catch (OperationCanceledException)
 		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return timeout;
 			throw;
@@ -772,11 +779,24 @@ httpResponse);
 
 		if (!httpResponse.IsSuccessStatusCode)
 		{
-			string errorBody       = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			string errorBody       = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 			int    statusCode      = (int)httpResponse.StatusCode;
 			string errorLogMessage = string.IsNullOrEmpty(errorBody)
 				? $"HTTP {statusCode} with empty response body. Endpoint: {url}"
 				: errorBody;
+
+			// An empty body says nothing about streaming support — a busy single-slot local server
+			// rejects whatever arrives while it is still unwinding the last request, and it is the
+			// streaming path that happens to arrive first. Latching _streamingSupported off on that
+			// permanently blinded the session to incremental output for the rest of the run, which is
+			// exactly what the silence deadline needs to see. Retry it as a transient instead.
+			if (statusCode >= 400 && statusCode < 500 && statusCode != 429 && string.IsNullOrEmpty(errorBody))
+			{
+				logger.ProtocolFailure(
+					model, DetectedProtocol.ChatCompletions, "Transient",
+					statusCode, errorLogMessage, errorBody, null);
+				return ProtocolResult.Transient(errorLogMessage, null);
+			}
 
 			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
 			// the provider rejects streaming for this model, so we disable it and fall through to
@@ -828,14 +848,17 @@ httpResponse);
 
 		try
 		{
-			using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
+			using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(requestCts.Token))
 			using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
 			{
 				while (true)
 				{
-					string? line = await reader.ReadLineAsync(cancellationToken);
+					string? line = await reader.ReadLineAsync(requestCts.Token);
 					if (line == null)
 						break;
+
+					requestCts.CancelAfter(idleTimeout);
+
 					if (!line.StartsWith("data: "))
 						continue;
 
@@ -978,6 +1001,11 @@ httpResponse);
 		}
 		catch (OperationCanceledException)
 		{
+			// A stream that went silent past the deadline is a timeout, not a user cancel: report it
+			// as one so it retries rather than unwinding the turn as an interrupt.
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
+			if (timeout != null)
+				return timeout;
 			throw;
 		}
 		catch (Exception ex)
@@ -1475,12 +1503,13 @@ httpResponse);
 			string              responseBody;
 			try
 			{
-				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+				using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, requestCts.Token);
+				responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 			}
 			catch (OperationCanceledException)
 			{
-				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 				if (timeout != null)
 					return TracerResult.Failed(timeout.ErrorMessage);
 				throw;

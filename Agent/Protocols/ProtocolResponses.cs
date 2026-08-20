@@ -257,12 +257,14 @@ public class ProtocolResponses
 				string              responseBody;
 				try
 				{
-					httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
-					responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+					// Non-streaming has no chunks to re-arm on, so this deadline is the whole request.
+					using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+					httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, requestCts.Token);
+					responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 				}
 				catch (OperationCanceledException)
 				{
-					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 					if (timeout != null)
 						return timeout;
 					throw;
@@ -512,14 +514,18 @@ public class ProtocolResponses
 			req.Headers.TryAddWithoutValidation(name, value);
 		}
 
+		// The streaming reader pushes this deadline out on every event, so it bounds silence only.
+		using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+		TimeSpan idleTimeout                     = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
+
 		HttpResponseMessage httpResponse;
 		try
 		{
-			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, HttpCompletionOption.ResponseHeadersRead, requestCts.Token);
 		}
 		catch (OperationCanceledException)
 		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return timeout;
 			throw;
@@ -539,7 +545,7 @@ public class ProtocolResponses
 
 		if (!httpResponse.IsSuccessStatusCode)
 		{
-			string errorBody  = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			string errorBody  = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 			int    statusCode = (int)httpResponse.StatusCode;
 
 			// Checked before the streaming-support verdict below: a request refused for asking after
@@ -550,6 +556,18 @@ public class ProtocolResponses
 			{
 				_retryAfterRefusal = true;
 				return null;
+			}
+
+			// An empty body says nothing about streaming support — it is what a busy server emits while
+			// it unwinds a previous request, and latching streaming off over it costs the session the
+			// incremental output the silence deadline is measured against. Retry it as a transient.
+			if (statusCode >= 400 && statusCode < 500 && statusCode != 429 && string.IsNullOrEmpty(errorBody))
+			{
+				string emptyMessage = $"HTTP {statusCode} with empty response body. Endpoint: {model.Endpoint}";
+				logger.ProtocolFailure(
+					model, DetectedProtocol.Responses, "Transient",
+					statusCode, emptyMessage, errorBody, null);
+				return ProtocolResult.Transient(emptyMessage, null);
 			}
 
 			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
@@ -588,14 +606,17 @@ public class ProtocolResponses
 
 		try
 		{
-			using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(cancellationToken))
+			using (Stream responseStream = await httpResponse.Content.ReadAsStreamAsync(requestCts.Token))
 			using (StreamReader reader = new StreamReader(responseStream, Encoding.UTF8))
 			{
 				while (true)
 				{
-					string? line = await reader.ReadLineAsync(cancellationToken);
+					string? line = await reader.ReadLineAsync(requestCts.Token);
 					if (line == null)
 						break;
+
+					requestCts.CancelAfter(idleTimeout);
+
 					if (!line.StartsWith("data: "))
 						continue;
 
@@ -688,6 +709,10 @@ public class ProtocolResponses
 		}
 		catch (OperationCanceledException)
 		{
+			// A stream that went silent past the deadline is a timeout, not a user cancel.
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
+			if (timeout != null)
+				return timeout;
 			throw;
 		}
 		catch (Exception ex)
@@ -909,12 +934,13 @@ public class ProtocolResponses
 		string              responseBody;
 		try
 		{
-			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
-			responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+			using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+			httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, requestCts.Token);
+			responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 		}
 		catch (OperationCanceledException)
 		{
-			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 				return TracerResult.Failed(timeout.ErrorMessage);
 			throw;
@@ -1054,12 +1080,13 @@ public class ProtocolResponses
 			string              responseBody;
 			try
 			{
-				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
-				responseBody = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
+				using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
+				httpResponse = await ProtocolHelpers.GetClient().SendAsync(req, requestCts.Token);
+				responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
 			}
 			catch (OperationCanceledException)
 			{
-				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model.Config.Name);
+				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 				if (timeout != null)
 					return TracerResult.Failed(timeout.ErrorMessage);
 				throw;

@@ -161,6 +161,13 @@ public class ModelConfig
 	[JsonPropertyName("retainReasoning")]
 	public bool RetainReasoning { get; set; } = false;
 
+	// How long a single request to this model may stay SILENT before it is abandoned and retried.
+	// Streaming readers push this deadline out again on every chunk that arrives, so it never bounds
+	// the length of a turn — only a mute connection. Raise it for a machine whose prompt processing
+	// runs for minutes before the first token appears (a big quantized model on a slow local box).
+	[JsonPropertyName("requestTimeoutSeconds")]
+	public int RequestTimeoutSeconds { get; set; } = 300;
+
 	[JsonPropertyName("cost")]
 	public CostConfig Cost { get; set; } = new();
 
