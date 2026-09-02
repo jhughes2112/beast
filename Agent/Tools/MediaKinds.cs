@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 
 // What a file is, for the purpose of getting it in front of a model.
@@ -68,6 +69,26 @@ public static class MediaKinds
 			return (MediaKind.Text, string.Empty);
 
 		return (MediaKind.Unknown, string.Empty);
+	}
+
+	// Reads a media file referenced by a tool result into the wire form. Protocols call this when
+	// they build the message, live or on rehydrate, so the bytes are whatever is on disk at that
+	// moment. Null when the file is gone, which the protocol reports as a text note.
+	public static MediaAttachment? LoadAttachment(string path, string mimeType)
+	{
+		MediaAttachment? attachment = null;
+		if (File.Exists(path))
+		{
+			byte[] bytes = File.ReadAllBytes(path);
+			attachment   = new MediaAttachment(mimeType, Convert.ToBase64String(bytes));
+		}
+		return attachment;
+	}
+
+	// The note a protocol emits in place of media it could not put on the wire.
+	public static string MissingNote(string path)
+	{
+		return $"[The media file {path} was attached here but is no longer on disk.]";
 	}
 
 	// The ModelConfig.Input modality a kind requires, empty when no model capability is involved.

@@ -39,13 +39,26 @@ public class ToolResult
 	// fixed raw-output ceiling. Always a real positive count — never a zero placeholder.
 	public int MeasuredOutputTokens { get; }
 
+	// A media file the result carries for the model to see natively, referenced by path rather
+	// than copied: protocols read the bytes when they build the wire message. Null for the
+	// ordinary text-only result.
+	public string? MediaPath     { get; }
+	public string? MediaMimeType { get; }
+
 	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens)
+		: this(id, stdOut, stdErr, exitCode, measuredOutputTokens, null, null)
+	{
+	}
+
+	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens, string? mediaPath, string? mediaMimeType)
 	{
 		Id                   = id;
 		StdOut               = stdOut;
 		StdErr               = stdErr;
 		ExitCode             = exitCode;
 		MeasuredOutputTokens = measuredOutputTokens;
+		MediaPath            = mediaPath;
+		MediaMimeType        = mediaMimeType;
 	}
 }
 

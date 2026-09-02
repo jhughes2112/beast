@@ -506,6 +506,18 @@ public class Session
 	// text with no media, and the orphaned attachment rode along with the NEXT message instead.
 	private readonly List<string> _pendingAttachments = new List<string>();
 
+	// Media files inspect_media has already reported as large to this conversation. Lives here
+	// rather than on the tool because the toolset is rebuilt every turn; the model's consent to
+	// send a big file must outlast that.
+	private readonly HashSet<string> _largeMediaSeen = new HashSet<string>(StringComparer.Ordinal);
+
+	// True the first time a path is reported, false once the model has already been told.
+	public bool MarkLargeMediaSeen(string fullPath)
+	{
+		lock (_largeMediaSeen)
+			return _largeMediaSeen.Add(fullPath);
+	}
+
 	public bool HasPendingAttachments
 	{
 		get
@@ -578,10 +590,11 @@ public class Session
 			}
 			else if (msg is ToolResultMessage tr)
 			{
+				ToolResult replayed = new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0, tr.MediaPath, tr.MediaMimeType);
 				if (toClient)
-					_bundle.OnToolResult(new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0));
+					_bundle.OnToolResult(replayed);
 				else
-					_bundle.Canonical.OnToolResult(new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0));
+					_bundle.Canonical.OnToolResult(replayed);
 			}
 		}
 	}

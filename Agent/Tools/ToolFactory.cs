@@ -191,48 +191,41 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("inspect_media") && registry != null && roleService != null && session != null)
+		// The native path needs only the session's own model, so the tool is exposed whenever the
+		// role names it. The MediaReader role serves the subagent path alone; when it is missing,
+		// that path reports so at call time rather than the tool silently vanishing.
+		if (role.Tools.Contains("inspect_media") && registry != null && session != null)
 		{
-			Role? mediaRole = roleService.GetRole("MediaReader");
-			if (mediaRole != null)
+			Role? mediaRole = roleService?.GetRole("MediaReader");
+
+			// Older settings.json files predate this tool or its use_subagent flag; fall back to
+			// the in-code config so the tool exists without forcing a settings regeneration.
+			if (!settings.Tools.TryGetValue("inspect_media", out ToolConfig? mediaTc) || !mediaTc.Parameters.ContainsKey("use_subagent"))
+				mediaTc = SettingsService.DefaultToolConfig("inspect_media");
+			MediaInspector inspector = new MediaInspector();
+			tools.Add(new Tool
 			{
-				// Older settings.json files predate this tool; fall back to the in-code config so
-				// the tool exists without forcing a settings regeneration.
-				if (!settings.Tools.TryGetValue("inspect_media", out ToolConfig? mediaTc))
+				Definition = new ToolDefinition
 				{
-					mediaTc = new ToolConfig
+					Type     = "function",
+					Function = new FunctionDefinition
 					{
-						Description = "Interpret an image or audio file with a media-capable model and get back only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. CWD is the repo root at /workspace/.",
-						Parameters  = new Dictionary<string, string>
-						{
-							{ "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac)." },
-							{ "goal", "Exactly what to extract or answer from the media; only this is returned." }
-						}
-					};
-				}
-				MediaInspector inspector = new MediaInspector();
-				tools.Add(new Tool
-				{
-					Definition = new ToolDefinition
-					{
-						Type     = "function",
-						Function = new FunctionDefinition
-						{
-							Name        = "inspect_media",
-							Description = mediaTc.Description,
-							Parameters  = Params(
-								Req("file_path", "string", mediaTc.Parameters["file_path"]),
-								Req("goal",      "string",      mediaTc.Parameters["goal"]))
-						}
-					},
-					Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
-					{
-						string filePath = Str(args, "file_path");
-						string goal     = Str(args, "goal");
-						return await inspector.InspectAsync(toolCallId, filePath, goal, mediaRole, registry, session, transport, maxOutputTokens, ct);
+						Name        = "inspect_media",
+						Description = mediaTc.Description,
+						Parameters  = Params(
+							Req("file_path",    "string",     mediaTc.Parameters["file_path"]),
+							Opt("goal",         "string",          mediaTc.Parameters["goal"]),
+							Opt("use_subagent", "boolean", mediaTc.Parameters["use_subagent"]))
 					}
-				});
-			}
+				},
+				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+				{
+					string filePath    = Str(args, "file_path");
+					string goal        = Str(args, "goal");
+					bool   useSubagent = BoolOpt(args, "use_subagent") ?? false;
+					return await inspector.InspectAsync(toolCallId, filePath, goal, useSubagent, mediaRole, registry, session, transport, maxOutputTokens, ct);
+				}
+			});
 		}
 
 		// Web search is available when at least one configured provider resolved an API key from a

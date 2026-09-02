@@ -58,6 +58,6 @@ public class CanonicalConversation
 		string content = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
 			content = content + "\nstderr: " + result.StdErr;
-		_messages.Add(new ToolResultMessage(result.Id, content));
+		_messages.Add(new ToolResultMessage(result.Id, content, result.MediaPath, result.MediaMimeType));
 	}
 }

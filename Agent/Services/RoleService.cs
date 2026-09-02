@@ -541,7 +541,7 @@ public class RoleService
 		const string endOfTurnPrompt = "Are you finished? To complete the review, use the finish_review tool and report your results.";
 		// finish_review is the terminator, created in code and added by SubagentRunner; it has no registry
 		// entry, so it is listed here only as the marker that selects this role's terminator.
-		List<string> tools = new List<string> { "read_file", "ls", "finish_review", "readonly_bash" };
+		List<string> tools = new List<string> { "read_file", "ls", "finish_review", "readonly_bash", "inspect_media" };
 		return new Role("Reviewer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
 	}
 
@@ -594,10 +594,11 @@ public class RoleService
 		return new Role("WebFetch", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, string.Empty, endOfTurnPrompt);
 	}
 
-	// Used internally by the inspect_media tool (MediaInspector.InspectAsync). It receives a goal
-	// plus the media file as a real attachment and answers with only what the goal asks for. The
-	// tool picks the first model in this role's list whose declared input modalities cover the
-	// file (declarations come from /config discovery), so this role's list can safely be '*'.
+	// Used internally by the inspect_media tool (MediaInspector.InspectAsync) when the calling model
+	// cannot take the file itself or asked to delegate. It receives a goal plus the media file as a
+	// real attachment and answers with only what the goal asks for. The tool picks the first model
+	// in this role's list whose declared input modalities cover the file (declarations come from
+	// /config discovery), so this role's list can safely be '*'.
 	private static Role MediaReaderRole()
 	{
 		const string description  = "Interprets an attached image or audio file against a goal";

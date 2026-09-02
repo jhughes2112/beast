@@ -261,6 +261,13 @@ public class SettingsService
 		}
 	}
 
+	// The in-code definition of one tool, for callers whose settings file predates a tool or one of
+	// its parameters and would otherwise expose a stale schema.
+	public static ToolConfig DefaultToolConfig(string name)
+	{
+		return CreateDefaultHomeSettings().Tools[name];
+	}
+
 	private static BeastSettings CreateDefaultHomeSettings()
 	{
 		return new BeastSettings
@@ -327,10 +334,11 @@ public class SettingsService
 				  },
 			  } },
 				{ "inspect_media", new ToolConfig() {
-				  Description = "Interpret an image or audio file with a media-capable model and get back only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. CWD is the repo root at /workspace/.",
+				  Description = "Look at an image, audio, or video file. If you accept that kind of input, the file itself is attached to the result so you can examine it directly. Otherwise, or when use_subagent is set, a media-capable subagent reads it and returns only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. A large file is reported by size the first time so you can resize or clip it with ffmpeg; calling again on the same path sends it as-is. CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
-					  { "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac)." },
-					  { "goal", "Exactly what to extract or answer from the media; only this is returned." },
+					  { "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac, mp4, mov, webm)." },
+					  { "goal", "Exactly what to extract or answer from the media. Required when a subagent reads it; ignored when the file is attached for you directly." },
+					  { "use_subagent", "Set true to have a subagent read the file and return text instead of attaching it to your context: right for long recordings where you only want a transcript, or many files where only a summary of each is needed." },
 				  },
 			  } },
 				{ "fetch_url", new ToolConfig() {

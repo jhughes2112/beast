@@ -137,7 +137,13 @@ public static class MechanicalCompaction
 				}
 				else if (msg is ToolResultMessage tr)
 				{
-					if (tr.Content.Length >= kMinResultChars && tr.Content.Length >= threshold && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? call))
+					// A result carrying media is elided on size of the media, not its one-line text:
+					// the file is what fills the window, and the note keeps the path so the model
+					// can ask for it again.
+					bool bulky = tr.Content.Length >= kMinResultChars && tr.Content.Length >= threshold;
+					if (tr.MediaPath != null && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? mediaCall))
+						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, $"[elided media {tr.MediaPath}: {mediaCall!.Name}({ArgSummary(mediaCall.ArgumentsJson)})]"));
+					else if (bulky && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? call))
 						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, ResultNote(call!, tr.Content.Length)));
 					else
 						rebuilt.Add(tr);

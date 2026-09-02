@@ -26,6 +26,7 @@ public class Program
 			MechanicalCompactionTests.Test(ctx);
 			ModelCatalogTests.Test(ctx);
 			ProtocolSwitchTests.Test(ctx);
+			MediaToolResultTests.Test(ctx);
 			WebToolsTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);

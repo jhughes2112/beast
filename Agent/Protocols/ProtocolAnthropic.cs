@@ -102,7 +102,7 @@ public class ProtocolAnthropic
 			}
 			else if (msg is ToolResultMessage tr)
 			{
-				AppendContent("user", ToolResultBlock(tr.ToolCallId, tr.Content));
+				AppendContent("user", ToolResultBlock(tr.ToolCallId, tr.Content, tr.MediaPath, tr.MediaMimeType));
 			}
 			else if (msg is AssistantMessage am)
 			{
@@ -210,7 +210,7 @@ public class ProtocolAnthropic
 		{
 			content = content + "\nstderr: " + result.StdErr;
 		}
-		AppendContent("user", ToolResultBlock(result.Id, content));
+		AppendContent("user", ToolResultBlock(result.Id, content, result.MediaPath, result.MediaMimeType));
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
@@ -939,12 +939,37 @@ public class ProtocolAnthropic
 		return block;
 	}
 
-	private static JsonObject ToolResultBlock(string toolUseId, string content)
+	// A tool_result block. Media the result carries rides inside the same content array: an image
+	// becomes a source block after the text, since Anthropic accepts images in tool results; any
+	// other kind degrades to a text note, the same as on a user message.
+	private static JsonObject ToolResultBlock(string toolUseId, string content, string? mediaPath, string? mediaMimeType)
 	{
+		JsonArray parts = new JsonArray(TextBlock(content));
+		if (mediaPath != null && mediaMimeType != null)
+		{
+			MediaAttachment? att = MediaKinds.LoadAttachment(mediaPath, mediaMimeType);
+			if (att == null)
+			{
+				parts.Add((JsonNode)TextBlock(MediaKinds.MissingNote(mediaPath)));
+			}
+			else if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+			{
+				parts.Add((JsonNode)new JsonObject
+				{
+					["type"]   = "image",
+					["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = att.MimeType, ["data"] = att.Base64Data }
+				});
+			}
+			else
+			{
+				parts.Add((JsonNode)TextBlock($"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]"));
+			}
+		}
+
 		JsonObject block     = new JsonObject();
 		block["type"]        = "tool_result";
 		block["tool_use_id"] = toolUseId;
-		block["content"]     = new JsonArray(TextBlock(content));
+		block["content"]     = parts;
 		return block;
 	}
 

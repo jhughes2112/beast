@@ -5,12 +5,16 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Backs the inspect_media tool. Reads an image or audio file, attaches it to a throwaway
-// MediaReader session (the same stage-session pattern the Summarizer uses — the caller's
-// conversation is never touched and needs no media-capable model of its own), and returns the
-// goal-directed text the MediaReader produces. Model selection is capability-driven: the first
-// model in the MediaReader role whose declared input modalities cover the file's kind is used;
-// if none declares it, the tool reports that instead of sending media a model cannot see.
+// Backs the inspect_media tool. Two ways to get a file in front of a model:
+//  - Native: the session's current model declares the file's modality, so the result carries the
+//    file itself and the model's own attention runs over the pixels. This is the default whenever
+//    it is possible — a description from another model is never a substitute for seeing.
+//  - Subagent: the current model cannot take the modality, or the caller asked for delegation
+//    (a long recording where only a transcript is wanted, bulk extraction where holding the
+//    payload in the caller's window is the wrong economics). The file is attached to a throwaway
+//    MediaReader session — the same stage-session pattern the Summarizer uses — and the tool
+//    returns the goal-directed text it produces. Model selection is capability-driven: the first
+//    model in the MediaReader role whose declared input modalities cover the file's kind is used.
 // Capability declarations come from /config discovery, and the truth stays with the provider: a
 // model that turns out not to accept the attachment fails the call, and that failure is the
 // tool's error result.
@@ -19,11 +23,20 @@ public class MediaInspector
 	// Attachments above this size are refused outright: they would dwarf any context window.
 	private const long MaxFileBytes = 16 * 1024 * 1024;
 
+	// Above these the first request for a file reports its size instead of sending it, so the
+	// model can resize or clip with ffmpeg first. Providers downscale images past roughly this
+	// edge anyway, so pixels beyond it are paid for and thrown away.
+	private const int    LargeImageEdge       = 1568;
+	private const long   LargeImageBytes      = 2 * 1024 * 1024;
+	private const double LargeDurationSeconds = 60;
+	private const long   LargeClipBytes       = 4 * 1024 * 1024;
+
 	public async Task<ToolResult> InspectAsync(
 		string            toolCallId,
 		string            filePath,
 		string            goal,
-		Role              mediaRole,
+		bool              useSubagent,
+		Role?             mediaRole,
 		LlmRegistry       registry,
 		Session           session,
 		ITransportServer  transport,
@@ -32,8 +45,6 @@ public class MediaInspector
 	{
 		if (string.IsNullOrWhiteSpace(filePath))
 			return new ToolResult(toolCallId, string.Empty, "Error: file_path cannot be empty", 1, 0);
-		if (string.IsNullOrWhiteSpace(goal))
-			return new ToolResult(toolCallId, string.Empty, "Error: goal cannot be empty", 1, 0);
 		if (!File.Exists(filePath))
 			return new ToolResult(toolCallId, string.Empty, $"Error: File not found: {filePath}", 1, 0);
 
@@ -45,6 +56,35 @@ public class MediaInspector
 		if (fileBytes > MaxFileBytes)
 			return new ToolResult(toolCallId, string.Empty, $"Error: {filePath} is {fileBytes / (1024 * 1024)}MB; the limit is {MaxFileBytes / (1024 * 1024)}MB.", 1, 0);
 
+		MediaProbe probe    = await MediaProbe.ProbeAsync(filePath, ct);
+		string     fullPath = Path.GetFullPath(filePath);
+		string?    sizeNote = LargeNote(filePath, kind, fileBytes, probe);
+		// A second request for the same path is consent to send whatever is there now, so the
+		// model can shrink a file in place and call again.
+		if (sizeNote != null && session.MarkLargeMediaSeen(fullPath))
+			return new ToolResult(toolCallId, sizeNote, string.Empty, 0, ToolDispatch.EstimateTokens(sizeNote));
+
+		LlmModel? current = registry.GetModel(session.Model);
+		if (!useSubagent && current != null && MediaKinds.Supports(current.Config, kind))
+		{
+			string facts = Describe(kind, fileBytes, probe);
+			string text  = $"{filePath} ({facts}) is attached to this result for you to examine directly.";
+			return new ToolResult(toolCallId, text, string.Empty, 0, ToolDispatch.EstimateTokens(text), fullPath, mimeType);
+		}
+
+		// Delegating: the goal is what the reader answers, so without one there is nothing to ask.
+		if (string.IsNullOrWhiteSpace(goal))
+		{
+			string why = useSubagent
+				? "use_subagent was set"
+				: $"the current model does not declare '{MediaKinds.Modality(kind)}' input, so a MediaReader subagent will look instead";
+			return new ToolResult(toolCallId, string.Empty, $"Error: {why}; a goal is required saying exactly what to extract from {filePath}.", 1, 0);
+		}
+
+		// The subagent path is the only one that needs the MediaReader role.
+		if (mediaRole == null)
+			return new ToolResult(toolCallId, string.Empty, "Error: no MediaReader role is configured, so the file cannot be handed to a subagent. Add the role in roles.json, or switch to a model that accepts this input with /model.", 1, 0);
+
 		// Candidates come from the MediaReader role's own list, in its order — the user arranges
 		// that order in /role, and it beats any cheapest-first guess.
 		List<LlmModel> capable = MediaKinds.CapableModels(registry, kind, mediaRole.Models);
@@ -54,10 +94,56 @@ public class MediaInspector
 		return await InspectWithModelsAsync(toolCallId, filePath, goal, mediaRole, capable, registry, session, transport, maxOutputTokens, ct);
 	}
 
+	// The physical facts a model can act on: pixel size for images, duration for clips, bytes for both.
+	private static string Describe(MediaKind kind, long fileBytes, MediaProbe probe)
+	{
+		string size = fileBytes >= 1024 * 1024
+			? $"{fileBytes / (1024.0 * 1024.0):F1} MB"
+			: $"{Math.Max(1, fileBytes / 1024)} KB";
+
+		string facts;
+		if (kind == MediaKind.Image)
+			facts = probe.Width > 0 ? $"{probe.Width}x{probe.Height} px, {size}" : size;
+		else
+			facts = probe.DurationSeconds > 0 ? $"{probe.DurationSeconds:F0} s, {size}" : size;
+		return facts;
+	}
+
+	// The once-per-file warning for media big enough to matter, or null when it is fine to send.
+	private static string? LargeNote(string filePath, MediaKind kind, long fileBytes, MediaProbe probe)
+	{
+		string? note  = null;
+		string  facts = Describe(kind, fileBytes, probe);
+
+		if (kind == MediaKind.Image)
+		{
+			bool large = fileBytes > LargeImageBytes || probe.Width > LargeImageEdge || probe.Height > LargeImageEdge;
+			if (large)
+			{
+				note = $"{filePath} is large ({facts}). Nothing was sent. Providers downscale images past about {LargeImageEdge} px on the long edge, "
+					+ "and every pixel sent costs context on every later turn. Either shrink or crop it first "
+					+ $"(e.g. ffmpeg -i \"{filePath}\" -vf \"scale={LargeImageEdge}:{LargeImageEdge}:force_original_aspect_ratio=decrease\" out.png) and inspect that, "
+					+ "or call inspect_media on this same path again to send it as-is.";
+			}
+		}
+		else
+		{
+			bool large = fileBytes > LargeClipBytes || probe.DurationSeconds > LargeDurationSeconds;
+			if (large)
+			{
+				note = $"{filePath} is long ({facts}). Nothing was sent. A recording costs context in proportion to its length on every later turn. "
+					+ $"Either clip the part you need first (e.g. ffmpeg -ss 0 -t {LargeDurationSeconds:F0} -i \"{filePath}\" out{Path.GetExtension(filePath)}), "
+					+ "ask a subagent for a transcript or summary (use_subagent=true with a goal), "
+					+ "or call inspect_media on this same path again to send it as-is.";
+			}
+		}
+		return note;
+	}
+
 	// Runs the file past the given candidate models, in the caller's preference order, stopping at the first one that
 	// answers. Falling through matters because a declared modality is only a claim: a model that
 	// rejects the attachment at request time should cost the caller a retry on the next candidate,
-	// not the whole call. Shared with the drag-and-drop intake path.
+	// not the whole call.
 	public async Task<ToolResult> InspectWithModelsAsync(
 		string            toolCallId,
 		string            filePath,

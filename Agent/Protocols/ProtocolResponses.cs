@@ -110,11 +110,7 @@ public class ProtocolResponses
 			}
 			else if (msg is ToolResultMessage tr)
 			{
-				JsonObject item = new JsonObject();
-				item["type"]    = "function_call_output";
-				item["call_id"] = tr.ToolCallId;
-				item["output"]  = tr.Content;
-				input.Add((JsonNode)item);
+				input.Add((JsonNode)BuildToolOutputItem(tr.ToolCallId, tr.Content, tr.MediaPath, tr.MediaMimeType));
 			}
 		}
 		_rehydratedInput = input;
@@ -198,16 +194,44 @@ public class ProtocolResponses
 
 	public void OnToolResult(ToolResult result)
 	{
-		JsonObject item = new JsonObject();
-		item["type"]    = "function_call_output";
-		item["call_id"] = result.Id;
-		string output   = result.StdOut;
+		string output = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
 		{
 			output = output + "\nstderr: " + result.StdErr;
 		}
-		item["output"] = output;
-		_deltaInput.Add((JsonNode)item);
+		_deltaInput.Add((JsonNode)BuildToolOutputItem(result.Id, output, result.MediaPath, result.MediaMimeType));
+	}
+
+	// A function_call_output item, shared by the live path and rehydrate. A text-only result keeps
+	// the plain string output; one carrying an image switches output to the part-array form with
+	// an input_image after the text. The Responses API takes no audio or video in a tool output,
+	// so those degrade to a text note, as they do on a user message.
+	private static JsonObject BuildToolOutputItem(string callId, string output, string? mediaPath, string? mediaMimeType)
+	{
+		JsonObject item = new JsonObject();
+		item["type"]    = "function_call_output";
+		item["call_id"] = callId;
+
+		if (mediaPath == null || mediaMimeType == null)
+		{
+			item["output"] = output;
+			return item;
+		}
+
+		JsonArray parts = new JsonArray();
+		if (!string.IsNullOrEmpty(output))
+			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = output });
+
+		MediaAttachment? att = MediaKinds.LoadAttachment(mediaPath, mediaMimeType);
+		if (att == null)
+			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = MediaKinds.MissingNote(mediaPath) });
+		else if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+			parts.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
+		else
+			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+
+		item["output"] = parts;
+		return item;
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(

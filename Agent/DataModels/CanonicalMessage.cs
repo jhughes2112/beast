@@ -26,13 +26,13 @@ public sealed class SystemMessage : CanonicalMessage
 // record is self-contained across save/load. Protocols convert it to their wire format.
 public sealed class MediaAttachment
 {
-	public string MimeType { get; }
+	public string MimeType   { get; }
 	public string Base64Data { get; }
 
 	[JsonConstructor]
 	public MediaAttachment(string mimeType, string base64Data)
 	{
-		MimeType = mimeType;
+		MimeType   = mimeType;
 		Base64Data = base64Data;
 	}
 }
@@ -49,7 +49,7 @@ public sealed class UserMessage : CanonicalMessage
 	[JsonConstructor]
 	public UserMessage(string text, IReadOnlyList<MediaAttachment>? attachments)
 	{
-		Text = text;
+		Text        = text;
 		Attachments = attachments;
 	}
 
@@ -63,15 +63,15 @@ public sealed class UserMessage : CanonicalMessage
 // Protocols ignore it during Rehydrate — unsigned thinking cannot be replayed to the server.
 public sealed class AssistantMessage : CanonicalMessage
 {
-	public string Text { get; }
+	public string Text     { get; }
 	public string Thinking { get; }
 	public IReadOnlyList<SemanticToolCall> ToolCalls { get; }
 
 	[JsonConstructor]
 	public AssistantMessage(string text, string thinking, IReadOnlyList<SemanticToolCall>? toolCalls)
 	{
-		Text = text;
-		Thinking = thinking;
+		Text      = text;
+		Thinking  = thinking;
 		ToolCalls = toolCalls ?? new List<SemanticToolCall>();
 	}
 }
@@ -79,12 +79,29 @@ public sealed class AssistantMessage : CanonicalMessage
 public sealed class ToolResultMessage : CanonicalMessage
 {
 	public string ToolCallId { get; }
-	public string Content { get; }
+	public string Content    { get; }
+
+	// A media file the model was shown with this result, stored by path rather than by content:
+	// media can be large, and the conversation record must stay small. Protocols read the file
+	// when they build the wire message, so a rehydrate onto another model sees whatever is on disk
+	// then. Null for the ordinary text-only result, which is what every older session file holds.
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public string? MediaPath { get; }
+
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public string? MediaMimeType { get; }
 
 	[JsonConstructor]
-	public ToolResultMessage(string toolCallId, string content)
+	public ToolResultMessage(string toolCallId, string content, string? mediaPath, string? mediaMimeType)
 	{
-		ToolCallId = toolCallId;
-		Content = content;
+		ToolCallId    = toolCallId;
+		Content       = content;
+		MediaPath     = mediaPath;
+		MediaMimeType = mediaMimeType;
+	}
+
+	public ToolResultMessage(string toolCallId, string content)
+		: this(toolCallId, content, null, null)
+	{
 	}
 }

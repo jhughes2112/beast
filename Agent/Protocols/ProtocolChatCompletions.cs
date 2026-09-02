@@ -82,21 +82,111 @@ public class ProtocolChatCompletions
 	// are never included. This is in-memory only and rebuilt from canonical by Rehydrate.
 	private readonly JsonArray _native = new JsonArray();
 
+	// The trailing user message carrying media from the current run of tool results. A "tool"
+	// message can only hold text, so media a tool result carries goes into a user message that
+	// follows the run; every tool message of the run is inserted ahead of it because the API
+	// requires the tool replies to sit directly after the assistant turn that called them. Cleared
+	// by any other append, which ends the run.
+	private JsonObject? _toolMediaCarrier;
+
 	// Rebuilds the native message chain from canonical. Thinking is intentionally dropped.
 	// Called by ProtocolProxy right after creating or switching in.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
 		_native.Clear();
+		_toolMediaCarrier = null;
 		foreach (CanonicalMessage msg in messages)
 		{
+			if (msg is ToolResultMessage tr)
+			{
+				AppendToolResult(tr.ToolCallId, tr.Content, tr.MediaPath, tr.MediaMimeType);
+				continue;
+			}
+
 			JsonObject? native = ToNativeMessage(msg);
 			if (native != null)
+			{
+				_toolMediaCarrier = null;
 				_native.Add((JsonNode)native);
+			}
+		}
+	}
+
+	// The OpenAI-compatible content part for one attachment: image_url, input_audio, or video_url.
+	private static JsonObject MediaPart(MediaAttachment att)
+	{
+		JsonObject part;
+		if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+		{
+			part = new JsonObject
+			{
+				["type"]        = "input_audio",
+				["input_audio"] = new JsonObject { ["data"] = att.Base64Data, ["format"] = att.MimeType.Substring(6) }
+			};
+		}
+		else if (att.MimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
+		{
+			// Video is the least standardized part type; servers that accept it here
+			// (OpenRouter, Gemini's compat layer) use video_url with a data URI.
+			part = new JsonObject
+			{
+				["type"]      = "video_url",
+				["video_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
+			};
+		}
+		else
+		{
+			part = new JsonObject
+			{
+				["type"]      = "image_url",
+				["image_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
+			};
+		}
+		return part;
+	}
+
+	// Appends a tool result, live or rehydrated, so both paths build the same shape. Media the
+	// result carries goes to the run's carrier user message (created on first need), with a text
+	// part naming the file so the model can tie the pixels back to the call that produced them.
+	private void AppendToolResult(string toolCallId, string content, string? mediaPath, string? mediaMimeType)
+	{
+		JsonObject msg      = new JsonObject();
+		msg["role"]         = "tool";
+		msg["content"]      = content;
+		msg["tool_call_id"] = toolCallId;
+
+		if (_toolMediaCarrier != null)
+			_native.Insert(_native.IndexOf(_toolMediaCarrier), msg);
+		else
+			_native.Add((JsonNode)msg);
+
+		if (mediaPath != null && mediaMimeType != null)
+		{
+			if (_toolMediaCarrier == null)
+			{
+				_toolMediaCarrier            = new JsonObject();
+				_toolMediaCarrier["role"]    = "user";
+				_toolMediaCarrier["content"] = new JsonArray();
+				_native.Add((JsonNode)_toolMediaCarrier);
+			}
+
+			JsonArray        parts = (JsonArray)_toolMediaCarrier["content"]!;
+			MediaAttachment? att   = MediaKinds.LoadAttachment(mediaPath, mediaMimeType);
+			if (att != null)
+			{
+				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = $"[Media from tool call {toolCallId}: {mediaPath}]" });
+				parts.Add((JsonNode)MediaPart(att));
+			}
+			else
+			{
+				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = MediaKinds.MissingNote(mediaPath) });
+			}
 		}
 	}
 
 	// Converts a typed canonical message to an OpenAI ChatCompletions wire object.
-	// Returns null for message types that have no native representation (none currently).
+	// Returns null for message types that have no native representation. Tool results are not
+	// handled here — they may expand to more than one message, so they go through AppendToolResult.
 	private JsonObject? ToNativeMessage(CanonicalMessage msg)
 	{
 		if (msg is SystemMessage sm)
@@ -118,34 +208,7 @@ public class ProtocolChatCompletions
 				if (!string.IsNullOrEmpty(um.Text))
 					parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = um.Text });
 				foreach (MediaAttachment att in um.Attachments)
-				{
-					if (att.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
-					{
-						parts.Add((JsonNode)new JsonObject
-						{
-							["type"]        = "input_audio",
-							["input_audio"] = new JsonObject { ["data"] = att.Base64Data, ["format"] = att.MimeType.Substring(6) }
-						});
-					}
-					else if (att.MimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase))
-					{
-						// Video is the least standardized part type; servers that accept it here
-						// (OpenRouter, Gemini's compat layer) use video_url with a data URI.
-						parts.Add((JsonNode)new JsonObject
-						{
-							["type"]      = "video_url",
-							["video_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
-						});
-					}
-					else
-					{
-						parts.Add((JsonNode)new JsonObject
-						{
-							["type"]      = "image_url",
-							["image_url"] = new JsonObject { ["url"] = $"data:{att.MimeType};base64,{att.Base64Data}" }
-						});
-					}
-				}
+					parts.Add((JsonNode)MediaPart(att));
 				obj["content"] = parts;
 			}
 			else
@@ -184,14 +247,6 @@ public class ProtocolChatCompletions
 			}
 			return obj;
 		}
-		if (msg is ToolResultMessage tr)
-		{
-			JsonObject obj      = new JsonObject();
-			obj["role"]         = "tool";
-			obj["content"]      = tr.Content;
-			obj["tool_call_id"] = tr.ToolCallId;
-			return obj;
-		}
 		return null;
 	}
 
@@ -215,11 +270,15 @@ public class ProtocolChatCompletions
 		// If the last item is already a user message, merge text in-place. The content may be a
 		// part ARRAY (a media-bearing turn) rather than a string — GetValue<string> on that throws
 		// and killed the handler when text followed an image without an assistant turn between.
-		int count = _native.Count;
+		// The media carrier after a tool run is the exception: text is never folded into it, so
+		// the live shape matches what Rehydrate builds (carrier, then a separate user message).
+		JsonObject? carrier = _toolMediaCarrier;
+		_toolMediaCarrier   = null;
+		int count           = _native.Count;
 		if (count > 0)
 		{
 			JsonNode? last = _native[count - 1];
-			if (last != null && last["role"]?.GetValue<string>() == "user")
+			if (last != null && !ReferenceEquals(last, carrier) && last["role"]?.GetValue<string>() == "user")
 			{
 				if (last["content"] is JsonArray parts)
 				{
@@ -255,7 +314,8 @@ public class ProtocolChatCompletions
 	// live turn and a rehydrated one produce byte-identical wire shapes.
 	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
 	{
-		JsonObject? msg = ToNativeMessage(new UserMessage(text, attachments));
+		_toolMediaCarrier = null;
+		JsonObject? msg   = ToNativeMessage(new UserMessage(text, attachments));
 		if (msg != null)
 			_native.Add((JsonNode)msg);
 	}
@@ -299,21 +359,18 @@ public class ProtocolChatCompletions
 			msg["tool_calls"] = tcArr;
 		}
 
+		_toolMediaCarrier = null;
 		_native.Add((JsonNode)msg);
 	}
 
 	public void OnToolResult(ToolResult result)
 	{
-		JsonObject msg = new JsonObject();
-		msg["role"]    = "tool";
 		string content = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
 		{
 			content = content + "\nstderr: " + result.StdErr;
 		}
-		msg["content"]      = content;
-		msg["tool_call_id"] = result.Id;
-		_native.Add((JsonNode)msg);
+		AppendToolResult(result.Id, content, result.MediaPath, result.MediaMimeType);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
