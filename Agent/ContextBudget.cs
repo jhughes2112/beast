@@ -45,8 +45,13 @@ public class ContextBudget
 	// Returns the pending tool-response reservation (for pessimistic estimation before tracer call).
 	public int PendingReserve => _pendingReserve;
 
-	// Seeds the per-turn window and limits and the authoritative starting size. Clears any pending
-	// reservation: a fresh turn begins with no outstanding tool outputs.
+	// Seeds the per-request window and limits and the authoritative starting size. The pending
+	// reservation is deliberately NOT cleared: this runs before EVERY provider call, including the
+	// one right after a tool round, and that round's outputs are exactly what the reservation holds.
+	// Clearing it here sized the request after a 43KB read_file as if the file were not in the
+	// prompt — the provider counted it, the request overran the window by the file's size minus the
+	// margin, and a 2% conversation was rejected as "too large". Only a provider measurement
+	// (RecordMeasurement) settles the reservation, because only it knows the outputs are counted.
 	public void Configure(int windowSize, int maxOutputTokens, int compactionReserve, int outputCap, int measuredContextSize)
 	{
 		_windowSize        = windowSize;
@@ -54,7 +59,6 @@ public class ContextBudget
 		_compactionReserve = compactionReserve;
 		_outputCap         = outputCap;
 		_measured          = measuredContextSize;
-		_pendingReserve    = 0;
 	}
 
 	// The input we would send next — the measured conversation plus any not-yet-measured tool output

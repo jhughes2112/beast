@@ -186,5 +186,13 @@ public static class ContextBudgetTests
 		// After recording measurement, pending reserve is cleared
 		budget.RecordMeasurement(2000);
 		ctx.AssertEqual(0, budget.PendingReserve, "PendingReserve: zero after RecordMeasurement");
+
+		// Configure runs before every provider call, including the one right after a tool round.
+		// It must not drop the round's charge: the 43KB read_file that vanished here was counted by
+		// the provider, and the request sized without it overran a 1M window by the file's size.
+		budget.ChargeToolResults(10000);
+		budget.Configure(100000, 200000, 7500, 0, 2000);
+		ctx.AssertEqual(10000, budget.PendingReserve, "PendingReserve: survives the per-request Configure");
+		ctx.AssertEqual<int?>(100000 - 2000 - 10000 - 1024, budget.MaxCompletionTokens(), "PendingReserve: the next request is sized against the charged round");
 	}
 }

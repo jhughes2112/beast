@@ -19,6 +19,7 @@ public class SessionLogger
 	// means reconstructing occupancy by measuring the JSON — which is how a starved output ceiling
 	// and a chunk that never actually shrank both stayed invisible for as long as they did.
 	private int _contextTokens;
+	private int _pendingTokens;
 	private int _windowTokens;
 	private int _maxOutputTokens;
 
@@ -31,10 +32,12 @@ public class SessionLogger
 	}
 
 	// Records what the next request is being sized against. Called by LlmService before each attempt;
-	// the values are provider-measured (or zero before the first response has measured anything).
-	public void SetTurnContext(int contextTokens, int windowTokens, int maxOutputTokens)
+	// the context is provider-measured (or zero before the first response has measured anything) and
+	// pending is the estimated size of tool outputs appended since, which the provider has yet to count.
+	public void SetTurnContext(int contextTokens, int pendingTokens, int windowTokens, int maxOutputTokens)
 	{
 		_contextTokens   = contextTokens;
+		_pendingTokens   = pendingTokens;
 		_windowTokens    = windowTokens;
 		_maxOutputTokens = maxOutputTokens;
 	}
@@ -54,6 +57,8 @@ public class SessionLogger
 				int percent = (int)((long)_contextTokens * 100 / _windowTokens);
 				sb.AppendLine($"context:  {_contextTokens} / {_windowTokens} tokens ({percent}%)");
 			}
+			if (_pendingTokens > 0)
+				sb.AppendLine($"pending:  {_pendingTokens} (tool output not yet measured by the provider)");
 			if (_maxOutputTokens > 0)
 				sb.AppendLine($"max_out:  {_maxOutputTokens}");
 			sb.AppendLine();

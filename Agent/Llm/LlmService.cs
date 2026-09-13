@@ -98,7 +98,7 @@ public class LlmService
 
 		// A tracer generates nothing, so it carries no output ceiling — but its header still states
 		// the occupancy it was fired to measure.
-		conversation.QueryLog.SetTurnContext(conversation.ContextLength, _model.Config.ContextWindow, 0);
+		conversation.QueryLog.SetTurnContext(conversation.ContextLength, conversation.Budget.PendingReserve, _model.Config.ContextWindow, 0);
 
 		return await _handler.CountTokensAsync(conversation.Bundle, toolDefs, forcedToolName, conversation.QueryLog, cancellationToken);
 	}
@@ -194,7 +194,7 @@ public class LlmService
 
 					// Stamp the sizing onto the log header, so a request in the log carries the two
 					// numbers that explain its shape instead of leaving them to be inferred.
-					conversation.QueryLog.SetTurnContext(conversation.ContextLength, _model.Config.ContextWindow, maxCompletionTokens ?? 0);
+					conversation.QueryLog.SetTurnContext(conversation.ContextLength, budget.PendingReserve, _model.Config.ContextWindow, maxCompletionTokens ?? 0);
 
 					// Provisional live stats while the turn streams. Protocols report inputTokens as the
 					// whole-conversation input the provider bills this turn (Anthropic via StreamStart
