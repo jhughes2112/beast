@@ -60,6 +60,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xz-utils bzip2 p7zip-full libxml2-utils pandoc dos2unix \
     # Audio/video transcoding and probing (ffprobe) for media-handling tasks
     ffmpeg \
+    # Image conversion, resizing, compositing, and inspection (`convert`/`identify`/`mogrify`)
+    imagemagick \
     # ICU/SSL/zlib: the AOT Agent itself needs only libssl3/zlib1g (it is InvariantGlobalization);
     # libicu74 stays for the .NET SDK below and any user projects that need globalization
     libicu74 libssl3 zlib1g \
@@ -193,7 +195,7 @@ RUN mkdir -p /opt/agent-bins/readonly \
          wc sort uniq cut tr comm cmp diff diff3 paste join column fold fmt expand unexpand rev \
          od xxd hexdump strings \
          sha256sum sha1sum md5sum b2sum cksum base64 base32 \
-         git jq xmllint pdftotext \
+         git jq xmllint pdftotext identify \
          chromium \
          ping traceroute dig nslookup host ss netstat \
          ps lsof \
