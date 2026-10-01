@@ -52,11 +52,14 @@ public class ProtocolAnthropic
 	private bool _thinkingSupported = true;
 
 	// Where a refusal is reported so it outlives this instance. Null in tests.
-	private readonly ModelReasoningSink? _onReasoningLearned;
+	private readonly ModelCapabilitySink? _onCapabilityLearned;
 
-	public ProtocolAnthropic(ModelReasoningSink? onReasoningLearned)
+	// Keeps each request's media within the provider's limits (see MediaBudget).
+	private readonly MediaBudget _media = new MediaBudget();
+
+	public ProtocolAnthropic(ModelCapabilitySink? onCapabilityLearned)
 	{
-		_onReasoningLearned = onReasoningLearned;
+		_onCapabilityLearned = onCapabilityLearned;
 	}
 
 	// True when a 400 says this model wants the adaptive thinking shape. Matched on the field names
@@ -233,13 +236,17 @@ public class ProtocolAnthropic
 			if (maxTokens <= 0)
 				maxTokens = 8192;
 
-			// Extra attempts exist only to re-send after learning something about this model's thinking:
-			// that it wants the adaptive shape, or that it has no thinking at all. Both are one-way
-			// flags, so the loop can turn at most twice before every path returns.
+			// Extra attempts exist only to re-send after learning something about this model: that it
+			// wants the adaptive thinking shape, that it has no thinking at all, or that the request
+			// carried more media than the provider takes. The thinking flags are one-way and the media
+			// limits only shrink below what was refused, so the loop always ends.
 			for (int attempt = 0; ; attempt++)
 			{
-				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxTokens, true, extraPayload);
-				body["stream"]  = true;
+				JsonObject body   = BuildRequestBody(model, tools, forcedToolName, maxTokens, true, extraPayload);
+				body["stream"]    = true;
+				string? mediaNote = _media.TakeNote();
+				if (mediaNote != null)
+					logger.Note(mediaNote);
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				// Fresh deadline per attempt; ReadStreamAsync re-arms it as events arrive.
@@ -277,9 +284,13 @@ public class ProtocolAnthropic
 					{
 						_thinkingSupported = false;
 						logger.Write(model.Config.Name, model.Endpoint, "[thinking] model does not support extended thinking; recording it as none and re-sending without it");
-						_onReasoningLearned?.Invoke(model.ConfigId, "none", null);
+						_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null);
 						continue;
 					}
+
+					// Too many images, or too many bytes of them: the same history with less media will go.
+					if (_media.LearnFromRefusal(model, statusCode, responseBody, _onCapabilityLearned, logger))
+						continue;
 
 					if (ProtocolHelpers.IsPermanentClientError(statusCode))
 					{
@@ -783,7 +794,9 @@ public class ProtocolAnthropic
 			// base input rate, so it is deliberately not requested.
 			body["cache_control"] = new JsonObject { ["type"] = "ephemeral" };
 		}
-		body["messages"] = CloneMessages();
+		JsonArray messages = CloneMessages();
+		_media.Apply(messages, model.Config.MaxImages, "text", true);
+		body["messages"] = messages;
 
 		if (!string.IsNullOrEmpty(_system))
 		{

@@ -48,6 +48,7 @@ public class LlmModel
 			ReasoningSummaries = false,
 			// Carried: a model that needs its own reasoning replayed needs it on every call.
 			RetainReasoning = Config.RetainReasoning,
+			MaxImages       = Config.MaxImages,
 			Cost            = Config.Cost,
 			Input           = Config.Input,
 			Extras          = Config.Extras,

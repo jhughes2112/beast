@@ -24,6 +24,10 @@ public static class MediaToolResultTests
 			TestAnthropicToolResultBlock(ctx, path, expected);
 			TestResponsesOutputParts(ctx, path, expected);
 			TestMissingFileDegradesToNote(ctx);
+			TestMediaSentOnce(ctx, path);
+			TestMediaBudgetKeepsNewest(ctx);
+			TestMediaBudgetLearnsImageCount(ctx);
+			TestMediaBudgetDropsOldest(ctx);
 		}
 		finally
 		{
@@ -139,6 +143,179 @@ public static class MediaToolResultTests
 		JsonArray              inner     = (JsonArray)((JsonArray)native[2]!["content"]!)[0]!["content"]!;
 		ctx.AssertEqual("text", inner[1]!["type"]!.GetValue<string>(), "Missing file: a text note replaces the image");
 		ctx.Assert(inner[1]!["text"]!.GetValue<string>().Contains(gone, StringComparison.Ordinal), "Missing file: the note names the path");
+	}
+
+	// A ChatCompletions-shaped history with one image per user message, oldest first; each image's
+	// payload is `chars` base64 characters tagged with its index so the survivors can be identified.
+	private static JsonArray ImageHistory(int count, int chars)
+	{
+		JsonArray messages = new JsonArray();
+		for (int i = 0; i < count; i++)
+		{
+			string    data  = $"{i}".PadRight(chars, 'A');
+			JsonArray parts = new JsonArray();
+			parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = $"shot {i}" });
+			parts.Add((JsonNode)new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = $"data:image/png;base64,{data}" } });
+			messages.Add((JsonNode)new JsonObject { ["role"] = "user", ["content"] = parts });
+		}
+		return messages;
+	}
+
+	private static int ImagesIn(JsonArray messages)
+	{
+		int images = 0;
+		foreach (JsonNode? msg in messages)
+		{
+			if (msg!["content"] is JsonArray parts && parts[1]!["type"]!.GetValue<string>() == "image_url")
+				images++;
+		}
+		return images;
+	}
+
+	// Media rides in requests only until the model has answered it with text or thinking; after that
+	// it is a note. A turn of nothing but tool calls is not an answer. The history itself keeps the
+	// media, so a retry before the answer still carries it.
+	private static void TestMediaSentOnce(TestContext ctx, string path)
+	{
+		ctx.Log("    MediaSentOnce");
+
+		JsonArray pending = ImageHistory(1, 100);
+		new MediaBudget().Apply(pending, 0, "text", true);
+		ctx.AssertEqual(1, ImagesIn(pending), "SentOnce: unanswered media is sent");
+
+		JsonArray answered = ImageHistory(2, 100);
+		answered.Insert(1, new JsonObject { ["role"] = "assistant", ["content"] = "it is a cat" });
+		new MediaBudget().Apply(answered, 0, "text", true);
+		ctx.AssertEqual("text",      answered[0]!["content"]![1]!["type"]!.GetValue<string>(), "SentOnce: answered media becomes a note");
+		ctx.AssertEqual("image_url", answered[2]!["content"]![1]!["type"]!.GetValue<string>(), "SentOnce: media after the last answer is still sent");
+
+		// Several inspects in a row with nothing said between them: the model still sees them all.
+		JsonArray toolsOnly = ImageHistory(2, 100);
+		toolsOnly.Insert(1, new JsonObject { ["role"] = "assistant", ["content"] = string.Empty, ["tool_calls"] = new JsonArray() });
+		new MediaBudget().Apply(toolsOnly, 0, "text", true);
+		ctx.AssertEqual(2, ImagesIn(toolsOnly), "SentOnce: a tool-call-only turn does not answer the media before it");
+
+		// Anthropic: a thinking block is an answer even with no text beside it.
+		JsonArray thought = ImageHistory(1, 100);
+		thought.Add((JsonNode)new JsonObject { ["role"] = "assistant", ["content"] = new JsonArray(new JsonObject { ["type"] = "thinking", ["thinking"] = "a cat", ["signature"] = "s" }, new JsonObject { ["type"] = "tool_use", ["id"] = "t", ["name"] = "ls", ["input"] = new JsonObject() }) });
+		new MediaBudget().Apply(thought, 0, "text", true);
+		ctx.AssertEqual(0, ImagesIn(thought), "SentOnce: thinking answers the media before it");
+
+		// Responses keeps its history server-side and is left alone.
+		JsonArray responses = ImageHistory(1, 100);
+		responses.Add((JsonNode)new JsonObject { ["role"] = "assistant", ["content"] = "it is a cat" });
+		new MediaBudget().Apply(responses, 0, "input_text", false);
+		ctx.AssertEqual(1, ImagesIn(responses), "SentOnce: nothing is removed when answered media is kept");
+
+		// Through a real protocol: the inspect result is sent on the next request, then removed once the
+		// model has replied, while the native history keeps it.
+		List<CanonicalMessage>  messages = Conversation(path);
+		ProtocolChatCompletions cc       = new ProtocolProxy(TestModel()).EnsureProtocolChatCompletions(messages);
+		Type[]                  types    = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?) };
+		object[]                args     = new object[] { TestModel(), new List<ToolDefinition>(), null!, null! };
+
+		JsonObject first = (JsonObject)Reflect.Instance(cc, "BuildRequestBody", types, args)!;
+		ctx.Assert(first.ToJsonString().Contains("\"image_url\"", StringComparison.Ordinal), "SentOnce: the inspect result is sent to the model");
+
+		cc.OnAssistantTurn("the button is misaligned", string.Empty, new List<SemanticToolCall>());
+		JsonObject second = (JsonObject)Reflect.Instance(cc, "BuildRequestBody", types, args)!;
+		ctx.Assert(!second.ToJsonString().Contains("\"image_url\"", StringComparison.Ordinal), "SentOnce: and not sent again after the model answered");
+		JsonArray native = (JsonArray)Reflect.GetField(cc, "_native")!;
+		ctx.Assert(native.ToJsonString().Contains("\"image_url\"", StringComparison.Ordinal), "SentOnce: native history is untouched");
+	}
+
+	private static void TestMediaBudgetKeepsNewest(TestContext ctx)
+	{
+		ctx.Log("    MediaBudgetKeepsNewest");
+		MediaBudget budget   = new MediaBudget();
+		JsonArray   messages = ImageHistory(6, 100);
+		budget.Apply(messages, 4, "text", true);
+
+		ctx.AssertEqual(4, ImagesIn(messages), "MediaBudget: a 4-image cap keeps four");
+		ctx.AssertEqual("text",      messages[0]!["content"]![1]!["type"]!.GetValue<string>(), "MediaBudget: the oldest image is the one dropped");
+		ctx.AssertEqual("text",      messages[1]!["content"]![1]!["type"]!.GetValue<string>(), "MediaBudget: and the next oldest");
+		ctx.AssertEqual("image_url", messages[5]!["content"]![1]!["type"]!.GetValue<string>(), "MediaBudget: the newest survives");
+		ctx.AssertNotNull(budget.TakeNote(), "MediaBudget: the trim is reported");
+		ctx.Assert(budget.TakeNote() == null, "MediaBudget: and reported once, not per request");
+
+		// A tool call's arguments are the model's JSON; one that says "type":"image" is not media.
+		JsonArray anthropic = new JsonArray();
+		JsonArray blocks    = new JsonArray();
+		blocks.Add((JsonNode)new JsonObject { ["type"] = "tool_use", ["id"] = "t1", ["name"] = "x", ["input"] = new JsonObject { ["items"] = new JsonArray(new JsonObject { ["type"] = "image" }) } });
+		anthropic.Add((JsonNode)new JsonObject { ["role"] = "assistant", ["content"] = blocks });
+		new MediaBudget().Apply(anthropic, 0, "text", true);
+		ctx.AssertEqual("image", anthropic[0]!["content"]![0]!["input"]!["items"]![0]!["type"]!.GetValue<string>(), "MediaBudget: tool_use input is never rewritten");
+	}
+
+	private static void TestMediaBudgetLearnsImageCount(TestContext ctx)
+	{
+		ctx.Log("    MediaBudgetLearnsImageCount");
+		List<(string Id, int? MaxImages)> learned = new List<(string, int?)>();
+		ModelCapabilitySink               sink    = (id, effort, summaries, maxImages) => learned.Add((id, maxImages));
+		SessionLogger                     logger  = new SessionLogger("media-budget-test");
+		MediaBudget                       budget  = new MediaBudget();
+
+		budget.Apply(ImageHistory(6, 100), 0, "text", true);
+		bool retry = budget.LearnFromRefusal(TestModel(), 400, "{\"error\":{\"message\":\"Too many images in request: > 4\",\"code\":400}}", sink, logger);
+		ctx.Assert(retry, "MediaBudget: an image-count refusal is re-sent");
+		ctx.AssertEqual(1,             learned.Count, "MediaBudget: and reported");
+		ctx.AssertEqual(4, learned[0].MaxImages ?? 0, "MediaBudget: at the cap the provider stated");
+
+		JsonArray resent = ImageHistory(6, 100);
+		budget.Apply(resent, 0, "text", true);
+		ctx.AssertEqual(4, ImagesIn(resent), "MediaBudget: the re-sent request carries the stated cap");
+
+		// No number in the message: drop the oldest, and never read the neighbouring "code":400 as the cap.
+		MediaBudget unnumbered = new MediaBudget();
+		unnumbered.Apply(ImageHistory(6, 100), 0, "text", true);
+		int reported = learned.Count;
+		ctx.Assert(unnumbered.LearnFromRefusal(TestModel(), 400, "{\"error\":{\"message\":\"Too many images provided\",\"code\":400}}", sink, logger), "MediaBudget: an unnumbered refusal is re-sent");
+		JsonArray fewer = ImageHistory(6, 100);
+		unnumbered.Apply(fewer, 0, "text", true);
+		ctx.AssertEqual(5, ImagesIn(fewer), "MediaBudget: without the oldest");
+		ctx.AssertEqual(reported, learned.Count, "MediaBudget: a derived cap is not persisted as a model fact");
+
+		MediaBudget vllm = new MediaBudget();
+		vllm.Apply(ImageHistory(3, 100), 0, "text", true);
+		vllm.LearnFromRefusal(TestModel(), 400, "{\"message\":\"At most 1 image(s) may be provided in one request.\"}", sink, logger);
+		ctx.AssertEqual(1, learned[learned.Count - 1].MaxImages ?? 0, "MediaBudget: vLLM's wording is understood");
+
+		MediaBudget unrelated = new MediaBudget();
+		unrelated.Apply(ImageHistory(3, 100), 0, "text", true);
+		ctx.Assert(!unrelated.LearnFromRefusal(TestModel(), 400, "{\"error\":{\"message\":\"Invalid tool schema\"}}", sink, logger), "MediaBudget: an unrelated 400 is not a media refusal");
+		ctx.Assert(!unrelated.LearnFromRefusal(TestModel(), 404, "{\"error\":{\"message\":\"No endpoints found that support image input\"}}", sink, logger), "MediaBudget: a model that takes no images is the human's call, not trimmed away");
+	}
+
+	private static void TestMediaBudgetDropsOldest(TestContext ctx)
+	{
+		ctx.Log("    MediaBudgetDropsOldest");
+		SessionLogger logger = new SessionLogger("media-budget-test");
+		MediaBudget   budget = new MediaBudget();
+		string        tooBig = "{\"error\":{\"message\":\"Downloaded image content cannot exceed 30MB\",\"code\":413}}";
+
+		// Nothing is trimmed up front: the provider decides what is too much.
+		JsonArray first = ImageHistory(10, 100);
+		budget.Apply(first, 0, "text", true);
+		ctx.AssertEqual(10, ImagesIn(first), "MediaBudget: everything unanswered is sent until refused");
+
+		ctx.Assert(budget.LearnFromRefusal(TestModel(), 413, tooBig, null, logger), "MediaBudget: a size refusal is re-sent");
+		JsonArray second = ImageHistory(10, 100);
+		budget.Apply(second, 0, "text", true);
+		ctx.AssertEqual(9, ImagesIn(second), "MediaBudget: without the oldest");
+
+		// The learned cap holds, so a request with more media is trimmed without another refusal.
+		JsonArray later = ImageHistory(12, 100);
+		budget.Apply(later, 0, "text", true);
+		ctx.AssertEqual(9, ImagesIn(later), "MediaBudget: the cap holds for later requests");
+
+		// Down to one, the refusal is not about how many: it goes to the ordinary failure path.
+		MediaBudget single = new MediaBudget();
+		single.Apply(ImageHistory(1, 100), 0, "text", true);
+		ctx.Assert(!single.LearnFromRefusal(TestModel(), 413, tooBig, null, logger), "MediaBudget: a lone item is never trimmed to nothing");
+
+		MediaBudget textOnly = new MediaBudget();
+		textOnly.Apply(new JsonArray(), 0, "text", true);
+		ctx.Assert(!textOnly.LearnFromRefusal(TestModel(), 413, "{\"error\":\"too big\"}", null, logger), "MediaBudget: a 413 on a request with no media is not ours to fix");
 	}
 
 	private static string Role(JsonNode? msg)

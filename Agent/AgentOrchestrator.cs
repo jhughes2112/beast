@@ -1396,7 +1396,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// No session-file deletion here: the worktree removal below deletes /workspace (sessions
 		// included) wholesale, and deleting them early meant a FAILED removal had already lost
 		// every conversation.
-		ToolResult remove = await ShellTools.BashAsync("finish_remove", FinishRemoveScript, null, ct);
+		// Root: removing the worktree deletes what the sandbox made root-owned (the .git pointer, the
+		// locked dot-folders, .beast), which the shell user cannot.
+		ToolResult remove = await ShellTools.AgentBashAsync("finish_remove", FinishRemoveScript, null, ct);
 		if (!remove.StdOut.Contains("REMOVED"))
 		{
 			string detail = remove.StdErr;

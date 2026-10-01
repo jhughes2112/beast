@@ -100,13 +100,24 @@ public class LlmRegistry
 		return _settings != null && _settings.SaveModelReasoning(configId, effort, summaries);
 	}
 
-	// The ModelReasoningSink handed to every service this registry builds. Swallows nothing: a fact
+	// The ModelCapabilitySink handed to every service this registry builds. Swallows nothing: a fact
 	// learned from a provider that could not be written down is worth a line on stderr, because the
-	// next run will pay to learn it again.
-	private void ApplyLearnedReasoning(string configId, string? effort, bool? summaries)
+	// next run will pay to learn it again. The image cap is applied in place for the same reason the
+	// reasoning fields are (see UpdateModelReasoning): every session on the model holds this config.
+	private void ApplyLearnedCapability(string configId, string? effort, bool? summaries, int? maxImages)
 	{
-		if (!UpdateModelReasoning(configId, effort, summaries))
-			Console.Error.WriteLine($"[LlmRegistry] '{configId}': reasoning capability learned at runtime could not be saved; it applies for this run only.");
+		bool saved = true;
+		if (effort != null || summaries.HasValue)
+			saved = UpdateModelReasoning(configId, effort, summaries);
+
+		if (maxImages.HasValue && _models.TryGetValue(configId, out LlmModel? model))
+		{
+			model.Config.MaxImages = maxImages.Value;
+			saved                  = saved && _settings != null && _settings.SaveModelMaxImages(configId, maxImages.Value);
+		}
+
+		if (!saved)
+			Console.Error.WriteLine($"[LlmRegistry] '{configId}': model capability learned at runtime could not be saved; it applies for this run only.");
 	}
 
 	// Last successfully fetched catalog per auto endpoint (keyed by configured baseUrl). Never
@@ -244,6 +255,7 @@ public class LlmRegistry
 			ReasoningEffort    = ReasoningEffort.Effective(enabled.ReasoningEffort),
 			ReasoningSummaries = enabled.ReasoningSummaries,
 			RetainReasoning    = enabled.RetainReasoning,
+			MaxImages          = enabled.MaxImages,
 			Cost               = cost,
 			Input              = input
 		};
@@ -339,7 +351,7 @@ public class LlmRegistry
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
 		if (withoutReasoning)
 			model = model.WithoutReasoning();
-		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models, ApplyLearnedReasoning);
+		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models, ApplyLearnedCapability);
 	}
 
 	// Builds a service for the next model below the current one in its role list — the automatic equivalent
@@ -379,7 +391,7 @@ public class LlmRegistry
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
 			if (withoutReasoning)
 				model = model.WithoutReasoning();
-			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds, ApplyLearnedReasoning);
+			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds, ApplyLearnedCapability);
 		}
 
 		return null;
@@ -401,7 +413,7 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
-		return new LlmService(model, protocol, avail, new List<string> { modelId }, ApplyLearnedReasoning);
+		return new LlmService(model, protocol, avail, new List<string> { modelId }, ApplyLearnedCapability);
 	}
 
 	// Returns the best available model for the role without creating a service.

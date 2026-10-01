@@ -59,24 +59,24 @@ public class ProtocolProxy
 	// always a new list.
 	private IReadOnlyList<CanonicalMessage>? _nativeSource;
 
-	// Where a protocol reports a durable reasoning fact it learned from the provider. Null for the
+	// Where a protocol reports a durable model fact it learned from the provider. Null for the
 	// bare test constructor, where there is no registry to tell and nothing to persist to.
-	private readonly ModelReasoningSink? _onReasoningLearned;
+	private readonly ModelCapabilitySink? _onCapabilityLearned;
 
 	public ProtocolProxy(LlmModel model)
 	{
-		_model              = model;
-		_detected           = DetectedProtocol.Unknown;
-		_onReasoningLearned = null;
+		_model               = model;
+		_detected            = DetectedProtocol.Unknown;
+		_onCapabilityLearned = null;
 	}
 
 	// Create with a known protocol â€” skips the per-turn probe in ExecuteAsync.
 	// Always prefer this constructor; use the no-protocol overload only as a fallback.
-	public ProtocolProxy(LlmModel model, DetectedProtocol detected, ModelReasoningSink onReasoningLearned)
+	public ProtocolProxy(LlmModel model, DetectedProtocol detected, ModelCapabilitySink onCapabilityLearned)
 	{
-		_model              = model;
-		_detected           = detected;
-		_onReasoningLearned = onReasoningLearned;
+		_model               = model;
+		_detected            = detected;
+		_onCapabilityLearned = onCapabilityLearned;
 	}
 
 	// Infers the protocol from the URL route suffix.
@@ -257,7 +257,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolChatCompletions == null || !ReferenceEquals(_nativeSource, canonical))
 		{
-			_protocolChatCompletions = new ProtocolChatCompletions(_model.Config.RetainReasoning, _model.ConfigId, _onReasoningLearned);
+			_protocolChatCompletions = new ProtocolChatCompletions(_model.Config.RetainReasoning, _model.ConfigId, _onCapabilityLearned);
 			_protocolChatCompletions.Rehydrate(canonical);
 			_protocolResponses = null;
 			_protocolAnthropic = null;
@@ -270,7 +270,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolResponses == null || !ReferenceEquals(_nativeSource, canonical))
 		{
-			_protocolResponses = new ProtocolResponses(_onReasoningLearned);
+			_protocolResponses = new ProtocolResponses(_onCapabilityLearned);
 			_protocolResponses.Rehydrate(canonical);
 			_protocolChatCompletions = null;
 			_protocolAnthropic       = null;
@@ -283,7 +283,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolAnthropic == null || !ReferenceEquals(_nativeSource, canonical))
 		{
-			_protocolAnthropic = new ProtocolAnthropic(_onReasoningLearned);
+			_protocolAnthropic = new ProtocolAnthropic(_onCapabilityLearned);
 			_protocolAnthropic.Rehydrate(canonical);
 			_protocolChatCompletions = null;
 			_protocolResponses       = null;

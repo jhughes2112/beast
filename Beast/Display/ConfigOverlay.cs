@@ -98,6 +98,9 @@ internal class ConfigOverlay
 		// Ask the provider to summarize this model's thinking. On unless turned off here, or until an
 		// endpoint refuses and the agent writes it back as false.
 		public bool OvrSummaries = true;
+		// Most images per request, learned by the agent from a provider's refusal (0 = none known).
+		// Not edited here — only carried, so an apply does not erase what the provider taught.
+		public int OvrMaxImages;
 
 		public bool Enabled;
 		// True when a settings entry exists (even disabled) — disabling never forgets overrides.
@@ -281,6 +284,7 @@ internal class ConfigOverlay
 							row.OvrEffort          = over["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
 							row.OvrRetainReasoning = over["retainReasoning"]?.GetValue<bool>() ?? false;
 							row.OvrSummaries       = over["reasoningSummaries"]?.GetValue<bool>() ?? true;
+							row.OvrMaxImages       = over["maxImages"]?.GetValue<int>() ?? 0;
 						}
 						_models.Add(row);
 					}
@@ -792,6 +796,7 @@ internal class ConfigOverlay
 		row.OvrEffort          = string.Empty;
 		row.OvrRetainReasoning = false;
 		row.OvrSummaries       = true;
+		row.OvrMaxImages       = 0;
 		_dirty                 = true;
 
 		if (row.Missing)
@@ -1102,6 +1107,8 @@ internal class ConfigOverlay
 			// rewrites when an endpoint refuses summaries mid-run.
 			if (!row.OvrSummaries)
 				entry["reasoningSummaries"] = false;
+			if (row.OvrMaxImages > 0)
+				entry["maxImages"] = row.OvrMaxImages;
 			models.Add(entry);
 		}
 

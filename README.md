@@ -122,6 +122,19 @@ A project can drop its own `.beast/roles.json` to override prompts for that repo
 
 ---
 
+## Security model
+
+The agent runs as root inside the container; nothing the model does runs as root.
+
+- **Unprivileged shell.** `bash` runs as a plain user with no sudo and no apt-get. System packages go through the `apt_install` tool (plain package names only); pip, npm, cargo and go install into its home folder. It all disappears with the container.
+- **Keys out of reach.** `~/.beast` is mounted where the shell user can't enter, and the file tools only work inside `/workspace` and `/tmp` — symlinks are resolved before the check.
+- **No git back door to your machine.** The whole repository belongs to the agent: the model's git can look (status, diff, log) but not change anything, so it can't plant a hook, config or anything else your host's git or editor would run. The agent's `commit_and_rebase` records and integrates the work; your main checkout is root-only and nothing else touches it.
+- **Dot-folders are the agent's.** Every top-level folder starting with `.` (`.git`, `.github`, `.vscode`, `.venv`, …) is read-only to the model — including any it creates, which are taken over as soon as the command that made them finishes. CI and editor config stay a human's call.
+
+It's a sandbox, not a code review: still read what it built before you run it on your machine.
+
+---
+
 ## How it works
 
 ```

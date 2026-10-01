@@ -209,7 +209,7 @@ public static class ModelCatalogTests
 			new List<JsonObject>(), new List<JsonObject>(), config);
 
 		List<(string Id, string? Effort, bool? Summaries)> learned = new List<(string, string?, bool?)>();
-		ModelReasoningSink sink = (id, effort, summaries) => learned.Add((id, effort, summaries));
+		ModelCapabilitySink sink = (id, effort, summaries, maxImages) => learned.Add((id, effort, summaries));
 
 		ProtocolResponses protocol = new ProtocolResponses(sink);
 		Type[]   types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };

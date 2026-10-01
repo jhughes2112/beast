@@ -220,6 +220,43 @@ public class SettingsService
 		return found;
 	}
 
+	// Persists the image cap a provider stated when it refused a request for carrying too many. Same
+	// lookup and same "false = nowhere on disk to put it" contract as SaveModelReasoning.
+	public bool SaveModelMaxImages(string modelId, int maxImages)
+	{
+		BeastSettings home  = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+		bool          found = false;
+
+		foreach (AutoProviderConfig auto in home.Auto)
+		{
+			foreach (AutoModelConfig model in auto.Models)
+			{
+				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					continue;
+				model.MaxImages = maxImages;
+				found           = true;
+			}
+		}
+
+		foreach (ProviderConfig provider in home.Providers)
+		{
+			foreach (ModelConfig model in provider.Models)
+			{
+				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					continue;
+				model.MaxImages = maxImages;
+				found           = true;
+			}
+		}
+
+		if (found)
+		{
+			WriteSettings(_homeDirSettingsPath, home);
+			LoadSettings();
+		}
+		return found;
+	}
+
 	// Persists the /config web-search provider selection into the USER settings file, alongside the
 	// endpoints — one setup, every project. No API keys are written: each provider resolves its key
 	// at load time from the endpoint sharing its domain.
@@ -283,28 +320,34 @@ public class SettingsService
 			Tools     = new Dictionary<string, ToolConfig>()
 			{
 				{ "bash", new ToolConfig() {
-				  Description = "Standard bash command. CWD is at the root of the repo at /workspace/",
+				  Description = "Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "command", "Shell command to execute" },
 					  { "timeout_seconds", "Timeout in seconds (default 120)." }
 					},
 				} },
+			  { "apt_install", new ToolConfig() {
+				  Description = "Install Ubuntu packages with apt. Your shell cannot run apt-get or sudo, so this installs them for you. Check first whether a package is already installed (dpkg -l <name>, apt list --installed, apt-cache policy <name>). Installed packages last only as long as this container.",
+				  Parameters  = new Dictionary<string,string>() {
+					  { "packages", "Space-separated Debian package names, e.g. \"graphviz libpq-dev\". Plain names only: no options, versions, or file paths." },
+				  },
+			  } },
 			  { "readonly_bash", new ToolConfig() {
-				  Description = "Read-only bash for inspecting the repo without changing it. Runs in a restricted bash shell. CWD is the repo root at /workspace/.",
+				  Description = "Read-only bash for inspecting the repo without changing it. Runs in a restricted bash shell. Installed packages can be checked with dpkg-query and apt-cache. CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "command", "Safe shell command to execute. Do not use stream redirection, do not use find or cd, no running programs by explicit path, and no modifying the PATH env var. A small set of safe commands are available; in the event of an error, they will be listed for you" },
 					  { "timeout_seconds", "Timeout in seconds (default 120)." },
 				  },
 			  } },
 			  { "write_file", new ToolConfig() {
-				  Description = "Create a new file or overwrite an existing one (if you used read_file already). CWD is /workspace/ but temporary files should go in /tmp/",
+				  Description = "Create a new file or overwrite an existing one (read_file it first if it exists). Relative paths are in the repo root at /workspace/, where your work belongs; nothing outside /workspace/ and /tmp/ can be written, nor anything inside a top-level folder whose name starts with '.' (.git, .github, .vscode, ...).",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "file_path", "File path" },
 					  { "content", "Complete file contents" },
 				  },
 			  } },
 				{ "edit_file", new ToolConfig() {
-				  Description = "Replace old_text with new_text in a file. Tries exact match first; if not found, retries ignoring all whitespace. CWD is at the root of the repo at /workspace/",
+				  Description = "Replace old_text with new_text in a file. Tries exact match first; if not found, retries ignoring all whitespace. Works inside /workspace/ and /tmp/ only, and not inside a top-level folder whose name starts with '.' (.git, .github, .vscode, ...). CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "file_path", "File path" },
 					  { "old_text", "Text to find and replace" },
@@ -318,7 +361,7 @@ public class SettingsService
 				  },
 			  } },
 				{ "read_file", new ToolConfig() {
-				  Description = "Read a file's raw contents. Returns up to 500 lines starting at offset. CWD is the repo root at /workspace/.",
+				  Description = "Read a file's raw contents. Returns up to 500 lines starting at offset. Works inside /workspace/ and /tmp/ only. CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
 					{ "file_path", "File path" },
 					{ "offset", "Starting line number (1 based). Omit for the beginning of the file." },
@@ -326,7 +369,7 @@ public class SettingsService
 				  },
 			  } },
 				{ "find_relevant_file_sections", new ToolConfig() {
-				  Description = "Find the sections of a file relevant to a goal: returns where different concepts can be found in the indicated file, citations for different sections so you can target follow-up read_file calls better. Small files are returned immediately without interpretation. CWD is the repo root at /workspace/.",
+				  Description = "Find the sections of a file relevant to a goal: returns where different concepts can be found in the indicated file, citations for different sections so you can target follow-up read_file calls better. Small files are returned immediately without interpretation. Works inside /workspace/ and /tmp/ only. CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "file_path", "File path" },
 					{ "goal", "What kind of content is relevant to you in this file. Used to focus the citations returned." },
@@ -334,7 +377,7 @@ public class SettingsService
 				  },
 			  } },
 				{ "inspect_media", new ToolConfig() {
-				  Description = "Look at an image, audio, or video file. If you accept that kind of input, the file itself is attached to the result so you can examine it directly. Otherwise, or when use_subagent is set, a media-capable subagent reads it and returns only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. A large file is reported by size the first time so you can resize or clip it with ffmpeg; calling again on the same path sends it as-is. CWD is the repo root at /workspace/.",
+				  Description = "Look at an image, audio, or video file. If you accept that kind of input, the file itself is attached to the result so you can examine it directly. Otherwise, or when use_subagent is set, a media-capable subagent reads it and returns only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. A large file is reported by size the first time so you can resize or clip it with ffmpeg; calling again on the same path sends it as-is. Works inside /workspace/ and /tmp/, and on a dropped attachment at the path you were given for it. CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac, mp4, mov, webm)." },
 					  { "goal", "Exactly what to extract or answer from the media. Required when a subagent reads it; ignored when the file is attached for you directly." },
@@ -374,7 +417,7 @@ public class SettingsService
 				  },
 			  } },
 			  { "commit_and_rebase", new ToolConfig() {
-				  Description = "Runs a script to check in all changes in the worktree and integrate them. The workflow is always to rebase commits on the current branch onto the parent branch (linear history, no merge commit), and fast-forward the base onto this branch. Call this after an approved review. On a conflict, the rebase stops with the conflicted files listed; resolve them then run 'git rebase --continue' with bash, then call this again to finish",
+				  Description = "Runs a script to check in all changes in the worktree and integrate them. The workflow is always to rebase commits on the current branch onto the parent branch (linear history, no merge commit), and fast-forward the base onto this branch. Call this after an approved review. This is the only way your work gets committed: your own git is read-only. On a conflict, the rebase stops with the conflicted files listed; resolve the conflict markers in those files, then call this again and it continues the rebase and finishes. Changes inside top-level folders whose names start with '.' (.github, .vscode, ...) are refused; only a human may make those.",
 				  Parameters  = new Dictionary<string,string>() {
 					  { "message", "A brief git commit message describing the changes" },
 				  },

@@ -29,10 +29,11 @@ public static class ShellTools
 	// shell so the output format matches `ls -al` exactly, then capped to MaxLsEntries entries.
 	public static async Task<ToolResult> LsAsync(string toolCallId, string folder, CancellationToken cancellationToken)
 	{
-		string target = string.IsNullOrWhiteSpace(folder) ? "." : folder;
+		string target  = string.IsNullOrWhiteSpace(folder) ? "." : folder;
 		string escaped = target.Replace("'", "'\\''");
 		string command = $"ls -1Ap -- '{escaped}' | awk '{{print ($0 ~ /\\/$/) \"\\t\" $0}}' | sort | cut -f2-";
-		ToolResult result = await BashAsync(toolCallId, command, null, cancellationToken);
+		// The shell user's shell, but without BashAsync's dot-folder sweep: a listing creates nothing.
+		ToolResult result = await RunBashAsync(toolCallId, command, null, false, true, cancellationToken);
 
 		if (result.ExitCode != 0 || string.IsNullOrEmpty(result.StdOut))
 			return result;
@@ -46,9 +47,9 @@ public static class ShellTools
 	{
 		string[] lines = result.StdOut.Replace("\r\n", "\n").Split('\n');
 
-		StringBuilder sb = new StringBuilder();
-		int entries = 0;
-		int omitted = 0;
+		StringBuilder sb      = new StringBuilder();
+		int           entries = 0;
+		int           omitted = 0;
 		foreach (string line in lines)
 		{
 			if (line.Length == 0)
@@ -75,9 +76,27 @@ public static class ShellTools
 		return new ToolResult(toolCallId, sb.ToString(), result.StdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
 
-	public static Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
+	// A shell for anything the model can cause to run: it runs as the sandbox's shell user, which
+	// cannot read the API keys or the agent's state and cannot touch the git repository. A top-level
+	// dot-folder the command created is handed to root before the result goes back, and the model is
+	// told so — otherwise it would only find out when its next write there failed.
+	public static async Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
-		return RunBashAsync(toolcallid, command, timeoutSeconds, false, cancellationToken);
+		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, cancellationToken);
+		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
+		if (sealedNote.Length > 0)
+		{
+			string stdErr = string.IsNullOrEmpty(result.StdErr) ? sealedNote : result.StdErr + "\n" + sealedNote;
+			result        = new ToolResult(toolcallid, result.StdOut, stdErr, result.ExitCode, result.MeasuredOutputTokens);
+		}
+		return result;
+	}
+
+	// A shell for the agent's own work — creating and removing the worktree, commit_and_rebase, the
+	// sandbox lockdown, apt installs — which needs root. Never hand this a command the model wrote.
+	public static Task<ToolResult> AgentBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
+	{
+		return RunBashAsync(toolcallid, command, timeoutSeconds, false, false, cancellationToken);
 	}
 
 	// Restricted, read-only variant of bash. Launches the shell with -r (restricted mode: no output
@@ -88,7 +107,7 @@ public static class ShellTools
 	// determined human attacker.
 	public static Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
-		return RunBashAsync(toolcallid, command, timeoutSeconds, true, cancellationToken);
+		return RunBashAsync(toolcallid, command, timeoutSeconds, true, true, cancellationToken);
 	}
 
 	// Drains a redirected stream into a capped builder in fixed-size chunks; returns true when the
@@ -99,7 +118,7 @@ public static class ShellTools
 	// process exit, and whatever was captured up to that point is the result.
 	private static async Task<bool> DrainCappedAsync(StreamReader reader, StringBuilder sink, CancellationToken ct)
 	{
-		bool capped = false;
+		bool   capped = false;
 		char[] buffer = new char[8192];
 		try
 		{
@@ -140,7 +159,7 @@ public static class ShellTools
 		return text;
 	}
 
-	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, CancellationToken cancellationToken)
+	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool asShellUser, CancellationToken cancellationToken)
 	{
 		ToolResult finalResult;
 
@@ -160,12 +179,12 @@ public static class ShellTools
 				// so commands containing quotes, backslashes, or $ arrive at bash verbatim.
 				ProcessStartInfo psi = new ProcessStartInfo
 				{
-					FileName = "/bin/bash",
-					WorkingDirectory = cwd,
+					FileName               = "/bin/bash",
+					WorkingDirectory       = cwd,
 					RedirectStandardOutput = true,
-					RedirectStandardError = true,
-					UseShellExecute = false,
-					CreateNoWindow = true
+					RedirectStandardError  = true,
+					UseShellExecute        = false,
+					CreateNoWindow         = true
 				};
 				// -r puts bash in restricted mode; PATH is narrowed so only the read-only allowlist resolves.
 				if (restricted)
@@ -177,25 +196,28 @@ public static class ShellTools
 				psi.ArgumentList.Add("-c");
 				psi.ArgumentList.Add(command);
 
+				if (asShellUser)
+					Sandbox.RunAsShellUser(psi, restricted);
+
 				using (Process process = new Process { StartInfo = psi })
 				{
 					StringBuilder output = new StringBuilder();
-					StringBuilder error = new StringBuilder();
+					StringBuilder error  = new StringBuilder();
 
 					process.Start();
 
 					// Each stream gets its own chunked drain task; a builder is written only by its
 					// own task, and both tasks are awaited before the builders are read.
 					using CancellationTokenSource drainCts = new CancellationTokenSource();
-					Task<bool> outputDrain = DrainCappedAsync(process.StandardOutput, output, drainCts.Token);
-					Task<bool> errorDrain = DrainCappedAsync(process.StandardError, error, drainCts.Token);
+					Task<bool> outputDrain                 = DrainCappedAsync(process.StandardOutput, output, drainCts.Token);
+					Task<bool> errorDrain                  = DrainCappedAsync( process.StandardError,  error, drainCts.Token);
 
 					using (CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
 					{
 						cts.CancelAfter(TimeSpan.FromSeconds(timeout));
 
 						bool processCompleted = false;
-						bool timedOut = false;
+						bool timedOut         = false;
 
 						try
 						{
@@ -233,12 +255,12 @@ public static class ShellTools
 						await Task.WhenAny(Task.WhenAll(outputDrain, errorDrain), Task.Delay(500));
 						drainCts.Cancel();
 						bool outputCapped = await outputDrain;
-						bool errorCapped = await errorDrain;
+						bool errorCapped  = await errorDrain;
 
 						if (processCompleted)
 						{
 							string result = CappedText(output, outputCapped, "stdout");
-							string err = CappedText(error, errorCapped, "stderr");
+							string err    = CappedText( error,  errorCapped, "stderr");
 
 							// Use string.Empty for no output to avoid nulls.
 							string stdOut = string.IsNullOrEmpty(result) ? string.Empty : result;
@@ -256,12 +278,12 @@ public static class ShellTools
 						else if (timedOut)
 						{
 							string result = CappedText(output, outputCapped, "stdout");
-							string err = CappedText(error, errorCapped, "stderr");
+							string err    = CappedText( error,  errorCapped, "stderr");
 							string stdOut = string.IsNullOrEmpty(result) ? string.Empty : result;
 							string stdErr = string.IsNullOrEmpty(err) ? string.Empty : err;
 
 							string timeoutMessage = $"Error: Command timed out after {timeout} seconds.";
-							finalResult = new ToolResult(toolcallid, stdOut, stdErr + (string.IsNullOrEmpty(stdErr) ? "" : "\n") + timeoutMessage, 1, 0);
+							finalResult           = new ToolResult(toolcallid, stdOut, stdErr + (string.IsNullOrEmpty(stdErr) ? "" : "\n") + timeoutMessage, 1, 0);
 						}
 						else
 						{
@@ -288,9 +310,9 @@ public static class ShellTools
 		// allowlist boundary. Tell it the full set up front so it adapts instead of probing to find the edges.
 		if (restricted && IsBoundaryFailure(finalResult))
 		{
-			string note = ReadonlyBoundaryNote();
+			string note      = ReadonlyBoundaryNote();
 			string mergedErr = string.IsNullOrEmpty(finalResult.StdErr) ? note : finalResult.StdErr + "\n" + note;
-			finalResult = new ToolResult(toolcallid, finalResult.StdOut, mergedErr, finalResult.ExitCode, finalResult.MeasuredOutputTokens);
+			finalResult      = new ToolResult(toolcallid, finalResult.StdOut, mergedErr, finalResult.ExitCode, finalResult.MeasuredOutputTokens);
 		}
 
 		return finalResult;

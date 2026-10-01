@@ -660,7 +660,7 @@ public static class FakeLlmTests
 
 	private static LlmService BuildService(LlmModel model)
 	{
-		return new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new List<string> { FakeLlm.ModelId }, (id, effort, summaries) => { });
+		return new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new List<string> { FakeLlm.ModelId }, (id, effort, summaries, maxImages) => { });
 	}
 
 	// The case that motivated all of this: an 89%-full conversation asks a subagent for a review and

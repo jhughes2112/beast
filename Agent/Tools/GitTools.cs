@@ -20,8 +20,10 @@ public static class GitTools
 	// worktree (git --git-common-dir), not guessed as "main" or read from origin/HEAD, so it is correct for any
 	// base branch. The commit message is passed base64-encoded so arbitrary text
 	// cannot break out of the script. A rebase conflict is left in place (not aborted) with the conflicted files
-	// listed, so the Developer can resolve it directly and call again. Returns (ok, transcript): ok is false on
-	// any git failure, with the transcript explaining why.
+	// listed; the Developer resolves the files and calls again, and this call continues the rebase — the
+	// model's own git is read-only (the repository is root's, see Sandbox), so it cannot run
+	// `git rebase --continue` itself. Returns (ok, transcript): ok is false on any git failure, with the
+	// transcript explaining why.
 	//
 	// Two non-worktree cases short-circuit to success before any rebase is attempted, so a project that is not
 	// wired for the full flow still succeeds: (1) the folder is not a git repository at all (a /worktree none /
@@ -31,13 +33,23 @@ public static class GitTools
 	public static async Task<(bool ok, string transcript)> CommitAndRebaseAsync(string message, CancellationToken ct)
 	{
 		string encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(message));
-		string script =
+		string script  =
 			"if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo 'Not a git repository; nothing to commit or integrate.'; exit 0; fi\n" +
-			"branch=$(git rev-parse --abbrev-ref HEAD)\n" +
+			"gitdir=$(git rev-parse --git-dir)\n" +
 			"common=$(git rev-parse --git-common-dir)\n" +
 			"main_wt=$(cd \"$common\" && cd .. && pwd)\n" +
 			"base=$(git -C \"$main_wt\" rev-parse --abbrev-ref HEAD)\n" +
-			"echo \"Committing work on '$branch'...\"\n" +
+			// A rebase left stopped on a conflict by an earlier call: HEAD is detached, so the branch
+			// comes from the rebase's own record of it.
+			"rb=''\n" +
+			"for d in rebase-merge rebase-apply; do if [ -d \"$gitdir/$d\" ]; then rb=\"$gitdir/$d\"; fi; done\n" +
+			"if [ -n \"$rb\" ]; then branch=$(sed 's#^refs/heads/##' \"$rb/head-name\"); else branch=$(git rev-parse --abbrev-ref HEAD); fi\n" +
+			"conflicted() {\n" +
+			"  echo \"Rebase of '$branch' onto '$base' stopped on conflicts. Conflicted files:\"\n" +
+			"  git diff --name-only --diff-filter=U\n" +
+			"  echo \"Resolve the conflict markers in each file, then call commit_and_rebase again to continue the rebase and fast-forward '$base'.\"\n" +
+			"  exit 1\n" +
+			"}\n" +
 			// Unique per call: parallel Developers in the same container must not clobber each
 			// other's message through a shared fixed path. The trap removes it however we exit.
 			"msgfile=$(mktemp /tmp/beast_commit_msg.XXXXXX) || { echo 'mktemp failed.'; exit 1; }\n" +
@@ -46,29 +58,40 @@ public static class GitTools
 			// An empty index is the only legitimate "nothing happened" case; any other add/commit
 			// failure (hooks, identity, index lock) must stop the flow, not read as success with the
 			// work still uncommitted.
+			// Still-conflicted files must be checked before staging, which marks them resolved.
+			"if [ -n \"$rb\" ]; then for f in $(git diff --name-only --diff-filter=U); do if grep -qE '^(<<<<<<<|>>>>>>>)( |$)' \"$f\"; then conflicted; fi; done; fi\n" +
 			"git add -A || { echo 'git add failed.'; exit 1; }\n" +
-			"if git diff --cached --quiet; then\n" +
-			"  echo '(nothing to commit)'\n" +
+			ProtectedGuard("git diff --cached --name-only") +
+			"if [ -n \"$rb\" ]; then\n" +
+			"  echo \"Continuing the rebase of '$branch' onto '$base' with the resolved files...\"\n" +
+			"  git -c core.editor=true rebase --continue || conflicted\n" +
 			"else\n" +
-			"  git commit -F \"$msgfile\" || { echo 'git commit failed.'; exit 1; }\n" +
+			"  echo \"Committing work on '$branch'...\"\n" +
+			"  if git diff --cached --quiet; then\n" +
+			"    echo '(nothing to commit)'\n" +
+			"  else\n" +
+			"    git commit -F \"$msgfile\" || { echo 'git commit failed.'; exit 1; }\n" +
+			"  fi\n" +
 			"fi\n" +
 			"if [ -z \"$base\" ] || [ \"$base\" = \"$branch\" ]; then echo \"Not running in a per-launch worktree (no distinct base branch); committed in place.\"; exit 0; fi\n" +
+			ProtectedGuard("git diff --name-only \"$base\"...HEAD") +
 			"echo \"Integrating '$branch' onto local '$base'...\"\n" +
 			"echo \"Rebasing '$branch' onto '$base' (linear history, no merge commit)...\"\n" +
-			"if ! git rebase \"$base\"; then\n" +
-			"  echo \"Rebase of '$branch' onto '$base' hit conflicts. Conflicted files:\"\n" +
-			"  git diff --name-only --diff-filter=U\n" +
-			"  echo \"Resolve each, 'git add' it, run 'git rebase --continue', then call commit_and_rebase again to fast-forward '$base'.\"\n" +
-			"  exit 1\n" +
-			"fi\n" +
+			"git rebase \"$base\" || conflicted\n" +
 			"echo \"Fast-forwarding base '$base' onto '$branch'...\"\n" +
 			"git -C \"$main_wt\" merge --ff-only \"$branch\" || { echo \"Could not fast-forward '$base' (its worktree may have uncommitted changes).\"; exit 1; }\n";
 
+		// Root: the repository is root's and the model's git is read-only, so recording the work and
+		// fast-forwarding the main checkout (which the model's shell cannot reach at all) is the agent's
+		// job alone. Root never runs git over metadata the shell could have written. Files a rebase
+		// wrote into the working tree as root are handed back to the shell user by re-running the
+		// sandbox lockdown, so the model can keep editing them.
 		ToolResult result;
 		await _gitGate.WaitAsync(ct);
 		try
 		{
-			result = await ShellTools.BashAsync("commit_and_rebase", script, null, ct);
+			result = await ShellTools.AgentBashAsync("commit_and_rebase", script, null, ct);
+			await Sandbox.LockDownAsync(ct);
 		}
 		finally
 		{
@@ -95,5 +118,27 @@ public static class GitTools
 
 		string transcript = sb.Length > 0 ? sb.ToString() : "[commit_and_rebase produced no output]";
 		return (ok, transcript);
+	}
+
+	// Script lines refusing to commit or integrate changes inside the top-level dot-folders (.github,
+	// .vscode, ...), which belong to the agent under the sandbox: those are where CI and editors
+	// execute from, so a change there is a human's to make. The model cannot write them, so this is a
+	// backstop. listCommand prints the changed paths to check. Empty without the sandbox, where the
+	// rule does not apply.
+	private static string ProtectedGuard(string listCommand)
+	{
+		string guard = string.Empty;
+		if (Sandbox.ShellUserActive)
+		{
+			guard =
+				$"protected=$({listCommand} | grep -E '^\\.[^/]+/')\n" +
+				"if [ -n \"$protected\" ]; then\n" +
+				"  echo 'Refusing: these changes are in protected folders, which only a human may change:'\n" +
+				"  echo \"$protected\"\n" +
+				"  echo 'Remove them from the branch, then call commit_and_rebase again.'\n" +
+				"  exit 1\n" +
+				"fi\n";
+		}
+		return guard;
 	}
 }

@@ -40,8 +40,9 @@ public static class WorktreeBootstrap
 			"  fi\n" +
 			"fi\n";
 
-		ToolResult result = await ShellTools.BashAsync("worktree_bootstrap", script, null, ct);
-		string detail = result.StdErr;
+		// Root: this runs before the sandbox lockdown, which then hands the checkout to the shell user.
+		ToolResult result = await ShellTools.AgentBashAsync("worktree_bootstrap", script, null, ct);
+		string     detail = result.StdErr;
 		if (!string.IsNullOrEmpty(result.StdOut))
 			detail = string.IsNullOrEmpty(detail) ? result.StdOut : detail + "\n" + result.StdOut;
 		return (result.ExitCode == 0, detail);

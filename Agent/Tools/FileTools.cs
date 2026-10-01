@@ -27,13 +27,20 @@ public static class FileTools
 	{
 		ToolResult result;
 
+		// The resolved path, symlinks followed, is the one read — never the argument itself.
+		(string? confined, string denied) = Sandbox.Confine(filePath, false, false);
+
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
 			result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
 		}
+		else if (confined == null)
+		{
+			result = new ToolResult(toolCallId, string.Empty, denied, 1, 0);
+		}
 		else
 		{
-			string fullPath = Path.GetFullPath(filePath);
+			string fullPath = confined;
 
 			try
 			{
@@ -257,6 +264,9 @@ public static class FileTools
 	{
 		ToolResult result;
 
+		// The resolved path, symlinks followed, is the one edited — never the argument itself.
+		(string? confined, string denied) = Sandbox.Confine(filePath, true, false);
+
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
 			result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
@@ -265,9 +275,13 @@ public static class FileTools
 		{
 			result = new ToolResult(toolCallId, string.Empty, "Error: old_text cannot be empty", 1, 0);
 		}
+		else if (confined == null)
+		{
+			result = new ToolResult(toolCallId, string.Empty, denied, 1, 0);
+		}
 		else
 		{
-			string fullPath = Path.GetFullPath(filePath);
+			string fullPath = confined;
 
 			try
 			{
@@ -287,7 +301,7 @@ public static class FileTools
 						if (exactIdx >= 0)
 						{
 							string newContent = fileContent.Substring(0, exactIdx) + replacement + fileContent.Substring(exactIdx + oldText.Length);
-							await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
+							await WriteTextAsync(fullPath, newContent, cts.Token);
 							result = new ToolResult(toolCallId, BuildEditEcho(newContent, exactIdx, oldText, replacement), string.Empty, 0, 0);
 						}
 						else
@@ -331,7 +345,7 @@ public static class FileTools
 									// differ from the model's old_text. Diff against what was really there.
 									string removedText = fileContent.Substring(origStart, origEnd - origStart);
 									string newContent  = fileContent.Substring(        0,           origStart) + replacement + fileContent.Substring(origEnd);
-									await File.WriteAllTextAsync(fullPath, newContent, cts.Token);
+									await WriteTextAsync(fullPath, newContent, cts.Token);
 									result = new ToolResult(toolCallId, BuildEditEcho(newContent, origStart, removedText, replacement), string.Empty, 0, 0);
 								}
 								else
@@ -528,20 +542,27 @@ public static class FileTools
 	{
 		ToolResult result;
 
+		// The resolved path, symlinks followed, is the one written — never the argument itself.
+		(string? confined, string denied) = Sandbox.Confine(filePath, true, false);
+
 		if (string.IsNullOrWhiteSpace(filePath))
 		{
 			result = new ToolResult(toolCallId, string.Empty, "Error: Path cannot be empty", 1, 0);
 		}
+		else if (confined == null)
+		{
+			result = new ToolResult(toolCallId, string.Empty, denied, 1, 0);
+		}
 		else
 		{
-			string fullPath = Path.GetFullPath(filePath);
+			string fullPath = confined;
 
 			try
 			{
 				string? directory = Path.GetDirectoryName(fullPath);
 				if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
 				{
-					Directory.CreateDirectory(directory);
+					CreateDirectoriesForShellUser(directory);
 				}
 
 				using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -550,13 +571,15 @@ public static class FileTools
 				await FileLock.WaitAsync(cts.Token);
 				try
 				{
-					await File.WriteAllTextAsync(fullPath, content ?? string.Empty, cts.Token);
+					await WriteTextAsync(fullPath, content ?? string.Empty, cts.Token);
 				}
 				finally
 				{
 					FileLock.Release();
 				}
 
+				// Written by the root agent; the model's shell must still be able to change it.
+				Sandbox.GiveToShellUser(fullPath);
 				result = new ToolResult(toolCallId, "OK", string.Empty, 0, 0);
 			}
 			catch (OperationCanceledException)
@@ -570,5 +593,37 @@ public static class FileTools
 		}
 
 		return result;
+	}
+
+	// Writes text as UTF-8 (no BOM, like File.WriteAllText) without ever opening an existing file with
+	// O_CREAT. The workspace root is a sticky, world-writable folder (Sandbox), and with the kernel's
+	// fs.protected_regular set — as Docker Desktop's VM sets it — an O_CREAT open of a file someone
+	// else owns there is refused even to root. File.WriteAllText always passes O_CREAT, so the root
+	// agent could not overwrite anything the model's shell had made. An existing file is truncated in
+	// place instead (no O_CREAT), and a new one is created exclusively (O_CREAT|O_EXCL on a name that
+	// does not exist, which the rule allows). Truncating in place also keeps the file's owner.
+	private static async Task WriteTextAsync(string path, string content, CancellationToken ct)
+	{
+		FileMode mode                   = File.Exists(path) ? FileMode.Truncate : FileMode.CreateNew;
+		await using FileStream stream   = new FileStream(path, mode, FileAccess.Write, FileShare.Read);
+		await using StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false));
+		await writer.WriteAsync(content.AsMemory(), ct);
+	}
+
+	// Creates a folder and any missing parents, handing each new one to the sandbox's shell user so
+	// the model's shell can write into what the root agent created.
+	private static void CreateDirectoriesForShellUser(string directory)
+	{
+		List<string> missing = new List<string>();
+		string?      current = directory;
+		while (!string.IsNullOrEmpty(current) && !Directory.Exists(current))
+		{
+			missing.Add(current);
+			current = Path.GetDirectoryName(current);
+		}
+
+		Directory.CreateDirectory(directory);
+		foreach (string created in missing)
+			Sandbox.GiveToShellUser(created);
 	}
 }

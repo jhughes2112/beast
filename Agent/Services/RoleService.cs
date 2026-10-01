@@ -443,14 +443,15 @@ public class RoleService
 	// ---- Role definitions ----
 	// Each role is defined here so the role set is easy to extend without touching the Role data class.
 
-	// Interactive entry point: read the project and decide what to do. No end-of-turn prompt, so it
-	// behaves like ordinary chat — it responds and waits. The subagent tool hands concrete work off to
-	// the Developer.  This should be a smart model.
+	// Interactive entry point and orchestrator: read the project, converse, and split larger requests
+	// into units of work it hands to the Developer one by one through assign_work. Its end-of-turn
+	// prompt only drives that work loop; outside it, it responds and waits like ordinary chat. This
+	// should be a smart model.
 	private static Role DefaultRole()
 	{
 		const string description  = "Light conversation role";
 		const string systemPrompt = """
-			You are a helpful assistant with read-only privileges. Your only job is to be conversational and pass work to the Developer. Always delegate immediately to the Developer the moment the user asks for work to be performed.
+			You are a helpful assistant and task orchestrator with read-only privileges. Your primary job is to take large unrelated tasks and pass them individually to the Developer one by one, or if a group of tasks benefits from shared context, pass them together to the Developer. Be conversational if there is no specific task assigned that requires a Developer to modify files.  The Developer has more access and tools than you do.
 			""";
 
 		const string summaryPrompt = """
@@ -510,16 +511,16 @@ public class RoleService
 			"""
             You are a developer agent working in a git worktree. Use tools to make changes directly.
             When the work has been implemented and tested, call review_work for constructive feedback. Address anything in-scope for the work requested and call review_work again until it is approved.
-            Once approved, call commit_and_rebase to finish the work and integrate it onto the base branch (ff merge only, no merge commits). If a conflict happens, resolve them, run 'git rebase --continue', then call commit_and_rebase again to finish.
+            Once approved, call commit_and_rebase to finish the work and integrate it onto the base branch (ff merge only, no merge commits). Your own git is read-only; commit_and_rebase is what records your work. If a conflict happens, resolve the conflicted files, then call commit_and_rebase again to continue.
             Be precise, directed, and maintain a sense of purpose without spending effort on high level considerations and interpretation. Consider the code the source of truth. Do not stray from the goal.
             If the goal cannot be achieved, be brief: report this and list what you attempted along with the exact output.
-            Finish by calling task_complete with the review outcome and integration status.
+            Finish by calling task_complete with the review outcome and integration status. If the environment is lacking some necessary dev tool or installation, surface that in the task_complete message. Do not worry about code formatting, that is automatically fixed on commit later.
             """;
 		const string endOfTurnPrompt = "Are you finished? If so, review_work until it's approved. After approval, commit_and_rebase to check it in. Then call task_complete with the approval message.";
 		// review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
 		// injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
 		// work; task_complete is this role's terminator).
-		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "inspect_media", "review_work", "commit_and_rebase", "task_complete" };
+		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "review_work", "commit_and_rebase", "task_complete", "inspect_media", "apt_install" };
 		return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
@@ -536,7 +537,7 @@ public class RoleService
             You are a reviewer agent with read-only access to the worktree. Inspect the indicated changes against the goal you were given: check correctness, scope, code quality and that nothing obviously broke.
             If you need any outputs from build tools, use the bash tool but do not modify any files. Approve with caveats, concerns, and indicate whether follow-on tasks should be added to the plan. 
             If the code quality violates standards, has bugs, needs more cases handled, or in any other case should be improved, reject with specific, actionable comments for the developer.
-            Call finish_review to complete this review round.
+            Call finish_review to complete this review round.  Do not worry about code formatting, that is automatically fixed on commit later.
             """;
 		const string endOfTurnPrompt = "Are you finished? To complete the review, use the finish_review tool and report your results.";
 		// finish_review is the terminator, created in code and added by SubagentRunner; it has no registry

@@ -57,6 +57,19 @@ public static class ToolFactory
 				});
 		}
 
+		if (role.Tools.Contains("apt_install"))
+		{
+			// Older settings.json files predate this tool; fall back to the in-code config.
+			if (!settings.Tools.TryGetValue("apt_install", out ToolConfig? aptTc))
+				aptTc = SettingsService.DefaultToolConfig("apt_install");
+			Register(tools, "apt_install", aptTc.Description, Params(Req("packages", "string", aptTc.Parameters["packages"])),
+				async (args, toolCallId, ct, transport, sessionId) =>
+				{
+					string packages = Str(args, "packages");
+					return await AptTools.InstallAsync(toolCallId, packages, ct);
+				});
+		}
+
 		if (role.Tools.Contains("readonly_bash"))
 		{
 			ToolConfig tc = settings.Tools["readonly_bash"];

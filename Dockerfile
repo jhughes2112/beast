@@ -103,7 +103,8 @@ RUN npm install -g playwright@1.62.1 \
     && playwright install --with-deps chromium-headless-shell \
     && rm -rf /var/lib/apt/lists/*
 
-# The agent runs as root, and Chromium refuses to start as root with its sandbox enabled. Playwright
+# Chromium refuses to start as root with its sandbox enabled (the agent is root; model shells run as
+# the unprivileged user created below, but the flags are harmless there too). Playwright
 # and Puppeteer launch with the sandbox on by default, so the browser died before the CDP endpoint
 # appeared and both timed out at launch. Wrap the real binary in place so every launcher (node/python
 # Playwright, Puppeteer, the CLI wrapper below) gets --no-sandbox and --disable-dev-shm-usage (the
@@ -174,6 +175,29 @@ RUN curl -fsSL https://services.gradle.org/distributions/gradle-8.14-bin.zip -o 
 # uv — fast Python package/environment manager; increasingly what project READMEs assume.
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
+# The unprivileged user every model-driven process runs as (bash, readonly_bash, ls). The agent stays
+# root: it reads the API keys under /root (0700, so this user cannot), runs commit_and_rebase, and owns
+# the workspace's .beast state, the repository's hooks and config, and the main checkout, which the
+# agent's startup lockdown makes root-only. Its home is where user-level installs land — pip falls
+# back to --user when site-packages is not writable (the config allows that on Ubuntu's externally
+# managed Python), npm installs globals under ~/.npm-global, and cargo/go/dotnet tools under ~/.
+# apt is not available to it; the agent's apt_install tool installs packages as root instead.
+# safe.directory: the workspace is root-owned (sticky) while this user runs git in it.
+# The dotnet call bakes this user's first-run sentinels, as the SDK layer above does for root.
+RUN useradd --create-home --uid 1500 --shell /bin/bash beast \
+    && git config --system safe.directory '*' \
+    && echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections \
+    && mkdir -p /home/beast/.config/pip /home/beast/.npm-global /home/beast/.local/bin \
+    && printf '[global]\nbreak-system-packages = true\n' > /home/beast/.config/pip/pip.conf \
+    && printf 'prefix=/home/beast/.npm-global\n' > /home/beast/.npmrc \
+    && chown -R beast:beast /home/beast \
+    && su beast -c 'dotnet nuget locals all --list >/dev/null'
+
+# Package lists stay in the image so the model's shell can check what exists and what is installed
+# (apt-cache policy/search, apt list) before asking apt_install for something; apt_install refreshes
+# them before its first install.
+RUN apt-get update
+
 # Read-only command allowlist for readonly_bash. The tool launches `bash -r` (restricted) with PATH set to
 # only this directory, so a locked-down role can run just these curated, read-only programs and nothing else
 # on the image resolves. Deliberately excludes anything that can spawn an unrestricted shell by absolute path
@@ -196,6 +220,7 @@ RUN mkdir -p /opt/agent-bins/readonly \
          od xxd hexdump strings \
          sha256sum sha1sum md5sum b2sum cksum base64 base32 \
          git jq xmllint pdftotext identify \
+         dpkg-query apt-cache \
          chromium \
          ping traceroute dig nslookup host ss netstat \
          ps lsof \

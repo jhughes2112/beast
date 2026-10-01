@@ -107,6 +107,11 @@ public class AutoModelConfig
 	// endpoint refuses. See ModelConfig.ReasoningSummaries.
 	[JsonPropertyName("reasoningSummaries")]
 	public bool ReasoningSummaries { get; set; } = true;
+
+	// 0 = no known limit. Not discoverable — no catalog states it — so it is written here when the
+	// provider refuses a request for carrying too many images. See ModelConfig.MaxImages.
+	[JsonPropertyName("maxImages")]
+	public int MaxImages { get; set; } = 0;
 }
 
 public class ToolConfig
@@ -175,6 +180,13 @@ public class ModelConfig
 	// Populated from catalog discovery for auto models; declarable manually for others.
 	[JsonPropertyName("input")]
 	public List<string> Input { get; set; } = new();
+
+	// Most images one request may carry; 0 = no known limit. Some providers cap it (a few at 4),
+	// and since every image in the conversation is re-sent each turn, a long session crosses it.
+	// Requests keep only the newest images within the cap. Learned and written back the first time
+	// the provider refuses a request for carrying too many; settable by hand as well.
+	[JsonPropertyName("maxImages")]
+	public int MaxImages { get; set; } = 0;
 
 	// Extra top-level fields merged verbatim into the outgoing request body. Each entry is a
 	// JSON object whose properties are copied into the payload as-is (strings, arrays, objects,

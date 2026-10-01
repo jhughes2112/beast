@@ -17,12 +17,13 @@ public enum LlmExitReason
 // fresh remainder) and the subtraction downstream then ran twice, so the split is stated here.
 public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost, int cachedTokens);
 
-// Raised by a protocol when a provider teaches it something durable about a model's reasoning: an
-// endpoint that refuses thinking summaries, or a model that rejects reasoning parameters outright.
-// The registry applies it to the live config and writes it to settings, so the next run — and every
-// other session using that model right now — starts from what was learned instead of rediscovering
-// it one rejected request at a time. Null fields mean "unchanged"; effort is a ReasoningEffort word.
-public delegate void ModelReasoningSink(string configId, string? effort, bool? summaries);
+// Raised by a protocol when a provider teaches it something durable about a model: an endpoint that
+// refuses thinking summaries, a model that rejects reasoning parameters outright, or one that caps
+// how many images a request may carry. The registry applies it to the live config and writes it to
+// settings, so the next run — and every other session using that model right now — starts from what
+// was learned instead of rediscovering it one rejected request at a time. Null fields mean
+// "unchanged"; effort is a ReasoningEffort word.
+public delegate void ModelCapabilitySink(string configId, string? effort, bool? summaries, int? maxImages);
 
 // Result returned by LlmService after running a conversation to completion.
 public class LlmResult
@@ -73,11 +74,11 @@ public class LlmService
 	// down state set by one session are visible to others picking that model next. roleModelIds is the
 	// role's priority list this model came from, so fallback can advance past it.
 	public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability, IReadOnlyList<string> roleModelIds,
-		ModelReasoningSink onReasoningLearned)
+		ModelCapabilitySink onCapabilityLearned)
 	{
 		_model        = model;
 		_availability = availability;
-		_handler      = new ProtocolProxy(model, detectedProtocol, onReasoningLearned);
+		_handler      = new ProtocolProxy(model, detectedProtocol, onCapabilityLearned);
 		_roleModelIds = roleModelIds;
 	}
 

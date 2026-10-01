@@ -19,6 +19,7 @@ public class Program
 		{
 			ITransportServer consoleTransport = new TransportConsoleDebug();
 			TestContext      ctx              = new TestContext(consoleTransport);
+			Sandbox.Initialize(Environment.CurrentDirectory);
 			FixJson.ResetCounters();
 			LlmServiceTests.Test(ctx);
 			ContextBudgetTests.Test(ctx);
@@ -27,6 +28,9 @@ public class Program
 			ModelCatalogTests.Test(ctx);
 			ProtocolSwitchTests.Test(ctx);
 			MediaToolResultTests.Test(ctx);
+			await ProtocolConformanceTests.TestAsync(ctx);
+			await SandboxTests.TestAsync(ctx);
+			await ToolSandboxTests.TestAsync(ctx);
 			WebToolsTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);
@@ -50,6 +54,13 @@ public class Program
 			Console.Error.WriteLine(string.IsNullOrWhiteSpace(wtDetail) ? "(no output)" : wtDetail);
 			return 1;
 		}
+
+		// Before anything the model can drive exists: from here on its shell runs as the sandbox's
+		// shell user, and the workspace's ownership and permissions keep that user out of the keys,
+		// the agent's state, and the git control files.
+		Sandbox.Initialize(Environment.CurrentDirectory);
+		string lockdown = await Sandbox.LockDownAsync(cts.Token);
+		Console.Error.WriteLine($"[Sandbox] {lockdown}");
 
 		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
 		RoleService     roleService     = new RoleService(Environment.CurrentDirectory);

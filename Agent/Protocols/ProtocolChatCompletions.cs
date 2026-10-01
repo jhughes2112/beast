@@ -37,15 +37,22 @@ public class ProtocolChatCompletions
 
 	// The model this instance speaks for, and where a capability learned from its provider is reported.
 	// Both are fixed for the instance's life: the proxy builds one protocol per model.
-	private readonly string              _configId;
-	private readonly ModelReasoningSink? _onReasoningLearned;
+	private readonly string               _configId;
+	private readonly ModelCapabilitySink? _onCapabilityLearned;
 
-	public ProtocolChatCompletions(bool retainReasoning, string configId, ModelReasoningSink? onReasoningLearned)
+	public ProtocolChatCompletions(bool retainReasoning, string configId, ModelCapabilitySink? onCapabilityLearned)
 	{
-		_retainReasoning    = retainReasoning;
-		_configId           = configId;
-		_onReasoningLearned = onReasoningLearned;
+		_retainReasoning     = retainReasoning;
+		_configId            = configId;
+		_onCapabilityLearned = onCapabilityLearned;
 	}
+
+	// Keeps each request's media within the provider's limits (see MediaBudget).
+	private readonly MediaBudget _media = new MediaBudget();
+
+	// Set when the streaming attempt was refused over its media: the turn is rebuilt with less of it
+	// and re-sent, rather than falling through to a non-streaming copy of the same refused request.
+	private bool _retryAfterMediaRefusal;
 
 	private bool _parallelToolCallsSupported = true;
 	private bool _streamingSupported         = true;
@@ -403,12 +410,20 @@ public class ProtocolChatCompletions
 				// in-protocol retry invisible: the model answered with reasoning and nothing else,
 				// this loop quietly asked again, and the log showed one request where the user
 				// watched three separate thinking blocks go by.
-				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
+				JsonObject body      = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
+				string?    mediaNote = _media.TakeNote();
+				if (mediaNote != null)
+					logger.Note(mediaNote);
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				if (_streamingSupported)
 				{
 					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, tools, extraHeaders, extraPayload, bundle, onProgress, logger, cancellationToken);
+					if (_retryAfterMediaRefusal)
+					{
+						_retryAfterMediaRefusal = false;
+						continue;
+					}
 					if (streamResult != null)
 					{
 						if (ShouldAdaptToolChoice(streamResult, forcedToolName, tools))
@@ -516,6 +531,10 @@ public class ProtocolChatCompletions
 					}
 					return success;
 				}
+
+				// Too many images, or too many bytes of them: the same history with less media will go.
+				if (_media.LearnFromRefusal(model, (int)httpResponse.StatusCode, responseBody, _onCapabilityLearned, logger))
+					continue;
 
 				bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
 				if (TryAdaptToError(httpResponse, responseBody, reasoningConfigured))
@@ -626,6 +645,7 @@ httpResponse);
 			}
 		}
 
+		_media.Apply(messages, model.Config.MaxImages, "text", true);
 		body["messages"] = messages;
 
 		if (tools.Count > 0)
@@ -853,6 +873,14 @@ httpResponse);
 					model, DetectedProtocol.ChatCompletions, "Transient",
 					statusCode, errorLogMessage, errorBody, null);
 				return ProtocolResult.Transient(errorLogMessage, null);
+			}
+
+			// A refusal over the request's media says nothing about streaming support: re-send the
+			// turn with less media, still streaming, instead of latching streaming off over it.
+			if (_media.LearnFromRefusal(model, statusCode, errorBody, _onCapabilityLearned, logger))
+			{
+				_retryAfterMediaRefusal = true;
+				return null;
 			}
 
 			// A 4xx other than the 429 handled above is a permanent client error in the streaming path:
@@ -1500,7 +1528,7 @@ httpResponse);
 			// effort now defaults to medium for models nobody configured). Record it so the next run —
 			// and every other session on this model — stops paying a rejected request to find out.
 			if (_reasoningMode == 2)
-				_onReasoningLearned?.Invoke(_configId, "none", null);
+				_onCapabilityLearned?.Invoke(_configId, "none", null, null);
 			return true;
 		}
 

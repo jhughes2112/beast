@@ -45,19 +45,25 @@ public class MediaInspector
 	{
 		if (string.IsNullOrWhiteSpace(filePath))
 			return new ToolResult(toolCallId, string.Empty, "Error: file_path cannot be empty", 1, 0);
-		if (!File.Exists(filePath))
+
+		// The resolved path, symlinks followed, is the one read. Dropped attachments in .beast are
+		// the one place outside the model's reach it may look, since it is told it can look again.
+		(string? confined, string denied) = Sandbox.Confine(filePath, false, true);
+		if (confined == null)
+			return new ToolResult(toolCallId, string.Empty, denied, 1, 0);
+		if (!File.Exists(confined))
 			return new ToolResult(toolCallId, string.Empty, $"Error: File not found: {filePath}", 1, 0);
 
 		(MediaKind kind, string mimeType) = MediaKinds.Classify(filePath);
 		if (kind == MediaKind.Text || kind == MediaKind.Unknown)
 			return new ToolResult(toolCallId, string.Empty, $"Error: '{Path.GetExtension(filePath)}' is not media this tool can interpret. Images, audio, and video only — use read_file for text.", 1, 0);
 
-		long fileBytes = new FileInfo(filePath).Length;
+		long fileBytes = new FileInfo(confined).Length;
 		if (fileBytes > MaxFileBytes)
 			return new ToolResult(toolCallId, string.Empty, $"Error: {filePath} is {fileBytes / (1024 * 1024)}MB; the limit is {MaxFileBytes / (1024 * 1024)}MB.", 1, 0);
 
-		MediaProbe probe    = await MediaProbe.ProbeAsync(filePath, ct);
-		string     fullPath = Path.GetFullPath(filePath);
+		MediaProbe probe    = await MediaProbe.ProbeAsync(confined, ct);
+		string     fullPath = confined;
 		string?    sizeNote = LargeNote(filePath, kind, fileBytes, probe);
 		// A second request for the same path is consent to send whatever is there now, so the
 		// model can shrink a file in place and call again.
@@ -68,7 +74,10 @@ public class MediaInspector
 		if (!useSubagent && current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string facts = Describe(kind, fileBytes, probe);
-			string text  = $"{filePath} ({facts}) is attached to this result for you to examine directly.";
+			// Answered media leaves the context (see MediaBudget): say so now, while the model can still act on it.
+			string text = $"{filePath} ({facts}) is attached to this result for you to examine directly. "
+				+ "It may be removed from context once you have responded to it, so note anything you will need from it later; "
+				+ "call inspect_media on it again if you need to see it again.";
 			return new ToolResult(toolCallId, text, string.Empty, 0, ToolDispatch.EstimateTokens(text), fullPath, mimeType);
 		}
 
@@ -91,7 +100,7 @@ public class MediaInspector
 		if (capable.Count == 0)
 			return new ToolResult(toolCallId, string.Empty, $"Error: no model in the MediaReader role declares '{MediaKinds.Modality(kind)}' input. Enable one with /config (its modalities are discovered or set there).", 1, 0);
 
-		return await InspectWithModelsAsync(toolCallId, filePath, goal, mediaRole, capable, registry, session, transport, maxOutputTokens, ct);
+		return await InspectWithModelsAsync(toolCallId, confined, goal, mediaRole, capable, registry, session, transport, maxOutputTokens, ct);
 	}
 
 	// The physical facts a model can act on: pixel size for images, duration for clips, bytes for both.

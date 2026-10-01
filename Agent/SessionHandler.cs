@@ -771,7 +771,10 @@ public class SessionHandler
 
 	// Resolves every staged file for this turn and commits the user message with whatever the
 	// resolution produced: real attachments for a model that can see them, substituted text
-	// otherwise. Each staged copy is deleted once consumed so the folder does not grow forever.
+	// otherwise. A staged copy that became an attachment is kept — the attachment leaves the
+	// context once answered, and the file is how the model looks again — and lives as long as the
+	// worktree; every other
+	// staged copy is deleted once consumed.
 	private async Task DeliverWithAttachmentsAsync(string line, LlmRegistry registry, RoleService roleService, ITransportServer transport, CancellationToken ct)
 	{
 		// Taken (not read) so they can only ever be applied to this one message.
@@ -806,7 +809,7 @@ public class SessionHandler
 				text.Append("\n\n").Append(note);
 			if (unsupportedDisplay.Length > 0)
 				unsupported.Add((unsupportedDisplay, kind, stagedName));
-			else
+			else if (attachment == null)
 				MediaIntake.DiscardStaged(stagedName);
 		}
 

@@ -14,7 +14,8 @@ using System.Threading.Tasks;
 // attachments on the user turn or text standing in for them:
 //
 //   - the current model declares the modality  -> attach it, so the model's attention runs over
-//     the media itself and it stays re-askable for the rest of the conversation
+//     the media itself; it leaves the context once answered, and the kept staged copy is how the
+//     model looks again
 //   - it does not                              -> the file is NOT sent; UnsupportedDisplay is set
 //     and the caller alerts the user to switch models
 //   - the file is text                         -> inlined verbatim
@@ -69,9 +70,9 @@ public static class MediaIntake
 	}
 
 	// Strips the "[ path ... ]" markers the client inserts, leaving what the user actually wrote.
-	// The marker exists so the client knows what to stage; once the file is attached it is pure
-	// noise to the model — the image is right there in the message, and repeating its path (twice,
-	// with an "[attached …]" note) spent tokens telling the model something it can see.
+	// The marker exists so the client knows what to stage; once the file is attached it is noise to
+	// the model — the image is right there in the message, and the one "[attached …]" note that
+	// ResolveAsync adds already names the kept copy it can inspect again.
 	public static string StripPathMarkers(string text)
 	{
 		return StripPathMarkers(text, null);
@@ -187,8 +188,10 @@ public static class MediaIntake
 		if (current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string data = Convert.ToBase64String(await File.ReadAllBytesAsync(staged, ct));
-			// No note: the attachment IS the evidence, and naming the file again only adds tokens.
-			return (string.Empty, new MediaAttachment(mimeType, data), string.Empty, kind);
+			// Answered media leaves the context (see MediaBudget), so the staged copy is kept and its
+			// path named: once the model has replied, that path is its only way back to the file.
+			string note = $"[attached {display}, saved at {staged}. It may be removed from context once you have responded to it; call inspect_media on that path to see it again.]";
+			return (note, new MediaAttachment(mimeType, data), string.Empty, kind);
 		}
 
 		// Otherwise the file cannot ride along, and there is no good substitute: a description

@@ -72,12 +72,17 @@ public class ProtocolResponses
 
 	// Where a refusal learned from the provider is reported so it outlives this instance. Null in
 	// tests, which exercise the request shapes without a registry behind them.
-	private readonly ModelReasoningSink? _onReasoningLearned;
+	private readonly ModelCapabilitySink? _onCapabilityLearned;
 
-	public ProtocolResponses(ModelReasoningSink? onReasoningLearned)
+	// Keeps each request's media within the provider's limits once it refuses (see MediaBudget).
+	// Answered media is NOT removed here: the history lives server-side and is left as the server
+	// holds it, and while chaining only the new items are in the request anyway.
+	private readonly MediaBudget _media = new MediaBudget();
+
+	public ProtocolResponses(ModelCapabilitySink? onCapabilityLearned)
 	{
-		_deltaInput         = new JsonArray();
-		_onReasoningLearned = onReasoningLearned;
+		_deltaInput          = new JsonArray();
+		_onCapabilityLearned = onCapabilityLearned;
 	}
 
 	// Clears native chaining state so the next turn replays the full canonical history once.
@@ -248,11 +253,15 @@ public class ProtocolResponses
 	{
 		try
 		{
-			// Loops only to re-send a turn the server refused over reasoning.summary. _summarySupported
-			// is one-way, so the rebuilt request cannot be refused for the same reason twice.
+			// Loops only to re-send a turn the server refused over reasoning.summary or over its media.
+			// _summarySupported is one-way and the media limits only shrink below what was refused, so
+			// the rebuilt request cannot be refused for the same reason twice.
 			for (; ; )
 			{
-				JsonObject body = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
+				JsonObject body      = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
+				string?    mediaNote = _media.TakeNote();
+				if (mediaNote != null)
+					logger.Note(mediaNote);
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				if (_streamingSupported)
@@ -325,8 +334,10 @@ public class ProtocolResponses
 
 				int statusCode = (int)httpResponse.StatusCode;
 
-				// The server refused a reasoning feature, not the turn: drop it and re-send the turn.
-				if (LearnReasoningRefusal(model, statusCode, responseBody, logger))
+				// The server refused a reasoning feature, or the request's media, not the turn: drop or
+				// trim it and re-send the turn.
+				if (LearnReasoningRefusal(model, statusCode, responseBody, logger)
+					|| _media.LearnFromRefusal(model, statusCode, responseBody, _onCapabilityLearned, logger))
 					continue;
 
 				// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
@@ -360,17 +371,12 @@ public class ProtocolResponses
 		// Otherwise, chain from the last response id and send only the delta items.
 		// DeepClone is required: assigning a JsonNode to a body object parents it, and the same
 		// node cannot be parented twice — re-use across turns throws InvalidOperationException.
-		if (_rehydratedInput != null)
+		JsonArray input = (JsonArray)(_rehydratedInput ?? _deltaInput).DeepClone();
+		_media.Apply(input, model.Config.MaxImages, "input_text", false);
+		body["input"] = input;
+		if (_rehydratedInput == null && _previousResponseId != null)
 		{
-			body["input"] = _rehydratedInput.DeepClone();
-		}
-		else
-		{
-			body["input"] = _deltaInput.DeepClone();
-			if (_previousResponseId != null)
-			{
-				body["previous_response_id"] = _previousResponseId;
-			}
+			body["previous_response_id"] = _previousResponseId;
 		}
 
 		if (maxCompletionTokens.HasValue)
@@ -480,7 +486,7 @@ public class ProtocolResponses
 		{
 			_summarySupported = false;
 			logger.Write(model.Config.Name, model.Endpoint, "[reasoning] endpoint refused thinking summaries; disabling them for this model and re-sending (its thinking will not be visible)");
-			_onReasoningLearned?.Invoke(model.ConfigId, null, false);
+			_onCapabilityLearned?.Invoke(model.ConfigId, null, false, null);
 			return true;
 		}
 
@@ -488,7 +494,7 @@ public class ProtocolResponses
 		{
 			_reasoningSupported = false;
 			logger.Write(model.Config.Name, model.Endpoint, "[reasoning] model does not accept a reasoning effort; recording it as none and re-sending");
-			_onReasoningLearned?.Invoke(model.ConfigId, "none", null);
+			_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null);
 			return true;
 		}
 
@@ -573,10 +579,12 @@ public class ProtocolResponses
 			int    statusCode = (int)httpResponse.StatusCode;
 
 			// Checked before the streaming-support verdict below: a request refused for asking after
-			// thinking summaries (or for offering an effort the model cannot take) says nothing about
+			// thinking summaries (or for offering an effort the model cannot take, or for carrying more
+			// media than the provider accepts) says nothing about
 			// whether this endpoint can stream, and permanently giving up streaming over it would cost
 			// far more than either was worth.
-			if (LearnReasoningRefusal(model, statusCode, errorBody, logger))
+			if (LearnReasoningRefusal(model, statusCode, errorBody, logger)
+				|| _media.LearnFromRefusal(model, statusCode, errorBody, _onCapabilityLearned, logger))
 			{
 				_retryAfterRefusal = true;
 				return null;

@@ -73,13 +73,16 @@ public static class MediaKinds
 
 	// Reads a media file referenced by a tool result into the wire form. Protocols call this when
 	// they build the message, live or on rehydrate, so the bytes are whatever is on disk at that
-	// moment. Null when the file is gone, which the protocol reports as a text note.
+	// moment. Null when the file is gone, which the protocol reports as a text note. Confined afresh
+	// on every read: the model's shell can replace the file between turns, and a symlink swapped in
+	// must not have the root agent send the API keys to the provider as an "image".
 	public static MediaAttachment? LoadAttachment(string path, string mimeType)
 	{
-		MediaAttachment? attachment = null;
-		if (File.Exists(path))
+		MediaAttachment? attachment  = null;
+		(string? confined, string _) = Sandbox.Confine(path, false, true);
+		if (confined != null && File.Exists(confined))
 		{
-			byte[] bytes = File.ReadAllBytes(path);
+			byte[] bytes = File.ReadAllBytes(confined);
 			attachment   = new MediaAttachment(mimeType, Convert.ToBase64String(bytes));
 		}
 		return attachment;
