@@ -45,7 +45,9 @@ internal class ConfigOverlay
 		("llama-server (local)", "http://localhost:8080/v1/chat/completions"),
 		("OpenAI",               "https://api.openai.com/v1/responses"),
 		("Anthropic",            "https://api.anthropic.com/v1/messages"),
-		("OpenRouter",           "https://openrouter.ai/api/v1/chat/completions"),
+		// Not an HTTP endpoint: the agent drives a Claude subscription through the Claude Code CLI.
+		("Anthropic Subscription", "claude-code://subscription"),
+		("OpenRouter",             "https://openrouter.ai/api/v1/chat/completions"),
 		("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
 		("xAI (Grok)",        "https://api.x.ai/v1/chat/completions"),
 		("Ollama (local)",    "http://localhost:11434/v1/chat/completions"),
@@ -564,12 +566,13 @@ internal class ConfigOverlay
 			return;
 		}
 
-		// An apply carrying no models is how the agent is told to drop the endpoint entirely.
+		// Removal is explicit: an apply that merely carries no models keeps the endpoint and its key.
 		JsonObject payload = new JsonObject
 		{
 			["baseUrl"] = baseUrl,
 			["apiKey"]  = string.Empty,
-			["models"]  = new JsonArray()
+			["models"]  = new JsonArray(),
+			["remove"]  = true
 		};
 		_status  = $"Removing {baseUrl}…";
 		_baseUrl = baseUrl;
@@ -1295,9 +1298,13 @@ internal class ConfigOverlay
 			case Mode.AddUrl:
 			case Mode.AddKey:
 			{
-				string label = _mode == Mode.AddUrl
-					? "Endpoint URL (base or full, e.g. http://host:8080/v1):"
-					: $"API key for {_baseUrl} (blank for none):";
+				string label;
+				if (_mode == Mode.AddUrl)
+					label = "Endpoint URL (base or full, e.g. http://host:8080/v1):";
+				else if (_baseUrl.StartsWith("claude-code://", StringComparison.OrdinalIgnoreCase))
+					label = "Long-lived OAuth token (run `claude setup-token` on the host and paste what it prints):";
+				else
+					label = $"API key for {_baseUrl} (blank for none):";
 				AnsiToScreen.WriteLine(s, 2, 2, label, textFg, bg);
 				string shown = _mode == Mode.AddKey && _entry.Length > 0 ? new string('•', _entry.Length) : _entry;
 				AnsiToScreen.WriteLine(s, 2,      4, Truncate("> " + shown + "▏", innerW), titleFg, bg);

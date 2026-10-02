@@ -133,10 +133,10 @@ public class SettingsService
 	// Persists the auto section as edited by /config: replaces (or adds) the entry for one
 	// endpoint in the USER settings file — model/endpoint configuration is user-level, set up
 	// once and serving every project and worktree (Docker runs mount ~/.beast at /root/.beast,
-	// so the home file is the same one true file either way). An endpoint whose model list is
-	// emptied is removed outright. Configuring an OpenRouter key also seeds the web-search
-	// block, so internet_search works without a second setup step.
-	public void SaveAutoEndpoint(string baseUrl, string apiKey, List<AutoModelConfig> models)
+	// so the home file is the same one true file either way). Only an explicit remove drops the
+	// endpoint; one whose model list is emptied keeps its entry and key. Configuring an OpenRouter
+	// key also seeds the web-search block, so internet_search works without a second setup step.
+	public void SaveAutoEndpoint(string baseUrl, string apiKey, List<AutoModelConfig> models, bool remove)
 	{
 		BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
 
@@ -150,7 +150,7 @@ public class SettingsService
 			}
 		}
 
-		if (models.Count == 0)
+		if (remove)
 		{
 			if (existing >= 0)
 				home.Auto.RemoveAt(existing);

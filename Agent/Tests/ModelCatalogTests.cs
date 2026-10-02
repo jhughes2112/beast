@@ -14,6 +14,7 @@ public static class ModelCatalogTests
 		ctx.Log("  ModelCatalogTests");
 
 		TestNormalizeRequestEndpoint(ctx);
+		TestClaudeCodeEndpoint(ctx);
 		TestParseEntryShapes(ctx);
 		TestLmStudioEnrichment(ctx);
 		TestOllamaEnrichment(ctx);
@@ -417,6 +418,52 @@ public static class ModelCatalogTests
 			ModelCatalog.NormalizeRequestEndpoint("https://api.anthropic.com"), "Normalize: Anthropic gains /v1/messages");
 		ctx.AssertEqual("https://api.openai.com/v1/responses",
 			ModelCatalog.NormalizeRequestEndpoint("https://api.openai.com/v1/responses"), "Normalize: responses endpoint unchanged");
+	}
+
+	// The subscription endpoint: its marker URL survives normalization, the CLI's initialize reply
+	// becomes one pinned model per version, and the login probe's json result is read the way the
+	// CLI actually reports it (shapes trimmed from real runs: a bogus token, then a working login).
+	private static void TestClaudeCodeEndpoint(TestContext ctx)
+	{
+		ctx.Assert(ClaudeCode.IsEndpoint(ClaudeCode.EndpointUrl), "ClaudeCode: the marker URL is recognized");
+		ctx.Assert(!ClaudeCode.IsEndpoint("https://api.anthropic.com/v1/messages"), "ClaudeCode: the API endpoint is not the subscription");
+		ctx.AssertEqual(ClaudeCode.EndpointUrl, ModelCatalog.NormalizeRequestEndpoint(ClaudeCode.EndpointUrl), "ClaudeCode: normalization leaves the marker alone");
+
+		string initialize = "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"beast-init\",\"response\":{\"models\":["
+			+ "{\"value\":\"default\",\"resolvedModel\":\"claude-opus-5-5\",\"displayName\":\"Default (recommended)\"},"
+			+ "{\"value\":\"opus\",\"resolvedModel\":\"claude-opus-5-5\",\"displayName\":\"Opus 5.5\"},"
+			+ "{\"value\":\"haiku\",\"resolvedModel\":\"claude-haiku-4-5-20251001\",\"displayName\":\"Haiku 4.5\"},"
+			+ "{\"value\":\"claude-opus-4-8\",\"resolvedModel\":\"claude-opus-4-8\",\"displayName\":\"Opus 4.8\"}]}}}\n";
+		List<DiscoveredModel> catalog = ClaudeCode.ParseCatalog("{\"type\":\"system\"}\n" + initialize);
+		ctx.AssertEqual(3, catalog.Count, "ClaudeCode: one entry per pinned version, the default pointer folded away");
+		if (catalog.Count == 3)
+		{
+			ctx.AssertEqual("claude-code/claude-opus-5-5", catalog[0].Id, "ClaudeCode: an alias lists the version it resolves to");
+			ctx.AssertEqual("Opus 5.5 (subscription)", catalog[0].Name, "ClaudeCode: named for the model, not the default pointer");
+			ctx.AssertEqual("claude-code/claude-opus-4-8", catalog[2].Id, "ClaudeCode: older pinned versions are listed too");
+		}
+		foreach (DiscoveredModel model in catalog)
+		{
+			ctx.Assert(model.ContextWindow > 0, $"ClaudeCode: {model.Id} has a known window");
+			ctx.AssertEqual(0m, model.CostInput, $"ClaudeCode: {model.Id} costs nothing per token");
+		}
+		ctx.AssertEqual(0, ClaudeCode.ParseCatalog("not json\n").Count, "ClaudeCode: no handshake reply lists nothing");
+
+		string rejected = """
+			{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"num_turns":1,
+			 "result":"Failed to authenticate. API Error: 401 OAuth access token is invalid.","total_cost_usd":0}
+			""";
+		ctx.AssertEqual("Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+			ClaudeCode.ParseProbeResult(rejected, 0, string.Empty), "ClaudeCode: a rejected token reports the CLI's reason");
+
+		string accepted = """
+			{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"result":"OK",
+			 "modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":10,"outputTokens":40,"contextWindow":200000}}}
+			""";
+		ctx.AssertEqual("", ClaudeCode.ParseProbeResult(accepted, 0, string.Empty), "ClaudeCode: a working login reports no error");
+
+		ctx.AssertContains(ClaudeCode.ParseProbeResult("", 1, "error: unknown option '--bogus'"), "unknown option",
+			"ClaudeCode: a run with no json result surfaces stderr");
 	}
 
 	private static void TestParseEntryShapes(TestContext ctx)

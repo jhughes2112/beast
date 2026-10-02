@@ -11,13 +11,13 @@ using System.Threading.Tasks;
 // loader falls back to conservative defaults when nothing was ever supplied.
 public class DiscoveredModel
 {
-	public string Id { get; set; } = string.Empty;
-	public string Name { get; set; } = string.Empty;
-	public int ContextWindow { get; set; } = 0;
-	public int MaxOutputTokens { get; set; } = 0;
+	public string Id              { get; set; } = string.Empty;
+	public string Name            { get; set; } = string.Empty;
+	public int    ContextWindow   { get; set; } = 0;
+	public int    MaxOutputTokens { get; set; } = 0;
 	// Per-million-token USD; -1 = unknown.
-	public decimal CostInput { get; set; } = -1m;
-	public decimal CostOutput { get; set; } = -1m;
+	public decimal CostInput     { get; set; } = -1m;
+	public decimal CostOutput    { get; set; } = -1m;
 	public decimal CostCacheRead { get; set; } = -1m;
 	// Null = unknown; otherwise the declared input modalities ("text", "image", "audio").
 	public List<string>? Modalities { get; set; } = null;
@@ -42,14 +42,26 @@ public static class ModelCatalog
 	// Returns the discovered catalog, or an empty list plus an error description on failure.
 	public static async Task<(List<DiscoveredModel> Models, string Error)> FetchAsync(string baseUrl, string apiKey, CancellationToken ct)
 	{
-		List<DiscoveredModel> models = new List<DiscoveredModel>();
-		string error = string.Empty;
+		// The subscription endpoint's catalog comes from the Claude Code CLI, not an HTTP /models.
+		// Logging in is proved separately, when /config opens the endpoint.
+		(List<DiscoveredModel> Models, string Error) result;
+		if (ClaudeCode.IsEndpoint(baseUrl))
+			result = await ClaudeCode.FetchCatalogAsync(apiKey, ct);
+		else
+			result = await FetchHttpAsync(baseUrl, apiKey, ct);
+		return result;
+	}
 
-		string apiRoot = ApiRoot(baseUrl);
-		bool anthropic = apiRoot.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase);
+	private static async Task<(List<DiscoveredModel> Models, string Error)> FetchHttpAsync(string baseUrl, string apiKey, CancellationToken ct)
+	{
+		List<DiscoveredModel> models = new List<DiscoveredModel>();
+		string                error  = string.Empty;
+
+		string apiRoot   = ApiRoot(baseUrl);
+		bool   anthropic = apiRoot.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase);
 
 		using HttpClient http = new HttpClient();
-		http.Timeout = kFetchTimeout;
+		http.Timeout          = kFetchTimeout;
 
 		try
 		{
@@ -67,8 +79,8 @@ public static class ModelCatalog
 				http.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
 			}
 
-			string body = await http.GetStringAsync($"{apiRoot}/models", ct);
-			JsonNode? root = JsonNode.Parse(body);
+			string     body = await http.GetStringAsync($"{apiRoot}/models", ct);
+			JsonNode?  root = JsonNode.Parse(body);
 			JsonArray? data = AsArrayOrNull(root?["data"]) ?? AsArrayOrNull(root?["models"]) ?? AsArrayOrNull(root);
 			if (data == null)
 			{
@@ -136,6 +148,10 @@ public static class ModelCatalog
 	// else gets the OpenAI-compatible /chat/completions under its api root.
 	public static string NormalizeRequestEndpoint(string url)
 	{
+		// The subscription marker is not an HTTP address; it is kept exactly as configured.
+		if (ClaudeCode.IsEndpoint(url))
+			return url;
+
 		string trimmed = url.TrimEnd('/');
 		foreach (string suffix in kEndpointSuffixes)
 		{
@@ -174,8 +190,8 @@ public static class ModelCatalog
 	private static DiscoveredModel ParseEntry(JsonNode entry, bool anthropic)
 	{
 		DiscoveredModel model = new DiscoveredModel();
-		model.Id = entry["id"]?.GetValue<string>() ?? entry["name"]?.GetValue<string>() ?? string.Empty;
-		model.Name = entry["display_name"]?.GetValue<string>() ?? entry["name"]?.GetValue<string>() ?? model.Id;
+		model.Id              = entry["id"]?.GetValue<string>() ?? entry["name"]?.GetValue<string>() ?? string.Empty;
+		model.Name            = entry["display_name"]?.GetValue<string>() ?? entry["name"]?.GetValue<string>() ?? model.Id;
 
 		// Release date: OpenAI-style catalogs carry epoch seconds in "created"; Anthropic uses an
 		// RFC3339 "created_at". Unknown stays 0 and sorts to the alphabetical tail.
@@ -207,15 +223,15 @@ public static class ModelCatalog
 
 		model.MaxOutputTokens = FirstPositive(
 			ReadInt(entry["top_provider"], "max_completion_tokens"),
-			ReadInt(entry, "max_tokens"));
+			ReadInt(                entry, "max_tokens"));
 
 		// OpenRouter pricing is USD per TOKEN as strings; normalize to per-million.
 		JsonNode? pricing = entry["pricing"];
 		if (pricing != null)
 		{
-			decimal? prompt = ReadDecimal(pricing, "prompt");
+			decimal? prompt     = ReadDecimal(pricing, "prompt");
 			decimal? completion = ReadDecimal(pricing, "completion");
-			decimal? cacheRead = ReadDecimal(pricing, "input_cache_read");
+			decimal? cacheRead  = ReadDecimal(pricing, "input_cache_read");
 			if (prompt.HasValue)
 				model.CostInput = prompt.Value * 1_000_000m;
 			if (completion.HasValue)
@@ -241,7 +257,7 @@ public static class ModelCatalog
 		}
 		else
 		{
-			JsonNode? capsNode = ReadNode(entry, "capabilities");
+			JsonNode?  capsNode     = ReadNode(entry, "capabilities");
 			JsonArray? capabilities = AsArrayOrNull(capsNode);
 			if (capabilities != null)
 			{
@@ -264,7 +280,7 @@ public static class ModelCatalog
 				// some other provider's differently-shaped capabilities object stays "unknown"
 				// instead of being misread as text-only.
 				bool image = ReadSupported(capsObj, "image_input");
-				bool pdf = ReadSupported(capsObj, "pdf_input");
+				bool pdf   = ReadSupported(capsObj, "pdf_input");
 				bool audio = ReadSupported(capsObj, "audio_input");
 				if (capsObj.ContainsKey("image_input") || capsObj.ContainsKey("pdf_input") || capsObj.ContainsKey("audio_input"))
 				{
@@ -324,7 +340,7 @@ public static class ModelCatalog
 	{
 		try
 		{
-			string body = await http.GetStringAsync($"{serverRoot}/props", ct);
+			string    body  = await http.GetStringAsync($"{serverRoot}/props", ct);
 			JsonNode? props = JsonNode.Parse(body);
 			if (props == null)
 				return;
@@ -332,7 +348,7 @@ public static class ModelCatalog
 			int nCtx = ReadInt(props, "n_ctx") ?? ReadInt(props["default_generation_settings"], "n_ctx") ?? 0;
 
 			List<string>? modalities = null;
-			JsonNode? modNode = props["modalities"];
+			JsonNode?     modNode    = props["modalities"];
 			if (modNode != null)
 			{
 				modalities = new List<string> { "text" };
@@ -369,8 +385,8 @@ public static class ModelCatalog
 	{
 		try
 		{
-			string body = await http.GetStringAsync($"{apiRoot}/language-models", ct);
-			JsonNode? root = JsonNode.Parse(body);
+			string     body = await http.GetStringAsync($"{apiRoot}/language-models", ct);
+			JsonNode?  root = JsonNode.Parse(body);
 			JsonArray? list = AsArrayOrNull(root?["models"]);
 			if (list != null)
 				ParseXaiList(list, models);
@@ -396,7 +412,7 @@ public static class ModelCatalog
 
 			// Collect this entry's id plus aliases for matching against discovered ids.
 			List<string> names = new List<string>();
-			string? id = entry["id"]?.GetValue<string>();
+			string?      id    = entry["id"]?.GetValue<string>();
 			if (!string.IsNullOrEmpty(id))
 				names.Add(id);
 			JsonArray? aliases = AsArrayOrNull(entry["aliases"]);
@@ -469,8 +485,8 @@ public static class ModelCatalog
 	{
 		try
 		{
-			string body = await http.GetStringAsync($"{serverRoot}/api/v0/models", ct);
-			JsonNode? root = JsonNode.Parse(body);
+			string     body = await http.GetStringAsync($"{serverRoot}/api/v0/models", ct);
+			JsonNode?  root = JsonNode.Parse(body);
 			JsonArray? data = AsArrayOrNull(root?["data"]);
 			if (data != null)
 				ParseLmStudioList(data, models);
@@ -508,7 +524,7 @@ public static class ModelCatalog
 
 				if (model.Modalities == null)
 				{
-					bool vision = string.Equals(entry["type"]?.GetValue<string>(), "vlm", StringComparison.OrdinalIgnoreCase);
+					bool       vision       = string.Equals(entry["type"]?.GetValue<string>(), "vlm", StringComparison.OrdinalIgnoreCase);
 					JsonArray? capabilities = AsArrayOrNull(entry["capabilities"]);
 					if (capabilities != null)
 					{
@@ -553,13 +569,13 @@ public static class ModelCatalog
 					continue;
 
 				calls++;
-				JsonObject request = new JsonObject { ["model"] = model.Id };
-				using StringContent content = new StringContent(request.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+				JsonObject request           = new JsonObject { ["model"] = model.Id };
+				using StringContent content  = new StringContent(request.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
 				HttpResponseMessage response = await http.PostAsync($"{serverRoot}/api/show", content, ct);
 				if (!response.IsSuccessStatusCode)
 					continue;
 
-				string body = await response.Content.ReadAsStringAsync(ct);
+				string    body = await response.Content.ReadAsStringAsync(ct);
 				JsonNode? show = JsonNode.Parse(body);
 				if (show != null)
 					ParseOllamaShow(show, model);
@@ -584,8 +600,8 @@ public static class ModelCatalog
 	{
 		if (model.Modalities == null)
 		{
-			List<string> modalities = new List<string> { "text" };
-			JsonArray? capabilities = AsArrayOrNull(show["capabilities"]);
+			List<string> modalities   = new List<string> { "text" };
+			JsonArray?   capabilities = AsArrayOrNull(show["capabilities"]);
 			if (capabilities != null)
 			{
 				foreach (JsonNode? c in capabilities)

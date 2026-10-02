@@ -931,8 +931,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			// Progress lands in the status bar, which stays visible under the picker modal — the
 			// user can see exactly which step is in flight instead of a silent wait.
-			_transport.Status(sessionId, $"[config] Fetching catalog from {baseUrl} ...");
-			(List<DiscoveredModel> discovered, string error) = await ModelCatalog.FetchAsync(baseUrl, apiKey, ct);
+			List<DiscoveredModel> discovered;
+			string                error;
+			if (ClaudeCode.IsEndpoint(baseUrl))
+			{
+				(discovered, error) = await VerifySubscriptionAsync(sessionId, apiKey, ct);
+			}
+			else
+			{
+				_transport.Status(sessionId, $"[config] Fetching catalog from {baseUrl} ...");
+				(discovered, error) = await ModelCatalog.FetchAsync(baseUrl, apiKey, ct);
+			}
 
 			// Docker/native host mismatch: the picker runs on the host where "localhost" is the
 			// natural spelling, but this fetch runs wherever the Agent runs — inside Docker that
@@ -959,7 +968,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 				}
 			}
 
-			if (error.Length > 0)
+			// A failed subscription login is never papered over with the cached list: the token is
+			// exactly what this visit is checking.
+			if (error.Length > 0 && !ClaudeCode.IsEndpoint(baseUrl))
 			{
 				List<DiscoveredModel>? cached = _registry.CachedCatalog(baseUrl);
 				if (cached != null)
@@ -1026,6 +1037,31 @@ public class AgentOrchestrator : ISessionOrchestrator
 		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigCatalogPayload));
 	}
 
+	// Opening the subscription endpoint in /config is where its token is proved: the first use in
+	// this container updates Claude Code, then one real request logs in, and only then is the
+	// account's catalog listed — the CLI lists models even for a token that cannot log in. A failed
+	// login offers nothing new to enable — only the models already configured, so they can be removed.
+	private async Task<(List<DiscoveredModel> Models, string Error)> VerifySubscriptionAsync(string sessionId, string token, CancellationToken ct)
+	{
+		_transport.Status(sessionId, "[config] Verifying the subscription login with one Haiku request ...");
+		string update = await ClaudeCode.EnsureUpdatedAsync(ct);
+		if (update.Length > 0)
+			_transport.Status(sessionId, $"[config] {update}");
+
+		string                error  = await ClaudeCode.VerifyLoginAsync(token, ct);
+		List<DiscoveredModel> models = new List<DiscoveredModel>();
+		if (error.Length == 0)
+		{
+			_transport.Status(sessionId, "[config] Subscription login verified; listing its models ...");
+			(models, error) = await ClaudeCode.FetchCatalogAsync(token, ct);
+		}
+		else
+		{
+			error = $"Subscription login failed: {error}";
+		}
+		return (models, error);
+	}
+
 	// Applies one endpoint's desired state from the picker: persists it to the project
 	// settings.json, then runs the full reload so the new models are live immediately.
 	private async Task HandleConfigApplyAsync(string sessionId, string args, CancellationToken ct)
@@ -1066,7 +1102,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 					nowEnabled.Add(model.Id);
 			}
 
-			_settings.SaveAutoEndpoint(payload.BaseUrl, payload.ApiKey, payload.Models);
+			_settings.SaveAutoEndpoint(payload.BaseUrl, payload.ApiKey, payload.Models, payload.Remove);
 
 			List<string> added = new List<string>();
 			foreach (string id in nowEnabled)

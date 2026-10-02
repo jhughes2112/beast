@@ -175,6 +175,13 @@ RUN curl -fsSL https://services.gradle.org/distributions/gradle-8.14-bin.zip -o 
 # uv — fast Python package/environment manager; increasingly what project READMEs assume.
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
+# Claude Code — the only sanctioned way to drive an Anthropic subscription ("claude -p"), used by
+# the agent for its claude-code:// endpoint. Native build, installed for root under /root/.local,
+# which the shell user cannot enter, so model shells cannot run it; the agent updates it on the
+# endpoint's first use in each container. The /usr/local/bin link puts it on the agent's PATH.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
 # The unprivileged user every model-driven process runs as (bash, readonly_bash, ls). The agent stays
 # root: it reads the API keys under /root (0700, so this user cannot), runs commit_and_rebase, and owns
 # the workspace's .beast state, the repository's hooks and config, and the main checkout, which the

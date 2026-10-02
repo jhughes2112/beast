@@ -205,4 +205,9 @@ public class ConfigApplyPayload
 
 	[JsonPropertyName("models")]
 	public List<AutoModelConfig> Models { get; set; } = new();
+
+	// True only for Del on the endpoint itself. An empty model list is NOT a removal: disabling or
+	// forgetting every model keeps the endpoint and its key.
+	[JsonPropertyName("remove")]
+	public bool Remove { get; set; } = false;
 }
