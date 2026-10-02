@@ -11,7 +11,9 @@ public enum DetectedProtocol
 	Unknown,
 	Anthropic,
 	Responses,
-	ChatCompletions
+	ChatCompletions,
+	// An Anthropic subscription driven through the Claude Code CLI (claude-code:// endpoints).
+	ClaudeDashP
 }
 
 // Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
@@ -46,6 +48,7 @@ public class ProtocolProxy
 	private ProtocolChatCompletions? _protocolChatCompletions;
 	private ProtocolResponses?       _protocolResponses;
 	private ProtocolAnthropic?       _protocolAnthropic;
+	private ProtocolClaudeDashP?     _protocolClaudeDashP;
 
 	// The canonical message list the live protocol's native state was built from. Native state is a
 	// MIRROR of one conversation, so it is only reusable for that same conversation: handed a
@@ -82,6 +85,8 @@ public class ProtocolProxy
 	// Infers the protocol from the URL route suffix.
 	private static DetectedProtocol DetectProtocolFromUrl(string endpoint)
 	{
+		if (ClaudeCode.IsEndpoint(endpoint))
+			return DetectedProtocol.ClaudeDashP;
 		if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
 			return DetectedProtocol.Anthropic;
 		if (endpoint.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
@@ -121,6 +126,10 @@ public class ProtocolProxy
 		if (protocol == DetectedProtocol.Unknown)
 			return (DetectedProtocol.Unknown, endpoint);
 
+		// Not a network address: the CLI is a local process, so there is nothing to reach.
+		if (protocol == DetectedProtocol.ClaudeDashP)
+			return (protocol, endpoint);
+
 		if (await CanReachEndpointAsync(endpoint))
 			return (protocol, endpoint);
 
@@ -143,6 +152,14 @@ public class ProtocolProxy
 		_protocolResponses       = null;
 		_protocolAnthropic       = null;
 		_nativeSource            = null;
+		DropClaudeDashP();
+	}
+
+	// The Claude Code protocol owns a live process, so discarding it must also end that process.
+	private void DropClaudeDashP()
+	{
+		_protocolClaudeDashP?.Dispose();
+		_protocolClaudeDashP = null;
 	}
 
 	// Fan-out methods called by ListenerBundle for external events (user input, tool results,
@@ -152,12 +169,14 @@ public class ProtocolProxy
 		_protocolChatCompletions?.OnSystemMessage(text);
 		_protocolResponses?.OnSystemMessage(text);
 		_protocolAnthropic?.OnSystemMessage(text);
+		_protocolClaudeDashP?.OnSystemMessage(text);
 	}
 	public void OnUserMessage(string text)
 	{
 		_protocolChatCompletions?.OnUserMessage(text);
 		_protocolResponses?.OnUserMessage(text);
 		_protocolAnthropic?.OnUserMessage(text);
+		_protocolClaudeDashP?.OnUserMessage(text);
 	}
 
 	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
@@ -165,6 +184,7 @@ public class ProtocolProxy
 		_protocolChatCompletions?.OnUserMessage(text, attachments);
 		_protocolResponses?.OnUserMessage(text, attachments);
 		_protocolAnthropic?.OnUserMessage(text, attachments);
+		_protocolClaudeDashP?.OnUserMessage(text, attachments);
 	}
 
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
@@ -172,6 +192,7 @@ public class ProtocolProxy
 		_protocolChatCompletions?.OnAssistantTurn(text, thinking, toolCalls);
 		_protocolResponses?.OnAssistantTurn(text, thinking, toolCalls);
 		_protocolAnthropic?.OnAssistantTurn(text, thinking, toolCalls);
+		_protocolClaudeDashP?.OnAssistantTurn(text, thinking, toolCalls);
 	}
 
 	public void OnToolResult(ToolResult result)
@@ -179,6 +200,7 @@ public class ProtocolProxy
 		_protocolChatCompletions?.OnToolResult(result);
 		_protocolResponses?.OnToolResult(result);
 		_protocolAnthropic?.OnToolResult(result);
+		_protocolClaudeDashP?.OnToolResult(result);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens,
@@ -207,6 +229,10 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 
 		if (_detected == DetectedProtocol.ChatCompletions)
 			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
+
+		// Claude Code takes no forced tool choice or per-call output ceiling; its own loop sizes each call.
+		if (_detected == DetectedProtocol.ClaudeDashP)
+			return await EnsureProtocolClaudeDashP(canonical).ExecuteAsync(_model, bundle, tools, onProgress, logger, cancellationToken);
 
 		logger.ProtocolFailure(_model, _detected, "UnknownProtocol", null, $"Endpoint speaks no recognized protocol: {endpoint}", null, null);
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
@@ -240,6 +266,11 @@ SessionLogger logger, CancellationToken cancellationToken)
 		if (_detected == DetectedProtocol.ChatCompletions)
 			return await EnsureProtocolChatCompletions(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
 
+		// Claude Code has no way to count a prompt without sending it. The first real turn's usage
+		// measures the conversation instead, and the caller treats a failed count as "not known yet".
+		if (_detected == DetectedProtocol.ClaudeDashP)
+			return TracerResult.Failed("Claude Code cannot count tokens ahead of a turn");
+
 		return TracerResult.Failed($"Endpoint speaks no recognized protocol");
 	}
 
@@ -262,6 +293,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 			_protocolResponses = null;
 			_protocolAnthropic = null;
 			_nativeSource      = canonical;
+			DropClaudeDashP();
 		}
 		return _protocolChatCompletions;
 	}
@@ -275,6 +307,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 			_protocolChatCompletions = null;
 			_protocolAnthropic       = null;
 			_nativeSource            = canonical;
+			DropClaudeDashP();
 		}
 		return _protocolResponses;
 	}
@@ -288,8 +321,24 @@ SessionLogger logger, CancellationToken cancellationToken)
 			_protocolChatCompletions = null;
 			_protocolResponses       = null;
 			_nativeSource            = canonical;
+			DropClaudeDashP();
 		}
 		return _protocolAnthropic;
+	}
+
+	internal ProtocolClaudeDashP EnsureProtocolClaudeDashP(IReadOnlyList<CanonicalMessage> canonical)
+	{
+		if (_protocolClaudeDashP == null || !ReferenceEquals(_nativeSource, canonical))
+		{
+			DropClaudeDashP();
+			_protocolClaudeDashP = new ProtocolClaudeDashP();
+			_protocolClaudeDashP.Rehydrate(canonical);
+			_protocolChatCompletions = null;
+			_protocolResponses       = null;
+			_protocolAnthropic       = null;
+			_nativeSource            = canonical;
+		}
+		return _protocolClaudeDashP;
 	}
 
 	// Returns the currently detected protocol for logging purposes.

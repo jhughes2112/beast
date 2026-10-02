@@ -50,6 +50,36 @@ public static class ClaudeCode
 		return url.StartsWith("claude-code://", StringComparison.OrdinalIgnoreCase);
 	}
 
+	// The name the CLI's --model takes: the model id without the prefix that keeps it apart from API ids.
+	public static string CliModel(string modelId)
+	{
+		return modelId.StartsWith(kModelPrefix, StringComparison.OrdinalIgnoreCase) ? modelId.Substring(kModelPrefix.Length) : modelId;
+	}
+
+	// The CLI's process setup, shared by every way it is run: the subscription token in its
+	// environment and nothing that would outrank it, started from the temp folder so no project
+	// settings or CLAUDE.md are picked up.
+	public static ProcessStartInfo StartInfo(List<string> args, string token)
+	{
+		ProcessStartInfo psi = new ProcessStartInfo
+		{
+			FileName               = "claude",
+			WorkingDirectory       = Path.GetTempPath(),
+			RedirectStandardInput  = true,
+			RedirectStandardOutput = true,
+			RedirectStandardError  = true,
+			UseShellExecute        = false,
+			CreateNoWindow         = true
+		};
+		foreach (string arg in args)
+			psi.ArgumentList.Add(arg);
+		foreach (string name in kShadowingVariables)
+			psi.Environment.Remove(name);
+		if (token.Length > 0)
+			psi.Environment["CLAUDE_CODE_OAUTH_TOKEN"] = token;
+		return psi;
+	}
+
 	// The models this subscription offers, as the CLI's initialize handshake reports them. The list
 	// is the account's own: an unauthenticated CLI answers with only its four built-in aliases.
 	public static async Task<(List<DiscoveredModel> Models, string Error)> FetchCatalogAsync(string token, CancellationToken ct)
@@ -226,28 +256,11 @@ public static class ClaudeCode
 		return error;
 	}
 
-	// Runs the CLI with the subscription token in its environment (and nothing that would outrank
-	// it), from the temp folder so no project settings or CLAUDE.md are picked up. stdin is written
-	// and then closed. started=false when there is no claude to run. A run past the timeout is
-	// killed and reported as exit -1.
+	// Runs the CLI to completion (see StartInfo). stdin is written and then closed. started=false
+	// when there is no claude to run. A run past the timeout is killed and reported as exit -1.
 	private static async Task<(bool Started, int ExitCode, string StdOut, string StdErr)> RunAsync(List<string> args, string token, string stdin, TimeSpan timeout, CancellationToken ct)
 	{
-		ProcessStartInfo psi = new ProcessStartInfo
-		{
-			FileName               = "claude",
-			WorkingDirectory       = Path.GetTempPath(),
-			RedirectStandardInput  = true,
-			RedirectStandardOutput = true,
-			RedirectStandardError  = true,
-			UseShellExecute        = false,
-			CreateNoWindow         = true
-		};
-		foreach (string arg in args)
-			psi.ArgumentList.Add(arg);
-		foreach (string name in kShadowingVariables)
-			psi.Environment.Remove(name);
-		if (token.Length > 0)
-			psi.Environment["CLAUDE_CODE_OAUTH_TOKEN"] = token;
+		ProcessStartInfo psi = StartInfo(args, token);
 
 		bool   started  = false;
 		int    exitCode = -1;
@@ -292,7 +305,7 @@ public static class ClaudeCode
 		return (started, exitCode, stdout, stderr);
 	}
 
-	private static string LastLine(string text)
+	internal static string LastLine(string text)
 	{
 		string[] lines = text.Trim().Split('\n');
 		return lines[lines.Length - 1].Trim();

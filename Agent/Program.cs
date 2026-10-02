@@ -40,6 +40,17 @@ public class Program
 			return ctx.Failed > 0 ? 1 : 0;
 		}
 
+		// --test-claude-code: live checks of the subscription protocol against the real CLI. Kept out of
+		// --test because it spends subscription requests.
+		if (args.Length > 0 && args[0] == "--test-claude-code")
+		{
+			TestContext ctx = new TestContext(new TransportConsoleDebug());
+			Sandbox.Initialize(Environment.CurrentDirectory);
+			await ClaudeCodeLiveTests.TestAsync(ctx);
+			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
+			return ctx.Failed > 0 ? 1 : 0;
+		}
+
 		// Create/attach the git worktree at /workspace before anything reads the working tree. The branch
 		// comes from the --worktree-branch startup argument (never an env var). No-op for debug/native runs
 		// without the /git mount. A failure here means /workspace is unusable, so abort.
