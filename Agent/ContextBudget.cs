@@ -25,6 +25,11 @@ public class ContextBudget
 	// both bounded and big enough to be worth having.
 	private const int kDefaultOutputBudget = 4096;
 
+	// The smallest answer worth asking for. No more room than this before the compaction line is not a
+	// turn but the signal to compact: a request allowed fewer tokens can only come back empty, and
+	// empty turns invite nudges that grow the context without ever reaching the line.
+	public const int MinUsefulOutput = 500;
+
 	// Config, set at turn start. The model (and therefore the window/limits) can change between turns.
 	private int _windowSize;
 	private int _maxOutputTokens;
@@ -62,14 +67,39 @@ public class ContextBudget
 	}
 
 	// The input we would send next — the measured conversation plus any not-yet-measured tool output
-	// — already leaves no room above the compaction reserve. With a 10% reserve this is the 90% mark,
-	// and it stays there: reserving a whole response on top would compact around 65% and throw away
-	// a quarter of every window on turns that were only ever going to answer in a sentence. The rare
-	// turn that genuinely needs more room than is left is caught when it happens, by the truncation
-	// check in LlmService, rather than by making every turn pay for it in advance.
+	// — leaves no more than a useful answer's room before the compaction line. That line sits about 90%
+	// of the way up, and it stays there: reserving a whole response on top would compact around 65%
+	// and throw away a quarter of every window on turns that were only ever going to answer in a
+	// sentence. The rare turn that genuinely needs more room than is left is caught when it happens,
+	// by the truncation check in LlmService, rather than by making every turn pay for it in advance.
 	public bool IsExhausted()
 	{
-		return _measured + _pendingReserve + _compactionReserve >= _windowSize;
+		return RoomToCompactionLine() <= MinUsefulOutput;
+	}
+
+	// The conversation size at and above which a session must compact, for callers that judge fullness from a
+	// size of their own (an estimate, a token count) rather than from this budget's state. Built from
+	// the same margin as IsExhausted, so every gate agrees on where the line is.
+	public static int CompactionThreshold(int windowSize, int compactionReserve, int measuredContextSize)
+	{
+		return (int)(windowSize - CompactionMargin(windowSize, compactionReserve, measuredContextSize) - MinUsefulOutput);
+	}
+
+	// The one margin held free above the conversation: the compaction reserve (room for the summary
+	// the compaction machinery writes) or the overflow margin (our token count disagreeing with the
+	// provider's), whichever is larger. "When to compact" and "how much output to ask for" are both
+	// measured against this one line. They used to use different margins — the reserve capped at 7500
+	// for compacting, a tenth of the conversation for sizing — and from 909k to 992k of a 1M window
+	// the second had already reached zero while the first had not tripped: every request went out
+	// asking for 0 output tokens, every turn came back empty, and the session never compacted.
+	private static long CompactionMargin(int windowSize, int compactionReserve, int measuredContextSize)
+	{
+		return Math.Max(compactionReserve, OverflowMargin(windowSize, measuredContextSize));
+	}
+
+	private long RoomToCompactionLine()
+	{
+		return _windowSize - _measured - _pendingReserve - CompactionMargin(_windowSize, _compactionReserve, _measured);
 	}
 
 	// Structural overflow evidence: the measured conversation plus outstanding reservations fill
@@ -92,8 +122,11 @@ public class ContextBudget
 	// a failed write: they start the file again from the top, the context grows, and the next attempt
 	// is truncated sooner. That loop is the thing this floor exists to prevent.
 	//
-	// The only hard limit above it is physical: providers reject a request whose prompt plus
-	// max_tokens overruns the window, so the result is clamped to what is genuinely left. Never
+	// The ceiling is the same line: the room above it is held for the summary compaction writes and
+	// for the providers' count of the prompt disagreeing with ours (they reject a request whose prompt
+	// plus max_tokens overruns the window), so no answer may claim it. With a measurement in hand the
+	// floor and the ceiling meet, and the ask is exactly the room before the line — a response that
+	// uses all of it lands the conversation ON the line, with the summary's room still intact. Never
 	// null: every request carries a limit.
 	//
 	// The floor needs a real measurement to stand on, and the FIRST request of a session has none:
@@ -105,21 +138,14 @@ public class ContextBudget
 	// response says how big this conversation is, the model's own allowance is the whole story.
 	public int? MaxCompletionTokens()
 	{
-		long physical = _windowSize - _measured - _pendingReserve - OverflowMargin();
-		if (physical <= 0)
-			return 0;
-
-		long want = OutputAllowance;
-		if (_measured > 0)
-		{
-			// Room before the compaction line — the floor, since reaching that line compacts anyway.
-			long toCompactionLine = physical - _compactionReserve;
-			if (want < toCompactionLine)
-				want = toCompactionLine;
-		}
-		if (want > physical)
-			want = physical;
-
+		long room = RoomToCompactionLine();
+		long want;
+		if (room <= 0)
+			want = 0;
+		else if (_measured > 0)
+			want = room;
+		else
+			want = Math.Min(OutputAllowance, room);
 		return (int)want;
 	}
 
@@ -139,12 +165,14 @@ public class ContextBudget
 	// can disagree, and a tenth of the prompt covers that generously; with no measurement at all the
 	// prompt could be anything, so a quarter of the window is held back until a response says
 	// otherwise. Either way the request fits, which is the only thing that breaks the loop.
-	private long OverflowMargin()
+	private static long OverflowMargin(int windowSize, int measuredContextSize)
 	{
-		if (_measured > 0)
-			return Math.Max(1024, _measured / 10);
-
-		return _windowSize / 4;
+		long margin;
+		if (measuredContextSize > 0)
+			margin = Math.Max(1024, measuredContextSize / 10);
+		else
+			margin = windowSize / 4;
+		return margin;
 	}
 
 	// The answer size this model asks for on its own account: its configured ceiling (or the default

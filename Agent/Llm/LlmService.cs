@@ -180,18 +180,23 @@ public class LlmService
 						}
 					}
 
-					if (budget.IsExhausted())
-					{
-						// Context-full is a caller-side constraint, not a model failure.
-						// Detection happens in CommitTurn when ADDING content to the session.
-						result = ProtocolResult.ContextFull("Context budget exhausted");
-						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", null, "Context budget exhausted", 0, 0, null, false);
-						break;
-					}
-
 					// Size the response against the exact context plus any not-yet-reported tool outputs,
 					// so input + output stays within the window even right after a tool round.
 					int? maxCompletionTokens = budget.MaxCompletionTokens();
+
+					// An output limit squeezed below a useful answer by the window (not by the model's own
+					// small ceiling) is never sent: the model could only return an empty turn. It is the
+					// compaction signal, the same one IsExhausted gives.
+					bool squeezed = (maxCompletionTokens ?? 0) < Math.Min(ContextBudget.MinUsefulOutput, budget.OutputAllowance);
+					if (budget.IsExhausted() || squeezed)
+					{
+						// Context-full is a caller-side constraint, not a model failure.
+						// Detection happens in CommitTurn when ADDING content to the session.
+						string reason = $"Context budget exhausted: {maxCompletionTokens ?? 0} output tokens fit before the compaction line ({conversation.ContextLength + budget.PendingReserve}/{_model.Config.ContextWindow} in use)";
+						result        = ProtocolResult.ContextFull(reason);
+						conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", null, reason, 0, 0, null, false);
+						break;
+					}
 
 					// Stamp the sizing onto the log header, so a request in the log carries the two
 					// numbers that explain its shape instead of leaving them to be inferred.

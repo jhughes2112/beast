@@ -391,8 +391,10 @@ public class SessionHandler
 	// the context is full and the turn must end in compaction.
 	private async Task<bool> CheckContextFullAsync(LlmService service, Tool[] tools, ITransportServer transport, CancellationToken token)
 	{
+		// The same compaction line the turn's own budget enforces, so this gate and the request
+		// sizing can never disagree about whether there is room for another answer.
 		bool full      = false;
-		int  threshold = _activeSession.ContextWindow - GetCompactionReserve();
+		int  threshold = ContextBudget.CompactionThreshold(_activeSession.ContextWindow, GetCompactionReserve(), _activeSession.ContextLength);
 
 		// Only text appended since the last measurement counts: everything up to and including the
 		// last assistant turn is already inside ContextLength, and unmeasured tool outputs are
@@ -438,7 +440,7 @@ public class SessionHandler
 				transport.Stats(_activeSession.Id, _activeSession.Model + ReasoningEffort.DisplaySuffix(service.Model.Config.ReasoningEffort), _activeSession.Role,
 					tracerFresh, 0,
 					_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens);
-				if (_lastInputTokens >= threshold)
+				if (_lastInputTokens >= ContextBudget.CompactionThreshold(_activeSession.ContextWindow, GetCompactionReserve(), tracer.InputTokens))
 				{
 					transport.Status(_activeSession.Id, $"Context full ({_lastInputTokens}/{_activeSession.ContextWindow}), compacting...");
 					full = true;
@@ -734,7 +736,7 @@ public class SessionHandler
 	// conversation changes so /model and /compact always resolve it without a sticky flag.
 	private bool IsContextBlocked => _lastInputTokens > 0
 		&& _activeSession.ContextWindow > 0
-		&& _lastInputTokens >= _activeSession.ContextWindow - GetCompactionReserve();
+		&& _lastInputTokens >= ContextBudget.CompactionThreshold(_activeSession.ContextWindow, GetCompactionReserve(), _lastInputTokens);
 
 	// Drains all pending commands and queued text for any session type.
 	// When the context is full, plain text is dropped with a message;
