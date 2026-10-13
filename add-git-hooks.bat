@@ -171,7 +171,17 @@ while IFS= read -r f; do
 	unfugly <"$f" >"$tmp"
 	# Preserve the original file's mode/identity; only rewrite when it changed.
 	if ! cmp -s "$tmp" "$f"; then
-		cat "$tmp" >"$f"
+		# An IDE or the virus scanner can hold a file open a moment after dotnet format rewrites it, and Windows then
+		# refuses the write. A large commit makes that likely, so retry for 10 seconds before giving up.
+		tries=0
+		until { cat "$tmp" >"$f"; } 2>/dev/null; do
+			tries=$((tries + 1))
+			if [ "$tries" -ge 10 ]; then
+				echo "pre-commit: $f stayed locked for 10 seconds; close what holds it and commit again." >&2
+				exit 1
+			fi
+			sleep 1
+		done
 	fi
 done <<EOF
 $staged

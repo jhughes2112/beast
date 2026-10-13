@@ -102,6 +102,12 @@ public class FakeProvider
 	private long _maxMediaBytes;
 	private bool _rejectStreaming;
 
+	// The Responses token-count route this server answers ("/responses/input_tokens/count" as OpenAI
+	// spells it, "/responses/input_tokens" as Meta does); empty answers neither. Every count request
+	// is logged by path, so a test can see how often a client probes.
+	private          string       _countRoute = string.Empty;
+	private readonly List<string> _countPaths = new List<string>();
+
 	public string ChatEndpoint      => $"http://localhost:{_port}/v1/chat/completions";
 	public string MessagesEndpoint  => $"http://localhost:{_port}/v1/messages";
 	public string ResponsesEndpoint => $"http://localhost:{_port}/v1/responses";
@@ -141,7 +147,21 @@ public class FakeProvider
 			_maxImages       = 0;
 			_maxMediaBytes   = 0;
 			_rejectStreaming = false;
+			_countRoute      = string.Empty;
+			_countPaths.Clear();
 		}
+	}
+
+	public void ServeCount(string route)
+	{
+		lock (_gate)
+			_countRoute = route;
+	}
+
+	public List<string> CountRequests()
+	{
+		lock (_gate)
+			return new List<string>(_countPaths);
 	}
 
 	public void Enqueue(FakeReply reply)
@@ -212,8 +232,25 @@ public class FakeProvider
 			: path.EndsWith("/responses", StringComparison.OrdinalIgnoreCase) ? "responses"
 			: string.Empty;
 
-		if (context.Request.HttpMethod == "POST" && api.Length > 0)
+		if (context.Request.HttpMethod == "POST" && path.Contains("/responses/input_tokens", StringComparison.OrdinalIgnoreCase))
+			await HandleCountAsync(context, path, ct);
+		else if (context.Request.HttpMethod == "POST" && api.Length > 0)
 			await HandleApiAsync(context, api, ct);
+		else
+			await WriteJsonAsync(context.Response, 404, "{\"error\":{\"message\":\"not found\"}}", ct);
+	}
+
+	// A count on the route this server serves answers a fixed figure; any other spelling is a 404.
+	private async Task HandleCountAsync(HttpListenerContext context, string path, CancellationToken ct)
+	{
+		bool served;
+		lock (_gate)
+		{
+			_countPaths.Add(path);
+			served = _countRoute.Length > 0 && path.EndsWith(_countRoute, StringComparison.OrdinalIgnoreCase);
+		}
+		if (served)
+			await WriteJsonAsync(context.Response, 200, "{\"object\":\"response.input_tokens\",\"input_tokens\":321}", ct);
 		else
 			await WriteJsonAsync(context.Response, 404, "{\"error\":{\"message\":\"not found\"}}", ct);
 	}

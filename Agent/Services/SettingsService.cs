@@ -14,6 +14,10 @@ public class SettingsService
 	private readonly string _homeDirSettingsPath;
 	private readonly string _legacyWorkDirSettingsPath;
 
+	// Every write is a read-modify-write of the whole file. Two at once would each drop the other's
+	// change — and a dropped change can be a rotated OAuth refresh token, which signs the user out.
+	private readonly object _writeGate = new object();
+
 	public BeastSettings Settings { get; private set; }
 
 	// Set when a pre-single-file project settings.json with real content is found: earlier builds
@@ -138,6 +142,14 @@ public class SettingsService
 	// key also seeds the web-search block, so internet_search works without a second setup step.
 	public void SaveAutoEndpoint(string baseUrl, string apiKey, List<AutoModelConfig> models, bool remove)
 	{
+		lock (_writeGate)
+		{
+			SaveAutoEndpointLocked(baseUrl, apiKey, models, remove);
+		}
+	}
+
+	private void SaveAutoEndpointLocked(string baseUrl, string apiKey, List<AutoModelConfig> models, bool remove)
+	{
 		BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
 
 		int existing = -1;
@@ -159,9 +171,13 @@ public class SettingsService
 		{
 			AutoProviderConfig entry = new AutoProviderConfig { BaseUrl = baseUrl, ApiKey = apiKey, Models = models };
 
-			// An apply that did not re-enter the key keeps the one already on disk.
+			// An apply that did not re-enter the key keeps the one already on disk — and the access
+			// token minted from it, which belongs to that key and to no other.
 			if (string.IsNullOrEmpty(entry.ApiKey) && existing >= 0)
-				entry.ApiKey = home.Auto[existing].ApiKey;
+			{
+				entry.ApiKey      = home.Auto[existing].ApiKey;
+				entry.AccessToken = home.Auto[existing].AccessToken;
+			}
 
 			if (existing >= 0)
 				home.Auto[existing] = entry;
@@ -173,6 +189,61 @@ public class SettingsService
 		LoadSettings();
 	}
 
+	// The stored refresh token (apiKey) and access token of the auto endpoint the predicate picks,
+	// read from disk rather than memory: another agent sharing this file may have rotated them since
+	// it was loaded. Empty strings when there is no such endpoint.
+	public (string ApiKey, string AccessToken) ReadAutoEndpointTokens(Func<string, bool> isEndpoint)
+	{
+		string apiKey = string.Empty;
+		string access = string.Empty;
+		lock (_writeGate)
+		{
+			BeastSettings? home = LoadSettingsFromFile(_homeDirSettingsPath);
+			if (home != null)
+			{
+				foreach (AutoProviderConfig auto in home.Auto)
+				{
+					if (isEndpoint(auto.BaseUrl))
+					{
+						apiKey = auto.ApiKey;
+						access = auto.AccessToken ?? string.Empty;
+						break;
+					}
+				}
+			}
+		}
+		return (apiKey, access);
+	}
+
+	// Persists a rotated token pair for an OAuth endpoint, creating its entry (with no models yet)
+	// when a fresh sign-in arrives before /config has saved the endpoint.
+	public void SaveAutoEndpointTokens(string baseUrl, Func<string, bool> isEndpoint, string apiKey, string accessToken)
+	{
+		lock (_writeGate)
+		{
+			BeastSettings       home  = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+			AutoProviderConfig? entry = null;
+			foreach (AutoProviderConfig auto in home.Auto)
+			{
+				if (isEndpoint(auto.BaseUrl))
+				{
+					entry = auto;
+					break;
+				}
+			}
+			if (entry == null)
+			{
+				entry = new AutoProviderConfig { BaseUrl = baseUrl };
+				home.Auto.Add(entry);
+			}
+			entry.ApiKey      = apiKey;
+			entry.AccessToken = accessToken;
+
+			WriteSettings(_homeDirSettingsPath, home);
+			LoadSettings();
+		}
+	}
+
 	// Persists a durable reasoning fact about one model — the effort word chosen with /effort, or a
 	// capability the provider taught us mid-run (an endpoint that refuses thinking summaries, a model
 	// that refuses to reason at all). Only the arguments supplied are written; null leaves that field
@@ -181,41 +252,44 @@ public class SettingsService
 	// applies it in memory), it simply has nowhere on disk to live.
 	public bool SaveModelReasoning(string modelId, string? effort, bool? summaries)
 	{
-		BeastSettings home  = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
-		bool          found = false;
-
-		foreach (AutoProviderConfig auto in home.Auto)
+		bool found = false;
+		lock (_writeGate)
 		{
-			foreach (AutoModelConfig model in auto.Models)
+			BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+
+			foreach (AutoProviderConfig auto in home.Auto)
 			{
-				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
-					continue;
-				if (effort != null)
-					model.ReasoningEffort = effort;
-				if (summaries.HasValue)
-					model.ReasoningSummaries = summaries.Value;
-				found = true;
+				foreach (AutoModelConfig model in auto.Models)
+				{
+					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+						continue;
+					if (effort != null)
+						model.ReasoningEffort = effort;
+					if (summaries.HasValue)
+						model.ReasoningSummaries = summaries.Value;
+					found = true;
+				}
 			}
-		}
 
-		foreach (ProviderConfig provider in home.Providers)
-		{
-			foreach (ModelConfig model in provider.Models)
+			foreach (ProviderConfig provider in home.Providers)
 			{
-				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
-					continue;
-				if (effort != null)
-					model.ReasoningEffort = effort;
-				if (summaries.HasValue)
-					model.ReasoningSummaries = summaries.Value;
-				found = true;
+				foreach (ModelConfig model in provider.Models)
+				{
+					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+						continue;
+					if (effort != null)
+						model.ReasoningEffort = effort;
+					if (summaries.HasValue)
+						model.ReasoningSummaries = summaries.Value;
+					found = true;
+				}
 			}
-		}
 
-		if (found)
-		{
-			WriteSettings(_homeDirSettingsPath, home);
-			LoadSettings();
+			if (found)
+			{
+				WriteSettings(_homeDirSettingsPath, home);
+				LoadSettings();
+			}
 		}
 		return found;
 	}
@@ -224,35 +298,38 @@ public class SettingsService
 	// lookup and same "false = nowhere on disk to put it" contract as SaveModelReasoning.
 	public bool SaveModelMaxImages(string modelId, int maxImages)
 	{
-		BeastSettings home  = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
-		bool          found = false;
-
-		foreach (AutoProviderConfig auto in home.Auto)
+		bool found = false;
+		lock (_writeGate)
 		{
-			foreach (AutoModelConfig model in auto.Models)
+			BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+
+			foreach (AutoProviderConfig auto in home.Auto)
 			{
-				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
-					continue;
-				model.MaxImages = maxImages;
-				found           = true;
+				foreach (AutoModelConfig model in auto.Models)
+				{
+					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+						continue;
+					model.MaxImages = maxImages;
+					found           = true;
+				}
 			}
-		}
 
-		foreach (ProviderConfig provider in home.Providers)
-		{
-			foreach (ModelConfig model in provider.Models)
+			foreach (ProviderConfig provider in home.Providers)
 			{
-				if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
-					continue;
-				model.MaxImages = maxImages;
-				found           = true;
+				foreach (ModelConfig model in provider.Models)
+				{
+					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+						continue;
+					model.MaxImages = maxImages;
+					found           = true;
+				}
 			}
-		}
 
-		if (found)
-		{
-			WriteSettings(_homeDirSettingsPath, home);
-			LoadSettings();
+			if (found)
+			{
+				WriteSettings(_homeDirSettingsPath, home);
+				LoadSettings();
+			}
 		}
 		return found;
 	}
@@ -262,20 +339,23 @@ public class SettingsService
 	// at load time from the endpoint sharing its domain.
 	public void SaveWebSearchProviders(List<WebSearchProviderConfig> providers)
 	{
-		BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+		lock (_writeGate)
+		{
+			BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
 
-		if (home.WebSearch == null)
-			home.WebSearch = new WebSearchConfig();
-		home.WebSearch.Providers = providers;
+			if (home.WebSearch == null)
+				home.WebSearch = new WebSearchConfig();
+			home.WebSearch.Providers = providers;
 
-		// The legacy single-provider block is superseded the moment the new list is written; leave
-		// its key in place (it is still a valid OpenRouter key source) but stop it from acting as
-		// an implicit second OpenRouter entry.
-		if (home.WebSearch.Openrouter != null)
-			home.WebSearch.Openrouter.Enabled = false;
+			// The legacy single-provider block is superseded the moment the new list is written; leave
+			// its key in place (it is still a valid OpenRouter key source) but stop it from acting as
+			// an implicit second OpenRouter entry.
+			if (home.WebSearch.Openrouter != null)
+				home.WebSearch.Openrouter.Enabled = false;
 
-		WriteSettings(_homeDirSettingsPath, home);
-		LoadSettings();
+			WriteSettings(_homeDirSettingsPath, home);
+			LoadSettings();
+		}
 	}
 
 	private void WriteSettings(string path, BeastSettings settings)
@@ -377,9 +457,10 @@ public class SettingsService
 				  },
 			  } },
 				{ "inspect_media", new ToolConfig() {
-				  Description = "Look at an image, audio, or video file. If you accept that kind of input, the file itself is attached to the result so you can examine it directly. Otherwise, or when use_subagent is set, a media-capable subagent reads it and returns only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. A large file is reported by size the first time so you can resize or clip it with ffmpeg; calling again on the same path sends it as-is. Works inside /workspace/ and /tmp/, and on a dropped attachment at the path you were given for it. CWD is the repo root at /workspace/.",
+				  Description = "Look at one or more image, audio, or video files. Pass several at once to compare them side by side (before/after screenshots, a render against its reference); they arrive together, in the order given. If you accept that kind of input, the files themselves are attached to the result so you can examine them directly. Otherwise, or when use_subagent is set, a media-capable subagent reads them and returns only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. Set max_dimension to have images downscaled for you rather than resizing them yourself. A large file is reported by size the first time; calling again on the same path sends it as-is. Works inside /workspace/ and /tmp/, and on a dropped attachment at the path you were given for it. CWD is the repo root at /workspace/.",
 				  Parameters  = new Dictionary<string,string>() {
-					  { "file_path", "Path to the media file (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac, mp4, mov, webm)." },
+					  { "file_paths", "Paths to the media files, one or more (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac, mp4, mov, webm)." },
+					  { "max_dimension", "Optional. Longest edge in pixels: any image larger than this is downscaled to fit, aspect ratio kept, before it is sent. Smaller images, audio, and video are sent unchanged. 1568 matches what most providers keep; use less when fine detail does not matter." },
 					  { "goal", "Exactly what to extract or answer from the media. Required when a subagent reads it; ignored when the file is attached for you directly." },
 					  { "use_subagent", "Set true to have a subagent read the file and return text instead of attaching it to your context: right for long recordings where you only want a transcript, or many files where only a summary of each is needed." },
 				  },

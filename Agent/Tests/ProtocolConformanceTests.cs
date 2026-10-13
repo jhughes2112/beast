@@ -81,6 +81,7 @@ public static class ProtocolConformanceTests
 				await TestPlainTextAsync(ctx, server, api, cts.Token);
 				await TestToolRoundTripAsync(ctx, server, api, cts.Token);
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
+				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
 				await TestThinkingAnswersMediaAsync(ctx, server, api, folder, cts.Token);
 				await TestDroppedAttachmentAsync(ctx, server, api, cts.Token);
 				await TestImageCountRefusalAsync(ctx, server, api, folder, false, cts.Token);
@@ -88,6 +89,8 @@ public static class ProtocolConformanceTests
 				await TestWrongModelIsNotTrimmedAsync(ctx, server, api, folder, cts.Token);
 				if (api.Protocol != DetectedProtocol.Anthropic)
 					await TestImageCountRefusalAsync(ctx, server, api, folder, true, cts.Token);
+				if (api.Protocol == DetectedProtocol.Responses)
+					await TestCountRouteProbedOnceAsync(ctx, server, api, cts.Token);
 			}
 		}
 		finally
@@ -105,6 +108,43 @@ public static class ProtocolConformanceTests
 	}
 
 	// ---- Scenarios ----
+
+	// The Responses token-count route is probed once per ENDPOINT, not once per protocol instance —
+	// every session, rehydrate and summarizer stage builds a fresh one. On a Meta-style server the
+	// first count pays one 404 on OpenAI's spelling and every later count goes straight to Meta's;
+	// on a server with neither, later counts skip both and go to the tracer.
+	private static async Task TestCountRouteProbedOnceAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		ModelConfig   config = new ModelConfig { Id = "fake-count", Name = "Fake count", ContextWindow = 200000, MaxOutputTokens = 4096 };
+		LlmModel      model  = new LlmModel(config.Id, api.Endpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), config);
+		SessionLogger logger = new SessionLogger("count-route-test");
+
+		server.Reset();
+		server.ServeCount("/responses/input_tokens");
+		EndpointFacts meta = new EndpointFacts();
+		for (int instance = 0; instance < 3; instance++)
+		{
+			TracerResult counted = await CountOnFreshInstanceAsync(model, meta, logger, ct);
+			ctx.Assert(counted.Succeeded && counted.InputTokens == 321, $"{api.Name} CountRoute: instance {instance} counts through Meta's route");
+		}
+		List<string> metaPaths = server.CountRequests();
+		ctx.AssertEqual(4, metaPaths.Count, $"{api.Name} CountRoute: one 404 on OpenAI's route, then one count per instance");
+		if (metaPaths.Count == 4)
+			ctx.Assert(metaPaths[0].EndsWith("/input_tokens/count", StringComparison.Ordinal), $"{api.Name} CountRoute: OpenAI's spelling is tried first");
+
+		server.Reset();
+		EndpointFacts none = new EndpointFacts();
+		for (int instance = 0; instance < 3; instance++)
+			await CountOnFreshInstanceAsync(model, none, logger, ct);
+		ctx.AssertEqual(2, server.CountRequests().Count, $"{api.Name} CountRoute: an endpoint with no count route is probed once, then skipped");
+	}
+
+	private static async Task<TracerResult> CountOnFreshInstanceAsync(LlmModel model, EndpointFacts facts, SessionLogger logger, CancellationToken ct)
+	{
+		ProtocolResponses protocol = new ProtocolResponses(null, facts, false);
+		protocol.Rehydrate(new List<CanonicalMessage> { new UserMessage("count me") });
+		return await protocol.CountTokensAsync(model, new List<ToolDefinition>(), null, new Dictionary<string, string>(), new Dictionary<string, JsonNode?>(), logger, ct);
+	}
 
 	private static async Task TestPlainTextAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
 	{
@@ -170,6 +210,45 @@ public static class ProtocolConformanceTests
 			ctx.AssertEqual(1,        sent[2].MediaCount, $"{api.Name} MediaAcrossTools: chaining sends only the new image");
 			ctx.AssertEqual(2, sent[3].VisibleMediaCount, $"{api.Name} MediaAcrossTools: the server-side thread is left holding both");
 		}
+	}
+
+	// One inspect naming two files puts both in front of the model in the same request, in the order
+	// asked, so it can compare them directly.
+	private static async Task TestTwoImagesInOneInspectAsync(TestContext ctx, FakeProvider server, Api api, string folder, CancellationToken ct)
+	{
+		// Each filled with its own letter, so its base64 holds a run ("QUFB" for 'A', "QkJC" for 'B')
+		// that identifies it in the request without any character JSON would escape.
+		Rig    rig = Build(server, api);
+		string a   = Path.Combine(folder, "before.png");
+		string b   = Path.Combine(folder, "after.png");
+		File.WriteAllBytes(a, LetterPng((byte)'A'));
+		File.WriteAllBytes(b, LetterPng((byte)'B'));
+		string args = new JsonObject { ["file_paths"] = new JsonArray(a, b) }.ToJsonString();
+		server.Enqueue(FakeReply.Call("c1", "inspect_media", args));
+		server.Enqueue(FakeReply.Say("after.png moved the button"));
+		rig.Session.Bundle.OnUserMessage("compare before and after");
+
+		await StepAsync(rig, ct);
+		await StepAsync(rig, ct);
+
+		List<FakeRequest> sent = server.Requests();
+		ctx.AssertEqual(2,         sent.Count, $"{api.Name} TwoImages: one inspect, then the answer");
+		ctx.AssertEqual(2, sent[1].MediaCount, $"{api.Name} TwoImages: both images ride in the same request");
+		string body   = sent[1].Body.ToJsonString();
+		int    before = body.IndexOf("QUFBQUFBQUFB", StringComparison.Ordinal);
+		int    after  = body.IndexOf("QkJCQkJCQkJC", StringComparison.Ordinal);
+		ctx.Assert(before >= 0 && after > before, $"{api.Name} TwoImages: in the order they were asked for");
+	}
+
+	// A PNG signature followed by one repeated letter.
+	private static byte[] LetterPng(byte letter)
+	{
+		byte[] bytes = new byte[128];
+		byte[] magic = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+		Array.Copy(magic, bytes, magic.Length);
+		for (int i = magic.Length; i < bytes.Length; i++)
+			bytes[i] = letter;
+		return bytes;
 	}
 
 	// Thinking is an answer where it survives on the wire (Messages replays signed thinking). Chat
@@ -315,7 +394,7 @@ public static class ProtocolConformanceTests
 			if (maxImages.HasValue)
 				learned.Add(maxImages.Value);
 		};
-		LlmService service = new LlmService(model, api.Protocol, new ModelAvailability(), new List<string> { config.Id }, sink);
+		LlmService service = new LlmService(model, api.Protocol, new ModelAvailability(), new EndpointFacts(), new List<string> { config.Id }, sink);
 
 		TestCaptureTransport transport = new TestCaptureTransport();
 		BeastSession         data      = new BeastSession(Guid.NewGuid().ToString("N"), "conformance", config.Id, "Tester",
@@ -363,15 +442,20 @@ public static class ProtocolConformanceTests
 		JsonObject parameters = new JsonObject
 		{
 			["type"]       = "object",
-			["properties"] = new JsonObject { ["file_path"] = new JsonObject { ["type"] = "string" } },
-			["required"]   = new JsonArray("file_path")
+			["properties"] = new JsonObject { ["file_paths"] = new JsonObject { ["type"] = "array", ["items"] = new JsonObject { ["type"] = "string" } } },
+			["required"]   = new JsonArray("file_paths")
 		};
 		MediaInspector inspector = new MediaInspector();
 		return new Tool
 		{
-			Definition = new ToolDefinition { Function = new FunctionDefinition { Name = "inspect_media", Description = "Looks at a media file.", Parameters = parameters } },
+			Definition = new ToolDefinition { Function = new FunctionDefinition { Name = "inspect_media", Description = "Looks at media files.", Parameters = parameters } },
 			Handler    = async (args, id, ct, transport, sessionId, maxOutput) =>
-				await inspector.InspectAsync(id, args["file_path"]?.GetValue<string>() ?? string.Empty, string.Empty, false, null, registry, session, transport, maxOutput, ct)
+			{
+				List<string> paths = new List<string>();
+				foreach (JsonNode? path in (JsonArray)args["file_paths"]!)
+					paths.Add(path!.GetValue<string>());
+				return await inspector.InspectAsync(id, paths, 0, string.Empty, false, null, registry, session, transport, maxOutput, ct);
+			}
 		};
 	}
 
@@ -379,7 +463,7 @@ public static class ProtocolConformanceTests
 
 	private static string Args(string path)
 	{
-		return new JsonObject { ["file_path"] = path }.ToJsonString();
+		return new JsonObject { ["file_paths"] = new JsonArray(path) }.ToJsonString();
 	}
 
 	// A PNG signature followed by filler to the requested size; nothing here decodes pixels.

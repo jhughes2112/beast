@@ -166,7 +166,7 @@ public static class Summarizer
 						}
 						else
 						{
-							transport.Status(session.Id, $"[Compaction] {service.Model.Config.Name} is rate limited and no fallback model is available.");
+							transport.Status(session.Id, $"[Compaction] {service.Model.Config.Name} is rate limited and no fallback model is available. {result.ErrorMessage}".TrimEnd());
 							failed = true;
 						}
 					}

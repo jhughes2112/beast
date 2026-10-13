@@ -62,6 +62,14 @@ public class AutoProviderConfig
 	[JsonPropertyName("apiKey")]
 	public string ApiKey { get; set; } = string.Empty;
 
+	// OAuth endpoints only (the ChatGPT subscription, whose apiKey is the refresh token): the
+	// short-lived access token minted from it. Kept beside the key so every agent sharing this file
+	// uses the current one instead of each refreshing on its own — a refresh token is single-use,
+	// and replaying a spent one revokes the whole sign-in.
+	[JsonPropertyName("accessToken")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public string? AccessToken { get; set; } = null;
+
 	[JsonPropertyName("models")]
 	public List<AutoModelConfig> Models { get; set; } = new();
 }

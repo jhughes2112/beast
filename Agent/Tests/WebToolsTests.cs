@@ -79,7 +79,7 @@ public static class WebToolsTests
 			(  dearWorks, "k", "stub")
 		};
 
-		ToolResult result = new WebSearchTool(providers, "test").SearchAsync("id", "q", "g", parent, new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult result = new WebSearchTool().SearchAsync("id", providers, "test", "q", "g", parent, new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
 
 		ctx.AssertEqual(0, result.ExitCode, "WebSearchTool: falls through to a provider that works");
 		ctx.AssertContains(result.StdOut, "answer from dear",  "WebSearchTool: returns the working provider's answer");
@@ -95,7 +95,7 @@ public static class WebToolsTests
 		{
 			(onlyBroken, "k", "stub")
 		};
-		ToolResult failed = new WebSearchTool(allBroken, "test").SearchAsync("id", "q", "g", NewParentSession(), new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult failed = new WebSearchTool().SearchAsync("id", allBroken, "test", "q", "g", NewParentSession(), new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
 		ctx.AssertEqual(1, failed.ExitCode, "WebSearchTool: all-providers-failed is an error result");
 		ctx.AssertContains(failed.StdErr, "broken said no", "WebSearchTool: the failure names why each provider failed");
 
@@ -109,8 +109,8 @@ public static class WebToolsTests
 			( brokeProvider, "k", "stub"),
 			(payingProvider, "k", "stub")
 		};
-		WebSearchTool creditTool = new WebSearchTool(creditCase, "test");
-		ToolResult    recovered  = creditTool.SearchAsync("id", "q", "g", NewParentSession(), transport, "s", 0, CancellationToken.None).GetAwaiter().GetResult();
+		WebSearchTool creditTool = new WebSearchTool();
+		ToolResult    recovered  = creditTool.SearchAsync("id", creditCase, "test", "q", "g", NewParentSession(), transport, "s", 0, CancellationToken.None).GetAwaiter().GetResult();
 
 		ctx.AssertEqual(0, recovered.ExitCode, "WebSearchTool: a 402 still falls back to the next provider");
 		ctx.AssertContains(recovered.StdOut, "answer from paying", "WebSearchTool: the fallback provider's answer is returned");
@@ -123,7 +123,7 @@ public static class WebToolsTests
 		ctx.AssertEqual(1, alerts, "WebSearchTool: an exhausted-credits 402 raises a client alert");
 
 		// A second search must not re-raise the banner for the same provider.
-		creditTool.SearchAsync("id", "q", "g", NewParentSession(), transport, "s", 0, CancellationToken.None).GetAwaiter().GetResult();
+		creditTool.SearchAsync("id", creditCase, "test", "q", "g", NewParentSession(), transport, "s", 0, CancellationToken.None).GetAwaiter().GetResult();
 		int repeated = 0;
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
@@ -133,7 +133,7 @@ public static class WebToolsTests
 		ctx.AssertEqual(1, repeated, "WebSearchTool: the credit alert is raised once per provider, not per search");
 
 		// No providers at all (nothing configured, or no keys resolved) is also a clean error.
-		ToolResult none = new WebSearchTool(new List<(WebSearchProvider, string, string)>(), "test").SearchAsync("id", "q", "g", NewParentSession(), new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult none = new WebSearchTool().SearchAsync("id", new List<(WebSearchProvider, string, string)>(), "test", "q", "g", NewParentSession(), new TestCaptureTransport(), "ws-test", 0, CancellationToken.None).GetAwaiter().GetResult();
 		ctx.AssertEqual(1, none.ExitCode, "WebSearchTool: no configured provider is an error result");
 	}
 
@@ -211,11 +211,11 @@ public static class WebToolsTests
 
 		try
 		{
-			WebSearchTool searcher = new WebSearchTool(usable, string.Empty);
+			WebSearchTool searcher = new WebSearchTool();
 
 			using CancellationTokenSource timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 			using CancellationTokenSource cts        = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-			ToolResult result                        = await searcher.SearchAsync("testSearchId", "What is the capital of France?", "State the capital city of France in one short sentence.", parent, new TestCaptureTransport(), parent.Id, 0, cts.Token);
+			ToolResult result                        = await searcher.SearchAsync("testSearchId", usable, string.Empty, "What is the capital of France?", "State the capital city of France in one short sentence.", parent, new TestCaptureTransport(), parent.Id, 0, cts.Token);
 
 			string response = result.ExitCode == 0 ? result.StdOut : result.StdErr;
 			ctx.Log($"    response: {response}");

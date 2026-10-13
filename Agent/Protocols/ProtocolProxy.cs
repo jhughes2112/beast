@@ -66,20 +66,26 @@ public class ProtocolProxy
 	// bare test constructor, where there is no registry to tell and nothing to persist to.
 	private readonly ModelCapabilitySink? _onCapabilityLearned;
 
+	// What has been probed about this endpoint, shared with every other service using it. The bare
+	// test constructor gets a private one: there is no registry to share it through.
+	private readonly EndpointFacts _endpointFacts;
+
 	public ProtocolProxy(LlmModel model)
 	{
 		_model               = model;
 		_detected            = DetectedProtocol.Unknown;
 		_onCapabilityLearned = null;
+		_endpointFacts       = new EndpointFacts();
 	}
 
 	// Create with a known protocol â€” skips the per-turn probe in ExecuteAsync.
 	// Always prefer this constructor; use the no-protocol overload only as a fallback.
-	public ProtocolProxy(LlmModel model, DetectedProtocol detected, ModelCapabilitySink onCapabilityLearned)
+	public ProtocolProxy(LlmModel model, DetectedProtocol detected, EndpointFacts endpointFacts, ModelCapabilitySink onCapabilityLearned)
 	{
 		_model               = model;
 		_detected            = detected;
 		_onCapabilityLearned = onCapabilityLearned;
+		_endpointFacts       = endpointFacts;
 	}
 
 	// Infers the protocol from the URL route suffix.
@@ -302,7 +308,7 @@ SessionLogger logger, CancellationToken cancellationToken)
 	{
 		if (_protocolResponses == null || !ReferenceEquals(_nativeSource, canonical))
 		{
-			_protocolResponses = new ProtocolResponses(_onCapabilityLearned);
+			_protocolResponses = new ProtocolResponses(_onCapabilityLearned, _endpointFacts, ChatGptSubscription.IsEndpoint(_model.Endpoint));
 			_protocolResponses.Rehydrate(canonical);
 			_protocolChatCompletions = null;
 			_protocolAnthropic       = null;

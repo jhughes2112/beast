@@ -63,8 +63,14 @@ public class LlmService
 	// single-model service (e.g. web search) carries just its own id, so it never falls back.
 	private readonly IReadOnlyList<string> _roleModelIds;
 
+	// A rate limit lifting further out than this ends the turn on this model instead of being waited out.
+	private static readonly TimeSpan kLongRateLimit = TimeSpan.FromMinutes(5);
+
 	public LlmModel Model  => _model;
 	public bool     IsDown => _availability.IsDown;
+
+	// When this model's backoff ends; in the past when it can serve now.
+	public DateTimeOffset AvailableAt => _availability.AvailableAt;
 
 	// The role's model list, read by the registry to find this service's slot and build the next fallback.
 	public IReadOnlyList<string> RoleModelIds => _roleModelIds;
@@ -72,13 +78,14 @@ public class LlmService
 	// detectedProtocol is resolved by LlmRegistry.ProbeEndpointsAsync before any session starts.
 	// availability is shared across all service instances for the same model so rate-limit and
 	// down state set by one session are visible to others picking that model next. roleModelIds is the
-	// role's priority list this model came from, so fallback can advance past it.
-	public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability, IReadOnlyList<string> roleModelIds,
-		ModelCapabilitySink onCapabilityLearned)
+	// role's priority list this model came from, so fallback can advance past it. endpointFacts is
+	// shared the same way per endpoint, so what one service probes is never probed again.
+	public LlmService(LlmModel model, DetectedProtocol detectedProtocol, ModelAvailability availability, EndpointFacts endpointFacts,
+		IReadOnlyList<string> roleModelIds, ModelCapabilitySink onCapabilityLearned)
 	{
 		_model        = model;
 		_availability = availability;
-		_handler      = new ProtocolProxy(model, detectedProtocol, onCapabilityLearned);
+		_handler      = new ProtocolProxy(model, detectedProtocol, endpointFacts, onCapabilityLearned);
 		_roleModelIds = roleModelIds;
 	}
 
@@ -209,9 +216,9 @@ public class LlmService
 					// displayed cached/in/out counters describe the CURRENT context (matching what
 					// Session.SendStats commits), so the in-flight turn's own numbers are reported as
 					// they arrive rather than added to lifetime baselines; contextTokens tracks the live
-					// occupancy (see below). Cost is the one cumulative figure, so it keeps its baseline.
-					decimal costBaseline    = conversation.TotalCost; // locals captured by closure for provisional stats
-					int     contextBaseline = conversation.ContextLength;
+					// occupancy (see below). Cost is the one cumulative figure, read live rather than
+					// captured: children roll their spend up after every round, so it can grow mid-stream.
+					int contextBaseline = conversation.ContextLength; // captured by closure for provisional stats
 
 					// What the NEXT submission finds cached is everything the last turn read AND wrote:
 					// the prompt it sent plus the completion it produced are one contiguous prefix of
@@ -244,7 +251,7 @@ public class LlmService
 							// The three reported counts are a partition of the live context, so they always
 							// add back up to the occupancy shown beside them.
 							int liveContext = livePrompt + outputTokens;
-							transport.Stats(conversation.Id, modelId, role, livePrompt - liveCached, outputTokens, costBaseline + turnCost, contextWindow, liveContext, liveCached);
+							transport.Stats(conversation.Id, modelId, role, livePrompt - liveCached, outputTokens, conversation.TotalCost + turnCost, contextWindow, liveContext, liveCached);
 						};
 
 					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
@@ -296,12 +303,25 @@ public class LlmService
 					if (result.Outcome == ProtocolCallOutcome.RateLimited)
 					{
 						rateLimitRetries++;
+
+						// A limit that lifts hours from now (a subscription's 5-hour or weekly usage window)
+						// is not worth waiting out mid-turn: the backoff is recorded so nothing picks this
+						// model until it lifts, and the caller falls back to the next model right away.
+						if (result.RetryAfter.HasValue && result.RetryAfter.Value > DateTimeOffset.UtcNow + kLongRateLimit)
+						{
+							_availability.ExtendBackoff(result.RetryAfter.Value);
+							string until = $"Rate limited until {result.RetryAfter.Value:u}";
+							conversation.QueryLog.ModelFailure(_model, _handler, "TooManyRetries", 429, until, rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, true);
+							result = ProtocolResult.TooManyRetries(string.IsNullOrEmpty(result.ErrorMessage) ? until : result.ErrorMessage, result.RetryAfter);
+							break;
+						}
+
 						if (rateLimitRetries > kMaxRateLimitRetries)
 						{
 							// Sustained rate limiting is a caller-side budget issue, not a model failure. The
 							// caller falls back to the next model in the role's list (RoleModelIds) on this outcome.
 							conversation.QueryLog.ModelFailure(_model, _handler, "TooManyRetries", 429, "Rate limited after maximum retries", rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, true);
-							result = ProtocolResult.TooManyRetries();
+							result = ProtocolResult.TooManyRetries(result.ErrorMessage, null);
 							break;
 						}
 						_availability.ExtendBackoff(result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5));

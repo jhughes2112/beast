@@ -27,6 +27,10 @@ public class SessionHandler
 	private string?     _nextModel;
 	private bool        _wantsCompact;
 
+	// Set when a drain applies a /reload: the running turn cluster re-fetches its role and rebuilds
+	// its toolset before the next LLM call, so the reload reaches tools mid-cluster.
+	private bool _toolsStale;
+
 	// Terminator sink written by the tool callback, read after each dispatch round.
 	private string? _terminatorValue;
 	private bool    _terminatorSucceeded;
@@ -36,9 +40,16 @@ public class SessionHandler
 	// Failure reason recorded when the model could not complete and no fallback was available.
 	private string? _lastFailure;
 
-	// Cost already rolled up into the parent for the active session; RollUpCost records only the
-	// remainder, so the parent is billed exactly once however many times the rollup runs.
-	private decimal _costRecordedToParent;
+	// Set when every model in the role failed and the session parked on the alert. The next human
+	// input retries the whole role list from the top instead of re-hitting the dead service.
+	private bool _modelsExhausted;
+
+	// Set while the turn waits out a usage limit that no other model could take over from; the
+	// first call that succeeds afterwards announces the resume.
+	private bool _waitingOnLimit;
+
+	// Set when RollUpCost moved spend into ancestors that have not been saved since.
+	private bool _rolledUpUnsaved;
 
 	// Last measured input token count, recorded by the tracer or after each successful turn.
 	// Used to compute whether the context window is full without a live model call.
@@ -60,7 +71,7 @@ public class SessionHandler
 	// is true only for a resumed root (the client has not seen its history yet); fresh children
 	// have nothing committed, and revived sessions were already replayed by the restore pass or
 	// streamed live.
-	public async Task RunAsync(LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, WebSearchConfig? webSearchConfig, bool replayOnStart, CancellationToken ct)
+	public async Task RunAsync(LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, bool replayOnStart, CancellationToken ct)
 	{
 		if (replayOnStart)
 			_activeSession.ReplayToTransport();
@@ -84,6 +95,13 @@ public class SessionHandler
 				// travel to compaction successors, and clear the moment the caller has been answered.
 				int maxWork  = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns : int.MaxValue;
 				int maxTotal = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
+
+				// 0. Input arriving at a session parked on "every model failed" IS the human retry.
+				// Every model in the role gets a fresh chance, starting from the top of the ranked
+				// list — rebuilding from the session's model would land on the one that failed last,
+				// whose fallback chain has nothing after it.
+				if (_activeSession.HasPending)
+					RetryExhaustedModels(roleService, registry);
 
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
 				await DrainInput(roleService, registry, transport, ct);
@@ -134,7 +152,7 @@ public class SessionHandler
 				bool contextFull = false;
 				try
 				{
-					contextFull = await RunTurnClusterAsync(role, windDown, registry, roleService, settings, transport, webSearchConfig, orchestrator, ct);
+					contextFull = await RunTurnClusterAsync(role, windDown, registry, roleService, settings, transport, orchestrator, ct);
 				}
 				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
 				{
@@ -147,6 +165,7 @@ public class SessionHandler
 					_activeSession.SendIdle();
 					if (!_activeSession.Ephemeral)
 						SaveSession(_activeSession);
+					SaveRolledUpCost(orchestrator);
 				}
 
 				// 5. Compact when the context filled mid-cluster (the turn was cut short, so the
@@ -208,9 +227,10 @@ public class SessionHandler
 		finally
 		{
 			_scope.Dispose();
+			RollUpCost(orchestrator);
 			if (!_activeSession.Ephemeral)
 				SaveSession(_activeSession);
-			RollUpCost(orchestrator);
+			SaveRolledUpCost(orchestrator);
 			_activeSession.SendIdle();
 			NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator, false);
 
@@ -227,9 +247,10 @@ public class SessionHandler
 
 	// Runs assistant turns and tool dispatch until the model stops calling tools, the user steers,
 	// or the run fails. Returns true when the context is full and the caller must compact.
-	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator, CancellationToken ct)
+	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
-		Tool[]  tools           = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
+		_toolsStale             = false;
+		Tool[]  tools           = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
 		string? forcedTool      = windDown ? _activeSession.TerminatorName : null;
 		bool    workToolsActive = _activeSession.WorkInProgress;
 		bool    contextFull     = false;
@@ -239,6 +260,21 @@ public class SessionHandler
 		// input signal, and without this check the wake would read as steering and run more turns.
 		while (!turnComplete && !contextFull && !ct.IsCancellationRequested && !_activeSession.Deleted)
 		{
+			// A /reload applied by a drain since the last round: pick up the republished role and
+			// rebuild the toolset from live config before the next call. A role that vanished left
+			// the service null (see DrainInput), which ends the cluster just below.
+			if (_toolsStale)
+			{
+				_toolsStale    = false;
+				Role? reloaded = roleService.GetRole(_activeSession.Role);
+				if (reloaded != null)
+				{
+					role            = reloaded;
+					workToolsActive = _activeSession.WorkInProgress;
+					tools           = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
+				}
+			}
+
 			// Reconcile service with any deferred /model switch before each LLM call.
 			ApplyPendingModelSwitch(role, registry);
 			LlmService? service = _service;
@@ -269,15 +305,29 @@ public class SessionHandler
 			}
 			else if (result.Outcome != ProtocolCallOutcome.Success)
 			{
-				string? failure = FallBackOrFail(service, result, registry, transport);
+				string? failure = FallBackOrFail(service, result, role, registry, transport);
 				if (failure != null)
 				{
 					_lastFailure = failure;
 					turnComplete = true;
+
+					// Park until a human answers the alert. Keeping the dead service let the next
+					// iteration run the same turn again; a down model fails without a network call,
+					// so that was a tight loop emitting one alert per pass until the app died.
+					_service         = null;
+					_modelsExhausted = true;
+					_activeSession.MarkInterrupted();
 				}
 			}
 			else
 			{
+				if (_waitingOnLimit)
+				{
+					_waitingOnLimit = false;
+					transport.Status(_activeSession.Id, $"Usage limit lifted; resumed on {service.Model.Config.Name}");
+					_activeSession.QueryLog.Note($"Usage limit lifted; resumed on {service.Model.Config.Name}");
+				}
+
 				_activeSession.CommitAssistantTurn(result.Payload!);
 				if (result.Payload!.Usage.PromptTokens > 0)
 					_lastInputTokens = result.Payload.Usage.PromptTokens;
@@ -320,9 +370,12 @@ public class SessionHandler
 				if (!turnComplete && _activeSession.WorkInProgress != workToolsActive)
 				{
 					workToolsActive = _activeSession.WorkInProgress;
-					tools           = BuildTools(role, windDown, settings.Settings, registry, roleService, webSearchConfig, orchestrator);
+					tools           = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
 				}
 
+				// The round's spend (its own completion, tool fees, children's rollups) reaches every
+				// ancestor now, not whenever this session next happens to reply or exit.
+				RollUpCost(orchestrator);
 				_activeSession.SendStats();
 			}
 		}
@@ -463,9 +516,10 @@ public class SessionHandler
 		return full;
 	}
 
-	// Swaps _service to a fallback model when one exists. Returns a failure message when no
-	// fallback is available and the turn must end.
-	private string? FallBackOrFail(LlmService service, ProtocolResult result, LlmRegistry registry, ITransportServer transport)
+	// Swaps _service to a fallback model when one exists. When none does but the limit lifts at a
+	// stated time, swaps to the model that recovers first and lets the turn wait for it. Returns a
+	// failure message only when neither is possible and the turn must end.
+	private string? FallBackOrFail(LlmService service, ProtocolResult result, Role role, LlmRegistry registry, ITransportServer transport)
 	{
 		string? failure     = null;
 		bool    rateLimited = result.Outcome == ProtocolCallOutcome.TooManyRetries;
@@ -476,7 +530,13 @@ public class SessionHandler
 
 		// PendingReserve covers tool outputs appended since the last measurement — without it a
 		// tool-heavy round can pick a fallback model the real conversation no longer fits in.
-		LlmService? fallback = registry.CreateFallbackService(service, _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve(), false);
+		int         minContext = _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve();
+		LlmService? fallback   = registry.CreateFallbackService(service, minContext, false);
+
+		// A limit with a stated reset (a subscription's usage window) lifts on its own. The registry
+		// already holds every model's backoff, so selection returns whichever role model serves
+		// soonest — possibly one above this in the list, past its own limit by now.
+		LlmService? waitOn = fallback == null && rateLimited && result.RetryAfter.HasValue ? registry.CreateService(role, string.Empty, minContext, false) : null;
 		if (fallback != null)
 		{
 			_activeSession.QueryLog.FallbackTransition(service, fallback,
@@ -485,19 +545,37 @@ public class SessionHandler
 			_service = fallback;
 			_activeSession.UpdateModel(fallback.Model);
 			_activeSession.SendStats();
-			transport.Status(_activeSession.Id, $"{(rateLimited ? "Rate limited" : "Model failed")}; falling back to {fallback.Model.Config.Name}");
+			string reason = rateLimited && result.ErrorMessage.Length > 0 ? $"Rate limited ({result.ErrorMessage})" : rateLimited ? "Rate limited" : "Model failed";
+			transport.Status(_activeSession.Id, $"{reason}; falling back to {fallback.Model.Config.Name}");
+		}
+		else if (waitOn != null)
+		{
+			// Nothing to intervene on, so no alert: the cluster carries on, and the next call waits
+			// out the backoff before re-submitting the turn. That wait yields to input, so a message
+			// or /model still applies at once rather than when the limit lifts.
+			DateTimeOffset now     = DateTimeOffset.UtcNow;
+			string         resume  = waitOn.AvailableAt > now ? ProtocolHelpers.DescribeReset(waitOn.AvailableAt, now) : "now";
+			string         waiting = $"{(result.ErrorMessage.Length > 0 ? result.ErrorMessage : "Rate limited.")} No other model can take over; the turn resumes automatically on {waitOn.Model.Config.Name} {resume}. Send a message or use /model to intervene.";
+			_activeSession.QueryLog.Note(waiting);
+			_service        = waitOn;
+			_waitingOnLimit = true;
+			_activeSession.UpdateModel(waitOn.Model);
+			_activeSession.SendStats();
+			transport.Status(_activeSession.Id, waiting);
 		}
 		else
 		{
+			// A rate limit's message is what the provider said about it — for a subscription, the
+			// usage of each window and when it resets — so the human can see how long to wait.
 			string detail = rateLimited
-				? "Rate limited after too many retries, and no fallback model is available."
+				? result.ErrorMessage.Length > 0 ? $"Rate limited, and no fallback model is available. {result.ErrorMessage}" : "Rate limited after too many retries, and no fallback model is available."
 				: string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage;
 			_activeSession.QueryLog.SessionFailure(_activeSession, service, detail, service.RoleModelIds.Count);
 			// Every model in the role is exhausted — nothing the system can do; a human must add
 			// credits, fix keys/config, or wait out the provider. Raise it loudly and persistently.
 			transport.Alert(_activeSession.Id,
 				$"Every model available to the '{_activeSession.Role}' role has failed. Last error: {detail}\n"
-				+ "A human needs to intervene: add provider credits, fix API keys in settings.json, or wait out the rate limits — then /reload or /model to resume.");
+				+ "A human needs to intervene: add provider credits, fix API keys in settings.json, or wait out the rate limits — then send a message to retry, or /reload or /model to resume.");
 			failure = string.IsNullOrEmpty(result.ErrorMessage) ? "all models failed" : result.ErrorMessage;
 		}
 		return failure;
@@ -651,9 +729,10 @@ public class SessionHandler
 
 				predecessor.SetDispatchScope(null);
 				predecessor.SendIdle();
+				RollUpCost(orchestrator);
 				if (!predecessor.Ephemeral)
 					SaveSession(predecessor);
-				RollUpCost(orchestrator);
+				SaveRolledUpCost(orchestrator);
 
 				// A child successor gets the next ID under the same parent; a root successor gets a
 				// fresh GUID. Everything else about the two is identical.
@@ -718,10 +797,9 @@ public class SessionHandler
 				predecessor.MarkInterrupted();
 				orchestrator.EnsureHandler(predecessor);
 
-				_activeSession        = successor;
-				_service              = service;
-				_lastInputTokens      = 0;
-				_costRecordedToParent = 0m;
+				_activeSession   = successor;
+				_service         = service;
+				_lastInputTokens = 0;
 				transport.Status(predecessor.Id, "[Compaction] Complete.");
 				compacted = true;
 			}
@@ -763,6 +841,7 @@ public class SessionHandler
 				// from the reloaded settings take effect.
 				_service = null;
 				RefreshService(refreshedRole, registry);
+				_toolsStale = true;
 				_activeSession.SendStats();
 				transport.Status(_activeSession.Id, "Configuration reloaded for this session.");
 			}
@@ -1062,18 +1141,17 @@ public class SessionHandler
 	// One toolset builder for every session. Which tools exist is configured by the role's tool
 	// list (ToolFactory checks it); the terminator callback is supplied only while the session
 	// owes a reply, and ToolFactory picks the matching terminator tool from the role.
-	private Tool[] BuildTools(Role role, bool windDown, BeastSettings beastSettings, LlmRegistry registry, RoleService roleService, WebSearchConfig? webSearchConfig, ISessionOrchestrator orchestrator)
+	private Tool[] BuildTools(Role role, bool windDown, SettingsService settings, LlmRegistry registry, RoleService roleService, ISessionOrchestrator orchestrator)
 	{
 		Tool[] full = ToolFactory.BuildForRole(
-			beastSettings,
+			settings,
 			role,
 			registry,
 			roleService,
 			_activeSession,
-			webSearchConfig,
 			_activeSession.WorkInProgress,
 			(roleName, displayName, prompt, maxWorkTurns, spawnCt) =>
-				orchestrator.SpawnChildAsync(beastSettings, _activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
+				orchestrator.SpawnChildAsync(_activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
 			() => _activeSession.BeginWork(),
 			() => _activeSession.EndWork(),
 			_activeSession.OwesReply ? Terminate : null);
@@ -1205,6 +1283,25 @@ public class SessionHandler
 			{
 				_activeSession.UpdateModel(newService.Model);
 				_service = newService;
+			}
+		}
+	}
+
+	// Resets the role's models and rebuilds the service from the top of the ranked list when the
+	// session is parked on exhausted models. A fresh handler has no flag, so a role whose every
+	// model is down counts as exhausted too — otherwise new input would wait on it forever.
+	private void RetryExhaustedModels(RoleService roleService, LlmRegistry registry)
+	{
+		Role? role = roleService.GetRole(_activeSession.Role);
+		if (role != null && (_modelsExhausted || registry.GetMillisecondsUntilAvailable(role) == long.MaxValue))
+		{
+			_modelsExhausted = false;
+			registry.ResetRoleAvailability(role);
+			LlmService? retry = registry.CreateService(role, "", _activeSession.ContextLength + GetCompactionReserve(), false);
+			if (retry != null)
+			{
+				_activeSession.UpdateModel(retry.Model);
+				_service = retry;
 			}
 		}
 	}
@@ -1343,18 +1440,42 @@ public class SessionHandler
 			_activeSession.ClearReplyObligation();
 			if (!_activeSession.Ephemeral)
 				SaveSession(_activeSession);
+			SaveRolledUpCost(orchestrator);
 		}
 	}
 
-	// Rolls the active session's spend up into the parent, recording only what has not been
-	// recorded yet. Runs at reply time, at compaction hand-off, and at handler exit.
+	// Rolls the active session's unreported spend up the whole ancestor chain, after every round and
+	// again at reply, compaction hand-off and handler exit. It does not stop at the parent: an idle
+	// parent (a human re-prompting a finished subagent) runs no turn of its own to pass the spend
+	// on, so each ancestor forwards its own unreported remainder and refreshes its display. Moves
+	// money in memory only; SaveRolledUpCost persists it at the session's own save points.
 	private void RollUpCost(ISessionOrchestrator orchestrator)
 	{
-		Session? parent = orchestrator.FindParent(_activeSession);
-		if (parent != null)
+		Session  child  = _activeSession;
+		Session? parent = orchestrator.FindParent(child);
+		while (parent != null && child.ReportCostTo(parent) != 0m)
 		{
-			parent.RecordCost(_activeSession.TotalCost - _costRecordedToParent);
-			_costRecordedToParent = _activeSession.TotalCost;
+			_rolledUpUnsaved = true;
+			parent.SendStats();
+			child  = parent;
+			parent = orchestrator.FindParent(child);
+		}
+	}
+
+	// Saves every ancestor that received rolled-up spend. Called right after the active session is
+	// saved, so a reload finds the reported markers and the totals that received them in agreement.
+	private void SaveRolledUpCost(ISessionOrchestrator orchestrator)
+	{
+		if (_rolledUpUnsaved)
+		{
+			_rolledUpUnsaved  = false;
+			Session? ancestor = orchestrator.FindParent(_activeSession);
+			while (ancestor != null)
+			{
+				if (!ancestor.Ephemeral && !ancestor.Deleted)
+					SessionService.Save(ancestor.Data);
+				ancestor = orchestrator.FindParent(ancestor);
+			}
 		}
 	}
 

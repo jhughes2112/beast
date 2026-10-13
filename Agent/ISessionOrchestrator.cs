@@ -15,7 +15,7 @@ public interface ISessionOrchestrator
 	// Spawns a child session under parent for the named role, seeds it with prompt, runs it until
 	// it answers via its terminator, and returns the result. The child session stays alive after
 	// answering so the user can keep interacting with it.
-	Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(BeastSettings settings, Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
+	Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
 
 	// Routes a message to the session identified by sessionId. Non-blocking; the message
 	// is queued in the target session and processed at the next turn boundary.

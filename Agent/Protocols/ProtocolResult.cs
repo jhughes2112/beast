@@ -3,14 +3,14 @@ using System.Collections.Generic;
 
 public enum ProtocolCallOutcome
 {
-	Success,      // A well-formed assistant turn was received and written to session state.
-	RateLimited,  // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
-	Transient,    // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off and retries the same model a few times, then escalates to TooManyRetries so the caller can fall back.
-	Failed,       // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
-	Interrupted,  // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
+	Success,        // A well-formed assistant turn was received and written to session state.
+	RateLimited,    // The API returned a rate-limit response. RetryAfter carries the backoff time when available.
+	Transient,      // A recoverable error (network failure, timeout, 5xx, bad request). LlmService backs off and retries the same model a few times, then escalates to TooManyRetries so the caller can fall back.
+	Failed,         // An unrecoverable error (auth failure, unknown protocol). LlmService marks the model permanently down.
+	Interrupted,    // The turn was cancelled by the user. Not a retryable outcome; the caller handles session cleanup.
 	TooManyRetries, // Rate-limited repeatedly; caller should try another model or abort.
-	ContextFull,  // Caller's context budget is exhausted before attempting a call; not a model failure.
-	Yielded,      // A retry backoff was interrupted because session input arrived. The caller drains the input (a /model or steering applies) and re-enters; not a failure.
+	ContextFull,    // Caller's context budget is exhausted before attempting a call; not a model failure.
+	Yielded,        // A retry backoff was interrupted because session input arrived. The caller drains the input (a /model or steering applies) and re-enters; not a failure.
 }
 
 // Normalised payload returned on ProviderCallOutcome.Success.
@@ -23,7 +23,7 @@ public class ProtocolCallPayload
 {
 	// Plain assistant text from the turn (empty string if none).
 	public string AssistantText { get; }
-	public string Thinking { get; }
+	public string Thinking      { get; }
 
 	// Tool calls the model wants to execute this turn (empty when none).
 	public IReadOnlyList<SemanticToolCall> ToolCalls { get; }
@@ -50,20 +50,20 @@ public class ProtocolCallPayload
 		string assistantText,
 		string thinking,
 		IReadOnlyList<SemanticToolCall> toolCalls,
-		List<ToolResult> toolResults,
-		string finishReason,
+		List<ToolResult>                toolResults,
+		string         finishReason,
 		TokenUsageInfo usage,
-		decimal cost,
-		object? nativeAnthropic = null,
-		object? nativeResponses = null)
+		decimal        cost,
+		object?        nativeAnthropic = null,
+		object?        nativeResponses = null)
 	{
-		AssistantText = assistantText;
-		Thinking = thinking;
-		ToolCalls = toolCalls;
-		ToolResults = toolResults;
-		FinishReason = finishReason;
-		Usage = usage;
-		Cost = cost;
+		AssistantText   = assistantText;
+		Thinking        = thinking;
+		ToolCalls       = toolCalls;
+		ToolResults     = toolResults;
+		FinishReason    = finishReason;
+		Usage           = usage;
+		Cost            = cost;
 		NativeAnthropic = nativeAnthropic;
 		NativeResponses = nativeResponses;
 	}
@@ -91,11 +91,11 @@ public class ProtocolResult
 
 	private ProtocolResult(ProtocolCallOutcome outcome, ProtocolCallPayload? payload, DateTimeOffset? retryAfter, string errorMessage, int httpStatus)
 	{
-		Outcome = outcome;
-		Payload = payload;
-		RetryAfter = retryAfter;
+		Outcome      = outcome;
+		Payload      = payload;
+		RetryAfter   = retryAfter;
 		ErrorMessage = errorMessage;
-		HttpStatus = httpStatus;
+		HttpStatus   = httpStatus;
 	}
 
 	public static ProtocolResult Succeeded(ProtocolCallPayload payload)
@@ -106,6 +106,12 @@ public class ProtocolResult
 	public static ProtocolResult RateLimited(DateTimeOffset? retryAfter)
 	{
 		return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, "", 0);
+	}
+
+	// Rate limited, with what the provider said about the limit (a subscription's usage and reset times).
+	public static ProtocolResult RateLimited(DateTimeOffset? retryAfter, string errorMessage)
+	{
+		return new ProtocolResult(ProtocolCallOutcome.RateLimited, null, retryAfter, errorMessage, 0);
 	}
 
 	public static ProtocolResult Transient(string errorMessage, DateTimeOffset? retryAfter)
@@ -130,9 +136,10 @@ public class ProtocolResult
 		return new ProtocolResult(ProtocolCallOutcome.Interrupted, payload, null, errorMessage, 0);
 	}
 
-	public static ProtocolResult TooManyRetries()
+	// retryAfter is when the limit lifts, when the provider said so; null when it only kept refusing.
+	public static ProtocolResult TooManyRetries(string errorMessage, DateTimeOffset? retryAfter)
 	{
-		return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, null, "", 0);
+		return new ProtocolResult(ProtocolCallOutcome.TooManyRetries, null, retryAfter, errorMessage, 0);
 	}
 
 	public static ProtocolResult ContextFull(string errorMessage)

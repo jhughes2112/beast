@@ -132,7 +132,7 @@ public static class ClaudeCodeLiveTests
 			Input         = new List<string> { "text", "image" }
 		};
 		LlmModel   model   = new LlmModel(config.Id, ClaudeCode.EndpointUrl, token, new List<JsonObject>(), new List<JsonObject>(), config);
-		LlmService service = new LlmService(model, DetectedProtocol.ClaudeDashP, new ModelAvailability(), new List<string> { config.Id }, (id, effort, summaries, maxImages) => { });
+		LlmService service = new LlmService(model, DetectedProtocol.ClaudeDashP, new ModelAvailability(), new EndpointFacts(), new List<string> { config.Id }, (id, effort, summaries, maxImages) => { });
 
 		TestCaptureTransport transport = new TestCaptureTransport();
 		BeastSession         data      = new BeastSession(Guid.NewGuid().ToString("N"), "claude-code-live", config.Id, "Tester",

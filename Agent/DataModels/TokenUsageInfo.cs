@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 // Used by LlmService for in-memory XML-tool-call parsing only. Not persisted; not a wire type.
@@ -39,26 +40,24 @@ public class ToolResult
 	// fixed raw-output ceiling. Always a real positive count — never a zero placeholder.
 	public int MeasuredOutputTokens { get; }
 
-	// A media file the result carries for the model to see natively, referenced by path rather
-	// than copied: protocols read the bytes when they build the wire message. Null for the
-	// ordinary text-only result.
-	public string? MediaPath     { get; }
-	public string? MediaMimeType { get; }
+	// Media files the result carries for the model to see natively, referenced by path rather than
+	// copied: protocols read the bytes when they build the wire message. Empty for the ordinary
+	// text-only result.
+	public IReadOnlyList<MediaFile> Media { get; }
 
 	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens)
-		: this(id, stdOut, stdErr, exitCode, measuredOutputTokens, null, null)
+		: this(id, stdOut, stdErr, exitCode, measuredOutputTokens, new List<MediaFile>())
 	{
 	}
 
-	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens, string? mediaPath, string? mediaMimeType)
+	public ToolResult(string id, string stdOut, string stdErr, int exitCode, int measuredOutputTokens, IReadOnlyList<MediaFile> media)
 	{
 		Id                   = id;
 		StdOut               = stdOut;
 		StdErr               = stdErr;
 		ExitCode             = exitCode;
 		MeasuredOutputTokens = measuredOutputTokens;
-		MediaPath            = mediaPath;
-		MediaMimeType        = mediaMimeType;
+		Media                = media;
 	}
 }
 

@@ -7,8 +7,11 @@ using System.Threading.Tasks;
 
 // Builds all tools for a given role in one call. Every parameter is used by at least one tool;
 // parameters for tools not in role.Tools are never called and may be null.
-// Helper roles (Explorer, WebFetch, WebSearch) and their LlmServices are resolved upfront; a tool
-// is silently omitted if its helper role or service is unavailable.
+// Helper-role availability (Explorer, WebFetch) is checked upfront to decide which tools exist; a
+// tool is silently omitted if its helper role or service is unavailable. Nothing a handler hands
+// off to is captured here: roles, providers, and models are looked up when the handler runs, since
+// a toolset lives for a whole turn cluster and a /config or /role reload must apply at the next
+// handoff, not the next cluster.
 // Special tools (assign_work, stop_work, review_work, terminators) require their corresponding
 // callbacks to be non-null or they are silently omitted — the role declaring a tool name is
 // necessary but not sufficient; the caller must also supply the live callback.
@@ -22,12 +25,11 @@ public static class ToolFactory
 	private const int SubagentMaxWorkTurns = 75;
 
 	public static Tool[] BuildForRole(
-		BeastSettings         settings,
+		SettingsService       settingsService,
 		Role                  role,
 		LlmRegistry?          registry,
 		RoleService?          roleService,
 		Session?              session,
-		WebSearchConfig?      webSearchConfig,
 		bool                  workInProgress,
 		SpawnSubagent?        spawnSubagent,
 		Action?               onWorkAssigned,
@@ -36,14 +38,17 @@ public static class ToolFactory
 	{
 		List<Tool> tools = new List<Tool>();
 
-		// Resolve helper roles and check model availability upfront. A tool is omitted when its role is
-		// unconfigured or no model is available. GetModelForRole is a lightweight availability check —
-		// the actual LlmService is created when the tool spawns its child session.
+		// Tool schemas (descriptions, parameters) come from this snapshot; the toolset is rebuilt when
+		// a reload lands, so they track config at round granularity. Handlers read settingsService live.
+		BeastSettings settings = settingsService.Settings;
+
+		// Check helper-role availability upfront. A tool is omitted when its role is unconfigured or no
+		// model is available. GetModelForRole is a lightweight availability check — the role itself is
+		// resolved again by name, and its LlmService created, when the tool spawns its child session.
 		Role? explorerRole  = roleService?.GetRole("Explorer");
 		bool  explorerReady = explorerRole != null && registry?.GetModelForRole(explorerRole, string.Empty, 0) != null;
 		Role? webFetchRole  = roleService?.GetRole("WebFetch");
 		bool  webFetchReady = webFetchRole != null && registry?.GetModelForRole(webFetchRole, string.Empty, 0) != null;
-		Role? webSearchRole = roleService?.GetRole("WebSearch");
 
 		if (role.Tools.Contains("bash"))
 		{
@@ -170,8 +175,7 @@ public static class ToolFactory
 					string filePath = Str(args, "file_path");
 					string goal     = Str(args, "goal");
 					string offset   = Str(args, "offset");
-					// explorerRole! is safe: explorerReady implies it was resolved at build time.
-					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, explorerRole!, spawnSubagent, maxOutputTokens, ct);
+					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, spawnSubagent, maxOutputTokens, ct);
 				}
 			});
 		}
@@ -198,8 +202,7 @@ public static class ToolFactory
 				{
 					string url  = Str(args, "url");
 					string goal = Str(args, "goal");
-					// webFetchRole! is safe: webFetchReady implies it was resolved at build time.
-					return await webFetch.FetchRawAsync(toolCallId, url, goal, webFetchRole!, spawnSubagent, ct);
+					return await webFetch.FetchRawAsync(toolCallId, url, goal, spawnSubagent, ct);
 				}
 			});
 		}
@@ -209,11 +212,10 @@ public static class ToolFactory
 		// that path reports so at call time rather than the tool silently vanishing.
 		if (role.Tools.Contains("inspect_media") && registry != null && session != null)
 		{
-			Role? mediaRole = roleService?.GetRole("MediaReader");
-
-			// Older settings.json files predate this tool or its use_subagent flag; fall back to
-			// the in-code config so the tool exists without forcing a settings regeneration.
-			if (!settings.Tools.TryGetValue("inspect_media", out ToolConfig? mediaTc) || !mediaTc.Parameters.ContainsKey("use_subagent"))
+			// Older settings.json files predate this tool or its current parameters (file_paths,
+			// max_dimension); fall back to the in-code config so the tool exists without forcing a
+			// settings regeneration.
+			if (!settings.Tools.TryGetValue("inspect_media", out ToolConfig? mediaTc) || !mediaTc.Parameters.ContainsKey("file_paths") || !mediaTc.Parameters.ContainsKey("max_dimension"))
 				mediaTc = SettingsService.DefaultToolConfig("inspect_media");
 			MediaInspector inspector = new MediaInspector();
 			tools.Add(new Tool
@@ -226,17 +228,23 @@ public static class ToolFactory
 						Name        = "inspect_media",
 						Description = mediaTc.Description,
 						Parameters  = Params(
-							Req("file_path",    "string",     mediaTc.Parameters["file_path"]),
-							Opt("goal",         "string",          mediaTc.Parameters["goal"]),
-							Opt("use_subagent", "boolean", mediaTc.Parameters["use_subagent"]))
+							ReqArray("file_paths", "string", mediaTc.Parameters["file_paths"]),
+							Opt("max_dimension", "integer", mediaTc.Parameters["max_dimension"]),
+							Opt("goal",          "string",           mediaTc.Parameters["goal"]),
+							Opt("use_subagent",  "boolean",  mediaTc.Parameters["use_subagent"]))
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
-					string filePath    = Str(args, "file_path");
-					string goal        = Str(args, "goal");
-					bool   useSubagent = BoolOpt(args, "use_subagent") ?? false;
-					return await inspector.InspectAsync(toolCallId, filePath, goal, useSubagent, mediaRole, registry, session, transport, maxOutputTokens, ct);
+					List<string> filePaths    = StrArray(args, "file_paths");
+					int          maxDimension = IntOpt(args, "max_dimension") ?? 0;
+					string       goal         = Str(args, "goal");
+					bool         useSubagent  = BoolOpt(args, "use_subagent") ?? false;
+
+					// Resolved per call: a reload republishes the role as a new object, so a captured one
+					// would keep the pre-reload model list.
+					Role? mediaRole = roleService?.GetRole("MediaReader");
+					return await inspector.InspectAsync(toolCallId, filePaths, maxDimension, goal, useSubagent, mediaRole, registry, session, transport, maxOutputTokens, ct);
 				}
 			});
 		}
@@ -250,7 +258,7 @@ public static class ToolFactory
 			if (searchProviders.Count > 0)
 			{
 				ToolConfig    tc        = settings.Tools["internet_search"];
-				WebSearchTool webSearch = new WebSearchTool(searchProviders, webSearchRole != null ? webSearchRole.SystemPrompt : string.Empty);
+				WebSearchTool webSearch = new WebSearchTool();
 				tools.Add(new Tool
 				{
 					Definition = new ToolDefinition
@@ -269,7 +277,12 @@ public static class ToolFactory
 					{
 						string query = Str(args, "query");
 						string goal  = Str(args, "goal");
-						return await webSearch.SearchAsync(toolCallId, query, goal, session, transport, sessionId, maxOutputTokens, ct);
+
+						// Providers and the WebSearch role's prompt are resolved per call, from live config.
+						List<(WebSearchProvider Provider, string ApiKey, string Model)> liveProviders = WebSearchRegistry.ResolveUsable(settingsService.Settings);
+						Role?  webSearchRole = roleService?.GetRole("WebSearch");
+						string systemPrompt  = webSearchRole != null ? webSearchRole.SystemPrompt : string.Empty;
+						return await webSearch.SearchAsync(toolCallId, liveProviders, systemPrompt, query, goal, session, transport, sessionId, maxOutputTokens, ct);
 					}
 				});
 			}
@@ -546,6 +559,26 @@ public static class ToolFactory
 	private static JsonObject Opt(string name, string type, string description)
 	{
 		return new JsonObject { ["_name"] = name, ["_required"] = false, ["type"] = type, ["description"] = description };
+	}
+
+	private static JsonObject ReqArray(string name, string itemType, string description)
+	{
+		return new JsonObject { ["_name"] = name, ["_required"] = true, ["type"] = "array", ["items"] = new JsonObject { ["type"] = itemType }, ["description"] = description };
+	}
+
+	// The strings of an array argument; empty when it is missing or not an array.
+	private static List<string> StrArray(JsonObject args, string key)
+	{
+		List<string> values = new List<string>();
+		if (args.TryGetPropertyValue(key, out JsonNode? node) && node is JsonArray array)
+		{
+			foreach (JsonNode? item in array)
+			{
+				if (item != null)
+					values.Add(item.ToString());
+			}
+		}
+		return values;
 	}
 
 	private static string Str(JsonObject args, string key)

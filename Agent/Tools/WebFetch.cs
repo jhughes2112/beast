@@ -28,12 +28,12 @@ public class WebFetch
 	// Fetches the resource and interprets it with the WebFetch role: a child session is seeded with the URL,
 	// the objective, and the paths of the saved files, then returns only what the objective asked for via
 	// return_to_caller. Cost rolls up into the calling session.
-	// webFetchRole is pre-resolved by BuildForRole; the spawn delegate runs it as a child session.
+	// The spawn delegate resolves the WebFetch role by name when the child starts, so a reload
+	// mid-cluster is honored at the handoff.
 	public async Task<ToolResult> FetchRawAsync(
 		string            toolCallId,
 		string            url,
 		string            objective,
-		Role              webFetchRole,
 		SpawnSubagent     spawn,
 		CancellationToken cancellationToken)
 	{
@@ -81,7 +81,7 @@ public class WebFetch
 				}
 			}
 
-			(bool ok, string answer, int tokens) = await spawn(webFetchRole.Name, $"fetch_url {url}", seed, MaxWorkTurns, cancellationToken);
+			(bool ok, string answer, int tokens) = await spawn("WebFetch", $"fetch_url {url}", seed, MaxWorkTurns, cancellationToken);
 			if (!ok)
 			{
 				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

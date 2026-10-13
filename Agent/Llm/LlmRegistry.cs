@@ -40,6 +40,25 @@ public class ModelAvailability
 	}
 }
 
+// What has been learned about one endpoint by probing it, shared by every service that talks to it
+// so each probe is paid once per endpoint — not once per conversation, rehydrate, or summarizer
+// stage, each of which builds its protocol state afresh.
+public class EndpointFacts
+{
+	// The Responses token-count route under /responses that answered (OpenAI's /input_tokens/count
+	// or Meta's /input_tokens), NoCountRoute when neither exists, empty until one has been tried.
+	public const string NoCountRoute = "none";
+
+	private string _responsesCountRoute = string.Empty;
+
+	public string ResponsesCountRoute => Volatile.Read(ref _responsesCountRoute);
+
+	public void RecordResponsesCountRoute(string route)
+	{
+		Volatile.Write(ref _responsesCountRoute, route);
+	}
+}
+
 // Registry of model configs, per-endpoint protocol detection, and per-model availability.
 // Creates fresh per-session LlmService instances — protocol conversation state is NOT shared.
 // Only availability (rate-limits, down-timers) is shared across sessions using the same model.
@@ -60,6 +79,10 @@ public class LlmRegistry
 	// Concurrent: parallel handlers race GetOrCreateAvailability, and a plain dictionary could
 	// hand two of them DIFFERENT availability objects for the same model.
 	private readonly ConcurrentDictionary<string, ModelAvailability> _availability = new(StringComparer.OrdinalIgnoreCase);
+
+	// Keyed by endpoint URL, like _probeCache, and likewise never cleared: what a probe taught us about
+	// an endpoint's routes survives /reload.
+	private readonly ConcurrentDictionary<string, EndpointFacts> _endpointFacts = new(StringComparer.OrdinalIgnoreCase);
 
 	// Last model the user explicitly picked (via /model) per role, in-memory for this run. New
 	// sessions and services for the role prefer it — but only while it can actually serve; a
@@ -351,7 +374,7 @@ public class LlmRegistry
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
 		if (withoutReasoning)
 			model = model.WithoutReasoning();
-		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), role.Models, ApplyLearnedCapability);
+		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), GetOrCreateEndpointFacts(model.Endpoint), role.Models, ApplyLearnedCapability);
 	}
 
 	// Builds a service for the next model below the current one in its role list — the automatic equivalent
@@ -391,7 +414,7 @@ public class LlmRegistry
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
 			if (withoutReasoning)
 				model = model.WithoutReasoning();
-			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), modelIds, ApplyLearnedCapability);
+			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), GetOrCreateEndpointFacts(model.Endpoint), modelIds, ApplyLearnedCapability);
 		}
 
 		return null;
@@ -413,7 +436,7 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
-		return new LlmService(model, protocol, avail, new List<string> { modelId }, ApplyLearnedCapability);
+		return new LlmService(model, protocol, avail, GetOrCreateEndpointFacts(model.Endpoint), new List<string> { modelId }, ApplyLearnedCapability);
 	}
 
 	// Returns the best available model for the role without creating a service.
@@ -483,6 +506,16 @@ public class LlmRegistry
 		if (_availability.TryGetValue(configId, out ModelAvailability? avail))
 		{
 			avail.AvailableAt = DateTimeOffset.MinValue;
+		}
+	}
+
+	// Resets availability for every model in a role — a human answering an all-models-failed
+	// alert is asking for the whole list to be tried again, not just the model that failed last.
+	public void ResetRoleAvailability(Role role)
+	{
+		foreach (string configId in role.Models)
+		{
+			ResetAvailability(configId);
 		}
 	}
 
@@ -577,6 +610,11 @@ public class LlmRegistry
 	private ModelAvailability GetOrCreateAvailability(string configId)
 	{
 		return _availability.GetOrAdd(configId, _ => new ModelAvailability());
+	}
+
+	private EndpointFacts GetOrCreateEndpointFacts(string endpoint)
+	{
+		return _endpointFacts.GetOrAdd(endpoint, _ => new EndpointFacts());
 	}
 
 	// The role preference has three asymmetric writers so an explicit choice can never be

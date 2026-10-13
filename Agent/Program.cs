@@ -29,9 +29,12 @@ public class Program
 			ProtocolSwitchTests.Test(ctx);
 			MediaToolResultTests.Test(ctx);
 			await ProtocolConformanceTests.TestAsync(ctx);
+			await UsageLimitResumeTests.TestAsync(ctx);
+			await MediaResizeTests.TestAsync(ctx);
 			await SandboxTests.TestAsync(ctx);
 			await ToolSandboxTests.TestAsync(ctx);
 			WebToolsTests.Test(ctx);
+			CostRollupTests.Test(ctx);
 			FixJsonTests.Test(ctx);
 			await FileToolsTests.TestAsync(ctx);
 			ShellToolsTests.Test(ctx);
@@ -75,6 +78,9 @@ public class Program
 
 		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
 		RoleService     roleService     = new RoleService(Environment.CurrentDirectory);
+
+		// The ChatGPT subscription's tokens live in settings.json beside every other key.
+		ChatGptSubscription.Initialize(settingsService);
 
 		// Free local chaos model, always available for driving the stack without spending money:
 		// add an endpoint with baseUrl http://localhost:13137/v1 and its "fake-chaos" model appears

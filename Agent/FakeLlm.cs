@@ -53,6 +53,12 @@ public class FakeLlm
 	// caller's provisional (pre-usage) reporting is observable at all.
 	public const string LateUsageModelId = "fake-chaos-late-usage";
 
+	// A gateway whose pre-flight check counts the prompt higher than the prompt_tokens its usage
+	// reports, and rejects prompt + max_tokens over the window in OpenRouter's wording, stating both
+	// the window and the total it counted. OpenRouter runs ~8-12k high; scaled to this window here.
+	public const string SkewedCountModelId = "fake-chaos-skewed-count";
+	public const int    PromptCountSkew    = 4000;
+
 	// Requests actually served since start. A caller that is supposed to have stopped can be checked
 	// against it — "no further requests arrived" is the only honest way to assert a loop ended.
 	private int _requestsServed;
@@ -258,6 +264,22 @@ public class FakeLlm
 					["type"]            = "exceed_context_size_error",
 					["n_prompt_tokens"] = promptTokens + maxTokens,
 					["n_ctx"]           = ContextWindow,
+				}
+			};
+			await WriteJsonAsync(context.Response, 400, reject.ToJsonString(), ct);
+			return;
+		}
+
+		// Verbatim OpenRouter phrasing, numbers aside.
+		if (string.Equals(requestedModel, SkewedCountModelId, StringComparison.Ordinal) && promptTokens + PromptCountSkew + maxTokens > ContextWindow)
+		{
+			int        counted = promptTokens + PromptCountSkew;
+			JsonObject reject  = new JsonObject
+			{
+				["error"] = new JsonObject
+				{
+					["message"] = $"This endpoint's maximum context length is {ContextWindow} tokens. However, you requested about {counted + maxTokens} tokens ({counted} of text input, 0 of tool input, {maxTokens} in the output). Please reduce the length of either one, or use the context-compression plugin to compress your prompt automatically.",
+					["code"]    = 400,
 				}
 			};
 			await WriteJsonAsync(context.Response, 400, reject.ToJsonString(), ct);

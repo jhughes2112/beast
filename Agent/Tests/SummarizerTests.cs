@@ -92,7 +92,7 @@ public static class SummarizerTests
 		};
 		LlmModel model = new LlmModel("budget-probe", "http://localhost/v1/chat/completions", "k",
 			new List<System.Text.Json.Nodes.JsonObject>(), new List<System.Text.Json.Nodes.JsonObject>(), config);
-		return new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new List<string> { "budget-probe" }, (id, effort, summaries, maxImages) => { });
+		return new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new EndpointFacts(), new List<string> { "budget-probe" }, (id, effort, summaries, maxImages) => { });
 	}
 
 	private static void TestRenderTranscript(TestContext ctx)

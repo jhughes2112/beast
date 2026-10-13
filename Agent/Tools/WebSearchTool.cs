@@ -5,37 +5,30 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Backs the internet_search tool. Holds the providers that resolved to a usable key this run,
-// cheapest first, and spends the caller's money on the least expensive one that works: a provider
-// that fails outright (bad key, outage, model retired) hands off to the next rather than failing
-// the whole call, since the alternative is an agent stuck without search over one bad endpoint.
+// Backs the internet_search tool. Given the providers that resolved to a usable key, cheapest
+// first, it spends the caller's money on the least expensive one that works: a provider that fails
+// outright (bad key, outage, model retired) hands off to the next rather than failing the whole
+// call, since the alternative is an agent stuck without search over one bad endpoint. Providers and
+// prompt are passed per call, resolved from live config, so a reload applies to the next search.
 // Each provider owns its own wire format; this only chooses between them and rolls up the fee.
 public class WebSearchTool
 {
-	private readonly List<(WebSearchProvider Provider, string ApiKey, string Model)> _providers;
-
-	// The WebSearch role's system prompt, handed to whichever provider serves the call, so search
-	// behavior stays customizable in roles.json regardless of which backend answers.
-	private readonly string _systemPrompt;
-
 	// Providers already alerted about exhausted credits, so the banner is raised once rather than
 	// on every search for the rest of the run.
 	private readonly HashSet<string> _creditAlerted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-	public WebSearchTool(List<(WebSearchProvider Provider, string ApiKey, string Model)> providers, string systemPrompt)
-	{
-		_providers = providers;
-		_systemPrompt = systemPrompt;
-	}
-
+	// systemPrompt is the WebSearch role's, handed to whichever provider serves the call, so search
+	// behavior stays customizable in roles.json regardless of which backend answers.
 	public async Task<ToolResult> SearchAsync(
 		string toolCallId,
-		string query,
-		string goal,
-		Session parent,
-		ITransportServer transport,
-		string sessionId,
-		int maxOutputTokens,
+		List<(WebSearchProvider Provider, string ApiKey, string Model)> providers,
+		string            systemPrompt,
+		string            query,
+		string            goal,
+		Session           parent,
+		ITransportServer  transport,
+		string            sessionId,
+		int               maxOutputTokens,
 		CancellationToken ct)
 	{
 		if (string.IsNullOrWhiteSpace(query))
@@ -44,12 +37,12 @@ public class WebSearchTool
 			return new ToolResult(toolCallId, string.Empty, "Error: Search goal cannot be empty.", 1, 0);
 
 		StringBuilder failures = new StringBuilder();
-		foreach ((WebSearchProvider provider, string apiKey, string model) in _providers)
+		foreach ((WebSearchProvider provider, string apiKey, string model) in providers)
 		{
 			WebSearchAnswer answer;
 			try
 			{
-				answer = await provider.SearchAsync(query, goal, _systemPrompt, apiKey, model, maxOutputTokens, ct);
+				answer = await provider.SearchAsync(query, goal, systemPrompt, apiKey, model, maxOutputTokens, ct);
 			}
 			catch (OperationCanceledException) when (ct.IsCancellationRequested)
 			{

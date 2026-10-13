@@ -37,6 +37,22 @@ public sealed class MediaAttachment
 	}
 }
 
+// A media file a tool result showed the model, stored by path rather than by content: media can be
+// large, and the conversation record must stay small. Protocols read the file when they build the
+// wire message, so a rehydrate onto another model sees whatever is on disk then.
+public sealed class MediaFile
+{
+	public string Path     { get; }
+	public string MimeType { get; }
+
+	[JsonConstructor]
+	public MediaFile(string path, string mimeType)
+	{
+		Path     = path;
+		MimeType = mimeType;
+	}
+}
+
 public sealed class UserMessage : CanonicalMessage
 {
 	public string Text { get; }
@@ -81,10 +97,13 @@ public sealed class ToolResultMessage : CanonicalMessage
 	public string ToolCallId { get; }
 	public string Content    { get; }
 
-	// A media file the model was shown with this result, stored by path rather than by content:
-	// media can be large, and the conversation record must stay small. Protocols read the file
-	// when they build the wire message, so a rehydrate onto another model sees whatever is on disk
-	// then. Null for the ordinary text-only result, which is what every older session file holds.
+	// The media files the model was shown with this result, in the order it asked for them. Null for
+	// the ordinary text-only result.
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public IReadOnlyList<MediaFile>? Media { get; }
+
+	// Session files written while a result could carry only one file hold it here. Read on load and
+	// folded into Media, so both are always null afterwards and are never written again.
 	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
 	public string? MediaPath { get; }
 
@@ -92,16 +111,22 @@ public sealed class ToolResultMessage : CanonicalMessage
 	public string? MediaMimeType { get; }
 
 	[JsonConstructor]
-	public ToolResultMessage(string toolCallId, string content, string? mediaPath, string? mediaMimeType)
+	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media, string? mediaPath, string? mediaMimeType)
 	{
-		ToolCallId    = toolCallId;
-		Content       = content;
-		MediaPath     = mediaPath;
-		MediaMimeType = mediaMimeType;
+		ToolCallId = toolCallId;
+		Content    = content;
+		Media      = media;
+		if (media == null && mediaPath != null && mediaMimeType != null)
+			Media = new List<MediaFile> { new MediaFile(mediaPath, mediaMimeType) };
+	}
+
+	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media)
+		: this(toolCallId, content, media, null, null)
+	{
 	}
 
 	public ToolResultMessage(string toolCallId, string content)
-		: this(toolCallId, content, null, null)
+		: this(toolCallId, content, null, null, null)
 	{
 	}
 }

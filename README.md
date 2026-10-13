@@ -6,11 +6,13 @@ Beast runs a fleet of cooperating LLM agents **sandboxed inside Docker**, driven
 
 **You own the model routing.** Every agent is a *Role*: an ordered list of models to try, the tools it may call, and its prompt. Put a cheap local model first and fall back to a premium API model only when you need it.
 
+**Bring the plan you already pay for.** Beast runs on a **ChatGPT subscription** (Plus/Pro/Business, signed in like the Codex CLI) or a **Claude subscription** (Pro/Max, via Claude Code), and on **any per-token API endpoint** — OpenAI, Anthropic, OpenRouter, Gemini, xAI, or a local server. Mix them freely in one role. When a subscription hits its usage limit, Beast tells you how much of each window is used and when it resets, falls back to the next model, and — if nothing else can take over — waits out the limit and picks the turn back up on its own.
+
 ---
 
 ## Quick start
 
-**You need:** Docker Desktop, and one API key *or* a local model server.
+**You need:** Docker Desktop, and one API key, a ChatGPT or Claude subscription, *or* a local model server.
 
 ```bat
 build.bat          :: produces beast.exe + the beastagent image

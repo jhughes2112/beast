@@ -50,9 +50,22 @@ public class ProtocolChatCompletions
 	// Keeps each request's media within the provider's limits (see MediaBudget).
 	private readonly MediaBudget _media = new MediaBudget();
 
-	// Set when the streaming attempt was refused over its media: the turn is rebuilt with less of it
-	// and re-sent, rather than falling through to a non-streaming copy of the same refused request.
-	private bool _retryAfterMediaRefusal;
+	// Set when the streaming attempt was refused over its media or its size: the turn is rebuilt with
+	// less media or a smaller output ask and re-sent, rather than falling through to a non-streaming
+	// copy of the same refused request.
+	private bool _retryRebuilt;
+
+	// How far this provider's pre-flight count of a prompt runs above the prompt_tokens its usage
+	// reports, learned from overflow 400s that state both the window and the total they counted, and
+	// taken off every output ask that follows. OpenRouter counts ~8-12k higher than it bills: the
+	// budget's 10% margin covers that on a big conversation but not a small one, so a subagent at 12%
+	// of a 262k window asked for all the room left and was rejected as over-window — and a 12%
+	// conversation has nothing to compact, so it died. Only grows; 0 = no skew seen.
+	private int _promptCountSkew;
+
+	// Extra room taken on top of each observed overrun, so a prompt that grows a little between turns
+	// does not trip the same 400 again on the very next request.
+	private const int kPromptSkewSlack = 2048;
 
 	private bool _parallelToolCallsSupported = true;
 	private bool _streamingSupported         = true;
@@ -106,7 +119,7 @@ public class ProtocolChatCompletions
 		{
 			if (msg is ToolResultMessage tr)
 			{
-				AppendToolResult(tr.ToolCallId, tr.Content, tr.MediaPath, tr.MediaMimeType);
+				AppendToolResult(tr.ToolCallId, tr.Content, tr.Media);
 				continue;
 			}
 
@@ -154,8 +167,8 @@ public class ProtocolChatCompletions
 
 	// Appends a tool result, live or rehydrated, so both paths build the same shape. Media the
 	// result carries goes to the run's carrier user message (created on first need), with a text
-	// part naming the file so the model can tie the pixels back to the call that produced them.
-	private void AppendToolResult(string toolCallId, string content, string? mediaPath, string? mediaMimeType)
+	// part naming each file so the model can tie the pixels back to the call that produced them.
+	private void AppendToolResult(string toolCallId, string content, IReadOnlyList<MediaFile>? media)
 	{
 		JsonObject msg      = new JsonObject();
 		msg["role"]         = "tool";
@@ -167,7 +180,7 @@ public class ProtocolChatCompletions
 		else
 			_native.Add((JsonNode)msg);
 
-		if (mediaPath != null && mediaMimeType != null)
+		foreach (MediaFile file in media ?? new List<MediaFile>())
 		{
 			if (_toolMediaCarrier == null)
 			{
@@ -178,15 +191,15 @@ public class ProtocolChatCompletions
 			}
 
 			JsonArray        parts = (JsonArray)_toolMediaCarrier["content"]!;
-			MediaAttachment? att   = MediaKinds.LoadAttachment(mediaPath, mediaMimeType);
+			MediaAttachment? att   = MediaKinds.LoadAttachment(file.Path, file.MimeType);
 			if (att != null)
 			{
-				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = $"[Media from tool call {toolCallId}: {mediaPath}]" });
+				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = $"[Media from tool call {toolCallId}: {file.Path}]" });
 				parts.Add((JsonNode)MediaPart(att));
 			}
 			else
 			{
-				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = MediaKinds.MissingNote(mediaPath) });
+				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = MediaKinds.MissingNote(file.Path) });
 			}
 		}
 	}
@@ -377,7 +390,7 @@ public class ProtocolChatCompletions
 		{
 			content = content + "\nstderr: " + result.StdErr;
 		}
-		AppendToolResult(result.Id, content, result.MediaPath, result.MediaMimeType);
+		AppendToolResult(result.Id, content, result.Media);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
@@ -419,9 +432,9 @@ public class ProtocolChatCompletions
 				if (_streamingSupported)
 				{
 					ProtocolResult? streamResult = await ExecuteStreamingAsync(model, body, tools, extraHeaders, extraPayload, bundle, onProgress, logger, cancellationToken);
-					if (_retryAfterMediaRefusal)
+					if (_retryRebuilt)
 					{
-						_retryAfterMediaRefusal = false;
+						_retryRebuilt = false;
 						continue;
 					}
 					if (streamResult != null)
@@ -534,6 +547,10 @@ public class ProtocolChatCompletions
 
 				// Too many images, or too many bytes of them: the same history with less media will go.
 				if (_media.LearnFromRefusal(model, (int)httpResponse.StatusCode, responseBody, _onCapabilityLearned, logger))
+					continue;
+
+				// Over-window only by the output we asked for: the same prompt with a smaller ask will go.
+				if (TryLearnPromptSkew(body, (int)httpResponse.StatusCode, responseBody, model, bundle, logger))
 					continue;
 
 				bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
@@ -709,6 +726,12 @@ httpResponse);
 			int cap = maxCompletionTokens.Value;
 			if (_affordableMaxTokens > 0 && _affordableMaxTokens < cap)
 				cap = _affordableMaxTokens;
+
+			// The provider counts the prompt higher than the measurement the ask was sized from. An ask
+			// no bigger than the skew is left alone (the tracer's 1, a nearly full window), and if it
+			// overruns, the rejection is a real overflow that compaction can fix.
+			if (cap > _promptCountSkew)
+				cap -= _promptCountSkew;
 			body["max_completion_tokens"] = cap;
 		}
 		else if (_affordableMaxTokens > 0)
@@ -752,7 +775,42 @@ httpResponse);
 	// afford 6546. To increase..."). Returns 0 when the phrase is absent or malformed.
 	private static int ParseAffordableTokens(string responseBody)
 	{
-		const string marker = "can only afford ";
+		return ParseIntAfter(responseBody, "can only afford ");
+	}
+
+	// An overflow 400 that states the window and the total it counted ("This endpoint's maximum
+	// context length is 262144 tokens. However, you requested about 262571 tokens (97333 of text
+	// input, 1594 of tool input, 163644 in the output)" from OpenRouter; vLLM drops the "about") is a
+	// SIZING miss, not a full context, whenever the overrun fits inside the output we asked for: the
+	// prompt fits and only the ask is too big. Reporting it as ContextFull sent conversations at 9-44%
+	// of their window into compaction, which a small conversation cannot do, so they died. Learn the
+	// overrun as skew and retry; an overrun the ask cannot absorb is a real overflow and returns false.
+	private bool TryLearnPromptSkew(JsonObject body, int statusCode, string responseBody, LlmModel model, ListenerBundle bundle, SessionLogger logger)
+	{
+		bool learned = false;
+		if (statusCode == 400 && ProtocolHelpers.IsContextOverflow(responseBody))
+		{
+			int limit     = ParseIntAfter(responseBody, "maximum context length is ");
+			int requested = ParseIntAfter(responseBody, "you requested about ");
+			if (requested == 0)
+				requested = ParseIntAfter(responseBody, "you requested ");
+			int sent    = body["max_completion_tokens"]?.GetValue<int>() ?? 0;
+			int overrun = requested - limit;
+			if (limit > 0 && overrun > 0 && sent - overrun - kPromptSkewSlack >= ContextBudget.MinUsefulOutput)
+			{
+				_promptCountSkew += overrun + kPromptSkewSlack;
+				string note       = $"{model.Config.Name} counted the prompt {overrun} tokens past its {limit}-token window with {sent} output asked; it counts prompts higher than its usage reports, so output asks are now {_promptCountSkew} tokens smaller. Retrying.";
+				logger.Note(note);
+				bundle.Transport?.Status(note);
+				learned = true;
+			}
+		}
+		return learned;
+	}
+
+	// The integer immediately following marker, or 0 when the marker is absent or not followed by digits.
+	private static int ParseIntAfter(string responseBody, string marker)
+	{
 		int result = 0;
 		int idx    = responseBody.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
 		if (idx >= 0)
@@ -879,7 +937,16 @@ httpResponse);
 			// turn with less media, still streaming, instead of latching streaming off over it.
 			if (_media.LearnFromRefusal(model, statusCode, errorBody, _onCapabilityLearned, logger))
 			{
-				_retryAfterMediaRefusal = true;
+				_retryRebuilt = true;
+				return null;
+			}
+
+			// Likewise an over-window refusal the output ask can absorb: re-send smaller, still streaming.
+			// It used to latch streaming off below, so every such 400 also cost the session its stream.
+			if (TryLearnPromptSkew(body, statusCode, errorBody, model, bundle, logger))
+			{
+				logger.ProtocolFailure(model, DetectedProtocol.ChatCompletions, "ClientError", statusCode, errorLogMessage, errorBody, null);
+				_retryRebuilt = true;
 				return null;
 			}
 

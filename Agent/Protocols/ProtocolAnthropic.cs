@@ -105,7 +105,7 @@ public class ProtocolAnthropic
 			}
 			else if (msg is ToolResultMessage tr)
 			{
-				AppendContent("user", ToolResultBlock(tr.ToolCallId, tr.Content, tr.MediaPath, tr.MediaMimeType));
+				AppendContent("user", ToolResultBlock(tr.ToolCallId, tr.Content, tr.Media));
 			}
 			else if (msg is AssistantMessage am)
 			{
@@ -213,7 +213,7 @@ public class ProtocolAnthropic
 		{
 			content = content + "\nstderr: " + result.StdErr;
 		}
-		AppendContent("user", ToolResultBlock(result.Id, content, result.MediaPath, result.MediaMimeType));
+		AppendContent("user", ToolResultBlock(result.Id, content, result.Media));
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(
@@ -952,18 +952,18 @@ public class ProtocolAnthropic
 		return block;
 	}
 
-	// A tool_result block. Media the result carries rides inside the same content array: an image
+	// A tool_result block. Media the result carries rides inside the same content array: each image
 	// becomes a source block after the text, since Anthropic accepts images in tool results; any
 	// other kind degrades to a text note, the same as on a user message.
-	private static JsonObject ToolResultBlock(string toolUseId, string content, string? mediaPath, string? mediaMimeType)
+	private static JsonObject ToolResultBlock(string toolUseId, string content, IReadOnlyList<MediaFile>? media)
 	{
 		JsonArray parts = new JsonArray(TextBlock(content));
-		if (mediaPath != null && mediaMimeType != null)
+		foreach (MediaFile file in media ?? new List<MediaFile>())
 		{
-			MediaAttachment? att = MediaKinds.LoadAttachment(mediaPath, mediaMimeType);
+			MediaAttachment? att = MediaKinds.LoadAttachment(file.Path, file.MimeType);
 			if (att == null)
 			{
-				parts.Add((JsonNode)TextBlock(MediaKinds.MissingNote(mediaPath)));
+				parts.Add((JsonNode)TextBlock(MediaKinds.MissingNote(file.Path)));
 			}
 			else if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
 			{

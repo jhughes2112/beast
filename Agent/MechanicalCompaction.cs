@@ -141,8 +141,8 @@ public static class MechanicalCompaction
 					// the file is what fills the window, and the note keeps the path so the model
 					// can ask for it again.
 					bool bulky = tr.Content.Length >= kMinResultChars && tr.Content.Length >= threshold;
-					if (tr.MediaPath != null && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? mediaCall))
-						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, $"[elided media {tr.MediaPath}: {mediaCall!.Name}({ArgSummary(mediaCall.ArgumentsJson)})]"));
+					if (tr.Media != null && tr.Media.Count > 0 && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? mediaCall))
+						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, $"[elided media {MediaPaths(tr.Media)}: {mediaCall!.Name}({ArgSummary(mediaCall.ArgumentsJson)})]"));
 					else if (bulky && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? call))
 						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, ResultNote(call!, tr.Content.Length)));
 					else
@@ -309,6 +309,15 @@ public static class MechanicalCompaction
 	private static string ResultNote(SemanticToolCall call, int chars)
 	{
 		return $"[elided {chars} chars: {call.Name}({ArgSummary(call.ArgumentsJson)})]";
+	}
+
+	// The files a result showed, comma-separated, so the note says where to look again.
+	private static string MediaPaths(IReadOnlyList<MediaFile> media)
+	{
+		List<string> paths = new List<string>();
+		foreach (MediaFile file in media)
+			paths.Add(file.Path);
+		return string.Join(", ", paths);
 	}
 
 	// Compact "key: value" rendering of a call's arguments for the elision note, with long values

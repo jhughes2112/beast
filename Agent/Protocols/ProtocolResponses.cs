@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -79,17 +80,50 @@ public class ProtocolResponses
 	// holds it, and while chaining only the new items are in the request anyway.
 	private readonly MediaBudget _media = new MediaBudget();
 
-	public ProtocolResponses(ModelCapabilitySink? onCapabilityLearned)
+	// The ChatGPT subscription backend (ChatGptSubscription) keeps nothing server-side: it requires
+	// store=false and has no previous_response_id over HTTP, so every request carries the whole
+	// conversation, which this instance then holds in _rehydratedInput as a running history. It also
+	// takes no max_output_tokens, has no token-count route, signs requests with a refreshed OAuth
+	// token, and wants the system prompt as a developer message.
+	private readonly bool _subscription;
+
+	// Ties this conversation's requests together for the subscription backend's prompt cache.
+	private readonly string _sessionKey = Guid.NewGuid().ToString();
+
+	// Subscription only: the reasoning items of the response just committed, encrypted_content and
+	// all, waiting for the assistant-turn fan-out to place them ahead of the turn they produced. With
+	// store=false they are the only way the model keeps its reasoning across tool calls. Held rather
+	// than appended at commit so a turn LlmService drops (an unrepairable tool call) leaves no trace.
+	private JsonArray? _pendingReasoning;
+
+	// The token-count route under /responses. OpenAI's is /input_tokens/count; Meta's is /input_tokens.
+	// OpenAI's is tried first and a 404 moves on to Meta's; whichever answers — or that neither does —
+	// is recorded on the endpoint's shared facts, so the probe happens once per endpoint.
+	private const    string        kOpenAiCountRoute = "/input_tokens/count";
+	private const    string        kMetaCountRoute   = "/input_tokens";
+	private readonly EndpointFacts _endpointFacts;
+
+	// Subscription only: a 401 refreshes the token and re-sends once per turn.
+	private bool _refreshAuth;
+	private bool _authRetried;
+
+	public ProtocolResponses(ModelCapabilitySink? onCapabilityLearned, EndpointFacts endpointFacts, bool subscription)
 	{
 		_deltaInput          = new JsonArray();
 		_onCapabilityLearned = onCapabilityLearned;
+		_endpointFacts       = endpointFacts;
+		_subscription        = subscription;
 	}
+
+	// The subscription backend takes the system prompt as a developer message, as the Codex CLI sends it.
+	private string SystemRole => _subscription ? "developer" : "system";
 
 	// Clears native chaining state so the next turn replays the full canonical history once.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
 		_previousResponseId    = null;
 		_assistantTurnOnServer = false;
+		_pendingReasoning      = null;
 		_deltaInput.Clear();
 
 		JsonArray input = new JsonArray();
@@ -97,7 +131,7 @@ public class ProtocolResponses
 		{
 			if (msg is SystemMessage sm)
 			{
-				input.Add((JsonNode)BuildMessageItem("system", "input_text", sm.Text));
+				input.Add((JsonNode)BuildMessageItem(SystemRole, "input_text", sm.Text));
 			}
 			else if (msg is UserMessage um)
 			{
@@ -115,7 +149,7 @@ public class ProtocolResponses
 			}
 			else if (msg is ToolResultMessage tr)
 			{
-				input.Add((JsonNode)BuildToolOutputItem(tr.ToolCallId, tr.Content, tr.MediaPath, tr.MediaMimeType));
+				input.Add((JsonNode)BuildToolOutputItem(tr.ToolCallId, tr.Content, tr.Media));
 			}
 		}
 		_rehydratedInput = input;
@@ -124,7 +158,7 @@ public class ProtocolResponses
 	// Track incremental changes to build deltas for chaining mode.
 	public void OnSystemMessage(string text)
 	{
-		_deltaInput.Add((JsonNode)BuildMessageItem("system", "input_text", text));
+		_deltaInput.Add((JsonNode)BuildMessageItem(SystemRole, "input_text", text));
 	}
 
 	public void OnUserMessage(string text)
@@ -173,6 +207,14 @@ public class ProtocolResponses
 			return;
 		}
 
+		// The turn's own reasoning goes in ahead of it, exactly as the response returned it.
+		if (_pendingReasoning != null)
+		{
+			foreach (JsonNode? item in _pendingReasoning)
+				_deltaInput.Add(item!.DeepClone());
+			_pendingReasoning = null;
+		}
+
 		if (!string.IsNullOrEmpty(text))
 		{
 			_deltaInput.Add((JsonNode)BuildMessageItem("assistant", "output_text", text));
@@ -204,20 +246,20 @@ public class ProtocolResponses
 		{
 			output = output + "\nstderr: " + result.StdErr;
 		}
-		_deltaInput.Add((JsonNode)BuildToolOutputItem(result.Id, output, result.MediaPath, result.MediaMimeType));
+		_deltaInput.Add((JsonNode)BuildToolOutputItem(result.Id, output, result.Media));
 	}
 
 	// A function_call_output item, shared by the live path and rehydrate. A text-only result keeps
-	// the plain string output; one carrying an image switches output to the part-array form with
-	// an input_image after the text. The Responses API takes no audio or video in a tool output,
-	// so those degrade to a text note, as they do on a user message.
-	private static JsonObject BuildToolOutputItem(string callId, string output, string? mediaPath, string? mediaMimeType)
+	// the plain string output; one carrying images switches output to the part-array form with an
+	// input_image per file after the text. The Responses API takes no audio or video in a tool
+	// output, so those degrade to a text note, as they do on a user message.
+	private static JsonObject BuildToolOutputItem(string callId, string output, IReadOnlyList<MediaFile>? media)
 	{
 		JsonObject item = new JsonObject();
 		item["type"]    = "function_call_output";
 		item["call_id"] = callId;
 
-		if (mediaPath == null || mediaMimeType == null)
+		if (media == null || media.Count == 0)
 		{
 			item["output"] = output;
 			return item;
@@ -227,13 +269,16 @@ public class ProtocolResponses
 		if (!string.IsNullOrEmpty(output))
 			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = output });
 
-		MediaAttachment? att = MediaKinds.LoadAttachment(mediaPath, mediaMimeType);
-		if (att == null)
-			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = MediaKinds.MissingNote(mediaPath) });
-		else if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-			parts.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
-		else
-			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+		foreach (MediaFile file in media)
+		{
+			MediaAttachment? att = MediaKinds.LoadAttachment(file.Path, file.MimeType);
+			if (att == null)
+				parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = MediaKinds.MissingNote(file.Path) });
+			else if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+				parts.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
+			else
+				parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+		}
 
 		item["output"] = parts;
 		return item;
@@ -251,11 +296,13 @@ public class ProtocolResponses
 		SessionLogger                 logger,
 		CancellationToken             cancellationToken)
 	{
+		_authRetried = false;
 		try
 		{
 			// Loops only to re-send a turn the server refused over reasoning.summary or over its media.
 			// _summarySupported is one-way and the media limits only shrink below what was refused, so
-			// the rebuilt request cannot be refused for the same reason twice.
+			// the rebuilt request cannot be refused for the same reason twice. (The subscription's 401
+			// re-send is also one-shot: _authRetried.)
 			for (; ; )
 			{
 				JsonObject body      = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
@@ -275,6 +322,10 @@ public class ProtocolResponses
 					if (streamResult != null)
 						return streamResult;
 				}
+
+				// The subscription backend only streams; there is no non-streaming request to fall back to.
+				if (_subscription)
+					return ProtocolResult.Transient("The ChatGPT subscription stream ended without a result", null);
 
 				string requestJson = body.ToJsonString();
 
@@ -365,22 +416,45 @@ public class ProtocolResponses
 	private JsonObject BuildBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens, Dictionary<string, JsonNode?> extraPayload)
 	{
 		JsonObject body = new JsonObject();
-		body["model"]   = model.Config.Id;
+		body["model"]   = _subscription ? ChatGptSubscription.ApiModel(model.Config.Id) : model.Config.Id;
+
+		// Reasoning held for a turn that was never fanned out belongs to a dropped turn.
+		_pendingReasoning = null;
 
 		// If we have rehydrated input, send the full history once (no previous_response_id).
 		// Otherwise, chain from the last response id and send only the delta items.
 		// DeepClone is required: assigning a JsonNode to a body object parents it, and the same
 		// node cannot be parented twice — re-use across turns throws InvalidOperationException.
-		JsonArray input = (JsonArray)(_rehydratedInput ?? _deltaInput).DeepClone();
-		_media.Apply(input, model.Config.MaxImages, "input_text", false);
+		// The subscription sends its running history plus the delta every time, so the history is
+		// all client-side and answered media can be dropped from it, as ChatCompletions does.
+		JsonArray input;
+		if (_subscription)
+		{
+			input = _rehydratedInput != null ? (JsonArray)_rehydratedInput.DeepClone() : new JsonArray();
+			foreach (JsonNode? item in _deltaInput)
+				input.Add(item!.DeepClone());
+		}
+		else
+		{
+			input = (JsonArray)(_rehydratedInput ?? _deltaInput).DeepClone();
+		}
+		_media.Apply(input, model.Config.MaxImages, "input_text", _subscription);
 		body["input"] = input;
-		if (_rehydratedInput == null && _previousResponseId != null)
+		if (!_subscription && _rehydratedInput == null && _previousResponseId != null)
 		{
 			body["previous_response_id"] = _previousResponseId;
 		}
 
-		if (maxCompletionTokens.HasValue)
+		// The subscription backend rejects max_output_tokens; its own limits bound the reply.
+		if (maxCompletionTokens.HasValue && !_subscription)
 			body["max_output_tokens"] = maxCompletionTokens.Value;
+
+		if (_subscription)
+		{
+			body["store"]            = false;
+			body["include"]          = new JsonArray("reasoning.encrypted_content");
+			body["prompt_cache_key"] = _sessionKey;
+		}
 
 		if (tools.Count > 0)
 		{
@@ -537,7 +611,23 @@ public class ProtocolResponses
 
 		HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
 		req.Content            = new StringContent(requestJson, Encoding.UTF8, "application/json");
-		req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+		if (_subscription)
+		{
+			// A sign-in only a person can renew is a hard failure (the human is alerted); anything
+			// else — the auth service briefly unreachable — is worth a retry.
+			ChatGptSubscription.Credentials creds = await ChatGptSubscription.ApplyHeadersAsync(req, _sessionKey, _refreshAuth, cancellationToken);
+			_refreshAuth = false;
+			if (creds.Error.Length > 0)
+			{
+				logger.ProtocolFailure(model, DetectedProtocol.Responses, "AuthFailure", null, creds.Error, null, null);
+				return creds.NeedsLogin ? ProtocolResult.Failed(creds.Error) : ProtocolResult.Transient(creds.Error, null);
+			}
+			req.Headers.TryAddWithoutValidation("Accept", "text/event-stream");
+		}
+		else
+		{
+			req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+		}
 
 		foreach ((string name, string value) in extraHeaders)
 		{
@@ -590,6 +680,10 @@ public class ProtocolResponses
 				return null;
 			}
 
+			// The subscription only streams, so no refusal here is a verdict on streaming support.
+			if (_subscription)
+				return SubscriptionFailure(model, httpResponse, statusCode, errorBody, logger);
+
 			// An empty body says nothing about streaming support — it is what a busy server emits while
 			// it unwinds a previous request, and latching streaming off over it costs the session the
 			// incremental output the silence deadline is measured against. Retry it as a transient.
@@ -632,9 +726,14 @@ public class ProtocolResponses
 		}
 
 		JsonNode? finalResponseNode = null;
+		JsonNode? streamError       = null;
 		string?   openStreamTag     = null;
 		int       liveInputTokens   = 0;
 		int       liveCachedTokens  = 0;
+
+		// Every finished output item as it streams. The ChatGPT backend's response.completed can carry
+		// an empty output (store=false), in which case these ARE the response.
+		JsonArray streamedItems = new JsonArray();
 
 		try
 		{
@@ -731,9 +830,21 @@ public class ProtocolResponses
 					{
 						bundle.Transport?.OnStreamChunk(StreamTag.Thinking, "\n\n");
 					}
-					else if (eventType == "response.completed" || eventType == "response.done")
+					else if (eventType == "response.output_item.done" && eventNode["item"] != null)
+					{
+						streamedItems.Add(eventNode["item"]!.DeepClone());
+					}
+					// An incomplete response is still a response: CommitResponse reads why it stopped.
+					else if (eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete")
 					{
 						finalResponseNode = eventNode["response"];
+						break;
+					}
+					// A failure reported inside a 200 stream: the error rides on the response, or on
+					// the event itself for a bare "error".
+					else if (eventType == "response.failed" || eventType == "error")
+					{
+						streamError = eventNode["response"]?["error"] ?? eventNode["error"] ?? eventNode;
 						break;
 					}
 				}
@@ -759,12 +870,81 @@ public class ProtocolResponses
 			}
 		}
 
+		if (streamError != null)
+			return StreamFailure(model, streamError, httpResponse.Headers, logger);
+
 		if (finalResponseNode != null)
 		{
+			JsonArray? output = finalResponseNode["output"] as JsonArray;
+			if ((output == null || output.Count == 0) && streamedItems.Count > 0)
+				finalResponseNode["output"] = streamedItems;
 			return CommitResponse(bundle, finalResponseNode, model);
 		}
 
 		return ProtocolResult.Transient("Stream ended without a response.completed event", null);
+	}
+
+	// Classifies a failure reported inside the stream. Overflow compacts; a usage or rate limit waits
+	// out its reset; anything else is retried as transient, as the Codex CLI does.
+	private static ProtocolResult StreamFailure(LlmModel model, JsonNode error, HttpResponseHeaders headers, SessionLogger logger)
+	{
+		string code    = error["code"]?.ToString() ?? error["type"]?.ToString() ?? string.Empty;
+		string message = error["message"]?.ToString() ?? error.ToJsonString();
+		string detail  = code.Length > 0 ? $"{code}: {message}" : message;
+
+		ProtocolResult result;
+		if (code == "context_length_exceeded" || ProtocolHelpers.IsContextOverflow(message))
+		{
+			result = ProtocolHelpers.ContextOverflowFailure("Responses", 400, detail, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+		}
+		else if (code == "usage_limit_reached" || code == "rate_limit_exceeded")
+		{
+			// The limit's own wording names the plan and reset only on the subscription; the API's says enough.
+			JsonObject wrapped = new JsonObject();
+			wrapped["error"]   = error.DeepClone();
+			string body        = wrapped.ToJsonString();
+			string usage       = ChatGptSubscription.IsEndpoint(model.Endpoint) ? ChatGptSubscription.DescribeLimit(headers, body, DateTimeOffset.UtcNow) : detail;
+			logger.ProtocolFailure(model, DetectedProtocol.Responses, "RateLimited", 429, usage, error.ToJsonString(), null);
+			result = ProtocolResult.RateLimited(ProtocolHelpers.ResetTimeFromBody(error.ToJsonString()), usage);
+		}
+		else
+		{
+			logger.ProtocolFailure(model, DetectedProtocol.Responses, "Transient", null, detail, error.ToJsonString(), null);
+			result = ProtocolResult.Transient($"Stream failed: {detail}", null);
+		}
+		return result;
+	}
+
+	// Maps a refused subscription request. A 401 is first answered by refreshing the token and
+	// re-sending once (null = re-send); the rest follow the non-streaming path's rules.
+	private ProtocolResult? SubscriptionFailure(LlmModel model, HttpResponseMessage httpResponse, int statusCode, string errorBody, SessionLogger logger)
+	{
+		ProtocolResult? result;
+		if (statusCode == 401 && !_authRetried)
+		{
+			_authRetried       = true;
+			_refreshAuth       = true;
+			_retryAfterRefusal = true;
+			logger.ProtocolFailure(model, DetectedProtocol.Responses, "AuthFailure", statusCode, "Token rejected; refreshing and re-sending", errorBody, null);
+			result = null;
+		}
+		else if (ProtocolHelpers.IsRateLimited(httpResponse, errorBody))
+		{
+			string usage = ChatGptSubscription.DescribeLimit(httpResponse.Headers, errorBody, DateTimeOffset.UtcNow);
+			logger.ProtocolFailure(model, DetectedProtocol.Responses, "RateLimited", statusCode, usage, errorBody, null);
+			result = ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(httpResponse, errorBody), usage);
+		}
+		else if (ProtocolHelpers.IsPermanentClientError(statusCode))
+		{
+			result = ProtocolHelpers.IsContextOverflow(errorBody)
+				? ProtocolHelpers.ContextOverflowFailure("Responses", statusCode, errorBody, logger, model.Config.Name, model.Endpoint, model.ConfigId)
+				: ProtocolHelpers.Failure("Responses", statusCode, errorBody, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+		}
+		else
+		{
+			result = ProtocolHelpers.TransientFailure("Responses", statusCode, errorBody, logger, model.Config.Name, model.Endpoint, model.ConfigId, httpResponse);
+		}
+		return result;
 	}
 
 	// The Responses SSE stream does not surface usage on text deltas, but response.created and
@@ -843,17 +1023,32 @@ public class ProtocolResponses
 
 
 
-		// Capture the server response id for next-turn chaining, then clear rehydrated input
-		// and delta buffer so subsequent turns accumulate fresh deltas.
-		// The id is in-memory only and never written into canonical state.
-		_previousResponseId = responseRoot["id"]?.GetValue<string>();
-		_rehydratedInput    = null;
-		_deltaInput.Clear();
+		if (_subscription)
+		{
+			// Nothing lives server-side: what was just sent becomes the running history, and the fan-out
+			// that follows records the turn itself, preceded by its reasoning.
+			JsonArray history = _rehydratedInput ?? new JsonArray();
+			foreach (JsonNode? item in _deltaInput)
+				history.Add(item!.DeepClone());
+			_rehydratedInput       = history;
+			_pendingReasoning      = ReplayableReasoning(output);
+			_assistantTurnOnServer = false;
+			_deltaInput.Clear();
+		}
+		else
+		{
+			// Capture the server response id for next-turn chaining, then clear rehydrated input
+			// and delta buffer so subsequent turns accumulate fresh deltas.
+			// The id is in-memory only and never written into canonical state.
+			_previousResponseId = responseRoot["id"]?.GetValue<string>();
+			_rehydratedInput    = null;
+			_deltaInput.Clear();
 
-		// With an id to chain from, this turn is already in the server-side thread, so the fan-out that
-		// follows must not append it to the next delta. Without one the next turn resends the delta on
-		// its own, and the turn has to be in it.
-		_assistantTurnOnServer = _previousResponseId != null;
+			// With an id to chain from, this turn is already in the server-side thread, so the fan-out that
+			// follows must not append it to the next delta. Without one the next turn resends the delta on
+			// its own, and the turn has to be in it.
+			_assistantTurnOnServer = _previousResponseId != null;
+		}
 
 		// The Responses API reports output clipping via incomplete_details rather than a finish
 		// reason; normalize it to "length" so callers detect cut-off replies uniformly.
@@ -866,6 +1061,28 @@ public class ProtocolResponses
 
 		List<ToolResult> emptyResults = new List<ToolResult>();
 		return ProtocolResult.Succeeded(new ProtocolCallPayload(assistantText, thinking, toolCalls, emptyResults, finishReason, usage, cost));
+	}
+
+	// The response's reasoning items as they can be sent back: encrypted_content and summary kept, the
+	// id dropped — with store=false the server holds no item to resolve it against, and naming one is
+	// a 404. Items without encrypted_content carry nothing the model can resume from.
+	private static JsonArray ReplayableReasoning(JsonArray output)
+	{
+		JsonArray reasoning = new JsonArray();
+		foreach (JsonNode? item in output)
+		{
+			if (item?["type"]?.GetValue<string>() != "reasoning" || item["encrypted_content"] == null)
+				continue;
+
+			JsonObject replay = new JsonObject
+			{
+				["type"]              = "reasoning",
+				["encrypted_content"] = item["encrypted_content"]!.DeepClone(),
+				["summary"]           = item["summary"]?.DeepClone() ?? new JsonArray()
+			};
+			reasoning.Add((JsonNode)replay);
+		}
+		return reasoning;
 	}
 
 	// Appends every text block of a reasoning item's part array, blank-line separated so multiple
@@ -937,16 +1154,28 @@ public class ProtocolResponses
 		SessionLogger                 logger,
 		CancellationToken             cancellationToken)
 	{
-		// Build the count endpoint URL: model.Endpoint ends with /responses, count endpoint is /responses/input_tokens/count
+		// The subscription backend has no count route, and a max_output_tokens=1 tracer is refused there
+		// too. The first real turn's usage measures the conversation instead; the caller treats a failed
+		// count as "not known yet".
+		if (_subscription)
+			return TracerResult.Failed("The ChatGPT subscription cannot count tokens ahead of a turn");
+
+		// An endpoint already found to have no count route goes straight to the tracer.
+		string known = _endpointFacts.ResponsesCountRoute;
+		if (known == EndpointFacts.NoCountRoute)
+			return await ExecuteTracerAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
+		string route = known.Length > 0 ? known : kOpenAiCountRoute;
+
+		// Build the count endpoint URL: model.Endpoint ends with /responses, count endpoint is /responses<route>
 		string countEndpoint = model.Endpoint;
 		if (countEndpoint.EndsWith("/responses", StringComparison.OrdinalIgnoreCase))
 		{
-			countEndpoint += "/input_tokens/count";
+			countEndpoint += route;
 		}
 		else
 		{
 			// Fallback if the endpoint doesn't follow the expected pattern
-			countEndpoint = model.Endpoint.TrimEnd('/') + "/input_tokens/count";
+			countEndpoint = model.Endpoint.TrimEnd('/') + route;
 		}
 
 		JsonObject body = BuildCountBody(model, tools, forcedToolName, extraPayload);
@@ -994,8 +1223,24 @@ public class ProtocolResponses
 			if (root == null)
 				return TracerResult.Failed("Empty response from count endpoint");
 
+			if (known.Length == 0)
+				_endpointFacts.RecordResponsesCountRoute(route);
+
 			int inputTokens = root["input_tokens"]?.GetValue<int>() ?? 0;
 			return TracerResult.Success(inputTokens, 0);
+		}
+
+		// The route is missing: OpenAI's moves on to Meta's spelling, and Meta's missing too means this
+		// endpoint has none. A 404 that names the model is about the model, not the route, and teaches
+		// nothing about the endpoint every other model on it shares.
+		if (statusCode == 404 && !responseBody.Contains("model", StringComparison.OrdinalIgnoreCase))
+		{
+			if (route == kOpenAiCountRoute)
+			{
+				_endpointFacts.RecordResponsesCountRoute(kMetaCountRoute);
+				return await CountTokensAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
+			}
+			_endpointFacts.RecordResponsesCountRoute(EndpointFacts.NoCountRoute);
 		}
 
 		// Count endpoint unavailable (404) or other 4xx — fall back to legacy tracer

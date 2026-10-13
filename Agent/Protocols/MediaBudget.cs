@@ -5,8 +5,9 @@ using System.Text.Json.Nodes;
 // Decides which media an outgoing request carries.
 //
 // Media is sent until the model has ANSWERED it — produced a turn with text or thinking after it —
-// and is then replaced by a note (Messages and ChatCompletions; the Responses protocol keeps its
-// history server-side and leaves it alone). Keeping answered media costs twice over: it is re-sent
+// and is then replaced by a note (Messages, ChatCompletions, and the stateless Responses history of
+// the ChatGPT subscription; the regular Responses protocol keeps its history server-side and leaves
+// it alone). Keeping answered media costs twice over: it is re-sent
 // on every later request, so a long visual session grows until the provider refuses the whole thing,
 // and it only gets dearer to remove, because dropping an item invalidates the prompt cache for
 // everything after it — one short reply right after the model has used it, a whole run of work
@@ -214,10 +215,11 @@ public class MediaBudget
 	// Messages: text / thinking / redacted_thinking blocks. ChatCompletions: non-empty content, or a
 	// replayed reasoning field (present only for models configured to retain it — otherwise the
 	// thinking is gone from the wire, and the media is the model's only record of what it saw).
+	// Responses (the stateless subscription history): an assistant output_text, or a reasoning item.
 	private static bool IsAnswer(JsonObject item)
 	{
 		bool assistant = item["role"] is JsonValue role && role.TryGetValue<string>(out string? r) && r == "assistant";
-		bool output    = false;
+		bool output    = PartType(item) == "reasoning";
 		if (assistant)
 		{
 			JsonNode? content = item["content"];
@@ -242,7 +244,7 @@ public class MediaBudget
 			string type = PartType(obj);
 			if (type == "thinking" || type == "redacted_thinking")
 				output = true;
-			else if (type == "text" && obj["text"] is JsonValue t && t.TryGetValue<string>(out string? s) && s.Length > 0)
+			else if ((type == "text" || type == "output_text") && obj["text"] is JsonValue t && t.TryGetValue<string>(out string? s) && s.Length > 0)
 				output = true;
 		}
 		return output;

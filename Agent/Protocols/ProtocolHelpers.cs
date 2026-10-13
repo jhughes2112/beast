@@ -114,7 +114,56 @@ static class ProtocolHelpers
 				return parsed;
 		}
 
-		return 0;
+		return ParseResetSeconds(responseBody);
+	}
+
+	// When a usage limit lifts, as the ChatGPT subscription states it in the error body:
+	// {"error":{"type":"usage_limit_reached","resets_at":<unix seconds>,"resets_in_seconds":N}}.
+	// Null when the body states neither.
+	public static DateTimeOffset? ResetTimeFromBody(string responseBody)
+	{
+		int seconds = ParseResetSeconds(responseBody);
+		return seconds > 0 ? DateTimeOffset.UtcNow.AddSeconds(seconds) : (DateTimeOffset?)null;
+	}
+
+	// One subscription usage window, worded the same for every provider:
+	// "5-hour window: 100% used (0% left), resets in 1h 4m (22:34 UTC)".
+	public static string DescribeUsageWindow(string name, double usedPercent, DateTimeOffset? reset, DateTimeOffset now)
+	{
+		string description = $"{name} window: {usedPercent:0.#}% used ({Math.Max(0, 100 - usedPercent):0.#}% left)";
+		if (reset.HasValue)
+			description = $"{description}, resets {DescribeReset(reset.Value, now)}";
+		return description;
+	}
+
+	// "in 1h 4m (22:34 UTC)"; a reset more than a day out names its date too.
+	public static string DescribeReset(DateTimeOffset reset, DateTimeOffset now)
+	{
+		TimeSpan wait  = reset > now ? reset - now : TimeSpan.Zero;
+		string   delay = wait.TotalDays >= 1 ? $"{(int)wait.TotalDays}d {wait.Hours}h" : wait.TotalHours >= 1 ? $"{(int)wait.TotalHours}h {wait.Minutes}m" : $"{Math.Max(1, (int)Math.Ceiling(wait.TotalMinutes))}m";
+		string   at    = reset.UtcDateTime.ToString(wait.TotalDays >= 1 ? "MMM d HH:mm" : "HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+		return $"in {delay} ({at} UTC)";
+	}
+
+	private static int ParseResetSeconds(string responseBody)
+	{
+		int seconds = 0;
+		if (responseBody.Contains("resets_"))
+		{
+			try
+			{
+				System.Text.Json.Nodes.JsonNode? root  = System.Text.Json.Nodes.JsonNode.Parse(responseBody);
+				System.Text.Json.Nodes.JsonNode? error = root?["error"] ?? root;
+				if (error?["resets_in_seconds"] is System.Text.Json.Nodes.JsonValue inSeconds && inSeconds.TryGetValue(out int relative) && relative > 0)
+					seconds = relative + 1;
+				else if (error?["resets_at"] is System.Text.Json.Nodes.JsonValue at && at.TryGetValue(out long epoch))
+					seconds = EpochToSecondsFromNow(epoch);
+			}
+			catch (System.Text.Json.JsonException)
+			{
+			}
+		}
+		return seconds;
 	}
 
 	private static string? GetFirstHeaderValue(System.Net.Http.Headers.HttpResponseHeaders headers, string headerName)

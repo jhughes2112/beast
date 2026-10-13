@@ -126,7 +126,6 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// it answers, and returns the result through the OnComplete callback. One entry point for
 	// every subagent — Developer, Reviewer, and the helper roles (Explorer, WebFetch) alike.
 	public async Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(
-		BeastSettings     settings,
 		Session           parent,
 		string            roleName,
 		string?           displayName,
@@ -229,7 +228,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			try
 			{
-				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, settings.WebSearch, replayOnStart: false, _cancellationTokenSource.Token);
+				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: false, _cancellationTokenSource.Token);
 			}
 			catch (OperationCanceledException)
 			{
@@ -281,7 +280,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			try
 			{
-				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, replayOnStart: false, _cancellationTokenSource.Token);
+				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: false, _cancellationTokenSource.Token);
 			}
 			catch (OperationCanceledException)
 			{
@@ -415,7 +414,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		SessionHandler handler = new SessionHandler(initial);
 		initial.TryAttachHandler();
-		await handler.RunAsync(_registry, _roleService, _settings, _transport, this, _settings.Settings.WebSearch, replayOnStart: true, ct);
+		await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: true, ct);
 	}
 
 	// ---- Session initialization ----
@@ -937,6 +936,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			{
 				(discovered, error) = await VerifySubscriptionAsync(sessionId, apiKey, ct);
 			}
+			else if (ChatGptSubscription.IsEndpoint(baseUrl))
+			{
+				(discovered, error) = await VerifyChatGptSubscriptionAsync(sessionId, ct);
+			}
 			else
 			{
 				_transport.Status(sessionId, $"[config] Fetching catalog from {baseUrl} ...");
@@ -970,7 +973,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			// A failed subscription login is never papered over with the cached list: the token is
 			// exactly what this visit is checking.
-			if (error.Length > 0 && !ClaudeCode.IsEndpoint(baseUrl))
+			if (error.Length > 0 && !ClaudeCode.IsEndpoint(baseUrl) && !ChatGptSubscription.IsEndpoint(baseUrl))
 			{
 				List<DiscoveredModel>? cached = _registry.CachedCatalog(baseUrl);
 				if (cached != null)
@@ -1058,6 +1061,32 @@ public class AgentOrchestrator : ISessionOrchestrator
 		else
 		{
 			error = $"Subscription login failed: {error}";
+		}
+		return (models, error);
+	}
+
+	// Opening the ChatGPT subscription in /config is where it is signed in: a stored sign-in that still
+	// refreshes is reused, otherwise the device-code flow puts a URL and a one-time code on the picker's
+	// loading screen and waits (up to 15 minutes) for the user to approve it in any browser. Only then
+	// is the account's catalog listed.
+	private async Task<(List<DiscoveredModel> Models, string Error)> VerifyChatGptSubscriptionAsync(string sessionId, CancellationToken ct)
+	{
+		_transport.Status(sessionId, "[config] Checking the ChatGPT subscription sign-in ...");
+		string error = await ChatGptSubscription.EnsureLoginAsync(message =>
+			{
+				// The picker's loading screen shows it; the status bar keeps a copy once the picker closes.
+				_transport.Status(sessionId, $"[config] {message}");
+				_transport.Config(sessionId, new System.Text.Json.Nodes.JsonObject { ["kind"] = "progress", ["text"] = message }.ToJsonString());
+			}, ct);
+		List<DiscoveredModel> models = new List<DiscoveredModel>();
+		if (error.Length == 0)
+		{
+			_transport.Status(sessionId, "[config] ChatGPT subscription signed in; listing its models ...");
+			(models, error) = await ChatGptSubscription.FetchCatalogAsync(ct);
+		}
+		else
+		{
+			error = $"ChatGPT sign-in failed: {error}";
 		}
 		return (models, error);
 	}

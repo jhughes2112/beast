@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -15,6 +17,7 @@ public static class ModelCatalogTests
 
 		TestNormalizeRequestEndpoint(ctx);
 		TestClaudeCodeEndpoint(ctx);
+		TestChatGptSubscription(ctx);
 		TestParseEntryShapes(ctx);
 		TestLmStudioEnrichment(ctx);
 		TestOllamaEnrichment(ctx);
@@ -142,7 +145,7 @@ public static class ModelCatalogTests
 		LlmModel    model  = new LlmModel("gpt-5.6-sol", "https://api.openai.com/v1/responses", "key",
 			new List<JsonObject>(), new List<JsonObject>(), config);
 
-		ProtocolResponses protocol = new ProtocolResponses(null);
+		ProtocolResponses protocol = new ProtocolResponses(null, new EndpointFacts(), false);
 		Type[] types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };
 		object[] args = new object[] { model, new List<ToolDefinition>(), null!, null!, new Dictionary<string, JsonNode?>() };
 
@@ -212,7 +215,7 @@ public static class ModelCatalogTests
 		List<(string Id, string? Effort, bool? Summaries)> learned = new List<(string, string?, bool?)>();
 		ModelCapabilitySink sink = (id, effort, summaries, maxImages) => learned.Add((id, effort, summaries));
 
-		ProtocolResponses protocol = new ProtocolResponses(sink);
+		ProtocolResponses protocol = new ProtocolResponses(sink, new EndpointFacts(), false);
 		Type[]   types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };
 		object[] args  = new object[] { model, new List<ToolDefinition>(), null!, null!, new Dictionary<string, JsonNode?>() };
 		JsonObject body = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
@@ -238,7 +241,7 @@ public static class ModelCatalogTests
 
 		// A 5xx quoting the request back is an outage, not a refusal — learning from one would switch
 		// a working feature off permanently on a bad afternoon.
-		ProtocolResponses outage = new ProtocolResponses(sink);
+		ProtocolResponses outage = new ProtocolResponses(sink, new EndpointFacts(), false);
 		Reflect.Instance(outage, "BuildBody", types, args);
 		bool fromOutage = (bool)Reflect.Instance(outage, "LearnReasoningRefusal", learnTypes,
 			new object[] { model, 503, "{\"error\":{\"message\":\"upstream: reasoning is not supported right now\"}}", logger })!;
@@ -464,6 +467,117 @@ public static class ModelCatalogTests
 
 		ctx.AssertContains(ClaudeCode.ParseProbeResult("", 1, "error: unknown option '--bogus'"), "unknown option",
 			"ClaudeCode: a run with no json result surfaces stderr");
+
+		// A refused turn names the limit from its own rate_limit_info and each window's usage from the
+		// last rate_limit_event, in the shapes Claude Code's stream-json schema declares.
+		DateTimeOffset now     = new DateTimeOffset(2026, 10, 13, 21, 30, 0, TimeSpan.Zero);
+		long           fiveHr  = now.AddMinutes(64).ToUnixTimeSeconds();
+		long           weekly  = now.AddDays(3).AddHours(2).ToUnixTimeSeconds();
+		JsonObject     refusal = JsonNode.Parse($"{{\"status\":\"rejected\",\"rateLimitType\":\"five_hour\",\"resetsAt\":{fiveHr},\"isUsingOverage\":false,\"overageStatus\":\"rejected\",\"overageDisabledReason\":\"out_of_credits\"}}")!.AsObject();
+		JsonObject     latest  = JsonNode.Parse($"{{\"status\":\"allowed_warning\",\"utilization\":0.92,\"unifiedWindows\":{{\"five_hour\":{{\"utilization\":1.0,\"resetsAt\":{fiveHr}}},\"seven_day\":{{\"utilization\":0.4,\"resetsAt\":{weekly}}}}}}}")!.AsObject();
+		string         usage   = ClaudeCode.DescribeLimit(refusal, latest, now);
+		ctx.AssertContains(usage, "Claude subscription usage limit reached (5-hour limit)", "ClaudeCode: the limit hit is named");
+		ctx.AssertContains(usage, "5-hour window: 100% used (0% left), resets in 1h 4m (22:34 UTC)", "ClaudeCode: the 5-hour window's usage and reset are stated");
+		ctx.AssertContains(usage, "Weekly window: 40% used (60% left), resets in 3d 2h (Oct 16 23:30 UTC)", "ClaudeCode: the weekly window's usage and reset are stated");
+		ctx.AssertContains(usage, "Usage credits unavailable (out of credits)", "ClaudeCode: why credits cannot carry on is stated");
+		ctx.AssertEqual(DateTimeOffset.FromUnixTimeSeconds(fiveHr), ClaudeCode.LimitResetsAt(refusal, latest), "ClaudeCode: the refusal's reset is when to retry");
+
+		string bare = ClaudeCode.DescribeLimit(refusal, null, now);
+		ctx.AssertContains(bare, "Resets in 1h 4m (22:34 UTC)", "ClaudeCode: with no window usage seen, the refusal's reset stands in");
+		ctx.Assert(!ClaudeCode.LimitResetsAt(null, latest).HasValue, "ClaudeCode: a warning that refused nothing sets no retry time");
+	}
+
+	// The ChatGPT subscription: its endpoint is recognized and left as configured, the backend's
+	// catalog lists only visible models under the subscription prefix, its usage-limit reset is read,
+	// and the stateless Responses mode resends the whole conversation with the turn's encrypted
+	// reasoning replayed ahead of it — never previous_response_id, never max_output_tokens.
+	private static void TestChatGptSubscription(TestContext ctx)
+	{
+		ctx.Assert(ChatGptSubscription.IsEndpoint(ChatGptSubscription.EndpointUrl), "ChatGpt: the backend URL is recognized");
+		ctx.Assert(!ChatGptSubscription.IsEndpoint("https://api.openai.com/v1/responses"), "ChatGpt: the API endpoint is not the subscription");
+		ctx.AssertEqual(ChatGptSubscription.EndpointUrl, ModelCatalog.NormalizeRequestEndpoint(ChatGptSubscription.EndpointUrl), "ChatGpt: normalization leaves the URL alone");
+		ctx.AssertEqual("gpt-6-sol", ChatGptSubscription.ApiModel("chatgpt/gpt-6-sol"), "ChatGpt: the wire model drops the prefix");
+
+		string models = """
+			{"models":[{"slug":"gpt-6-sol","display_name":"GPT-6 Sol","context_window":272000,"visibility":"list"},
+			           {"slug":"internal-eval","visibility":"hide"},
+			           {"slug":"gpt-5.3-codex-spark","context_window":128000}]}
+			""";
+		List<DiscoveredModel> catalog = ChatGptSubscription.ParseCatalog(models);
+		ctx.AssertEqual(2, catalog.Count, "ChatGpt: hidden models are not offered");
+		if (catalog.Count == 2)
+		{
+			ctx.AssertEqual("chatgpt/gpt-6-sol", catalog[0].Id, "ChatGpt: ids carry the subscription prefix");
+			ctx.AssertEqual("GPT-6 Sol (subscription)", catalog[0].Name, "ChatGpt: named for the model");
+			ctx.AssertEqual(128000, catalog[1].ContextWindow, "ChatGpt: a stated window is kept");
+			ctx.AssertEqual(0m, catalog[1].CostInput, "ChatGpt: costs nothing per token");
+		}
+		ctx.AssertEqual(0, ChatGptSubscription.ParseCatalog("not json").Count, "ChatGpt: an unreadable catalog lists nothing");
+
+		DateTimeOffset? reset = ProtocolHelpers.ResetTimeFromBody("{\"error\":{\"type\":\"usage_limit_reached\",\"resets_in_seconds\":3600}}");
+		ctx.Assert(reset.HasValue && reset.Value > DateTimeOffset.UtcNow.AddMinutes(59), "ChatGpt: a usage limit's reset time is read from the body");
+		ctx.Assert(!ProtocolHelpers.ResetTimeFromBody("{\"error\":{\"message\":\"slow down\"}}").HasValue, "ChatGpt: a body without one states no reset");
+
+		// A refused request spells out each window's usage and reset from the x-codex-* headers.
+		DateTimeOffset      now     = new DateTimeOffset(2026, 10, 13, 21, 30, 0, TimeSpan.Zero);
+		HttpResponseMessage limited = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+		limited.Headers.TryAddWithoutValidation("x-codex-plan-type", "plus");
+		limited.Headers.TryAddWithoutValidation("x-codex-primary-used-percent", "100");
+		limited.Headers.TryAddWithoutValidation("x-codex-primary-window-minutes", "300");
+		limited.Headers.TryAddWithoutValidation("x-codex-primary-reset-at", $"{now.AddMinutes(64).ToUnixTimeSeconds()}");
+		limited.Headers.TryAddWithoutValidation("x-codex-secondary-used-percent", "19");
+		limited.Headers.TryAddWithoutValidation("x-codex-secondary-window-minutes", "10080");
+		limited.Headers.TryAddWithoutValidation("x-codex-secondary-reset-at", $"{now.AddDays(6).AddHours(7).ToUnixTimeSeconds()}");
+		limited.Headers.TryAddWithoutValidation("x-codex-credits-has-credits", "False");
+		string usage = ChatGptSubscription.DescribeLimit(limited.Headers, "{\"error\":{\"type\":\"usage_limit_reached\"}}", now);
+		ctx.Assert(usage.Contains("ChatGPT plus usage limit reached"), $"ChatGpt: the limit names the plan ({usage})");
+		ctx.Assert(usage.Contains("5-hour window: 100% used (0% left), resets in 1h 4m (22:34 UTC)"), $"ChatGpt: the 5-hour window's usage and reset are stated ({usage})");
+		ctx.Assert(usage.Contains("Weekly window: 19% used (81% left), resets in 6d 7h (Oct 20 04:30 UTC)"), $"ChatGpt: the weekly window's usage and reset are stated ({usage})");
+		ctx.Assert(usage.Contains("No credits"), $"ChatGpt: the absence of credits is stated ({usage})");
+
+		string bodyOnly = ChatGptSubscription.DescribeLimit(new HttpResponseMessage().Headers, "{\"error\":{\"type\":\"usage_limit_reached\",\"plan_type\":\"pro\",\"resets_in_seconds\":3600}}", DateTimeOffset.UtcNow);
+		ctx.Assert(bodyOnly.Contains("ChatGPT pro usage limit reached") && bodyOnly.Contains("Resets in 1h 0m"), $"ChatGpt: without headers the body's plan and reset stand in ({bodyOnly})");
+
+		ModelConfig config = new ModelConfig { Id = "chatgpt/gpt-6-sol", Name = "GPT-6 Sol", ContextWindow = 272000 };
+		LlmModel    model  = new LlmModel(config.Id, ChatGptSubscription.EndpointUrl, string.Empty, new List<JsonObject>(), new List<JsonObject>(), config);
+		Type[]      types  = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };
+		object[]    args   = new object[] { model, new List<ToolDefinition>(), null!, 4000, new Dictionary<string, JsonNode?>() };
+
+		ProtocolResponses protocol = new ProtocolResponses(null, new EndpointFacts(), true);
+		protocol.Rehydrate(new List<CanonicalMessage> { new SystemMessage("role prompt"), new UserMessage("read it") });
+		JsonObject first = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		ctx.AssertEqual("gpt-6-sol", first["model"]?.GetValue<string>(), "ChatGpt: the request names the bare slug");
+		ctx.AssertEqual(false, first["store"]?.GetValue<bool>(), "ChatGpt: nothing is stored server-side");
+		ctx.AssertEqual("reasoning.encrypted_content", first["include"]?[0]?.GetValue<string>(), "ChatGpt: encrypted reasoning is asked for");
+		ctx.Assert(first["max_output_tokens"] == null, "ChatGpt: no max_output_tokens, which the backend refuses");
+		ctx.AssertEqual("developer", first["input"]?[0]?["role"]?.GetValue<string>(), "ChatGpt: the system prompt goes as a developer message");
+
+		JsonNode response = JsonNode.Parse("""
+			{"id":"resp_1","output":[
+			  {"type":"reasoning","id":"rs_1","encrypted_content":"SEALED","summary":[]},
+			  {"type":"function_call","id":"fc_1","call_id":"call_1","name":"read_file","arguments":"{}"}],
+			 "usage":{"input_tokens":120,"output_tokens":30}}
+			""")!;
+		Reflect.Instance(protocol, "CommitResponse", new Type[] { typeof(ListenerBundle), typeof(JsonNode), typeof(LlmModel) }, new object[] { null!, response, model });
+		List<SemanticToolCall> calls = new List<SemanticToolCall> { new SemanticToolCall { Id = "call_1", Name = "read_file", ArgumentsJson = "{}" } };
+		protocol.OnAssistantTurn(string.Empty, string.Empty, calls);
+		protocol.OnToolResult(new ToolResult("call_1", "contents", string.Empty, 0, 0));
+
+		JsonObject second = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		JsonArray  input  = second["input"]!.AsArray();
+		ctx.Assert(second["previous_response_id"] == null, "ChatGpt: never chains from a response id");
+		ctx.AssertEqual(5, input.Count, "ChatGpt: the whole conversation is resent (developer, user, reasoning, call, output)");
+		if (input.Count == 5)
+		{
+			ctx.AssertEqual("reasoning", input[2]?["type"]?.GetValue<string>(), "ChatGpt: the turn's reasoning is replayed ahead of it");
+			ctx.AssertEqual("SEALED", input[2]?["encrypted_content"]?.GetValue<string>(), "ChatGpt: with its encrypted content intact");
+			ctx.Assert(input[2]?["id"] == null, "ChatGpt: and without the id store=false cannot resolve");
+			ctx.AssertEqual("call_1", input[3]?["call_id"]?.GetValue<string>(), "ChatGpt: the call follows its reasoning");
+			ctx.AssertEqual("function_call_output", input[4]?["type"]?.GetValue<string>(), "ChatGpt: and its output follows the call");
+		}
+
+		JsonObject third = (JsonObject)Reflect.Instance(protocol, "BuildBody", types, args)!;
+		ctx.AssertEqual(5, third["input"]!.AsArray().Count, "ChatGpt: rebuilding the same request does not duplicate anything");
 	}
 
 	private static void TestParseEntryShapes(TestContext ctx)

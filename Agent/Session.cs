@@ -386,6 +386,21 @@ public class Session
 			_data.TotalCost += cost;
 	}
 
+	// Rolls the spend this session has not yet reported up into its parent and returns how much that
+	// was. The reported amount lives on the session data, so however many handlers run this session
+	// over its life, the parent receives each cent of it exactly once.
+	public decimal ReportCostTo(Session parent)
+	{
+		decimal unreported;
+		lock (_costLock)
+		{
+			unreported                 = _data.TotalCost - _data.CostReportedToParent;
+			_data.CostReportedToParent = _data.TotalCost;
+		}
+		parent.RecordCost(unreported);
+		return unreported;
+	}
+
 	// Records a standalone token count of the prompt as it stands right now — no turn has run, so
 	// there is no completion and nothing has been cached yet: (cached 0, input X, output 0). This is
 	// a provider measurement, the same authority as a turn's usage, so it sets the context size the
@@ -590,7 +605,7 @@ public class Session
 			}
 			else if (msg is ToolResultMessage tr)
 			{
-				ToolResult replayed = new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0, tr.MediaPath, tr.MediaMimeType);
+				ToolResult replayed = new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0, tr.Media ?? new List<MediaFile>());
 				if (toClient)
 					_bundle.OnToolResult(replayed);
 				else

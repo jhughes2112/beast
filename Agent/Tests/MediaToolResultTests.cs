@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 
@@ -16,10 +17,14 @@ public static class MediaToolResultTests
 		string path = Path.Combine(Path.GetTempPath(), $"beast-media-{Guid.NewGuid():N}.png");
 		File.WriteAllBytes(path, new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4 });
 		string expected = Convert.ToBase64String(File.ReadAllBytes(path));
+		string second   = Path.Combine(Path.GetTempPath(), $"beast-media-{Guid.NewGuid():N}.png");
+		File.WriteAllBytes(second, new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9, 8, 7, 6 });
 
 		try
 		{
 			TestCanonicalKeepsPathOnly(ctx, path);
+			TestLegacySingleMediaLoads(ctx, path);
+			TestSeveralMediaInOneResult(ctx, path, second);
 			TestChatCompletionsCarrier(ctx, path, expected);
 			TestAnthropicToolResultBlock(ctx, path, expected);
 			TestResponsesOutputParts(ctx, path, expected);
@@ -32,6 +37,7 @@ public static class MediaToolResultTests
 		finally
 		{
 			File.Delete(path);
+			File.Delete(second);
 		}
 	}
 
@@ -45,7 +51,7 @@ public static class MediaToolResultTests
 			new SemanticToolCall { Id = "call_a", Name = "inspect_media", ArgumentsJson = "{\"file_path\":\"a.png\"}" },
 			new SemanticToolCall { Id = "call_b", Name = "ls",            ArgumentsJson = "{\"folder\":\".\"}" }
 		});
-		bundle.OnToolResult(new ToolResult("call_a", "a.png attached", string.Empty, 0, 3, path, "image/png"));
+		bundle.OnToolResult(new ToolResult("call_a", "a.png attached", string.Empty, 0, 3, new List<MediaFile> { new MediaFile(path, "image/png") }));
 		bundle.OnToolResult(new ToolResult("call_b", "a.png\nb.txt", string.Empty, 0, 3));
 		return messages;
 	}
@@ -55,9 +61,50 @@ public static class MediaToolResultTests
 		ctx.Log("    CanonicalKeepsPathOnly");
 		List<CanonicalMessage> messages = Conversation(path);
 		ToolResultMessage      tr       = (ToolResultMessage)messages[2];
-		ctx.AssertEqual(       path,     tr.MediaPath!, "Canonical: tool result records the media path");
-		ctx.AssertEqual("image/png", tr.MediaMimeType!, "Canonical: tool result records the mime type");
-		ctx.Assert(((ToolResultMessage)messages[3]).MediaPath == null, "Canonical: a text result carries no media");
+		ctx.AssertEqual(          1,      tr.Media!.Count, "Canonical: tool result records its one media file");
+		ctx.AssertEqual(       path,     tr.Media[0].Path, "Canonical: tool result records the media path");
+		ctx.AssertEqual("image/png", tr.Media[0].MimeType, "Canonical: tool result records the mime type");
+		ctx.Assert(((ToolResultMessage)messages[3]).Media == null, "Canonical: a text result carries no media");
+	}
+
+	// Session files from before results could carry several files hold one as mediaPath/mediaMimeType.
+	// They load into Media, and are written back only in the new shape.
+	private static void TestLegacySingleMediaLoads(TestContext ctx, string path)
+	{
+		ctx.Log("    LegacySingleMediaLoads");
+		string             legacy = $"{{\"$type\":\"tool\",\"ToolCallId\":\"call_a\",\"Content\":\"a.png attached\",\"MediaPath\":{JsonValue.Create(path)!.ToJsonString()},\"MediaMimeType\":\"image/png\"}}";
+		CanonicalMessage?  loaded = JsonSerializer.Deserialize(legacy, BeastJsonContext.Default.CanonicalMessage);
+		ToolResultMessage? tr     = loaded as ToolResultMessage;
+		ctx.Assert(tr != null && tr.Media != null && tr.Media.Count == 1 && tr.Media[0].Path == path && tr.Media[0].MimeType == "image/png", "Legacy: a single mediaPath loads as one media file");
+
+		string written = tr == null ? string.Empty : JsonSerializer.Serialize<CanonicalMessage>(tr, BeastJsonContext.Default.CanonicalMessage);
+		ctx.Assert(written.Contains("\"Media\"", StringComparison.Ordinal) && !written.Contains("MediaPath", StringComparison.Ordinal), $"Legacy: it is saved back as a media list only ({written})");
+	}
+
+	// Several files in one result — a side-by-side comparison — reach every wire shape, in order.
+	private static void TestSeveralMediaInOneResult(TestContext ctx, string path, string second)
+	{
+		ctx.Log("    SeveralMediaInOneResult");
+		List<CanonicalMessage> messages = new List<CanonicalMessage>();
+		ListenerBundle         bundle   = new ListenerBundle(new CanonicalConversation(messages), null);
+		bundle.OnUserMessage("compare these");
+		bundle.OnAssistantTurn(string.Empty, string.Empty, new List<SemanticToolCall> { new SemanticToolCall { Id = "call_a", Name = "inspect_media", ArgumentsJson = "{}" } });
+		bundle.OnToolResult(new ToolResult("call_a", "two attached", string.Empty, 0, 3, new List<MediaFile> { new MediaFile(path, "image/png"), new MediaFile(second, "image/png") }));
+		string firstData  = Convert.ToBase64String(File.ReadAllBytes(path));
+		string secondData = Convert.ToBase64String(File.ReadAllBytes(second));
+
+		JsonArray carrier = (JsonArray)((JsonArray)Reflect.GetField(new ProtocolProxy(TestModel()).EnsureProtocolChatCompletions(messages), "_native")!)[3]!["content"]!;
+		ctx.AssertEqual(4, carrier.Count, "Several: ChatCompletions carrier holds a note and an image per file");
+		ctx.Assert(carrier[1]!["image_url"]!["url"]!.GetValue<string>().EndsWith(firstData, StringComparison.Ordinal)
+			&& carrier[3]!["image_url"]!["url"]!.GetValue<string>().EndsWith(secondData, StringComparison.Ordinal), "Several: ChatCompletions keeps the files in order");
+
+		JsonArray inner = (JsonArray)((JsonArray)((JsonArray)Reflect.GetField(new ProtocolProxy(TestModel()).EnsureProtocolAnthropic(messages), "_native")!)[2]!["content"]!)[0]!["content"]!;
+		ctx.AssertEqual(3, inner.Count, "Several: Anthropic tool_result holds the text and both images");
+		ctx.Assert(inner[1]!["source"]!["data"]!.GetValue<string>() == firstData && inner[2]!["source"]!["data"]!.GetValue<string>() == secondData, "Several: Anthropic keeps the files in order");
+
+		JsonArray parts = (JsonArray)((JsonArray)Reflect.GetField(new ProtocolProxy(TestModel()).EnsureProtocolResponses(messages), "_rehydratedInput")!)[2]!["output"]!;
+		ctx.AssertEqual(3, parts.Count, "Several: Responses output holds the text and an input_image per file");
+		ctx.Assert(parts[2]!["image_url"]!.GetValue<string>().EndsWith(secondData, StringComparison.Ordinal), "Several: Responses keeps the files in order");
 	}
 
 	// The tool message stays text; the image rides in a user message after BOTH tool replies, so
@@ -86,7 +133,7 @@ public static class MediaToolResultTests
 		JsonArray               liveNative = (JsonArray)Reflect.GetField(liveCc, "_native")!;
 		liveCc.OnUserMessage("look at the screenshot");
 		liveCc.OnAssistantTurn(string.Empty, string.Empty, new List<SemanticToolCall> { new SemanticToolCall { Id = "call_a", Name = "inspect_media", ArgumentsJson = "{}" } });
-		liveCc.OnToolResult(new ToolResult("call_a", "a.png attached", string.Empty, 0, 3, path, "image/png"));
+		liveCc.OnToolResult(new ToolResult("call_a", "a.png attached", string.Empty, 0, 3, new List<MediaFile> { new MediaFile(path, "image/png") }));
 		liveCc.OnToolResult(new ToolResult("call_b", "a.png\nb.txt", string.Empty, 0, 3));
 		ctx.AssertEqual(5, liveNative.Count, "ChatCompletions live: same message count");
 		ctx.AssertEqual("tool", Role(liveNative[3]), "ChatCompletions live: later tool reply inserted ahead of the carrier");

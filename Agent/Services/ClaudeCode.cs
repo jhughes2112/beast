@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -309,5 +310,84 @@ public static class ClaudeCode
 	{
 		string[] lines = text.Trim().Split('\n');
 		return lines[lines.Length - 1].Trim();
+	}
+
+	// ---- Usage limits ----
+
+	// Spells out a refused turn's usage limit from Claude Code's rate_limit_info: which limit was hit,
+	// how much of each window is used and when it resets, and whether usage credits can carry on.
+	// refusal is the info the refused turn's result carried (limit and reset only); latest is the last
+	// rate_limit_event, the only one with every window's usage. Either may be null.
+	internal static string DescribeLimit(JsonObject? refusal, JsonObject? latest, DateTimeOffset now)
+	{
+		JsonObject? limit = refusal ?? latest;
+		string      kind  = LimitName(ReadText(limit, "rateLimitType"));
+
+		StringBuilder text    = new StringBuilder($"Claude subscription usage limit reached{(kind.Length > 0 ? $" ({kind})" : "")}; the allowance is shared with Claude Code and claude.ai.");
+		int           windows = 0;
+		JsonObject?   unified = (latest?["unifiedWindows"] ?? refusal?["unifiedWindows"]) as JsonObject;
+		foreach ((string key, string name) in new (string Key, string Name)[] { ("five_hour", "5-hour"), ("seven_day", "Weekly"), ("seven_day_overage_included", "Weekly (with usage credits)") })
+		{
+			JsonObject? window = unified?[key] as JsonObject;
+			if (window != null && window["utilization"] is JsonValue used && used.TryGetValue(out double fraction))
+			{
+				text.Append($" {ProtocolHelpers.DescribeUsageWindow(name, fraction * 100, ResetsAt(window, "resetsAt"), now)}.");
+				windows++;
+			}
+		}
+
+		DateTimeOffset? reset = ResetsAt(limit, "resetsAt");
+		if (windows == 0 && reset.HasValue)
+			text.Append($" Resets {ProtocolHelpers.DescribeReset(reset.Value, now)}.");
+
+		string overage = ReadText(limit, "overageStatus");
+		string reason  = ReadText(limit, "overageDisabledReason");
+		if (overage == "rejected" || reason.Length > 0)
+			text.Append($" Usage credits unavailable{(reason.Length > 0 ? $" ({reason.Replace('_', ' ')})" : "")}.");
+		else if (overage.Length > 0)
+			text.Append(" Usage credits available.");
+		return text.ToString();
+	}
+
+	// When the limit lifts: the refusal's own reset, else the last event's if that one was a refusal.
+	internal static DateTimeOffset? LimitResetsAt(JsonObject? refusal, JsonObject? latest)
+	{
+		DateTimeOffset? reset = ResetsAt(refusal, "resetsAt");
+		if (!reset.HasValue && ReadText(latest, "status") == "rejected")
+			reset = ResetsAt(latest, "resetsAt");
+		return reset;
+	}
+
+	private static string LimitName(string rateLimitType)
+	{
+		string name;
+		if (rateLimitType == "five_hour")
+			name = "5-hour limit";
+		else if (rateLimitType == "seven_day")
+			name = "weekly limit";
+		else if (rateLimitType == "seven_day_opus")
+			name = "weekly Opus limit";
+		else if (rateLimitType == "seven_day_sonnet")
+			name = "weekly Sonnet limit";
+		else if (rateLimitType == "seven_day_overage_included")
+			name = "weekly limit including usage credits";
+		else if (rateLimitType == "overage")
+			name = "usage-credit spend cap";
+		else
+			name = rateLimitType.Replace('_', ' ');
+		return name;
+	}
+
+	private static DateTimeOffset? ResetsAt(JsonObject? node, string key)
+	{
+		DateTimeOffset? reset = null;
+		if (node?[key] is JsonValue value && value.TryGetValue(out long epoch) && epoch > 0)
+			reset = DateTimeOffset.FromUnixTimeSeconds(epoch);
+		return reset;
+	}
+
+	private static string ReadText(JsonObject? node, string key)
+	{
+		return node?[key] is JsonValue value && value.TryGetValue(out string? text) && text != null ? text : string.Empty;
 	}
 }

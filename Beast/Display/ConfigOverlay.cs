@@ -39,6 +39,8 @@ internal class ConfigOverlay
 	// list costs nothing to carry and turns adding a provider into pick + paste key.
 	// Ordered by likelihood of being the one the user came for: the everyday picks first, then
 	// the remaining local servers, then the rest roughly by popularity.
+	private const string kChatGptSubscriptionUrl = "https://chatgpt.com/backend-api/codex/responses";
+
 	private static readonly (string Name, string Url)[] kPresets =
 	{
 		("Custom URL…", ""),
@@ -47,9 +49,14 @@ internal class ConfigOverlay
 		("Anthropic",            "https://api.anthropic.com/v1/messages"),
 		// Not an HTTP endpoint: the agent drives a Claude subscription through the Claude Code CLI.
 		("Anthropic Subscription", "claude-code://subscription"),
-		("OpenRouter",             "https://openrouter.ai/api/v1/chat/completions"),
+		// A ChatGPT plan signed in with a device code (no key to paste); served by the Codex backend.
+		// The agent shows the sign-in URL and code in the loading screen.
+		("OpenAI Subscription",                         kChatGptSubscriptionUrl),
+		("OpenRouter",          "https://openrouter.ai/api/v1/chat/completions"),
 		("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
 		("xAI (Grok)",        "https://api.x.ai/v1/chat/completions"),
+		// Meta recommends its Responses API (reasoning carried across turns, web search grounding).
+		("Meta",              "https://api.meta.ai/v1/responses"),
 		("Ollama (local)",    "http://localhost:11434/v1/chat/completions"),
 		("LM Studio (local)", "http://localhost:1234/v1/chat/completions"),
 		("vLLM (local)",      "http://localhost:8000/v1/chat/completions"),
@@ -237,6 +244,13 @@ internal class ConfigOverlay
 				// triggered this refresh stays visible on the endpoint screen.
 				if (_status.StartsWith("Loading endpoints", StringComparison.Ordinal))
 					_status = string.Empty;
+			}
+			else if (kind == "progress")
+			{
+				// A step the user must act on while the catalog loads — the ChatGPT sign-in URL and
+				// code — shown in the modal itself rather than left to the status bar.
+				if (_mode == Mode.Loading)
+					_status = root?["text"]?.GetValue<string>() ?? string.Empty;
 			}
 			else if (kind == "catalog")
 			{
@@ -651,6 +665,14 @@ internal class ConfigOverlay
 			{
 				_entry = string.Empty;
 				_mode  = Mode.AddUrl;
+			}
+			else if (kPresets[_presetSelected].Url == kChatGptSubscriptionUrl)
+			{
+				// No key to ask for: the agent signs in with a device code, shown in the status bar.
+				_baseUrl = kChatGptSubscriptionUrl;
+				_apiKey  = string.Empty;
+				RequestCatalog();
+				_status = "Signing in to ChatGPT…";
 			}
 			else
 			{

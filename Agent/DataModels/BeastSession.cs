@@ -61,6 +61,14 @@ public class BeastSession
 	[JsonPropertyName("totalCost")]
 	public decimal TotalCost { get; internal set; }
 
+	// How much of TotalCost has already been rolled up into the parent. Persisted with the session,
+	// not held by whichever handler happens to be running it: handlers come and go (a compaction
+	// predecessor, a reload, a human re-prompting a finished subagent), and each new one used to start
+	// from zero and bill the parent the child's whole total again.
+	[JsonInclude]
+	[JsonPropertyName("costReportedToParent")]
+	public decimal CostReportedToParent { get; internal set; }
+
 	// Absolute session totals. These only ever increase over the life of a session and are never
 	// reset, not on model switch and not on compaction. CumulativeInputTokens and
 	// CumulativeOutputTokens are what the client displays as the running in/out counters, while
@@ -115,10 +123,13 @@ public class BeastSession
 		Model       = model;
 		Role        = role;
 		// Null-coalesced so session files written before the obligation existed still load.
-		TerminatorName         = terminatorName ?? string.Empty;
-		Messages               = messages ?? new List<CanonicalMessage>();
-		LastTokenUsage         = lastTokenUsage;
-		TotalCost              = totalCost;
+		TerminatorName = terminatorName ?? string.Empty;
+		Messages       = messages ?? new List<CanonicalMessage>();
+		LastTokenUsage = lastTokenUsage;
+		TotalCost      = totalCost;
+		// Overwritten on load when the file carries it. Files written before it existed had already
+		// rolled their whole total up, so they read as fully reported rather than billing it again.
+		CostReportedToParent   = totalCost;
 		CumulativeInputTokens  = cumulativeInputTokens;
 		CumulativeOutputTokens = cumulativeOutputTokens;
 		CurrentContextSize     = currentContextSize;

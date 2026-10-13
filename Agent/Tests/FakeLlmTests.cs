@@ -45,6 +45,8 @@ public static class FakeLlmTests
 			Name            = "Fake Chaos",
 			ContextWindow   = FakeLlm.ContextWindow,
 			MaxOutputTokens = 8192,
+			// Priced, so cost rollups have something to move; nothing else here looks at spend.
+			Cost = new CostConfig { Input = 1m, Output = 2m },
 		};
 		LlmModel model = new LlmModel(FakeLlm.ModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), config);
 
@@ -106,6 +108,16 @@ public static class FakeLlmTests
 		};
 		LlmModel lateModel = new LlmModel(FakeLlm.LateUsageModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), lateConfig);
 
+		// A sixth id that counts prompts higher than its usage reports, as OpenRouter does.
+		ModelConfig skewedConfig = new ModelConfig
+		{
+			Id              = FakeLlm.SkewedCountModelId,
+			Name            = "Fake Skewed Count",
+			ContextWindow   = FakeLlm.ContextWindow,
+			MaxOutputTokens = 8192,
+		};
+		LlmModel skewedModel = new LlmModel(FakeLlm.SkewedCountModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), skewedConfig);
+
 		LlmRegistry                  registry    = new LlmRegistry();
 		Dictionary<string, LlmModel> models      = new Dictionary<string, LlmModel>(StringComparer.OrdinalIgnoreCase);
 		models[FakeLlm.ModelId]                  = model;
@@ -128,6 +140,8 @@ public static class FakeLlmTests
 		await TestFirstRequestFitsTheWindowAsync(ctx, reserveModel, cts.Token);
 		await TestFreshSessionIsCountedFirstAsync(ctx, server, reserveModel, registry, roleService, cts.Token);
 		await TestProvisionalStatsTreatPriorTurnAsCachedAsync(ctx, lateModel, cts.Token);
+		await TestSkewedPromptCountShrinksTheAskAsync(ctx, server, skewedModel, cts.Token);
+		await TestCostReachesIdleAncestorsEachRoundAsync(ctx, model, registry, roleService, cts.Token);
 
 		TestCaptureTransport transport = new TestCaptureTransport();
 		Session              session   = BuildSession("fake-e2e", model, transport);
@@ -507,7 +521,7 @@ public static class FakeLlmTests
 		using CancellationTokenSource runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 		SessionHandler handler               = new SessionHandler(session);
 		session.TryAttachHandler();
-		Task run = handler.RunAsync(registry, roleService, settings, transport, orchestrator, null, false, runCts.Token);
+		Task run = handler.RunAsync(registry, roleService, settings, transport, orchestrator, false, runCts.Token);
 
 		// Wait for the session to report that it cannot continue — that alert is the handler
 		// deciding to stop rather than go around again.
@@ -544,6 +558,52 @@ public static class FakeLlmTests
 	// and none of it is fresh input. The bar used to carry the previous turn's cached FIGURE forward
 	// instead, which reported a whole conversation as fresh input on every turn — the expensive half
 	// of the reading, and wrong every time after turn one.
+	// A gateway that counts the prompt higher than its usage reports rejects "all the room left" as
+	// over-window, and states by how much. On a small conversation the overflow margin cannot cover
+	// that, and the rejection used to come back as ContextFull — which a conversation at a few percent
+	// of its window cannot compact its way out of, so the field subagents died at 9-44%. The overrun
+	// has to be learned and the ask shrunk, still streaming, and remembered for the next turn.
+	private static async Task TestSkewedPromptCountShrinksTheAskAsync(TestContext ctx, FakeLlm server, LlmModel model, CancellationToken ct)
+	{
+		TestCaptureTransport transport = new TestCaptureTransport();
+		Session              session   = BuildSession("skewed-count", model, transport);
+		LlmService           service   = BuildService(model);
+
+		// The first turn is unmeasured, so its margin is a quarter of the window and it fits.
+		session.AddUserMessage("First turn.");
+		ProtocolResult first = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.Success, first.Outcome, "SkewedCount: the unmeasured first turn runs");
+		if (first.Payload != null)
+			session.CommitAssistantTurn(first.Payload);
+
+		// Measured and tiny: the ask is nearly the whole window, and the skew overruns it.
+		session.AddUserMessage("Second turn.");
+		server.StartRecording();
+		ProtocolResult second  = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
+		List<string>   tripped = server.StopRecording();
+		ctx.AssertEqual(ProtocolCallOutcome.Success, second.Outcome, "SkewedCount: a small conversation rejected for its output ask is not reported as full");
+		ctx.AssertEqual(2, tripped.Count, "SkewedCount: one rejection, one resized retry");
+		if (tripped.Count == 2)
+		{
+			JsonNode? rejected = JsonNode.Parse(tripped[0]);
+			JsonNode? retried  = JsonNode.Parse(tripped[1]);
+			ctx.Assert(retried?["max_completion_tokens"]?.GetValue<int>() < rejected?["max_completion_tokens"]?.GetValue<int>(), "SkewedCount: the retry asks for less output");
+			ctx.Assert(retried?["stream"]?.GetValue<bool>() == true, "SkewedCount: the retry still streams");
+		}
+		if (second.Payload != null)
+			session.CommitAssistantTurn(second.Payload);
+
+		// The skew is remembered: the next turn goes through on its first request, still streaming.
+		session.AddUserMessage("Third turn.");
+		server.StartRecording();
+		ProtocolResult third = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
+		List<string>   clean = server.StopRecording();
+		ctx.AssertEqual(ProtocolCallOutcome.Success, third.Outcome, "SkewedCount: the next turn runs");
+		ctx.AssertEqual(1, clean.Count, "SkewedCount: the learned skew sizes the next turn right the first time");
+		if (clean.Count == 1)
+			ctx.Assert(JsonNode.Parse(clean[0])?["stream"]?.GetValue<bool>() == true, "SkewedCount: streaming survived the rejection");
+	}
+
 	private static async Task TestProvisionalStatsTreatPriorTurnAsCachedAsync(TestContext ctx, LlmModel model, CancellationToken ct)
 	{
 		TestCaptureTransport transport = new TestCaptureTransport();
@@ -599,7 +659,7 @@ public static class FakeLlmTests
 		using CancellationTokenSource runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 		SessionHandler handler               = new SessionHandler(session);
 		session.TryAttachHandler();
-		Task run = handler.RunAsync(registry, roleService, settings, transport, orchestrator, null, false, runCts.Token);
+		Task run = handler.RunAsync(registry, roleService, settings, transport, orchestrator, false, runCts.Token);
 
 		for (int i = 0; i < 100 && session.ContextLength == 0; i++)
 		{
@@ -642,11 +702,68 @@ public static class FakeLlmTests
 		}
 	}
 
+	// A human prompts a subagent whose parent and grandparent sit idle. Its spend has to reach the
+	// root as each round lands — not when the child next replies or its handler exits, which for a
+	// chat with a finished subagent may be never — and the handler's exit must not bill it again.
+	private static async Task TestCostReachesIdleAncestorsEachRoundAsync(TestContext ctx, LlmModel model, LlmRegistry registry, RoleService roleService, CancellationToken ct)
+	{
+		TestCaptureTransport transport = new TestCaptureTransport();
+		SettingsService      settings  = new SettingsService(Environment.CurrentDirectory);
+
+		Session          root           = BuildSession("cost-root",   model, transport);
+		Session          parent         = BuildSession("cost-parent", model, transport);
+		Session          child          = BuildSession("cost-child",  model, transport);
+		TreeOrchestrator orchestrator   = new TreeOrchestrator();
+		orchestrator.Parents[child.Id]  = parent;
+		orchestrator.Parents[parent.Id] = root;
+
+		child.AddUserMessage("Say something.");
+		using CancellationTokenSource runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+		SessionHandler handler               = new SessionHandler(child);
+		child.TryAttachHandler();
+		Task run = handler.RunAsync(registry, roleService, settings, transport, orchestrator, false, runCts.Token);
+
+		for (int i = 0; i < 100 && root.TotalCost == 0m; i++)
+		{
+			await Task.Delay(50, ct);
+		}
+		ctx.Assert(root.TotalCost > 0m, "CostRollup: a round's spend reaches an idle grandparent while the child's handler is still running");
+
+		runCts.Cancel();
+		try
+		{
+			await run;
+		}
+		catch (OperationCanceledException)
+		{
+		}
+
+		ctx.AssertEqual(child.TotalCost, parent.TotalCost, "CostRollup: the parent holds the child's spend once, handler exit included");
+		ctx.AssertEqual(child.TotalCost, root.TotalCost, "CostRollup: and so does the root");
+	}
+
+	// Resolves parents from a fixed map, so a handler can roll cost up a tree with no real orchestrator.
+	private sealed class TreeOrchestrator : ISessionOrchestrator
+	{
+		public readonly Dictionary<string, Session> Parents = new Dictionary<string, Session>(StringComparer.Ordinal);
+
+		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
+			=> Task.FromResult((false, "no subagents in this test", 0));
+
+		public void     Deliver           (string sessionId, string content) { }
+		public void     RegisterSession   (Session session)                  { }
+		public void     UnregisterSession (string sessionId)                 { }
+		public void     EnsureHandler     (Session session)                  { }
+		public Session? FindParent        (Session session) => Parents.TryGetValue(session.Id, out Session? parent) ? parent : null;
+		public void     TransferCompletion(string fromSessionId, string toSessionId)                   { }
+		public void     CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
+	}
+
 	// Minimal orchestrator for driving a SessionHandler in isolation: it records nothing and starts
 	// no other handlers, so the test observes only the session under test.
-	private sealed class StubOrchestrator : ISessionOrchestrator
+	internal sealed class StubOrchestrator : ISessionOrchestrator
 	{
-		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(BeastSettings settings, Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
+		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
 			=> Task.FromResult((false, "no subagents in this test", 0));
 
 		public void     Deliver           (string sessionId, string content) { }
@@ -660,7 +777,7 @@ public static class FakeLlmTests
 
 	private static LlmService BuildService(LlmModel model)
 	{
-		return new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new List<string> { FakeLlm.ModelId }, (id, effort, summaries, maxImages) => { });
+		return new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new EndpointFacts(), new List<string> { FakeLlm.ModelId }, (id, effort, summaries, maxImages) => { });
 	}
 
 	// The case that motivated all of this: an 89%-full conversation asks a subagent for a review and

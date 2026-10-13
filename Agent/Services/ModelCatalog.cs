@@ -42,11 +42,14 @@ public static class ModelCatalog
 	// Returns the discovered catalog, or an empty list plus an error description on failure.
 	public static async Task<(List<DiscoveredModel> Models, string Error)> FetchAsync(string baseUrl, string apiKey, CancellationToken ct)
 	{
-		// The subscription endpoint's catalog comes from the Claude Code CLI, not an HTTP /models.
+		// The Anthropic subscription's catalog comes from the Claude Code CLI, not an HTTP /models; the
+		// ChatGPT subscription's from its backend, signed with the stored sign-in rather than a key.
 		// Logging in is proved separately, when /config opens the endpoint.
 		(List<DiscoveredModel> Models, string Error) result;
 		if (ClaudeCode.IsEndpoint(baseUrl))
 			result = await ClaudeCode.FetchCatalogAsync(apiKey, ct);
+		else if (ChatGptSubscription.IsEndpoint(baseUrl))
+			result = await ChatGptSubscription.FetchCatalogAsync(ct);
 		else
 			result = await FetchHttpAsync(baseUrl, apiKey, ct);
 		return result;

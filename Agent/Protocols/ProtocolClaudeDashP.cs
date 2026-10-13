@@ -56,6 +56,13 @@ public sealed class ProtocolClaudeDashP
 	// which arrives after this protocol has already returned the turn; the next read consumes it.
 	private bool _awaitingResult;
 
+	// The last rate_limit_info Claude Code reported: the subscription's usage of each window, which a
+	// refused turn's own result does not repeat.
+	private JsonObject? _rateLimit;
+
+	// The rate_limit_info of a refused turn, from the API-error assistant message ahead of its result.
+	private JsonObject? _refusal;
+
 	// User content (text and image blocks) committed since the last thing sent to the process.
 	private readonly List<JsonObject> _unsent = new List<JsonObject>();
 
@@ -635,7 +642,15 @@ public sealed class ProtocolClaudeDashP
 				{
 					result = OnSystemEvent(evt, model, bundle, logger);
 				}
-				// assistant / user echoes restate what the stream events already carried.
+				else if (type == "rate_limit_event" && evt["rate_limit_info"] is JsonObject rateLimit)
+				{
+					_rateLimit = (JsonObject)rateLimit.DeepClone();
+				}
+				else if (type == "assistant" && evt["api_error_params"]?["rate_limit_info"] is JsonObject refusal)
+				{
+					_refusal = (JsonObject)refusal.DeepClone();
+				}
+				// Other assistant / user echoes restate what the stream events already carried.
 			}
 		}
 		finally
@@ -724,9 +739,19 @@ public sealed class ProtocolClaudeDashP
 
 			ProtocolResult failure;
 			string         kind;
-			if (status == 429)
+			JsonObject?    refusal = _refusal;
+			_refusal               = null;
+			if (evt["api_error"]?.ToString() == "usage_limit_reached" || refusal != null)
 			{
-				failure = ProtocolResult.RateLimited(null);
+				// The account's own plan limit or credit cap: say which, how much is used, and when it
+				// lifts, so a limit hours away is fallen back from rather than retried.
+				message = ClaudeCode.DescribeLimit(refusal, _rateLimit, DateTimeOffset.UtcNow);
+				failure = ProtocolResult.RateLimited(ClaudeCode.LimitResetsAt(refusal, _rateLimit), message);
+				kind    = "RateLimited";
+			}
+			else if (status == 429)
+			{
+				failure = ProtocolResult.RateLimited(null, message);
 				kind    = "RateLimited";
 			}
 			else if (ProtocolHelpers.IsContextOverflow(message))
@@ -838,8 +863,8 @@ public sealed class ProtocolClaudeDashP
 		return content;
 	}
 
-	// Beast's tool result as an MCP result: the same text every protocol sends, plus the media file
-	// when the result carries one.
+	// Beast's tool result as an MCP result: the same text every protocol sends, plus each image the
+	// result carries.
 	private static JsonObject ToolReply(ToolResult result)
 	{
 		string text = result.StdOut;
@@ -848,8 +873,11 @@ public sealed class ProtocolClaudeDashP
 
 		JsonObject reply   = TextReply(text, false);
 		JsonArray  content = (JsonArray)reply["content"]!;
-		if (result.MediaPath != null && result.MediaMimeType != null && result.MediaMimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && File.Exists(result.MediaPath))
-			content.Add((JsonNode)new JsonObject { ["type"] = "image", ["data"] = Convert.ToBase64String(File.ReadAllBytes(result.MediaPath)), ["mimeType"] = result.MediaMimeType });
+		foreach (MediaFile file in result.Media)
+		{
+			if (file.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && File.Exists(file.Path))
+				content.Add((JsonNode)new JsonObject { ["type"] = "image", ["data"] = Convert.ToBase64String(File.ReadAllBytes(file.Path)), ["mimeType"] = file.MimeType });
+		}
 		return reply;
 	}
 
