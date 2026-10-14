@@ -111,8 +111,8 @@ public class DisplayScreen : IDisplay
 	private Action<string>?             _sessionSwitchCallback;
 	private Action<string>?             _sessionDeleteCallback;
 
-	// Session tree overlay state.
-	private bool _sessionTreeOpen = false;
+	// Session tree overlay state. Open from launch; F10 toggles it away and back.
+	private bool _sessionTreeOpen = true;
 
 	// /config modal overlay; created on first open so it can capture SendAsync.
 	private ConfigOverlay? _configOverlay;

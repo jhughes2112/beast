@@ -101,7 +101,11 @@ public static class ModelCatalog
 					try
 					{
 						DiscoveredModel model = ParseEntry(entry, anthropic);
-						if (model.Id.Length > 0)
+
+						// OpenRouter ":batch" entries are served only by its async Batch API (up to a
+						// 24h turnaround), never the live endpoints a session calls; listing them at
+						// their half price would only invite a model that cannot answer.
+						if (model.Id.Length > 0 && !model.Id.EndsWith(":batch", StringComparison.OrdinalIgnoreCase))
 							models.Add(model);
 					}
 					catch (Exception ex)
