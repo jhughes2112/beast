@@ -21,9 +21,6 @@ public static class ToolFactory
 	// The per-agent read_file window. Bounded so a single read cannot flood the context.
 	private const int ReadFileMaxLines = 500;
 
-	// Working-turn budget for the Developer/Reviewer subagents spawned by assign_work/review_work.
-	private const int SubagentMaxWorkTurns = 75;
-
 	public static Tool[] BuildForRole(
 		SettingsService       settingsService,
 		Role                  role,
@@ -40,7 +37,8 @@ public static class ToolFactory
 
 		// Tool schemas (descriptions, parameters) come from this snapshot; the toolset is rebuilt when
 		// a reload lands, so they track config at round granularity. Handlers read settingsService live.
-		BeastSettings settings = settingsService.Settings;
+		BeastSettings                  settings    = settingsService.Settings;
+		Dictionary<string, ToolConfig> toolConfigs = settingsService.Tools;
 
 		// Check helper-role availability upfront. A tool is omitted when its role is unconfigured or no
 		// model is available. GetModelForRole is a lightweight availability check — the role itself is
@@ -52,7 +50,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("bash"))
 		{
-			ToolConfig tc = settings.Tools["bash"];
+			ToolConfig tc = toolConfigs["bash"];
 			Register(tools, "bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
@@ -64,9 +62,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("apt_install"))
 		{
-			// Older settings.json files predate this tool; fall back to the in-code config.
-			if (!settings.Tools.TryGetValue("apt_install", out ToolConfig? aptTc))
-				aptTc = SettingsService.DefaultToolConfig("apt_install");
+			ToolConfig aptTc = toolConfigs["apt_install"];
 			Register(tools, "apt_install", aptTc.Description, Params(Req("packages", "string", aptTc.Parameters["packages"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
@@ -77,7 +73,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("readonly_bash"))
 		{
-			ToolConfig tc = settings.Tools["readonly_bash"];
+			ToolConfig tc = toolConfigs["readonly_bash"];
 			Register(tools, "readonly_bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
@@ -89,7 +85,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("write_file"))
 		{
-			ToolConfig tc = settings.Tools["write_file"];
+			ToolConfig tc = toolConfigs["write_file"];
 			Register(tools, "write_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("content", "string", tc.Parameters["content"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
@@ -101,7 +97,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("edit_file"))
 		{
-			ToolConfig tc = settings.Tools["edit_file"];
+			ToolConfig tc = toolConfigs["edit_file"];
 			Register(tools, "edit_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("old_text", "string", tc.Parameters["old_text"]), Req("new_text", "string", tc.Parameters["new_text"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
@@ -113,7 +109,7 @@ public static class ToolFactory
 		}
 		if (role.Tools.Contains("ls"))
 		{
-			ToolConfig tc = settings.Tools["ls"];
+			ToolConfig tc = toolConfigs["ls"];
 			Register(tools, "ls", tc.Description, Params(Req("folder", "string", tc.Parameters["folder"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
@@ -124,7 +120,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("read_file"))
 		{
-			ToolConfig tc = settings.Tools["read_file"];
+			ToolConfig tc = toolConfigs["read_file"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -153,7 +149,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && spawnSubagent != null)
 		{
-			ToolConfig     tc         = settings.Tools["find_relevant_file_sections"];
+			ToolConfig     tc         = toolConfigs["find_relevant_file_sections"];
 			FileSummarizer summarizer = new FileSummarizer();
 			tools.Add(new Tool
 			{
@@ -182,7 +178,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("fetch_url") && webFetchReady && spawnSubagent != null)
 		{
-			ToolConfig tc       = settings.Tools["fetch_url"];
+			ToolConfig tc       = toolConfigs["fetch_url"];
 			WebFetch   webFetch = new WebFetch();
 			tools.Add(new Tool
 			{
@@ -212,11 +208,7 @@ public static class ToolFactory
 		// that path reports so at call time rather than the tool silently vanishing.
 		if (role.Tools.Contains("inspect_media") && registry != null && session != null)
 		{
-			// Older settings.json files predate this tool or its current parameters (file_paths,
-			// max_dimension); fall back to the in-code config so the tool exists without forcing a
-			// settings regeneration.
-			if (!settings.Tools.TryGetValue("inspect_media", out ToolConfig? mediaTc) || !mediaTc.Parameters.ContainsKey("file_paths") || !mediaTc.Parameters.ContainsKey("max_dimension"))
-				mediaTc = SettingsService.DefaultToolConfig("inspect_media");
+			ToolConfig     mediaTc   = toolConfigs["inspect_media"];
 			MediaInspector inspector = new MediaInspector();
 			tools.Add(new Tool
 			{
@@ -257,7 +249,7 @@ public static class ToolFactory
 			List<(WebSearchProvider Provider, string ApiKey, string Model)> searchProviders = WebSearchRegistry.ResolveUsable(settings);
 			if (searchProviders.Count > 0)
 			{
-				ToolConfig    tc        = settings.Tools["internet_search"];
+				ToolConfig    tc        = toolConfigs["internet_search"];
 				WebSearchTool webSearch = new WebSearchTool();
 				tools.Add(new Tool
 				{
@@ -290,7 +282,14 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("assign_work") && spawnSubagent != null && onWorkAssigned != null)
 		{
-			ToolConfig tc = settings.Tools["assign_work"];
+			ToolConfig tc = toolConfigs["assign_work"];
+
+			// The effort parameter exists only when the Developer role defines named budget sizes, and
+			// its text lists them, so the numbers live in roles.json alone.
+			Role?      worker     = roleService?.GetRole("Developer");
+			JsonObject assignArgs = worker != null && worker.TurnBudgets.Count > 0
+				? Params(Req("prompt", "string", tc.Parameters["prompt"]), Opt("effort", "string", $"{tc.Parameters["effort"]} Sizes: {EffortSizes(worker)}."))
+				: Params(Req("prompt", "string", tc.Parameters["prompt"]));
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -300,8 +299,7 @@ public static class ToolFactory
 					{
 						Name        = "assign_work",
 						Description = tc.Description,
-						Parameters  = Params(
-							Req("prompt", "string", tc.Parameters["prompt"]))
+						Parameters  = assignArgs
 					}
 				},
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -310,9 +308,19 @@ public static class ToolFactory
 					if (string.IsNullOrWhiteSpace(prompt))
 						return new ToolResult(toolCallId, string.Empty, "Error: assign_work requires a 'prompt'.", 1, 0);
 
+					string effort = Str(args, "effort");
+					int    turns  = 0;
+					if (!string.IsNullOrWhiteSpace(effort))
+					{
+						// Sizes come from the Developer role in roles.json, resolved per call so a reload applies.
+						Role? live = roleService?.GetRole("Developer");
+						if (live == null || !TryEffortTurns(live, effort, out turns))
+							return new ToolResult(toolCallId, string.Empty, $"Error: effort must be one of: {EffortSizes(live)}. Got '{effort}'.", 1, 0);
+					}
+
 					onWorkAssigned();
 
-					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, SubagentMaxWorkTurns, ct);
+					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, turns, ct);
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -325,7 +333,7 @@ public static class ToolFactory
 		// role that cannot delegate never sees it.
 		if (workInProgress && role.Tools.Contains("assign_work") && onStopWork != null)
 		{
-			ToolConfig tc = settings.Tools["stop_work"];
+			ToolConfig tc = toolConfigs["stop_work"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -350,7 +358,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("review_work") && spawnSubagent != null)
 		{
-			ToolConfig tc = settings.Tools["review_work"];
+			ToolConfig tc = toolConfigs["review_work"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -370,7 +378,7 @@ public static class ToolFactory
 					if (string.IsNullOrWhiteSpace(prompt))
 						return new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0);
 
-					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, SubagentMaxWorkTurns, ct);
+					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, 0, ct);
 					if (!ok)
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
 
@@ -381,7 +389,7 @@ public static class ToolFactory
 
 		if (role.Tools.Contains("commit_and_rebase"))
 		{
-			ToolConfig tc = settings.Tools["commit_and_rebase"];
+			ToolConfig tc = toolConfigs["commit_and_rebase"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -418,7 +426,7 @@ public static class ToolFactory
 		// SessionHandler.NotifyComplete stamps it once, when the reply is actually delivered.
 		if (role.Tools.Contains("task_complete") && onTerminate != null)
 		{
-			ToolConfig tc = settings.Tools["task_complete"];
+			ToolConfig tc = toolConfigs["task_complete"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -445,7 +453,7 @@ public static class ToolFactory
 		}
 		else if (role.Tools.Contains("finish_review") && onTerminate != null)
 		{
-			ToolConfig tc = settings.Tools["finish_review"];
+			ToolConfig tc = toolConfigs["finish_review"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -475,7 +483,7 @@ public static class ToolFactory
 		}
 		else if (onTerminate != null)
 		{
-			ToolConfig tc = settings.Tools["return_to_caller"];
+			ToolConfig tc = toolConfigs["return_to_caller"];
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -502,6 +510,34 @@ public static class ToolFactory
 		}
 
 		return tools.ToArray();
+	}
+
+	// The turn count of a named budget size on the role, matched case-insensitively.
+	private static bool TryEffortTurns(Role role, string effort, out int turns)
+	{
+		bool found = false;
+		turns      = 0;
+		foreach ((string name, int budget) in role.TurnBudgets)
+		{
+			if (string.Equals(name, effort.Trim(), StringComparison.OrdinalIgnoreCase))
+			{
+				turns = budget;
+				found = true;
+			}
+		}
+		return found;
+	}
+
+	// "small = 30 turns, large = 120 turns" for a role's named budget sizes; empty when it has none.
+	private static string EffortSizes(Role? role)
+	{
+		List<string> sizes = new List<string>();
+		if (role != null)
+		{
+			foreach ((string name, int budget) in role.TurnBudgets)
+				sizes.Add($"{name} = {budget} turns");
+		}
+		return string.Join(", ", sizes);
 	}
 
 	// Registers a tool in the list, wrapping the handler with MeasureRawResult so output is always

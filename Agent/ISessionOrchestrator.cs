@@ -4,7 +4,8 @@ using System.Threading.Tasks;
 
 // Signature for spawning a subagent session and awaiting its reply. Tool handlers receive this
 // shape so any tool can delegate work to a role without knowing the orchestrator. displayName
-// null derives the name from the prompt's first line.
+// null derives the name from the prompt's first line. maxWorkTurns > 0 overrides the role's own
+// max_turns budget; 0 uses the role's.
 public delegate Task<(bool ok, string text, int responseTokens)> SpawnSubagent(string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
 
 // Interface that AgentOrchestrator implements and SessionHandlers depend on.

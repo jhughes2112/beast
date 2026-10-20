@@ -20,9 +20,6 @@ public class BeastSettings
 	[JsonPropertyName("auto")]
 	public List<AutoProviderConfig> Auto { get; set; } = new();
 
-	[JsonPropertyName("tools")]
-	public Dictionary<string, ToolConfig> Tools { get; set; } = new();
-
 	[JsonPropertyName("webSearch")]
 	public WebSearchConfig? WebSearch { get; set; }
 
@@ -120,6 +117,24 @@ public class AutoModelConfig
 	// provider refuses a request for carrying too many images. See ModelConfig.MaxImages.
 	[JsonPropertyName("maxImages")]
 	public int MaxImages { get; set; } = 0;
+
+	// 0 = the default (see ModelConfig.RequestTimeoutSeconds). Raise for a slow local box.
+	[JsonPropertyName("requestTimeoutSeconds")]
+	public int RequestTimeoutSeconds { get; set; } = 0;
+
+	// Extra top-level fields merged into this model's request body, and extra HTTP headers — the
+	// same shapes as ModelConfig.Extras/Headers, here per model so provider-specific controls (an
+	// OpenRouter provider routing block, a beta header) need no hand-written provider entry. Null =
+	// none, and a null is not written to the file.
+	[JsonPropertyName("extras")]
+	[JsonConverter(typeof(JsonObjectListConverter))]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public List<JsonObject>? Extras { get; set; } = null;
+
+	[JsonPropertyName("headers")]
+	[JsonConverter(typeof(JsonObjectListConverter))]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public List<JsonObject>? Headers { get; set; } = null;
 }
 
 public class ToolConfig

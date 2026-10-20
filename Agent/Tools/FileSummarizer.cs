@@ -20,12 +20,6 @@ public class FileSummarizer
 	private const int SmallFileMaxLines = 50;
 	private const int SmallFileMaxBytes = 2048;
 
-	// The Explorer digests one file window and returns its citations via return_to_caller. It has no tools to
-	// work with, so there is nothing to do but cite, but flaky models/servers do not always emit the tool call
-	// on the first try: the session's wind-down forces the terminator once these working turns run out and,
-	// failing that, salvages the last assistant message, so a few turns are allotted rather than a single forced one.
-	private const int MaxWorkTurns = 5;
-
 	// Entry point for the find_relevant_file_sections tool. Reads a line-numbered window from the caller's offset and lets
 	// the Explorer cite the parts relevant to the goal. A small file (or a failed read) is returned raw.
 	// The spawn delegate resolves the Explorer role by name when the child starts, so a reload
@@ -89,7 +83,7 @@ public class FileSummarizer
 	{
 		// The left-margin line numbers let the Explorer cite exact locations against the goal.
 		string seed = $"Goal: {goal}\nFile: {filePath}\n\nFile content (line numbers in the left margin):\n{content}";
-		(bool ok, string answer, int tokens) = await spawn("Explorer", $"find_relevant_file_sections {filePath}", seed, MaxWorkTurns, cancellationToken);
+		(bool ok, string answer, int tokens) = await spawn("Explorer", $"find_relevant_file_sections {filePath}", seed, 0, cancellationToken);
 		if (!ok)
 		{
 			string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

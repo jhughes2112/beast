@@ -18,7 +18,12 @@ public class SettingsService
 	// change — and a dropped change can be a rotated OAuth refresh token, which signs the user out.
 	private readonly object _writeGate = new object();
 
+	// Tool descriptions live in their own regenerable file (see ToolService), never in settings.json.
+	private readonly ToolService _toolService = new ToolService();
+
 	public BeastSettings Settings { get; private set; }
+
+	public Dictionary<string, ToolConfig> Tools => _toolService.Tools;
 
 	// Set when a pre-single-file project settings.json with real content is found: earlier builds
 	// wrote and honored one, so silently ignoring it would lose configured providers, keys, and
@@ -50,12 +55,34 @@ public class SettingsService
 			home = CreateDefaultHomeSettings();
 			WriteSettings(_homeDirSettingsPath, home);
 		}
+		else if (HasLegacyToolsSection(_homeDirSettingsPath))
+		{
+			// Earlier builds kept tool descriptions here, where they could never be updated; they now
+			// live in tools.json, so rewriting the file drops the stale section.
+			WriteSettings(_homeDirSettingsPath, home);
+		}
+
+		_toolService.Reload();
 
 		// Published with a single reference assignment: a concurrent reader never sees a
 		// half-populated settings object.
 		Settings = home;
 
 		DetectLegacyProjectSettings();
+	}
+
+	private static bool HasLegacyToolsSection(string path)
+	{
+		bool legacy = false;
+		try
+		{
+			JsonNode? root = JsonNode.Parse(File.ReadAllText(path), null, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
+			legacy         = root is JsonObject obj && obj.ContainsKey("tools");
+		}
+		catch (JsonException)
+		{
+		}
+		return legacy;
 	}
 
 	// Flags a leftover project settings.json that carries real configuration. Empty auto-generated
@@ -80,7 +107,6 @@ public class SettingsService
 			meaningful = legacy != null
 				&& (legacy.Providers.Count > 0 || legacy.Auto.Count > 0 || legacy.WebSearch?.Openrouter != null
 					|| (legacy.WebSearch != null && legacy.WebSearch.Providers.Count > 0)
-					|| legacy.Tools.Count > 0
 					|| !string.IsNullOrEmpty(legacy.IdleSoundFile)
 					|| !string.IsNullOrEmpty(legacy.SubagentSoundFile)
 					|| legacy.CompactionReserveTokens > 0);
@@ -378,13 +404,6 @@ public class SettingsService
 		}
 	}
 
-	// The in-code definition of one tool, for callers whose settings file predates a tool or one of
-	// its parameters and would otherwise expose a stale schema.
-	public static ToolConfig DefaultToolConfig(string name)
-	{
-		return CreateDefaultHomeSettings().Tools[name];
-	}
-
 	private static BeastSettings CreateDefaultHomeSettings()
 	{
 		return new BeastSettings
@@ -397,134 +416,6 @@ public class SettingsService
 			// configs — full ModelConfig with extras/headers/reasoning — it just starts empty
 			// instead of shipping placeholder stubs that showed up as phantom endpoints.
 			Providers = new List<ProviderConfig>(),
-			Tools     = new Dictionary<string, ToolConfig>()
-			{
-				{ "bash", new ToolConfig() {
-				  Description = "Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "command", "Shell command to execute" },
-					  { "timeout_seconds", "Timeout in seconds (default 120)." }
-					},
-				} },
-			  { "apt_install", new ToolConfig() {
-				  Description = "Install Ubuntu packages with apt. Your shell cannot run apt-get or sudo, so this installs them for you. Check first whether a package is already installed (dpkg -l <name>, apt list --installed, apt-cache policy <name>). Installed packages last only as long as this container.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "packages", "Space-separated Debian package names, e.g. \"graphviz libpq-dev\". Plain names only: no options, versions, or file paths." },
-				  },
-			  } },
-			  { "readonly_bash", new ToolConfig() {
-				  Description = "Read-only bash for inspecting the repo without changing it. Runs in a restricted bash shell. Installed packages can be checked with dpkg-query and apt-cache. CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "command", "Safe shell command to execute. Do not use stream redirection, do not use find or cd, no running programs by explicit path, and no modifying the PATH env var. A small set of safe commands are available; in the event of an error, they will be listed for you" },
-					  { "timeout_seconds", "Timeout in seconds (default 120)." },
-				  },
-			  } },
-			  { "write_file", new ToolConfig() {
-				  Description = "Create a new file or overwrite an existing one (read_file it first if it exists). Relative paths are in the repo root at /workspace/, where your work belongs; nothing outside /workspace/ and /tmp/ can be written, nor anything inside a top-level folder whose name starts with '.' (.git, .github, .vscode, ...).",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "file_path", "File path" },
-					  { "content", "Complete file contents" },
-				  },
-			  } },
-				{ "edit_file", new ToolConfig() {
-				  Description = "Replace old_text with new_text in a file. Tries exact match first; if not found, retries ignoring all whitespace. Works inside /workspace/ and /tmp/ only, and not inside a top-level folder whose name starts with '.' (.git, .github, .vscode, ...). CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "file_path", "File path" },
-					  { "old_text", "Text to find and replace" },
-					  { "new_text", "Replacement text" },
-				  },
-			  } },
-				{ "ls", new ToolConfig() {
-				  Description = "List a folder's contents. CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "folder", "Folder to list" }
-				  },
-			  } },
-				{ "read_file", new ToolConfig() {
-				  Description = "Read a file's raw contents. Returns up to 500 lines starting at offset. Works inside /workspace/ and /tmp/ only. CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					{ "file_path", "File path" },
-					{ "offset", "Starting line number (1 based). Omit for the beginning of the file." },
-					{ "lines",  "Number of lines to read. Omit to read to the end of the file (capped at 500)." },
-				  },
-			  } },
-				{ "find_relevant_file_sections", new ToolConfig() {
-				  Description = "Find the sections of a file relevant to a goal: returns where different concepts can be found in the indicated file, citations for different sections so you can target follow-up read_file calls better. Small files are returned immediately without interpretation. Works inside /workspace/ and /tmp/ only. CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "file_path", "File path" },
-					{ "goal", "What kind of content is relevant to you in this file. Used to focus the citations returned." },
-					{ "offset", "Starting line number (1 based) for the window to digest. Omit for the beginning of the file." },
-				  },
-			  } },
-				{ "inspect_media", new ToolConfig() {
-				  Description = "Look at one or more image, audio, or video files. Pass several at once to compare them side by side (before/after screenshots, a render against its reference); they arrive together, in the order given. If you accept that kind of input, the files themselves are attached to the result so you can examine them directly. Otherwise, or when use_subagent is set, a media-capable subagent reads them and returns only what the goal asks for. Use for screenshots, diagrams, photos, and recordings. Set max_dimension to have images downscaled for you rather than resizing them yourself. A large file is reported by size the first time; calling again on the same path sends it as-is. Works inside /workspace/ and /tmp/, and on a dropped attachment at the path you were given for it. CWD is the repo root at /workspace/.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "file_paths", "Paths to the media files, one or more (png, jpg, gif, webp, bmp, wav, mp3, m4a, ogg, flac, mp4, mov, webm)." },
-					  { "max_dimension", "Optional. Longest edge in pixels: any image larger than this is downscaled to fit, aspect ratio kept, before it is sent. Smaller images, audio, and video are sent unchanged. 1568 matches what most providers keep; use less when fine detail does not matter." },
-					  { "goal", "Exactly what to extract or answer from the media. Required when a subagent reads it; ignored when the file is attached for you directly." },
-					  { "use_subagent", "Set true to have a subagent read the file and return text instead of attaching it to your context: right for long recordings where you only want a transcript, or many files where only a summary of each is needed." },
-				  },
-			  } },
-				{ "fetch_url", new ToolConfig() {
-				  Description = "Fetch a web page and get back only the information you ask for, filtered by an LLM to just what your goal describes.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "url", "The fully-formed URL to fetch content from." },
-					{ "goal", "Explain exactly what you are looking for and how that information will be used, so only that is returned." },
-				  },
-			  } },
-			{ "internet_search", new ToolConfig() {
-				  Description = "Search the live internet. THIS COSTS REAL MONEY on every call — treat it as a last resort, not a lookup. Search the repository FIRST: ls, read_file, find_relevant_file_sections, and readonly_bash (grep) answer almost every question about this codebase, and a library's name, version, and API are already in the source, lock files, imports, or vendored docs you can read for free. Do NOT use this to find a file, recall a library name, check what a dependency does, or re-derive something you read earlier in this conversation. Use it ONLY for information that genuinely lives outside this machine and that you cannot proceed without: upstream documentation you do not have, a recent release or breaking change, or an error message from a third-party service. Up to five links and summaries will be returned.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "query", "Use clear natural language to describe what should be retrieved from Google" },
-					  { "goal", "Provide a clear prompt to an agent so that it can appropriately filter down the results to what is relevant, not the complete content of the page. If you know exactly what you're looking for ask for it here." },
-				  },
-			  } },
-			  { "assign_work", new ToolConfig() {
-				  Description = "Hand a concrete unit of work to the Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and returns a report. After this, you stay in a work loop — you are re-prompted each turn to assign the next unit of work — until you call stop_work.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "prompt", "The task for the Developer, written in natural language as if you were the user instructing it." },
-				  },
-			  } },
-			  { "stop_work", new ToolConfig() {
-				  Description = "End the work loop and hand control back to the user. Call this once all delegated work is complete (or should not continue). Until you call it, you are re-prompted after each turn to assign the next unit of work.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "summary", "A brief summary of what was accomplished across the delegated work, or why the work is stopping." },
-				  },
-			  } },
-			  { "review_work", new ToolConfig() {
-				  Description = "Ask a fresh Reviewer session with no prior context to inspect your changes for quality and correctness. The verdict will be approved or rejected, but in either case may contain comments that need to be addressed. The review does not commit anything. Once approved, address any requested issues, then integrate the work with commit_and_rebase.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "prompt", "Provide sufficient context for a reviewer to understand the nature of the work, what changes were made, how to view the diffs, if all the changes being reviewed relate to the task or if other changes are present as well that should be disregarded. Do not be convincing, be informative to a peer unfamiliar with the codebase." },
-				  },
-			  } },
-			  { "commit_and_rebase", new ToolConfig() {
-				  Description = "Runs a script to check in all changes in the worktree and integrate them. The workflow is always to rebase commits on the current branch onto the parent branch (linear history, no merge commit), and fast-forward the base onto this branch. Call this after an approved review. This is the only way your work gets committed: your own git is read-only. On a conflict, the rebase stops with the conflicted files listed; resolve the conflict markers in those files, then call this again and it continues the rebase and finishes. Changes inside top-level folders whose names start with '.' (.github, .vscode, ...) are refused; only a human may make those.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "message", "A brief git commit message describing the changes" },
-				  },
-			  } },
-			  { "task_complete", new ToolConfig() {
-				  Description = "Declare this task fully finished and return a detailed message to the agent that delegated it to you. Before calling this, you should first get feedback with review_work then after approval check it in with commit_and_rebase. If you cannot complete the work, note that.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "results_of_review_work", "Describe the work completed, any unfinished of follow-on tasks that the managing agent should add to the task list, and final integration status. This string is the entire response the agent receives, so be precise and maximally useful." },
-					  { "success", "True if the task was completed successfully; false if it failed or was blocked." },
-				  },
-			  } },
-			  { "finish_review", new ToolConfig() {
-				  Description = "Call this to finish the review of the indicated work. The developer that requested this review will perform all corrective actions and manage the flow of content into the git repo. Your response here is all the developer will receive in response to requesting this review. Read your instructions carefully to understand the acceptance criteria, but realize that the developer can respond to minor change requests if criteria have been met, so provide comments that lead to maximum quality results.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "approved", "True to accept these changes, false to require the developer to rework" },
-					{ "comments", "Without being overly conversational, indicate what was reviewed, describe the rationale for acceptance or rejection, what could be improved. This is the entire response the developer agent will receive." },
-				  },
-			  } },
-			  { "return_to_caller", new ToolConfig() {
-				  Description = "Call this to declare your task finished.",
-				  Parameters  = new Dictionary<string,string>() {
-					  { "output", "This is the entire response the calling agent receives. Carefully follow the instructions provided, use an appropriate level of detail to be maximally helpful and maintain high signal to noise ratio. Include all critical information that someone receiving your response would want to know about to be fully informed." },
-					  { "success", "True if the task could be considered a success; false if it failed, was blocked, or unable to complete." },
-				  },
-			  } },
-			},
 			// No placeholder web-search block: providers are added in /config, and each borrows
 			// its API key from the endpoint sharing its domain, so there is nothing to pre-fill.
 			WebSearch = new WebSearchConfig()

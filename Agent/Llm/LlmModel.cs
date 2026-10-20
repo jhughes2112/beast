@@ -49,10 +49,12 @@ public class LlmModel
 			// Carried: a model that needs its own reasoning replayed needs it on every call.
 			RetainReasoning = Config.RetainReasoning,
 			MaxImages       = Config.MaxImages,
-			Cost            = Config.Cost,
-			Input           = Config.Input,
-			Extras          = Config.Extras,
-			Headers         = Config.Headers
+			// Carried: a slow box needs its patience on every call, quiet or not.
+			RequestTimeoutSeconds = Config.RequestTimeoutSeconds,
+			Cost                  = Config.Cost,
+			Input                 = Config.Input,
+			Extras                = Config.Extras,
+			Headers               = Config.Headers
 		};
 		return new LlmModel(ConfigId, Endpoint, ApiKey, Extras, Headers, quiet);
 	}

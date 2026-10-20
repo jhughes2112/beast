@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -25,6 +26,7 @@ public class Program
 			ContextBudgetTests.Test(ctx);
 			SummarizerTests.Test(ctx);
 			MechanicalCompactionTests.Test(ctx);
+			ModelSettingsTests.Test(ctx);
 			ModelCatalogTests.Test(ctx);
 			ProtocolSwitchTests.Test(ctx);
 			MediaToolResultTests.Test(ctx);
@@ -58,9 +60,10 @@ public class Program
 		// comes from the --worktree-branch startup argument (never an env var). No-op for debug/native runs
 		// without the /git mount. A failure here means /workspace is unusable, so abort.
 		string worktreeBranch = ArgValue(args, "--worktree-branch");
-		// No worktree branch means an ephemeral, current-folder launch: the session is not saved and no git
-		// worktree is set up. A named worktree launch passes its branch and gets a persisted session.
-		bool ephemeral               = string.IsNullOrEmpty(worktreeBranch);
+		// No worktree branch means a current-folder launch: no git worktree is set up, but the session is saved and
+		// resumed like any other, under /workspace/.beast/sessions. Only a run with no /workspace at all (a native
+		// debugger run) keeps its session in memory, since there is nowhere to save it.
+		bool ephemeral               = !Directory.Exists("/workspace");
 		(bool wtOk, string wtDetail) = await WorktreeBootstrap.EnsureAsync(worktreeBranch, cts.Token);
 		if (!wtOk)
 		{

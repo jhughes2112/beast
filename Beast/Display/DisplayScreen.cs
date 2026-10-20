@@ -17,7 +17,7 @@ using TextCopy;
 // Each Blit call in Redraw is the "enable/disable" switch for that layer.
 public class DisplayScreen : IDisplay
 {
-	private const string HelpText     = "Commands: /compact, /config, /role, /reload, /model <id>, /effort <level>, /finish, /verbose, /test, /quit  ·  Alt+V pastes images and files";
+	private const string HelpText     = "Commands: /compact, /clear, /config, /role, /reload, /model <id>, /effort <level>, /finish, /verbose, /test, /quit  ·  Alt+V pastes images and files";
 	private const int    MaxInputRows = 10;
 
 	// Slash verbs forwarded to the agent; anything else is refused locally. The orchestrator's own
@@ -200,6 +200,12 @@ public class DisplayScreen : IDisplay
 	// Effective width of the history area (full terminal width, minus the session-tree panel when open).
 	// Set every Redraw; used by mouse hit-testing so column math matches the reflowed layout.
 	private int _historyWidth = 0;
+
+	// Width text is laid out in: the history area less the scrollbar gutter. Horizontal panning of a
+	// wide block is measured against this, since that is the width the viewport actually shows.
+	private int _layoutWidth = 0;
+
+	private const int ScrollbarGutter = 2;
 
 	// The cached block composition — the session log as a StackLayout of pre-rendered block Screens.
 	// It survives across frames untouched: a content update that keeps a block's height (the common case
@@ -695,16 +701,21 @@ public class DisplayScreen : IDisplay
 		// When the session tree panel is open it claims the right edge, so the history reflows into the
 		// remaining width rather than being painted over. Every width-dependent step below (block layout,
 		// the rendered window, the scrollbar, hover/copy hit-testing) works in historyW, not the full w.
-		int panelW    = _sessionTreeOpen ? Math.Min(52, Math.Max(36, w / 3)) : 0;
-		int historyW  = w - panelW;
+		int panelW   = _sessionTreeOpen ? Math.Min(52, Math.Max(36, w / 3)) : 0;
+		int historyW = w - panelW;
+
+		// The scrollbar paints over the last ScrollbarGutter columns of the history area, so text is laid
+		// out in the columns before it: a long line ends beside the scrollbar instead of under it.
+		int layoutW   = Math.Max(1, historyW - ScrollbarGutter);
+		_layoutWidth  = layoutW;
 		_historyWidth = historyW;
 
-		if (historyW != _renderedWidth)
+		if (layoutW != _renderedWidth)
 		{
 			_blockCache.Clear();
 			// Block widths change with the viewport, so horizontal offsets no longer mean the same thing.
 			_blockHScroll.Clear();
-			_renderedWidth = historyW;
+			_renderedWidth = layoutW;
 			// Reflow changes every block height; the previous composition and anchoring basis are invalid.
 			_stack = null;
 		}
@@ -737,7 +748,7 @@ public class DisplayScreen : IDisplay
 			if (_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued) && queued.Count > 0)
 			{
 				const string marker = "⧗ ";
-				int          textWidth = Math.Max(1, historyW - marker.Length);
+				int          textWidth = Math.Max(1, layoutW - marker.Length);
 				List<string> wrapped   = new List<string>();
 				bool         first     = true;
 				foreach (string entry in queued)
@@ -769,9 +780,9 @@ public class DisplayScreen : IDisplay
 		// beneath it without making the spacer part of the block (so toggle/hover math stays clean).
 		StackLayout? oldStack = _stack;
 		bool         rebuilt  = false;
-		if (_stack == null || (_dirtySlots.Count > 0 && !PatchDirtyBlocks(_stack, historyW)))
+		if (_stack == null || (_dirtySlots.Count > 0 && !PatchDirtyBlocks(_stack, layoutW)))
 		{
-			_stack  = BuildStack(historyW);
+			_stack  = BuildStack(layoutW);
 			rebuilt = true;
 		}
 		_dirtySlots.Clear();
@@ -836,7 +847,7 @@ public class DisplayScreen : IDisplay
 				int            clipBottom   = Math.Min(historyH, bottomInView);
 				if (clipBottom > clipTop)
 				{
-					Rect hoverRect = new Rect(0, clipTop, historyW, clipBottom - clipTop);
+					Rect hoverRect = new Rect(0, clipTop, layoutW, clipBottom - clipTop);
 					new ChannelBrightnessEffect(fgFactor: 1.3f, bgFactor: 1.075f).Apply(historyView, hoverRect);
 					// Small lerp-to-white on the background so the highlight is still visible when
 					// the underlying cell bg is true black (where multiplicative scaling does nothing).
@@ -845,7 +856,12 @@ public class DisplayScreen : IDisplay
 			}
 		}
 
-		// 4. Scrollbar overlay (last two columns). Time-based opacity fades in/out.
+		// The history window is layoutW wide; the frame is where it meets the scrollbar gutter, so the
+		// composite is made first and the scrollbar is tinted onto the frame.
+		Screen frame = new Screen(w, h, bgCell);
+		frame.Blit(historyView, 0, 0, BlendMode.Normal, null);
+
+		// 4. Scrollbar overlay (the gutter columns). Time-based opacity fades in/out.
 		const float ScrollbarMaxOpacity = 0.5f;
 		float scrollbarOpacity = ComputeScrollbarOpacity() * ScrollbarMaxOpacity;
 		int   thumbH           = 0;
@@ -856,18 +872,16 @@ public class DisplayScreen : IDisplay
 			thumbTop = (int)Math.Round((double)(maxOffset - _historyScrollOffset) / maxOffset * (historyH - thumbH));
 			thumbTop = Math.Max(0, Math.Min(historyH - thumbH, thumbTop));
 
-			Rect trackRect = new Rect(historyW - 2, 0, 2, historyH);
-			new TintEffect(Palette.ScrollTrack, scrollbarOpacity).Apply(historyView, trackRect);
+			Rect trackRect = new Rect(historyW - ScrollbarGutter, 0, ScrollbarGutter, historyH);
+			new TintEffect(Palette.ScrollTrack, scrollbarOpacity).Apply(frame, trackRect);
 			if (thumbH > 0)
 			{
-				Rect thumbRect = new Rect(historyW - 2, thumbTop, 2, thumbH);
-				new TintEffect(Palette.ScrollThumb, scrollbarOpacity).Apply(historyView, thumbRect);
+				Rect thumbRect = new Rect(historyW - ScrollbarGutter, thumbTop, ScrollbarGutter, thumbH);
+				new TintEffect(Palette.ScrollThumb, scrollbarOpacity).Apply(frame, thumbRect);
 			}
 		}
 
-		// 5. Composite all layers onto the full-frame Screen.
-		Screen frame = new Screen(w, h, bgCell);
-		frame.Blit(historyView, 0, 0, BlendMode.Normal, null);
+		// 5. Composite the remaining layers onto the full-frame Screen.
 
 		// Separator layer. Carries the "{Role} F10(N/T)" status at its right end.
 		Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex, _currentRole, _sessionActive, _sessionTotal);
@@ -893,7 +907,7 @@ public class DisplayScreen : IDisplay
 		// consumed by the agent. Renders in the reserved ghostRows space.
 		if (ghostRows > 0)
 		{
-			RenderPendingGhost(frame, w, historyW, historyH, ghostRows);
+			RenderPendingGhost(frame, w, layoutW, historyH, ghostRows);
 		}
 
 		// Status bar layer.
@@ -1093,7 +1107,7 @@ public class DisplayScreen : IDisplay
 			return false;
 
 		int blockW = _stack.BlockWidthOfSlot(_hoverSlot);
-		int maxOff = blockW - _historyWidth;
+		int maxOff = blockW - _layoutWidth;
 		if (maxOff <= 0)
 			return false; // nothing hidden to the side
 

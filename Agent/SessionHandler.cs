@@ -55,6 +55,16 @@ public class SessionHandler
 	// Used to compute whether the context window is full without a live model call.
 	private int _lastInputTokens;
 
+	// Work budget bookkeeping. A turn is one model response, counted as it lands: the budget used to
+	// count turn CLUSTERS, which a model that keeps calling tools never ends, so it could work
+	// unbounded. Turns only — wall clock punishes slow models, rate limits, and retries that are not
+	// the model's doing.
+	private int _workTurns;
+	private int _budgetWarnLevel;
+
+	// Grace turns after the budget is spent for the forced terminator to land before the reply is salvaged.
+	private const int kMaxWindDownTurns = 5;
+
 
 	// Cancellation scope for the current turn cluster; replaced by ResetScope at each cluster
 	// start and after a steering resume. The session's /cancel handler cancels the installed scope.
@@ -78,8 +88,6 @@ public class SessionHandler
 		_activeSession.SendStats();
 		_activeSession.AnnounceToClient();
 
-		const int kMaxWindDownTurns = 5;
-		int   turn = 0;
 		Role? role = null;
 
 		ResetScope(ct);
@@ -91,11 +99,6 @@ public class SessionHandler
 			// answer out (step 7) and the session continues as a free-floating conversation.
 			while (!ct.IsCancellationRequested && !_activeSession.Deleted)
 			{
-				// Budgets live on the session (part of its reply obligation), so they survive reload,
-				// travel to compaction successors, and clear the moment the caller has been answered.
-				int maxWork  = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns : int.MaxValue;
-				int maxTotal = _activeSession.MaxWorkTurns > 0 ? _activeSession.MaxWorkTurns + kMaxWindDownTurns : int.MaxValue;
-
 				// 0. Input arriving at a session parked on "every model failed" IS the human retry.
 				// Every model in the role gets a fresh chance, starting from the top of the ranked
 				// list — rebuilding from the session's model would land on the one that failed last,
@@ -148,7 +151,9 @@ public class SessionHandler
 				ResetScope(ct);
 
 				// Wind-down only makes sense while the session still owes a reply to force out.
-				bool windDown    = turn >= maxWork && _activeSession.OwesReply;
+				// Budgets live on the session (part of its reply obligation), so they survive reload,
+				// travel to compaction successors, and clear the moment the caller has been answered.
+				bool windDown    = _activeSession.OwesReply && BudgetUsed() >= 1.0;
 				bool contextFull = false;
 				try
 				{
@@ -209,13 +214,12 @@ public class SessionHandler
 					_lastFailure      = null;
 					_terminatorCalled = false;
 				}
-				turn++;
 
-				// 7. Out of turns while still owing a reply: answer the caller now with whatever the
-				// session produced (NotifyComplete salvages the last assistant text). The obligation —
-				// and with it every budget — is cleared; from here on this is just a session the user
-				// can chat with.
-				if (_activeSession.OwesReply && turn >= maxTotal)
+				// 7. Out of budget while still owing a reply, and the wind-down grace is spent too:
+				// answer the caller now with whatever the session produced (NotifyComplete salvages the
+				// last assistant text). The obligation — and with it every budget — is cleared; from here
+				// on this is just a session the user can chat with.
+				if (_activeSession.OwesReply && BudgetBlown())
 					NotifyComplete(role.Name, orchestrator, true);
 			}
 		}
@@ -275,6 +279,24 @@ public class SessionHandler
 				}
 			}
 
+			// The budget is judged before every call, not just at cluster start: a model that keeps
+			// calling tools never ends a cluster, so the loop top alone would never see it spent.
+			// Spent forces the terminator; short of that, the countdown warnings fire at 50% and 80%.
+			if (!windDown && _activeSession.OwesReply)
+			{
+				double used = BudgetUsed();
+				if (used >= 1.0)
+				{
+					windDown   = true;
+					tools      = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
+					forcedTool = _activeSession.TerminatorName;
+				}
+				else
+				{
+					WarnIfBudgetLow(used);
+				}
+			}
+
 			// Reconcile service with any deferred /model switch before each LLM call.
 			ApplyPendingModelSwitch(role, registry);
 			LlmService? service = _service;
@@ -329,6 +351,7 @@ public class SessionHandler
 				}
 
 				_activeSession.CommitAssistantTurn(result.Payload!);
+				_workTurns++;
 				if (result.Payload!.Usage.PromptTokens > 0)
 					_lastInputTokens = result.Payload.Usage.PromptTokens;
 
@@ -380,6 +403,35 @@ public class SessionHandler
 			}
 		}
 		return contextFull;
+	}
+
+	// The fraction of the work budget spent, 0 when the session has none.
+	private double BudgetUsed()
+	{
+		double used = 0.0;
+		if (_activeSession.MaxWorkTurns > 0)
+			used = (double)_workTurns / _activeSession.MaxWorkTurns;
+		return used;
+	}
+
+	// True once the budget is spent AND the wind-down grace after it is too: the forced terminator
+	// had its chance and the caller must be answered with whatever exists.
+	private bool BudgetBlown()
+	{
+		return _activeSession.MaxWorkTurns > 0 && _workTurns >= _activeSession.MaxWorkTurns + kMaxWindDownTurns;
+	}
+
+	// Injects the countdown warning once per line crossed (50%, then 80%). Skipped while the tail is
+	// user text so it never stacks on steering; the level only advances when it is actually sent, so
+	// the next round retries.
+	private void WarnIfBudgetLow(double used)
+	{
+		int level = used >= 0.8 ? 2 : (used >= 0.5 ? 1 : 0);
+		if (level > _budgetWarnLevel && !TailIsUserMessage())
+		{
+			_budgetWarnLevel = level;
+			_activeSession.AddUserMessage(Nudges.BudgetCheck(level == 2 ? 80 : 50, _workTurns, _activeSession.MaxWorkTurns, _activeSession.TerminatorName));
+		}
 	}
 
 	// Decides whether the turn cluster is finished after a successful assistant round. One policy
@@ -531,7 +583,7 @@ public class SessionHandler
 		// PendingReserve covers tool outputs appended since the last measurement — without it a
 		// tool-heavy round can pick a fallback model the real conversation no longer fits in.
 		int         minContext = _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve();
-		LlmService? fallback   = registry.CreateFallbackService(service, minContext, false);
+		LlmService? fallback   = registry.CreateFallbackService(service, minContext, role.NoReasoning);
 
 		// A limit with a stated reset (a subscription's usage window) lifts on its own. The registry
 		// already holds every model's backoff, so selection returns whichever role model serves
@@ -1325,7 +1377,7 @@ public class SessionHandler
 
 	private List<string> BuildCompletionCandidates(RoleService roleService, LlmRegistry registry)
 	{
-		List<string> candidates  = new List<string> { "/compact", "/config", "/role", "/reload", "/model", "/finish", "/help" };
+		List<string> candidates  = new List<string> { "/compact", "/clear", "/config", "/role", "/reload", "/model", "/finish", "/help" };
 		Role?        activeRole  = roleService.GetRole(_activeSession.Role);
 		LlmModel?    activeModel = activeRole != null
 			? registry.GetModelForRole(activeRole, _activeSession.Model, _activeSession.ContextLength + GetCompactionReserve())

@@ -20,29 +20,29 @@ public static class Worktrees
 		public readonly string Branch;
 		public readonly string HostPath;
 		public readonly string RepoCwd;
-		// Ephemeral: the current folder is mounted directly, with no git worktree and no saved session.
+		// Ephemeral: the current folder is mounted directly, with no git worktree. Its session is still saved under <folder>/.beast/sessions.
 		// Branch is empty in that case, which is the signal the launcher and agent both key off.
 		public readonly bool Ephemeral;
 
 		public Selection(string name, string hostPath, string repoCwd)
 		{
-			Name = name;
-			Branch = name;
-			HostPath = hostPath;
-			RepoCwd = repoCwd;
+			Name      = name;
+			Branch    = name;
+			HostPath  = hostPath;
+			RepoCwd   = repoCwd;
 			Ephemeral = false;
 		}
 
 		private Selection(string name, string cwd)
 		{
-			Name = name;
-			Branch = string.Empty;
-			HostPath = cwd;
-			RepoCwd = cwd;
+			Name      = name;
+			Branch    = string.Empty;
+			HostPath  = cwd;
+			RepoCwd   = cwd;
 			Ephemeral = true;
 		}
 
-		// An ephemeral selection: run in place in the current folder, touching no git and persisting nothing.
+		// An ephemeral selection: run in place in the current folder, touching no git.
 		// Name is the folder leaf for display; the container lock name is derived from the full path instead.
 		public static Selection ForCurrentFolder(string cwd)
 		{
@@ -54,12 +54,12 @@ public static class Worktrees
 	// An existing worktree folder and when it was last touched, for the launch menu ordering.
 	public readonly struct Info
 	{
-		public readonly string Name;
+		public readonly string   Name;
 		public readonly DateTime LastUsedUtc;
 
 		public Info(string name, DateTime lastUsedUtc)
 		{
-			Name = name;
+			Name        = name;
 			LastUsedUtc = lastUsedUtc;
 		}
 	}
@@ -87,8 +87,8 @@ public static class Worktrees
 	// not allowed here. Empty input becomes "work".
 	public static string SanitizeName(string name)
 	{
-		StringBuilder sb = new StringBuilder(name.Length);
-		bool lastDash = false;
+		StringBuilder sb       = new StringBuilder(name.Length);
+		bool          lastDash = false;
 		foreach (char c in name.Trim())
 		{
 			bool ok = char.IsLetterOrDigit(c) || c == '.' || c == '_' || c == '-';
@@ -113,7 +113,7 @@ public static class Worktrees
 	public static List<Info> List(string cwd)
 	{
 		List<Info> result = new List<Info>();
-		string dir = RepoDir(cwd);
+		string     dir    = RepoDir(cwd);
 		if (!Directory.Exists(dir))
 			return result;
 
@@ -134,7 +134,7 @@ public static class Worktrees
 	// the project's .beast folder into being, so its .gitignore is ensured here in the same step.
 	public static Selection Ensure(string cwd, string name)
 	{
-		string safe = SanitizeName(name);
+		string safe     = SanitizeName(name);
 		string hostPath = Path.Combine(RepoDir(cwd), safe);
 		Directory.CreateDirectory(hostPath);
 		EnsureBeastGitignore(cwd);
@@ -146,7 +146,7 @@ public static class Worktrees
 	// edit it freely. Best effort: a failure here never blocks a launch.
 	public static void EnsureBeastGitignore(string cwd)
 	{
-		string beastDir = Path.Combine(cwd, ".beast");
+		string beastDir      = Path.Combine(     cwd, ".beast");
 		string gitignorePath = Path.Combine(beastDir, ".gitignore");
 		try
 		{
@@ -190,19 +190,19 @@ public static class Worktrees
 	}
 
 	// Removes a worktree's host folder after the agent has detached it via `git worktree remove`. Best
-// effort: a folder still in use or already gone is not fatal.
-public static void RemoveFolder(string cwd, string name)
-{
-	string hostPath = Path.Combine(RepoDir(cwd), SanitizeName(name));
-	try
+	// effort: a folder still in use or already gone is not fatal.
+	public static void RemoveFolder(string cwd, string name)
 	{
-		if (Directory.Exists(hostPath))
-			Directory.Delete(hostPath, true);
+		string hostPath = Path.Combine(RepoDir(cwd), SanitizeName(name));
+		try
+		{
+			if (Directory.Exists(hostPath))
+				Directory.Delete(hostPath, true);
+		}
+		catch
+		{
+		}
 	}
-	catch
-	{
-	}
-}
 
 	// The path to the lastSession.json file in the repo root .beast folder.
 	private static string LastSessionPath(string cwd)
@@ -220,7 +220,7 @@ public static void RemoveFolder(string cwd, string name)
 
 		try
 		{
-			string json = File.ReadAllText(path);
+			string json   = File.ReadAllText(path);
 			using var doc = JsonDocument.Parse(json);
 			if (doc.RootElement.TryGetProperty("worktreeName", out var element))
 				return element.GetString();

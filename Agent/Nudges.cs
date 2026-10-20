@@ -16,6 +16,7 @@ public static class Nudges
 	{
 		"Continue the task, then call the ",
 		"You are out of working turns.",
+		"Budget check:",
 		"That output is about ",
 		"A tool call in your previous response was invalid",
 		"The conversation was compacted to free context.",
@@ -29,7 +30,25 @@ public static class Nudges
 	public static string OutOfTurns(string terminatorName)
 	{
 		return $"You are out of working turns. Call the {terminatorName} tool now with your final result, "
-			+ "preserving the key details (file paths, line numbers, names, key output).";
+			+ "preserving the key details (file paths, line numbers, names, key output) and stating plainly what is unfinished.";
+	}
+
+	// Stated once in the seed prompt of a budgeted subagent, so the limit is known before the work
+	// starts rather than discovered when the countdown warnings arrive. Not a nudge: it is the
+	// task's own first message and stays in history.
+	public static string BudgetNotice(int maxTurns)
+	{
+		return $"Work budget: {maxTurns} turns (a turn is one model response, tool calls included). "
+			+ "You are warned at 50% and 80%; at 100% you are cut off and must report whatever state the work is in. Plan to finish with margin to spare.";
+	}
+
+	// Injected mid-work when the budget crosses a warning line. Says what is left in absolute terms so
+	// the model can plan, and tells it what to drop: exploration and polish, never the required outcome.
+	public static string BudgetCheck(int percent, int turnsUsed, int maxTurns, string terminatorName)
+	{
+		return $"Budget check: {percent}% of your work budget is spent ({turnsUsed} of {maxTurns} turns). "
+			+ $"Stop exploring and polishing. Do only what the goal strictly requires, then finish with the {terminatorName} tool; "
+			+ "anything left over goes into your final report as a follow-on, not into more tweaks.";
 	}
 
 	// Injected as the last message of a compaction successor that was mid-work: the elided history

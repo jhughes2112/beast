@@ -437,8 +437,10 @@ public static class MechanicalCompactionTests
 
 	private static void TestNudgeRecognition(TestContext ctx)
 	{
-		ctx.Assert(Nudges.IsNudge(Nudges.ContinueTask("return_to_caller"), ""), "IsNudge: continue-task template");
-		ctx.Assert(     Nudges.IsNudge(Nudges.OutOfTurns("task_complete"), ""), "IsNudge: out-of-turns template");
+		ctx.Assert(        Nudges.IsNudge(Nudges.ContinueTask("return_to_caller"), ""), "IsNudge: continue-task template");
+		ctx.Assert(             Nudges.IsNudge(Nudges.OutOfTurns("task_complete"), ""), "IsNudge: out-of-turns template");
+		ctx.Assert(Nudges.IsNudge(Nudges.BudgetCheck(80, 48, 60, "task_complete"), ""), "IsNudge: budget check template");
+		ctx.Assert(                       !Nudges.IsNudge(Nudges.BudgetNotice(60), ""), "IsNudge: the budget notice is task text, not a nudge");
 		// No longer generated (replies are never rewritten to fit a caller's budget) but still
 		// present in histories written by earlier versions, so it must stay strippable.
 		ctx.Assert(Nudges.IsNudge("That output is about 900 tokens but must fit within 500 tokens.", ""), "IsNudge: legacy over-budget template");

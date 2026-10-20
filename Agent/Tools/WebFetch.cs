@@ -17,10 +17,6 @@ public class WebFetch
 	private static readonly HttpClient SharedHttpClient = new();
 	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(30);
 
-	// The WebFetch role now does real work — reading and parsing the saved files — so it gets several turns;
-	// the session's wind-down forces the terminator once these run out so the run always finishes.
-	private const int MaxWorkTurns = 8;
-
 	// Resources larger than this are not auto-downloaded: the WebFetch role is told the size and can fetch them
 	// itself with curl/wget via bash if the objective actually needs them.
 	private const long MaxAutoDownloadBytes = 1_048_576;
@@ -81,7 +77,7 @@ public class WebFetch
 				}
 			}
 
-			(bool ok, string answer, int tokens) = await spawn("WebFetch", $"fetch_url {url}", seed, MaxWorkTurns, cancellationToken);
+			(bool ok, string answer, int tokens) = await spawn("WebFetch", $"fetch_url {url}", seed, 0, cancellationToken);
 			if (!ok)
 			{
 				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;

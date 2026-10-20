@@ -237,7 +237,7 @@ public class LlmRegistry
 					continue;
 
 				updated[enabled.Id] = new LlmModel(enabled.Id, endpoint, provider.ApiKey,
-					new List<System.Text.Json.Nodes.JsonObject>(), new List<System.Text.Json.Nodes.JsonObject>(),
+					enabled.Extras ?? new List<System.Text.Json.Nodes.JsonObject>(), enabled.Headers ?? new List<System.Text.Json.Nodes.JsonObject>(),
 					BuildModelConfig(enabled, found));
 			}
 			_models = updated;
@@ -275,12 +275,13 @@ public class LlmRegistry
 			MaxOutputTokens = enabled.MaxOutputTokens > 0 ? enabled.MaxOutputTokens : found.MaxOutputTokens,
 			// Blank settles into the default here (see ReasoningEffort.DefaultWord), so an auto model
 			// nobody has configured still reasons rather than silently running with thinking off.
-			ReasoningEffort    = ReasoningEffort.Effective(enabled.ReasoningEffort),
-			ReasoningSummaries = enabled.ReasoningSummaries,
-			RetainReasoning    = enabled.RetainReasoning,
-			MaxImages          = enabled.MaxImages,
-			Cost               = cost,
-			Input              = input
+			ReasoningEffort       = ReasoningEffort.Effective(enabled.ReasoningEffort),
+			ReasoningSummaries    = enabled.ReasoningSummaries,
+			RetainReasoning       = enabled.RetainReasoning,
+			MaxImages             = enabled.MaxImages,
+			RequestTimeoutSeconds = enabled.RequestTimeoutSeconds,
+			Cost                  = cost,
+			Input                 = input
 		};
 	}
 
@@ -372,7 +373,7 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
-		if (withoutReasoning)
+		if (withoutReasoning || role.NoReasoning)
 			model = model.WithoutReasoning();
 		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), GetOrCreateEndpointFacts(model.Endpoint), role.Models, ApplyLearnedCapability);
 	}

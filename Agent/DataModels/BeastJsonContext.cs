@@ -13,8 +13,10 @@ using System.Text.Json.Serialization;
 // emits the other half. This is the one sanctioned exception to the no-partial-classes rule.
 [JsonSerializable(typeof(BeastSession))]
 [JsonSerializable(typeof(BeastSettings))]
+[JsonSerializable(typeof(AutoModelConfig))]
 [JsonSerializable(typeof(SessionService.SessionManifest))]
 [JsonSerializable(typeof(RoleService.RolesFile))]
+[JsonSerializable(typeof(ToolService.ToolsFile))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(ConfigEndpointsPayload))]
 [JsonSerializable(typeof(ConfigCatalogPayload))]

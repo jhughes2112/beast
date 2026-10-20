@@ -17,7 +17,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private readonly LlmRegistry             _registry;
 	private readonly RoleService             _roleService;
 	private readonly SettingsService         _settings;
-	// True for a current-folder launch with no worktree: the root session is ephemeral and nothing is resumed.
+	// True when there is nowhere to save sessions (a native debugger run with no /workspace): the root session is
+	// ephemeral and nothing is resumed. A current-folder launch in Docker still saves and resumes.
 	private readonly bool _ephemeral;
 
 	// All live sessions tracked by the orchestrator, keyed by session ID.
@@ -168,6 +169,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string banner       = await WorktreeBannerAsync(ct);
 		string seededPrompt = string.IsNullOrEmpty(banner) ? prompt : $"{banner}\n\n{prompt}";
 
+		// The caller may pick the budget (assign_work effort); otherwise the role's own max_turns applies.
+		// A budgeted child is told its limit up front so it can pace itself before the warnings arrive.
+		int turnBudget = maxWorkTurns > 0 ? maxWorkTurns : role.MaxTurns;
+		if (turnBudget > 0)
+			seededPrompt = $"{seededPrompt}\n\n{Nudges.BudgetNotice(turnBudget)}";
+
 		// The reply obligation is written onto the session itself so it survives save/load and can
 		// travel to a compaction successor: the child knows which tool answers the caller. It carries
 		// no output budget — the child answers at whatever size the work warrants, and the caller
@@ -190,7 +197,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// The work-turn budget rides on the session with the rest of the reply obligation; the live
 		// callback that resolves this caller is registered against the session id (and follows the
 		// obligation to a compaction successor via TransferCompletion).
-		subSession.SetMaxWorkTurns(maxWorkTurns);
+		subSession.SetMaxWorkTurns(turnBudget);
 		lock (_sessionLock)
 		{
 			_completions[subSession.Id] = (ok, text, tokens) =>
@@ -609,7 +616,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// and never reaches the agent, which presents as a silent hang.
 	public static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
-		"quit", "finish", "reload", "help", "delete-session", "test",
+		"quit", "finish", "reload", "help", "delete-session", "test", "clear",
 		"config-endpoints", "config-catalog", "config-apply", "config-search-apply",
 		"config-roles", "config-role-apply"
 	};
@@ -1253,6 +1260,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 			case "finish":
 				await FinishAsync(sessionId, ct);
 				break;
+			case "clear":
+				// A new conversation without losing the old one: the previous root stays in the session
+				// list (and on disk) to be reopened or deleted from there.
+				StartReplacementRoot();
+				_transport.Status(sessionId, "Started a new session.");
+				break;
 			case "reload":
 				await ReloadConfigurationAsync(sessionId, ct);
 				break;
@@ -1292,7 +1305,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 				await HandleConfigRoleApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
 			case "help":
-				_transport.Output(sessionId, "Commands: /compact, /reload, /model <id>, /finish, /test, /quit");
+				_transport.Output(sessionId, "Commands: /compact, /clear, /reload, /model <id>, /finish, /test, /quit");
 				break;
 			case "delete-session":
 			{

@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 
 
 // The /config modal overlay: pick an endpoint (or add one), then toggle models from its
-// discovered catalog with spacebar. Fields the catalog could not determine (context window,
+// discovered catalog with spacebar. Enter on a model opens one menu of every editable field. Fields the catalog could not determine (context window,
 // pricing, modalities) are prompted for at the moment a model is enabled — the one moment the
 // user is demonstrably paying attention — and only those values are persisted; everything
 // discoverable is re-discovered at every load. All state is owned here; DisplayScreen routes
@@ -110,6 +110,11 @@ internal class ConfigOverlay
 		// Most images per request, learned by the agent from a provider's refusal (0 = none known).
 		// Not edited here — only carried, so an apply does not erase what the provider taught.
 		public int OvrMaxImages;
+		// Silent-request timeout in seconds (0 = the default), and extra request fields / headers as a
+		// compact JSON array of objects (empty = none) — the same shapes the settings file stores.
+		public int    OvrTimeout;
+		public string OvrExtras  = string.Empty;
+		public string OvrHeaders = string.Empty;
 
 		public bool Enabled;
 		// True when a settings entry exists (even disabled) — disabling never forgets overrides.
@@ -151,9 +156,11 @@ internal class ConfigOverlay
 	private          int            _modelScroll;
 	private          string         _filter = string.Empty;
 
-	private          ModelRow? _detailRow;
-	private readonly List<(string Field, bool Required)> _detailFields = new();
-	private          int _detailIndex;
+	private ModelRow? _detailRow;
+	private int       _detailScroll;
+	// True while the selected field is being typed into (_entry); otherwise the menu is navigating.
+	private bool _detailEditing;
+	private int  _detailIndex;
 	// True when the editor was opened by an enable (space on a row with unknowns): finishing it
 	// completes the enable. False when opened by Enter as a plain edit.
 	private bool _detailEnableOnFinish;
@@ -301,6 +308,9 @@ internal class ConfigOverlay
 							row.OvrRetainReasoning = over["retainReasoning"]?.GetValue<bool>() ?? false;
 							row.OvrSummaries       = over["reasoningSummaries"]?.GetValue<bool>() ?? true;
 							row.OvrMaxImages       = over["maxImages"]?.GetValue<int>() ?? 0;
+							row.OvrTimeout         = over["requestTimeoutSeconds"]?.GetValue<int>() ?? 0;
+							row.OvrExtras          = ReadObjects(over["extras"]);
+							row.OvrHeaders         = ReadObjects(over["headers"]);
 						}
 						_models.Add(row);
 					}
@@ -351,6 +361,16 @@ internal class ConfigOverlay
 		return true;
 	}
 
+	// A stored extras/headers value as the compact array of objects the editor works in; empty when
+	// absent or malformed.
+	private static string ReadObjects(JsonNode? node)
+	{
+		string normalized = string.Empty;
+		if (node != null)
+			TryNormalizeObjects(node.ToJsonString(), out normalized);
+		return normalized;
+	}
+
 	private static List<string>? ReadStringList(JsonNode? node)
 	{
 		// Type-checked rather than AsArray(), which throws on any other shape.
@@ -394,7 +414,7 @@ internal class ConfigOverlay
 		string clean = text.Replace("\r", string.Empty).Replace("\n", string.Empty).Trim();
 		if (clean.Length > 0)
 		{
-			if (_mode == Mode.AddUrl || _mode == Mode.AddKey || _mode == Mode.Details || _mode == Mode.SearchModel)
+			if (_mode == Mode.AddUrl || _mode == Mode.AddKey || (_mode == Mode.Details && _detailEditing) || _mode == Mode.SearchModel)
 			{
 				_entry += clean;
 			}
@@ -765,7 +785,7 @@ internal class ConfigOverlay
 				else if (row.UnknownWindow || row.UnknownCost || row.UnknownModalities)
 				{
 					// Enabling with unknowns: those fields are required now, while the user is here.
-					OpenEditor(row, requiredOnly: true, enableOnFinish: true);
+					OpenEditor(row, enableOnFinish: true);
 				}
 				else
 				{
@@ -787,7 +807,7 @@ internal class ConfigOverlay
 			// Enter on a row edits its values — every overridable field, prefilled with the
 			// current override (blank = auto-discover).
 			if (_modelSelected >= 0 && _modelSelected < _visible.Count)
-				OpenEditor(_models[_visible[_modelSelected]], requiredOnly: false, enableOnFinish: false);
+				OpenEditor(_models[_visible[_modelSelected]], enableOnFinish: false);
 		}
 		else if (key.Key == ConsoleKey.Backspace)
 		{
@@ -833,89 +853,247 @@ internal class ConfigOverlay
 		}
 	}
 
-	// Opens the field editor for one row. requiredOnly limits it to the fields that MUST be
-	// answered before the model can run (unknown to discovery and not yet overridden); the full
-	// editor covers every overridable field. enableOnFinish completes a pending space-toggle.
-	private void OpenEditor(ModelRow row, bool requiredOnly, bool enableOnFinish)
+	// The editable fields of one model, in menu order.
+	private static readonly string[] kDetailFields =
 	{
-		_detailRow = row;
-		_detailFields.Clear();
-		bool windowRequired     = row.UnknownWindow;
-		bool costRequired       = row.UnknownCost;
-		bool modalitiesRequired = row.UnknownModalities;
+		"window", "costIn", "costOut", "modalities", "effort", "summaries", "retain", "timeout", "extras", "headers"
+	};
 
-		if (!requiredOnly || windowRequired)
-			_detailFields.Add(("window", windowRequired));
-		if (!requiredOnly || costRequired)
-		{
-			_detailFields.Add(("costIn", costRequired));
-			_detailFields.Add(("costOut", costRequired));
-		}
-		if (!requiredOnly || modalitiesRequired)
-			_detailFields.Add(("modalities", modalitiesRequired));
-		if (!requiredOnly)
-		{
-			_detailFields.Add(("effort", false));
-			_detailFields.Add(("summaries", false));
-			_detailFields.Add(("retain", false));
-		}
-
-		if (_detailFields.Count == 0)
-		{
-			_detailRow = null;
-			return;
-		}
-
+	// Opens the settings menu for one row. enableOnFinish completes a pending space-toggle: Esc then
+	// enables the model once every field marked * (unknown to discovery, so it must be supplied) is set.
+	private void OpenEditor(ModelRow row, bool enableOnFinish)
+	{
+		_detailRow            = row;
 		_detailEnableOnFinish = enableOnFinish;
 		_detailIndex          = 0;
-		_entry                = DetailPrefill(_detailFields[0].Field, row);
+		_detailScroll         = 0;
+		_detailEditing        = false;
+		_entry                = string.Empty;
+		_status               = enableOnFinish ? "Fill the fields marked * — Esc then enables the model." : string.Empty;
 		_mode                 = Mode.Details;
 	}
 
 	private void HandleDetailsKey(ConsoleKeyInfo key)
 	{
-		if (key.Key == ConsoleKey.Escape)
+		ModelRow? row = _detailRow;
+		if (row == null)
 		{
-			// Stop editing; fields already committed this session keep their new values. A
-			// pending enable is abandoned — the row stays off.
-			_detailRow = null;
-			_mode      = Mode.Models;
+			_mode = Mode.Models;
+			return;
 		}
-		else if (key.Key == ConsoleKey.Backspace)
+
+		string field = kDetailFields[_detailIndex];
+		if (_detailEditing)
 		{
-			if (_entry.Length > 0)
-				_entry = _entry.Substring(0, _entry.Length - 1);
-		}
-		else if (key.Key == ConsoleKey.Enter)
-		{
-			(string field, bool required) = _detailFields[_detailIndex];
-			if (_detailRow != null && CommitDetail(field, _entry.Trim(), _detailRow, required))
+			if (key.Key == ConsoleKey.Escape)
 			{
-				_detailIndex++;
-				if (_detailIndex >= _detailFields.Count)
+				_detailEditing = false;
+				_status        = string.Empty;
+			}
+			else if (key.Key == ConsoleKey.Backspace)
+			{
+				if (_entry.Length > 0)
+					_entry = _entry.Substring(0, _entry.Length - 1);
+			}
+			else if (key.Key == ConsoleKey.Enter)
+			{
+				if (CommitDetail(field, _entry.Trim(), row, out string error))
 				{
-					if (_detailEnableOnFinish)
-					{
-						_detailRow.Enabled = true;
-						_dirty             = true;
-					}
-					_detailRow = null;
-					_mode      = Mode.Models;
+					_detailEditing = false;
+					_status        = string.Empty;
 				}
 				else
 				{
-					_entry = DetailPrefill(_detailFields[_detailIndex].Field, _detailRow);
+					_status = error;
 				}
 			}
+			else if (key.KeyChar != '\0' && !char.IsControl(key.KeyChar))
+			{
+				_entry += key.KeyChar;
+			}
 		}
-		else if (key.KeyChar != '\0' && !char.IsControl(key.KeyChar))
+		else if (key.Key == ConsoleKey.Escape)
 		{
-			_entry += key.KeyChar;
+			FinishDetails(row);
+		}
+		else if (key.Key == ConsoleKey.UpArrow)
+		{
+			if (_detailIndex > 0)
+				_detailIndex--;
+		}
+		else if (key.Key == ConsoleKey.DownArrow)
+		{
+			if (_detailIndex < kDetailFields.Length - 1)
+				_detailIndex++;
+		}
+		else if (key.Key == ConsoleKey.Delete)
+		{
+			// Back to auto: the override is dropped and discovery (or the default) rules again.
+			CommitDetail(field, string.Empty, row, out string _);
+			_status = string.Empty;
+		}
+		else if (key.Key == ConsoleKey.Enter || key.Key == ConsoleKey.Spacebar || key.KeyChar == ' ')
+		{
+			if (field == "summaries")
+			{
+				row.OvrSummaries = !row.OvrSummaries;
+				_dirty           = true;
+			}
+			else if (field == "retain")
+			{
+				row.OvrRetainReasoning = !row.OvrRetainReasoning;
+				_dirty                 = true;
+			}
+			else if (key.Key == ConsoleKey.Enter)
+			{
+				_detailEditing = true;
+				_entry         = DetailPrefill(field, row);
+				_status        = string.Empty;
+			}
 		}
 	}
 
-	// Prefill is the CURRENT OVERRIDE only — a blank field means "auto-discover", so a field
-	// without an override starts blank rather than pre-baking the discovered value into one.
+	// Leaving the menu. A pending enable completes only when nothing required is still unknown;
+	// otherwise the row stays off and says what is missing.
+	private void FinishDetails(ModelRow row)
+	{
+		if (_detailEnableOnFinish)
+		{
+			List<string> missing = new List<string>();
+			foreach (string field in kDetailFields)
+			{
+				if (DetailRequired(field, row))
+					missing.Add(DetailName(field));
+			}
+
+			if (missing.Count == 0)
+			{
+				row.Enabled = true;
+				_dirty      = true;
+				_status     = string.Empty;
+			}
+			else
+			{
+				_status = $"Not enabled — still needed: {string.Join(", ", missing)}.";
+			}
+		}
+		else
+		{
+			_status = string.Empty;
+		}
+		_detailRow = null;
+		_mode      = Mode.Models;
+	}
+
+	// A field is required when discovery cannot supply it and no override has: the model cannot run
+	// (or be priced) without it.
+	private static bool DetailRequired(string field, ModelRow row)
+	{
+		switch (field)
+		{
+			case "window":
+				return row.UnknownWindow;
+			case "costIn":
+			case "costOut":
+				return row.UnknownCost;
+			case "modalities":
+				return row.UnknownModalities;
+			default:
+				return false;
+		}
+	}
+
+	private static string DetailName(string field)
+	{
+		switch (field)
+		{
+			case "window":
+				return "Context window (tokens)";
+			case "costIn":
+				return "Input cost ($ per Mtok)";
+			case "costOut":
+				return "Output cost ($ per Mtok)";
+			case "modalities":
+				return "Input modalities";
+			case "effort":
+				return "Reasoning effort";
+			case "summaries":
+				return "Thinking summaries";
+			case "retain":
+				return "Send reasoning back";
+			case "timeout":
+				return "Silent-request timeout (s)";
+			case "extras":
+				return "Extra request fields (JSON)";
+			default:
+				return "Extra HTTP headers (JSON)";
+		}
+	}
+
+	// What the row shows when not being edited: the override, or what rules in its absence.
+	private static string DetailValue(string field, ModelRow row)
+	{
+		switch (field)
+		{
+			case "window":
+				return row.OvrWindow > 0 ? row.OvrWindow.ToString() : row.DiscWindow > 0 ? $"{row.DiscWindow} (discovered)" : "unknown";
+			case "costIn":
+				return row.OvrCostIn >= 0 ? $"${row.OvrCostIn:0.####}" : row.DiscCostIn >= 0 ? $"${row.DiscCostIn:0.00} (discovered)" : "unknown";
+			case "costOut":
+				return row.OvrCostOut >= 0 ? $"${row.OvrCostOut:0.####}" : row.DiscCostOut >= 0 ? $"${row.DiscCostOut:0.00} (discovered)" : "unknown";
+			case "modalities":
+				return row.OvrModalities != null ? string.Join(",", row.OvrModalities)
+					: row.DiscModalities != null ? $"{string.Join(",", row.DiscModalities)} (discovered)" : "unknown";
+			case "effort":
+				return row.OvrEffort.Length > 0 ? row.OvrEffort : "medium (default)";
+			case "summaries":
+				return row.OvrSummaries ? "on" : "off";
+			case "retain":
+				return row.OvrRetainReasoning ? "on" : "off";
+			case "timeout":
+				return row.OvrTimeout > 0 ? row.OvrTimeout.ToString() : "300 (default)";
+			case "extras":
+				return row.OvrExtras.Length > 0 ? DetailJsonText(row.OvrExtras) : "none";
+			default:
+				return row.OvrHeaders.Length > 0 ? DetailJsonText(row.OvrHeaders) : "none";
+		}
+	}
+
+	// One line of help for the selected row: what blank means for THIS field and when to touch it.
+	private static string DetailHelp(string field)
+	{
+		switch (field)
+		{
+			case "window":
+			case "costIn":
+			case "costOut":
+				return "Del = back to the discovered value. * means the endpoint does not report it, so it must be set.";
+			case "modalities":
+				return "Comma list of text,image,audio,video,file. * means undiscovered: say what the model accepts.";
+			case "effort":
+				return "none/minimal/low/medium/high/max. Blank = medium; 'none' turns thinking off.";
+			case "summaries":
+				return "Ask the provider for thinking summaries. Turn off to stop paying for summary tokens.";
+			case "retain":
+				return "Replay the model's own thinking back to it. Only for models trained on preserved thinking.";
+			case "timeout":
+				return "How long one request may stay silent before it is retried. Raise for slow local models.";
+			case "extras":
+				return "A JSON object merged into every request body, e.g. {\"provider\":{\"order\":[\"Anthropic\"]}} on OpenRouter.";
+			default:
+				return "A JSON object of header names to values added to every request, e.g. {\"anthropic-beta\":\"...\"}.";
+		}
+	}
+
+	// A stored extras/headers array shown as the single object it almost always is.
+	private static string DetailJsonText(string array)
+	{
+		JsonNode? node = JsonNode.Parse(array);
+		return node is JsonArray list && list.Count == 1 && list[0] != null ? list[0]!.ToJsonString() : array;
+	}
+
+	// Prefill is the CURRENT OVERRIDE only — a blank field means "auto", so a field without an override
+	// starts blank rather than pre-baking the discovered value into one.
 	private static string DetailPrefill(string field, ModelRow row)
 	{
 		switch (field)
@@ -928,116 +1106,78 @@ internal class ConfigOverlay
 				return row.OvrCostOut >= 0 ? row.OvrCostOut.ToString("0.####") : string.Empty;
 			case "modalities":
 				return row.OvrModalities != null ? string.Join(",", row.OvrModalities) : string.Empty;
-			case "retain":
-				return row.OvrRetainReasoning ? "on" : "off";
-			case "summaries":
-				return row.OvrSummaries ? "on" : "off";
+			case "timeout":
+				return row.OvrTimeout > 0 ? row.OvrTimeout.ToString() : string.Empty;
+			case "extras":
+				return row.OvrExtras.Length > 0 ? DetailJsonText(row.OvrExtras) : string.Empty;
+			case "headers":
+				return row.OvrHeaders.Length > 0 ? DetailJsonText(row.OvrHeaders) : string.Empty;
 			default:
 				return row.OvrEffort;
 		}
 	}
 
-	// The label carries the discovered value and what blank means for THIS field, so the rule
-	// ("blank = discover; required when undiscoverable") is visible at the moment it applies.
-	private static string DetailLabel(string field, bool required, ModelRow row)
+	// Commits one text field; blank clears the override (back to auto). Returns false with a message
+	// when the value does not parse, holding the editor on the field.
+	private bool CommitDetail(string field, string value, ModelRow row, out string error)
 	{
-		string name;
-		string discovered;
-		switch (field)
-		{
-			case "window":
-				name       = "Context window (tokens)";
-				discovered = row.DiscWindow > 0 ? row.DiscWindow.ToString() : string.Empty;
-				break;
-			case "costIn":
-				name       = "Input cost ($ per Mtok)";
-				discovered = row.DiscCostIn >= 0 ? $"${row.DiscCostIn:0.00}" : string.Empty;
-				break;
-			case "costOut":
-				name       = "Output cost ($ per Mtok)";
-				discovered = row.DiscCostOut >= 0 ? $"${row.DiscCostOut:0.00}" : string.Empty;
-				break;
-			case "modalities":
-				name       = "Input modalities (text,image,audio)";
-				discovered = row.DiscModalities != null ? string.Join(",", row.DiscModalities) : string.Empty;
-				break;
-			case "retain":
-				name       = "Send reasoning back to the model (on/off)";
-				discovered = string.Empty;
-				break;
-			case "summaries":
-				name       = "Show thinking summaries (on/off)";
-				discovered = string.Empty;
-				break;
-			default:
-				name       = "Reasoning effort (none/minimal/low/medium/high/max)";
-				discovered = string.Empty;
-				break;
-		}
-
-		// Blank is no longer "whatever the provider does": an unset model reasons at medium, and a
-		// model that should not reason has to say "none" — which /effort can also set mid-session.
-		if (field == "effort")
-			return $"{name}  [blank = medium; 'none' to turn thinking off]";
-		// Nothing to discover and nothing to fall back to: this one is on only if the user says so.
-		if (field == "retain")
-			return $"{name}  [blank = off; on only for models that need their own thinking replayed]";
-		// The only one of these that defaults ON, so blank has to mean on — and it costs tokens.
-		if (field == "summaries")
-			return $"{name}  [blank = on; off stops paying for summary tokens on this model]";
-		return discovered.Length > 0
-			? $"{name}  [discovered: {discovered}; blank = auto]"
-			: required ? $"{name}  [not discoverable — value required]" : $"{name}  [blank = auto]";
-	}
-
-	// Commits one field. Blank clears the override (back to auto-discover) unless the field is
-	// required — undiscoverable AND needed to run — in which case blank is refused and the
-	// prompt stays. Returns false to hold the editor on the current field.
-	private bool CommitDetail(string field, string value, ModelRow row, bool required)
-	{
-		bool ok = false;
+		bool ok = true;
+		error   = string.Empty;
 		if (value.Length == 0)
 		{
-			if (!required)
+			switch (field)
 			{
-				if (field == "window")
+				case "window":
 					row.OvrWindow = 0;
-				else if (field == "costIn")
+					break;
+				case "costIn":
 					row.OvrCostIn = -1m;
-				else if (field == "costOut")
+					break;
+				case "costOut":
 					row.OvrCostOut = -1m;
-				else if (field == "modalities")
+					break;
+				case "modalities":
 					row.OvrModalities = null;
-				else if (field == "retain")
-					row.OvrRetainReasoning = false;
-				else if (field == "summaries")
+					break;
+				case "summaries":
 					row.OvrSummaries = true;
-				else
+					break;
+				case "retain":
+					row.OvrRetainReasoning = false;
+					break;
+				case "timeout":
+					row.OvrTimeout = 0;
+					break;
+				case "extras":
+					row.OvrExtras = string.Empty;
+					break;
+				case "headers":
+					row.OvrHeaders = string.Empty;
+					break;
+				default:
 					row.OvrEffort = string.Empty;
-				_dirty = true;
-				ok     = true;
+					break;
 			}
 		}
-		else if (field == "window")
+		else if (field == "window" || field == "timeout")
 		{
-			if (int.TryParse(value, out int window) && window > 0)
-			{
-				row.OvrWindow = window;
-				_dirty        = true;
-				ok            = true;
-			}
+			ok = int.TryParse(value, out int number) && number > 0;
+			if (ok && field == "window")
+				row.OvrWindow = number;
+			else if (ok)
+				row.OvrTimeout = number;
+			else
+				error = "Enter a whole number greater than zero.";
 		}
 		else if (field == "costIn" || field == "costOut")
 		{
-			if (decimal.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal cost) && cost >= 0)
-			{
-				if (field == "costIn")
-					row.OvrCostIn = cost;
-				else
-					row.OvrCostOut = cost;
-				_dirty = true;
-				ok     = true;
-			}
+			ok = decimal.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal cost) && cost >= 0;
+			if (ok && field == "costIn")
+				row.OvrCostIn = cost;
+			else if (ok)
+				row.OvrCostOut = cost;
+			else
+				error = "Enter a price in dollars per million tokens, e.g. 3 or 0.15.";
 		}
 		else if (field == "modalities")
 		{
@@ -1048,35 +1188,65 @@ internal class ConfigOverlay
 				if (trimmed.Length > 0)
 					modalities.Add(trimmed);
 			}
-			if (modalities.Count > 0)
-			{
+			ok = modalities.Count > 0;
+			if (ok)
 				row.OvrModalities = modalities;
-				_dirty            = true;
-				ok                = true;
-			}
+			else
+				error = "Enter at least one of text,image,audio,video,file.";
 		}
-		else if (field == "retain" || field == "summaries")
+		else if (field == "extras" || field == "headers")
 		{
-			// A wrong word here would silently mean "off", so only the yes/no words this accepts
-			// commit — anything else holds the prompt rather than guessing.
-			string word = value.ToLowerInvariant();
-			bool   on   = word == "on" || word == "true" || word == "yes" || word == "1";
-			bool   off  = word == "off" || word == "false" || word == "no" || word == "0";
-			if (on || off)
-			{
-				if (field == "retain")
-					row.OvrRetainReasoning = on;
-				else
-					row.OvrSummaries = on;
-				_dirty = true;
-				ok     = true;
-			}
+			ok = TryNormalizeObjects(value, out string normalized);
+			if (ok && field == "extras")
+				row.OvrExtras = normalized;
+			else if (ok)
+				row.OvrHeaders = normalized;
+			else
+				error = "That is not a JSON object. Example: {\"key\": \"value\"}";
 		}
 		else
 		{
 			row.OvrEffort = value.ToLowerInvariant();
-			_dirty        = true;
-			ok            = true;
+		}
+
+		if (ok)
+			_dirty = true;
+		return ok;
+	}
+
+	// Accepts one JSON object or an array of objects and returns them as a compact array — the shape the
+	// settings file stores. False for anything else, including malformed JSON.
+	private static bool TryNormalizeObjects(string text, out string normalized)
+	{
+		normalized = string.Empty;
+		bool ok    = false;
+		try
+		{
+			JsonNode?  node  = JsonNode.Parse(text);
+			JsonArray? array = null;
+			if (node is JsonObject single)
+			{
+				array = new JsonArray();
+				array.Add(single);
+				ok = true;
+			}
+			else if (node is JsonArray list)
+			{
+				array = list;
+				ok    = true;
+				foreach (JsonNode? item in list)
+				{
+					if (item is not JsonObject)
+						ok = false;
+				}
+			}
+
+			if (ok && array != null)
+				normalized = array.ToJsonString();
+		}
+		catch (System.Text.Json.JsonException)
+		{
+			ok = false;
 		}
 		return ok;
 	}
@@ -1134,6 +1304,12 @@ internal class ConfigOverlay
 				entry["reasoningSummaries"] = false;
 			if (row.OvrMaxImages > 0)
 				entry["maxImages"] = row.OvrMaxImages;
+			if (row.OvrTimeout > 0)
+				entry["requestTimeoutSeconds"] = row.OvrTimeout;
+			if (row.OvrExtras.Length > 0)
+				entry["extras"] = JsonNode.Parse(row.OvrExtras);
+			if (row.OvrHeaders.Length > 0)
+				entry["headers"] = JsonNode.Parse(row.OvrHeaders);
 			models.Add(entry);
 		}
 
@@ -1387,13 +1563,44 @@ internal class ConfigOverlay
 			}
 			case Mode.Details:
 			{
-				ModelRow? row                 = _detailRow;
-				(string field, bool required) = _detailFields[_detailIndex];
-				AnsiToScreen.WriteLine(s, 2, 1, Truncate($"{(_detailEnableOnFinish ? "Enable" : "Edit")} {row?.Id}", innerW), titleFg, bg);
+				ModelRow? row = _detailRow;
+				AnsiToScreen.WriteLine(s, 2, 1, Truncate($"{(_detailEnableOnFinish ? "Enable" : "Settings for")} {row?.Id}", innerW), titleFg, bg);
 				if (row != null)
-					AnsiToScreen.WriteLine(s, 2, 3, Truncate($"{DetailLabel(field, required, row)}  ({_detailIndex + 1}/{_detailFields.Count})", innerW), textFg, bg);
-				AnsiToScreen.WriteLine(s, 2,      5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2,     "Enter accept · Esc stop editing",   dimFg, bg);
+				{
+					int visRows = Math.Max(1, bh - 6);
+					if (_detailIndex < _detailScroll)
+						_detailScroll = _detailIndex;
+					if (_detailIndex >= _detailScroll + visRows)
+						_detailScroll = _detailIndex - visRows + 1;
+
+					const int labelWidth = 34;
+					for (int r = 0; r < visRows; r++)
+					{
+						int idx = _detailScroll + r;
+						if (idx >= kDetailFields.Length)
+							break;
+
+						string field    = kDetailFields[idx];
+						bool   sel      = idx == _detailIndex;
+						bool   required = DetailRequired(field, row);
+						Rgb    rowBg    = sel ? selBg : bg;
+						Rgb    rowFg    = required ? unknownFg : textFg;
+						s.Fill(new Rect(1, r + 3, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
+
+						string name  = (required ? "* " : "  ") + DetailName(field);
+						string value = sel && _detailEditing ? _entry + "▏" : DetailValue(field, row);
+						AnsiToScreen.WriteLine(s, 2, r + 3, Truncate(name.PadRight(labelWidth) + value, innerW), sel && _detailEditing ? titleFg : rowFg, rowBg);
+					}
+
+					AnsiToScreen.WriteLine(s, 2, bh - 3, Truncate(DetailHelp(kDetailFields[_detailIndex]), innerW), dimFg, bg);
+					if (_status.Length == 0)
+					{
+						string hint = _detailEditing
+							? "Enter accept · Esc cancel"
+							: "↑↓ move · Enter edit/toggle · Del reset to auto · Esc done" + (_detailEnableOnFinish ? " (enables)" : string.Empty);
+						AnsiToScreen.WriteLine(s, 2, bh - 2, Truncate(hint, innerW), dimFg, bg);
+					}
+				}
 				break;
 			}
 		}

@@ -296,8 +296,9 @@ public class Session
 	// be handed to a compaction successor.
 	public string TerminatorName => _data.TerminatorName;
 
-	// Working-turn budget before wind-down forces the terminator. 0 = unlimited. Part of the
-	// reply obligation: set at spawn, handed to a compaction successor, cleared with the reply.
+	// Working-turn budget before wind-down forces the terminator; a turn is one model response. 0 =
+	// unlimited. Part of the reply obligation: set at spawn, handed to a compaction successor,
+	// cleared with the reply.
 	public int MaxWorkTurns => _data.MaxWorkTurns;
 
 	public void SetMaxWorkTurns(int maxWorkTurns) => _data.MaxWorkTurns = maxWorkTurns;

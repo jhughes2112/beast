@@ -9,9 +9,9 @@ public class Program
 {
 	public static async Task<int> Main(string[] args)
 	{
-		Console.Title = "Beast";
+		Console.Title         = "Beast";
 		List<string> switches = new List<string>();
-		string? prompt = null;
+		string?      prompt   = null;
 
 		// First pass: normalize all args into slash-prefixed switches and collect prompt.
 		for (int i = 0; i < args.Length; i++)
@@ -42,9 +42,9 @@ public class Program
 		}
 
 		// Second pass: check for switches that need special Beast-side handling.
-		bool showHelp = switches.Contains("/help") || switches.Contains("/h");
+		bool showHelp      = switches.Contains("/help") || switches.Contains("/h");
 		bool runBeastTests = switches.Contains("/test");
-		bool verbose = switches.Contains("/verbose");
+		bool verbose       = switches.Contains("/verbose");
 
 		// --worktree <name> selects (or creates) the worktree without showing the menu. Beast-only.
 		string? worktreeArg = null;
@@ -52,7 +52,7 @@ public class Program
 		{
 			if (sw == "/worktree" || sw.StartsWith("/worktree ", StringComparison.Ordinal))
 			{
-				int sp = sw.IndexOf(' ');
+				int sp      = sw.IndexOf(' ');
 				worktreeArg = sp >= 0 ? sw.Substring(sp + 1).Trim() : null;
 			}
 		}
@@ -85,27 +85,27 @@ public class Program
 		}
 
 		// Build the ordered message list: switches, then prompt, then /quit if non-interactive.
-		bool nonInteractive = prompt != null || agentSwitches.Count > 0;
-		List<string> messages = new List<string>(agentSwitches);
+		bool         nonInteractive = prompt != null || agentSwitches.Count > 0;
+		List<string> messages       = new List<string>(agentSwitches);
 		if (prompt != null)
 			messages.Add(prompt);
 		if (nonInteractive)
 			messages.Add("/quit");
 
-		ClientLog log = new ClientLog(verbose);
+		ClientLog    log         = new ClientLog(verbose);
 		CollapseMode initialMode = verbose ? CollapseMode.Verbose : CollapseMode.Minimized;
-		IDisplay display = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayScreen(initialMode);
+		IDisplay     display     = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayScreen(initialMode);
 
 		// /debug — connect to an already-running agent on port 13131 (start Agent separately in VS).
 		bool useDebug = switches.Contains("/debug");
 
-		ILauncher agentContext;
-		string agentName;
+		ILauncher            agentContext;
+		string               agentName;
 		Worktrees.Selection? worktree = null;
 		if (useDebug)
 		{
 			agentContext = new LaunchDebug();
-			agentName = "beast_debug";
+			agentName    = "beast_debug";
 		}
 		else
 		{
@@ -127,23 +127,26 @@ public class Program
 
 			Worktrees.Selection? sel = await ResolveWorktree(cwd, worktreeArg, nonInteractive);
 			if (sel == null)
-				return 0;   // user cancelled the worktree menu
-			worktree = sel;
+				return 0; // user cancelled the worktree menu
+							// A current-folder run saves its session under <folder>/.beast/sessions like any other, so keep that out of git.
+			if (sel.Value.Ephemeral)
+				Worktrees.EnsureBeastGitignore(cwd);
+			worktree     = sel;
 			agentContext = new LaunchDocker("beastagent", log, sel.Value);
-			agentName = Worktrees.ContainerName(sel.Value);
+			agentName    = Worktrees.ContainerName(sel.Value);
 		}
 
 		await using BeastApp app = new BeastApp(agentContext, messages, display, log, agentName, worktree);
 		return await app.Run();
 	}
 
-	// Menu sentinel for "run in the current folder, ephemerally". The colons can never survive SanitizeName,
+	// Menu sentinel for "run in the current folder, with no git worktree". The colons can never survive SanitizeName,
 	// so this value cannot collide with a chosen or typed worktree name.
 	private const string EphemeralChoice = "::current-folder::";
 
 	// Resolves what this launch attaches to. A worktree name (explicit --worktree <name>) creates/attaches a
-	// git worktree with a saved session; "none", or no name on a non-interactive run, runs ephemerally in the
-	// current folder with no git and no saved session; an interactive run with no name shows the chooser, which
+	// git worktree with a saved session; "none", or no name on a non-interactive run, runs in the
+	// current folder with no git; its session is still saved and resumed from <folder>/.beast/sessions. An interactive run with no name shows the chooser, which
 	// itself offers the current-folder option alongside the existing worktrees. Returns null only on cancel.
 	//
 	// A folder that is not a git repository cannot host a worktree, so every path falls back to an ephemeral
@@ -171,10 +174,10 @@ public class Program
 			return Worktrees.Selection.ForCurrentFolder(cwd);
 
 		List<Worktrees.Info> existing = Worktrees.List(cwd);
-		HashSet<string> running = await LaunchDocker.RunningWorktreeNamesAsync();
+		HashSet<string>      running  = await LaunchDocker.RunningWorktreeNamesAsync();
 
 		List<SelectMenu.Item> items = new List<SelectMenu.Item>();
-		items.Add(new SelectMenu.Item("Current folder (ephemeral, no git)", EphemeralChoice, string.Empty, false));
+		items.Add(new SelectMenu.Item("Current folder (no git worktree)", EphemeralChoice, string.Empty, false));
 		foreach (Worktrees.Info info in existing)
 		{
 			bool inUse = running.Contains(info.Name);
@@ -196,8 +199,8 @@ public class Program
 			}
 		}
 
-		string suggestion = existing.Count == 0 ? "work" : string.Empty;
-		SelectMenu.Result result = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, initialIndex, 
+		string            suggestion = existing.Count == 0 ? "work" : string.Empty;
+		SelectMenu.Result result     = SelectMenu.Choose($"Beast — choose a worktree  ({cwd})", items, "Create new worktree", suggestion, initialIndex,
 LaunchNotes.Pick());
 		if (result.Cancelled)
 			return null;
