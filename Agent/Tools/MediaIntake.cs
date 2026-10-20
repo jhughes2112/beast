@@ -188,9 +188,9 @@ public static class MediaIntake
 		if (current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string data = Convert.ToBase64String(await File.ReadAllBytesAsync(staged, ct));
-			// Answered media leaves the context (see MediaBudget), so the staged copy is kept and its
-			// path named: once the model has replied, that path is its only way back to the file.
-			string note = $"[attached {display}, saved at {staged}. It may be removed from context once you have responded to it; call inspect_media on that path to see it again.]";
+			// Superseded media leaves the context (see MediaBudget), so the staged copy is kept and its
+			// path named: once newer media arrives, that path is its only way back to the file.
+			string note = $"[attached {display}, saved at {staged}. It stays in view until newer media is attached or inspected, then may be removed from context; call inspect_media on that path to see it again.]";
 			return (note, new MediaAttachment(mimeType, data), string.Empty, kind);
 		}
 

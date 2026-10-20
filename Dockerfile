@@ -110,9 +110,22 @@ RUN npm install -g playwright@1.62.1 \
 # Playwright, Puppeteer, the CLI wrapper below) gets --no-sandbox and --disable-dev-shm-usage (the
 # 64MB /dev/shm crashes it) without scripts having to pass them. `exec` preserves the pid and
 # inherited fds, so Playwright's --remote-debugging-pipe (fds 3/4) still reaches the browser.
+# GPU: when the host passes /dev/dxg (WSL2 / Docker Desktop, with /usr/lib/wsl mounted), Mesa's d3d12
+# driver gives WebGL the real GPU through ANGLE's native-EGL backend, ~10-20x faster than SwiftShader.
+# Those flags go AFTER "$@" so they win over a script's own --use-angle=swiftshader (last switch wins).
+# MESA_D3D12_DEFAULT_ADAPTER_NAME picks the discrete GPU over an integrated one; an unmatched name
+# falls back to Mesa's default adapter. Without /dev/dxg the browser is launched exactly as before.
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
 RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell) \
     && mv "$BIN" "$BIN.real" \
-    && printf '#!/bin/bash\nexec "%s.real" --no-sandbox --disable-dev-shm-usage "$@"\n' "$BIN" > "$BIN" \
+    && printf '%s\n' '#!/bin/bash' \
+         'if [ -e /dev/dxg ]; then' \
+         '  export LD_LIBRARY_PATH=/usr/lib/wsl/lib GALLIUM_DRIVER=d3d12 MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA' \
+         "  exec \"$BIN.real\" --no-sandbox --disable-dev-shm-usage \"\$@\" --use-gl=angle --use-angle=gl-egl --ignore-gpu-blocklist" \
+         'fi' \
+         "exec \"$BIN.real\" --no-sandbox --disable-dev-shm-usage \"\$@\"" \
+         > "$BIN" \
     && chmod +x "$BIN"
 
 # Plain `chromium` for script-free checks: --dump-dom, --screenshot=out.png, --print-to-pdf.

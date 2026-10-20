@@ -34,6 +34,11 @@ public class MediaInspector
 	private const double LargeDurationSeconds = 60;
 	private const long   LargeClipBytes       = 4 * 1024 * 1024;
 
+	// ffmpeg's default scaler is bicubic, which softens a shrunk image. Lanczos keeps edges and fine
+	// text crisp, accurate_rnd and full_chroma_int avoid banding and colour smear. Part of a copy's
+	// identity, so copies made with an older filter are not reused.
+	private const string ScaleFlags = "lanczos+accurate_rnd+full_chroma_int";
+
 	// One requested file as this call resolved it: the path the model named, the file actually sent
 	// (a downscaled copy when max_dimension shrank it), and the physical facts of what is sent.
 	private sealed record Item(string Requested, string SendPath, MediaKind Kind, string MimeType, long Bytes, MediaProbe Probe, string ResizedFrom);
@@ -97,9 +102,9 @@ public class MediaInspector
 		LlmModel? current = registry.GetModel(session.Model);
 		if (!useSubagent && current != null && SupportsAll(current.Config, kinds))
 		{
-			// Answered media leaves the context (see MediaBudget): say so now, while the model can still act on it.
+			// Superseded media leaves the context (see MediaBudget): say so now, while the model can still act on it.
 			string text = $"{Listing(items)}\n{(items.Count > 1 ? $"These {items.Count} files are" : "This file is")} attached to this result, in this order, for you to examine directly. "
-				+ "They may be removed from context once you have responded to them, so note anything you will need later; "
+				+ "They stay in view while you reason about them and are removed from context only when you next call inspect_media, so note anything you will need later; "
 				+ "call inspect_media on them again if you need to see them again.";
 			return new ToolResult(toolCallId, text, string.Empty, 0, ToolDispatch.EstimateTokens(text), files);
 		}
@@ -177,7 +182,7 @@ public class MediaInspector
 		string   extension = Path.GetExtension(source).ToLowerInvariant();
 		bool     jpeg      = extension == ".jpg" || extension == ".jpeg";
 		FileInfo info      = new FileInfo(source);
-		byte[]   identity  = SHA256.HashData(Encoding.UTF8.GetBytes($"{source}|{info.Length}|{info.LastWriteTimeUtc.Ticks}"));
+		byte[]   identity  = SHA256.HashData(Encoding.UTF8.GetBytes($"{source}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{ScaleFlags}"));
 		string   name      = $"{Path.GetFileNameWithoutExtension(source)}-{Convert.ToHexString(identity, 0, 4).ToLowerInvariant()}-max{maxDimension}{(jpeg ? ".jpg" : ".png")}";
 		string   target    = Path.Combine(MediaIntake.EnsureStagingFolder(Environment.CurrentDirectory), name);
 		string   mimeType  = jpeg ? "image/jpeg" : "image/png";
@@ -193,7 +198,7 @@ public class MediaInspector
 				UseShellExecute        = false,
 				CreateNoWindow         = true
 			};
-			foreach (string arg in new string[] { "-v", "error", "-y", "-i", source, "-vf", $"scale={maxDimension}:{maxDimension}:force_original_aspect_ratio=decrease", "-frames:v", "1" })
+			foreach (string arg in new string[] { "-v", "error", "-y", "-i", source, "-vf", $"scale={maxDimension}:{maxDimension}:force_original_aspect_ratio=decrease:flags={ScaleFlags}", "-frames:v", "1" })
 				psi.ArgumentList.Add(arg);
 			if (jpeg)
 			{

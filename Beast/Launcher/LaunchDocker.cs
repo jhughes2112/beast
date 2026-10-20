@@ -13,18 +13,18 @@ using System.Threading.Tasks;
 // Implements IAgentContext so BeastApp can swap it for NativeContext.
 public class LaunchDocker : ILauncher
 {
-	private readonly string _image;
-	private readonly DockerClient _dockerClient;
-	private readonly ClientLog _log;
+	private readonly string              _image;
+	private readonly DockerClient        _dockerClient;
+	private readonly ClientLog           _log;
 	private readonly Worktrees.Selection _worktree;
-	private string? _containerId;
-	private int _hostPort;
+	private          string?             _containerId;
+	private          int                 _hostPort;
 
 	public LaunchDocker(string image, ClientLog log, Worktrees.Selection worktree)
 	{
-		_image = image;
-		_log = log;
-		_worktree = worktree;
+		_image        = image;
+		_log          = log;
+		_worktree     = worktree;
 		_dockerClient = new DockerClientConfiguration().CreateClient();
 	}
 
@@ -44,9 +44,9 @@ public class LaunchDocker : ILauncher
 		// it is up, using the branch passed as the --worktree-branch startup argument.
 		// Ephemeral run: the current folder is bound straight to /workspace with no /git and no branch, so the
 		// agent operates in place and skips all git worktree setup.
-		string repoCwd = _worktree.RepoCwd;
+		string repoCwd          = _worktree.RepoCwd;
 		string worktreeHostPath = _worktree.HostPath;
-		string beastConfigDir = Path.Combine(
+		string beastConfigDir   = Path.Combine(
 			Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
 		Directory.CreateDirectory(beastConfigDir);
 
@@ -54,7 +54,7 @@ public class LaunchDocker : ILauncher
 		List<string> binds;
 		if (_worktree.Ephemeral)
 		{
-			cmd = new List<string>();
+			cmd   = new List<string>();
 			binds = new List<string>
 			{
 				$"{repoCwd}:/workspace",
@@ -63,7 +63,7 @@ public class LaunchDocker : ILauncher
 		}
 		else
 		{
-			cmd = new List<string> { "--worktree-branch", _worktree.Branch };
+			cmd   = new List<string> { "--worktree-branch", _worktree.Branch };
 			binds = new List<string>
 			{
 				$"{repoCwd}:/git",
@@ -75,19 +75,28 @@ public class LaunchDocker : ILauncher
 		// Find an available port on the host
 		_hostPort = FindAvailablePort();
 
+		// Docker's WSL2 backend can hand the container the host GPU: /dev/dxg plus the WSL driver libraries
+		// let the browser's WebGL run on the real GPU instead of software rendering.
+		List<DeviceMapping> devices = new List<DeviceMapping>();
+		if (await IsWslBackendAsync(cancellationToken))
+		{
+			devices.Add(new DeviceMapping { PathOnHost = "/dev/dxg", PathInContainer = "/dev/dxg", CgroupPermissions = "rwm" });
+			binds.Add("/usr/lib/wsl:/usr/lib/wsl:ro");
+		}
+
 		CreateContainerParameters createParams = new CreateContainerParameters
 		{
-			Image = _image,
-			Name = name,
+			Image      = _image,
+			Name       = name,
 			WorkingDir = "/workspace",
-			Env = new List<string> { },
-            // Startup arguments to the agent entrypoint (never env vars); empty for an ephemeral run.
-            Cmd = cmd,
+			Env        = new List<string> { },
+			// Startup arguments to the agent entrypoint (never env vars); empty for an ephemeral run.
+			Cmd          = cmd,
 			ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
-			HostConfig = new HostConfig
+			HostConfig   = new HostConfig
 			{
-				AutoRemove = false,
-				ExtraHosts = new List<string> { "host.docker.internal:host-gateway" },
+				AutoRemove   = false,
+				ExtraHosts   = new List<string> { "host.docker.internal:host-gateway" },
 				PortBindings = new Dictionary<string, IList<PortBinding>>
 				{
 					["13131/tcp"] = new List<PortBinding>
@@ -95,12 +104,13 @@ public class LaunchDocker : ILauncher
 						new PortBinding { HostIP = "127.0.0.1", HostPort = _hostPort.ToString() }
 					}
 				},
-				Binds = binds
+				Binds   = binds,
+				Devices = devices
 			}
 		};
 
 		CreateContainerResponse response = await _dockerClient.Containers.CreateContainerAsync(createParams, cancellationToken);
-		_containerId = response.ID;
+		_containerId                     = response.ID;
 		_log.Verbose($"[docker] Container created: {_containerId}");
 
 		await _dockerClient.Containers.StartContainerAsync(_containerId, new ContainerStartParameters());
@@ -108,10 +118,17 @@ public class LaunchDocker : ILauncher
 		return _hostPort;
 	}
 
+	// True when the Docker VM is WSL2, the only backend that exposes /dev/dxg.
+	private async Task<bool> IsWslBackendAsync(CancellationToken cancellationToken)
+	{
+		SystemInfoResponse info = await _dockerClient.System.GetSystemInfoAsync(cancellationToken);
+		return info.KernelVersion.Contains("WSL2", StringComparison.OrdinalIgnoreCase);
+	}
+
 	private static int FindAvailablePort()
 	{
 		const int startPort = 20000;
-		const int endPort = 21000;
+		const int endPort   = 21000;
 		HashSet<int> usedPorts = GetUsedPorts();
 
 		for (int port = startPort; port <= endPort; port++)
@@ -249,7 +266,7 @@ public class LaunchDocker : ILauncher
 		HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
 		try
 		{
-			using DockerClient client = new DockerClientConfiguration().CreateClient();
+			using DockerClient client               = new DockerClientConfiguration().CreateClient();
 			IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
 				new ContainersListParameters { All = false });
 

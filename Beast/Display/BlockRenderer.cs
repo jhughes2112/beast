@@ -16,17 +16,17 @@ internal static class BlockRenderer
 	internal static BlockLayer Build(DisplayMessage msg, int w, bool plainText)
 	{
 		bool isToolCall = msg.Type == FrameType.ToolCall;
-		bool isError   = isToolCall && msg.PairedResponseIsError;
+		bool isError    = isToolCall && msg.PairedResponseIsError;
 		// The header line and the stderr block go red whenever the response carries any error content —
 		// a non-zero exit, or any stderr text even on a clean exit. The block's base color stays normal,
 		// though: only the header row and the stderr region are painted red, so stdout keeps its normal
 		// (blue) background and reads as distinct from stderr below it.
-		bool headerError = isError || (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseError));
-		(Rgb fg, Rgb? bg) = ColorsForType(msg.Type, false);
+		bool headerError              = isError || (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseError));
+		(      Rgb fg,       Rgb? bg) = ColorsForType(msg.Type,       false);
 		(Rgb headerFg, Rgb? headerBg) = ColorsForType(msg.Type, headerError);
-		int spacer = 0;
+		int spacer                    = 0;
 
-		string prefix = PrefixTextForType(msg.Type);
+		string prefix  = PrefixTextForType(msg.Type);
 		string summary = isToolCall
 			? FormatToolCallSummary(msg.Content, msg.PairedResponseContent)
 			: msg.Content.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
@@ -35,7 +35,7 @@ internal static class BlockRenderer
 		if (isToolCall)
 		{
 			int paren = msg.Content.IndexOf('(');
-			toolName = paren >= 0 ? msg.Content.Substring(0, paren).Trim() : msg.Content;
+			toolName  = paren >= 0 ? msg.Content.Substring(0, paren).Trim() : msg.Content;
 		}
 
 		// Thinking/tool/tool-response blocks indent their whole expanded body (header included) two spaces
@@ -53,7 +53,7 @@ internal static class BlockRenderer
 		// The collapsed preview is always stdout (bash output, a file's contents) — never stderr — so it
 		// keeps the normal body background regardless of exit code.
 		string respBgAnsi = DisplayScreen.Palette.BodyBgAnsi;
-		string fileLang = string.Empty;
+		string fileLang   = string.Empty;
 		if (!isError && (toolName == "read_file" || toolName == "write_file"
 					  || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
 			fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
@@ -83,7 +83,7 @@ internal static class BlockRenderer
 			if (!string.IsNullOrEmpty(writeContent))
 			{
 				string[] wlines = writeContent.Replace("\r\n", "\n").Split('\n');
-				int end = Math.Min(wlines.Length, 5);
+				int      end    = Math.Min(wlines.Length, 5);
 				for (int i = 0; i < end; i++)
 					collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(wlines[i]), fileLang, respBgAnsi));
 			}
@@ -124,12 +124,12 @@ internal static class BlockRenderer
 		if (needsEllipsis)
 			collapsedLines[0] = headerIndent + prefix + AnsiString.TruncateVisible(summary, availW - 1) + "…";
 
-		Cell rowBg = new Cell(' ', fg, bg, CellStyle.None);
+		Cell   rowBg     = new Cell(' ', fg, bg, CellStyle.None);
 		Screen collapsed = new Screen(w, collapsedLines.Count + spacer, rowBg);
 		for (int r = 0; r < collapsedLines.Count; r++)
 		{
-			Rgb lineFg = r == 0 ? headerFg : fg;
-			Rgb? lineBg = r == 0 ? headerBg : bg;
+			Rgb  lineFg                    = r == 0 ? headerFg : fg;
+			Rgb? lineBg                    = r == 0 ? headerBg : bg;
 			(int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, r, collapsedLines[r], lineFg, lineBg);
 			AnsiToScreen.PadRowBackground(collapsed, endX, r, cFg, cBg);
 		}
@@ -148,17 +148,17 @@ internal static class BlockRenderer
 		if (contentW > MaxBlockWidth)
 			contentW = MaxBlockWidth;
 
-		int expandedRows = Math.Max(1, ansiLines.Count);
-		Screen expanded = new Screen(contentW, expandedRows + spacer, rowBg);
+		int    expandedRows = Math.Max(1, ansiLines.Count);
+		Screen expanded     = new Screen(contentW, expandedRows + spacer, rowBg);
 		// Output rows fall back to the body background (slightly darker than the block) on any reset, so prose
 		// and markdown responses — which carry no explicit background of their own — still read as distinct
 		// output rather than blending into the call block. stdout always uses the normal body background;
 		// only the header (row 0) and the stderr block fall back to the red error background.
 		Rgb? responseBaseBg = DisplayScreen.Palette.FileBodyBg;
-		Rgb? errorBaseBg = DisplayScreen.Palette.FileErrBodyBg;
+		Rgb? errorBaseBg    = DisplayScreen.Palette.FileErrBodyBg;
 		for (int r = 0; r < ansiLines.Count; r++)
 		{
-			Rgb rowFg = r == 0 ? headerFg : fg;
+			Rgb  rowFg = r == 0 ? headerFg : fg;
 			Rgb? rowBaseBg;
 			if (r == 0)
 				rowBaseBg = headerBg;
@@ -176,13 +176,13 @@ internal static class BlockRenderer
 		{
 			string tag = $"Took {msg.ToolDuration.Value.TotalSeconds:F1}s";
 			StampRightOnRow(collapsed, 0, tag, headerFg, headerBg);
-			StampRightOnRow(expanded, 0, tag, headerFg, headerBg);
+			StampRightOnRow( expanded, 0, tag, headerFg, headerBg);
 		}
 
 		if (msg.Type == FrameType.Thinking)
 		{
 			ApplyStyle(collapsed, CellStyle.Italic);
-			ApplyStyle(expanded, CellStyle.Italic);
+			ApplyStyle( expanded, CellStyle.Italic);
 		}
 
 		return new BlockLayer(msg.Index, collapsed, expanded, isExpanded: !msg.Collapsed);
@@ -275,7 +275,7 @@ internal static class BlockRenderer
 	private static List<string> RenderMessageRows(DisplayMessage msg, int w)
 	{
 		List<string> result = new List<string>();
-		string prefix = PrefixTextForType(msg.Type);
+		string       prefix = PrefixTextForType(msg.Type);
 		// The system prompt is plain instructional text, not markdown: rendering it through Markdig drops
 		// angle-bracket tokens (parsed as HTML) and collapses single newlines, so it is rendered verbatim.
 		// Thinking renders as markdown unconditionally, exactly like assistant output, so a completed block
@@ -296,12 +296,12 @@ internal static class BlockRenderer
 
 		if (useMarkdown)
 		{
-			List<RenderLine> mdLines = MarkdownAnsi.Render(ExpandTabs(msg.Content), msg.Type, wrapW);
-			bool firstLine = true;
+			List<RenderLine> mdLines   = MarkdownAnsi.Render(ExpandTabs(msg.Content), msg.Type, wrapW);
+			bool             firstLine = true;
 			foreach (RenderLine mdLine in mdLines)
 			{
 				string full = firstLine ? prefix + mdLine.Text : mdLine.Text;
-				firstLine = false;
+				firstLine   = false;
 				// Code blocks and tables are NoWrap — leave them at natural width so the block scrolls
 				// horizontally; only prose reflows to the viewport.
 				if (mdLine.NoWrap)
@@ -319,11 +319,11 @@ internal static class BlockRenderer
 		else
 		{
 			string[] logicalLines = msg.Content.Split('\n');
-			bool first = true;
+			bool     first        = true;
 			foreach (string line in logicalLines)
 			{
-				string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
-				first = false;
+				string full               = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
+				first                     = false;
 				List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
 				foreach (string wl in wrappedLines)
 					result.Add(wl);
@@ -341,14 +341,14 @@ internal static class BlockRenderer
 
 	private static List<string> RenderMessageRowsRaw(DisplayMessage msg, int w)
 	{
-		List<string> result = new List<string>();
-		string prefix = PrefixTextForType(msg.Type);
-		string[] logicalLines = msg.Content.Split('\n');
-		bool first = true;
+		List<string> result       = new List<string>();
+		string       prefix       = PrefixTextForType(msg.Type);
+		string[]     logicalLines = msg.Content.Split('\n');
+		bool         first        = true;
 		foreach (string line in logicalLines)
 		{
 			string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
-			first = false;
+			first       = false;
 			foreach (string wl in AnsiString.Wrap(full, w))
 				result.Add(wl);
 		}
@@ -359,13 +359,13 @@ internal static class BlockRenderer
 
 	private static List<string> RenderToolCallRows(DisplayMessage msg, int w, out int responseStart, out int errorStart)
 	{
-		responseStart = -1;
-		errorStart = -1;
-		List<string> result = new List<string>();
-		string content = msg.Content;
+		responseStart        = -1;
+		errorStart           = -1;
+		List<string> result  = new List<string>();
+		string       content = msg.Content;
 
-		int paren = content.IndexOf('(');
-		string name = paren >= 0 ? content.Substring(0, paren).Trim() : content;
+		int    paren    = content.IndexOf('(');
+		string name     = paren >= 0 ? content.Substring(0, paren).Trim() : content;
 		string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
@@ -386,7 +386,7 @@ internal static class BlockRenderer
 		// Arguments and stdout always render on the normal body background — only the stderr block below
 		// carries the red error background.
 		string respBodyBgAnsi = DisplayScreen.Palette.BodyBgAnsi;
-		string fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
+		string fileLang       = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
 		// edit_file's parameters (the old/new text) are redundant with the diff shown below, so its
 		// arguments are not emitted at all — only the diffed response.
@@ -394,7 +394,7 @@ internal static class BlockRenderer
 		{
 			try
 			{
-				using JsonDocument doc = JsonDocument.Parse(argsJson);
+				using JsonDocument doc   = JsonDocument.Parse(argsJson);
 				List<string> inlineProps = new List<string>();
 				// Block-valued arguments deferred until after the short scalars. Kind: 0 = prose markdown,
 				// 1 = code content, 2 = plain multi-line. Sorted shortest-first before emission.
@@ -611,13 +611,13 @@ internal static class BlockRenderer
 	private static void EmitEditDiffLines(List<string> result, string content)
 	{
 		string[] raw = content.Replace("\r\n", "\n").Split('\n');
-		int n = raw.Length;
+		int      n   = raw.Length;
 
 		// Parse each line into (marker, gutter, body). The gutter is the fixed-width "NNNNN x " prefix
 		// (5-digit number, space, marker, space). Non-diff lines (the header) get marker '\0'.
-		char[] markers = new char[n];
+		char[]   markers = new char[n];
 		string[] gutters = new string[n];
-		string[] bodies = new string[n];
+		string[] bodies  = new string[n];
 		for (int i = 0; i < n; i++)
 		{
 			string line = raw[i];
@@ -626,13 +626,13 @@ internal static class BlockRenderer
 			{
 				markers[i] = line[6];
 				gutters[i] = line.Substring(0, 8);
-				bodies[i] = ExpandTabs(line.Substring(8));
+				bodies[i]  = ExpandTabs(line.Substring(8));
 			}
 			else
 			{
 				markers[i] = '\0';
 				gutters[i] = string.Empty;
-				bodies[i] = line;
+				bodies[i]  = line;
 			}
 		}
 
@@ -681,7 +681,7 @@ internal static class BlockRenderer
 	// row's base tint and only the differing middle gets the brighter highlight background.
 	private static string BuildDiffRow(string gutter, string body, string? counterpart, bool isAdd)
 	{
-		string baseAnsi = isAdd ? DisplayScreen.Palette.DiffAddAnsi   : DisplayScreen.Palette.DiffDelAnsi;
+		string baseAnsi = isAdd ? DisplayScreen.Palette.DiffAddAnsi : DisplayScreen.Palette.DiffDelAnsi;
 		string hiAnsi   = isAdd ? DisplayScreen.Palette.DiffAddHiAnsi : DisplayScreen.Palette.DiffDelHiAnsi;
 
 		if (counterpart == null)
@@ -692,7 +692,7 @@ internal static class BlockRenderer
 		if (cp + cs >= body.Length)
 			return baseAnsi + gutter + body;
 
-		string head = body.Substring(0, cp);
+		string head = body.Substring( 0,                    cp);
 		string mid  = body.Substring(cp, body.Length - cs - cp);
 		string tail = body.Substring(body.Length - cs);
 		return baseAnsi + gutter + head + hiAnsi + mid + baseAnsi + tail;
@@ -701,7 +701,7 @@ internal static class BlockRenderer
 	private static int CommonPrefixLength(string a, string b)
 	{
 		int max = Math.Min(a.Length, b.Length);
-		int i = 0;
+		int i   = 0;
 		while (i < max && a[i] == b[i])
 			i++;
 		return i;
@@ -710,7 +710,7 @@ internal static class BlockRenderer
 	private static int CommonSuffixLength(string a, string b, int prefix)
 	{
 		int max = Math.Min(a.Length, b.Length) - prefix;
-		int i = 0;
+		int i   = 0;
 		while (i < max && a[a.Length - 1 - i] == b[b.Length - 1 - i])
 			i++;
 		return i;
@@ -791,13 +791,13 @@ internal static class BlockRenderer
 		if (paren < 0)
 			return content.Replace('\n', ' ');
 
-		string name = content.Substring(0, paren).Trim();
+		string name     = content.Substring(0, paren).Trim();
 		string argsJson = content.Substring(paren + 1);
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
 
-		JsonElement root = default;
-		bool parsed = false;
+		JsonElement root   = default;
+		bool        parsed = false;
 		try
 		{
 			using JsonDocument doc = JsonDocument.Parse(argsJson);
@@ -805,7 +805,7 @@ internal static class BlockRenderer
 			// number root would throw InvalidOperationException out of Get() and crash the render.
 			if (doc.RootElement.ValueKind == JsonValueKind.Object)
 			{
-				root = doc.RootElement.Clone();
+				root   = doc.RootElement.Clone();
 				parsed = true;
 			}
 		}
@@ -827,22 +827,23 @@ internal static class BlockRenderer
 			return el.GetRawText();
 		}
 
-		string label = name.Replace('_', ' ');
-		int respLineCount = CountLines(pairedResponse);
-		int writeLineCount = (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert")
+		string label          = name.Replace('_', ' ');
+		int    respLineCount  = CountLines(pairedResponse);
+		int    writeLineCount = (name == "write_file" || name == "edit_file" || name == "edit_file_replace" || name == "edit_file_insert")
 			? CountLines(Get("content") + Get("new_text"))
 			: 0;
 		string summary = name switch
 		{
-			"read_file"                                                          => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
+			"read_file" => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
 			"write_file" or "edit_file" or "edit_file_replace" or "edit_file_insert" => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
-			"bash" or "readonly_bash"                                  => BuildRunCommandSummary(label, Get("command")),
-			"internet_search"                                               => BuildPathSummary(label, Get("query"), respLineCount),
-			"fetch_url"                                               => BuildPathSummary(label, Get("url"), respLineCount),
-			"return_to_caller"                                         => BuildLineCountSummary(label, CountLines(Get("output"))),
-			"finish_review"                                            => BuildLineCountSummary(label, CountLines(Get("comments"))),
-			"state_transition"                                         => $"{label} {Get("statement")}",
-			_                                                          => BuildGenericSummary(label, parsed ? root : default, parsed)
+			"bash" or "readonly_bash" => BuildRunCommandSummary(label, Get("command")),
+			"internet_search"         => BuildPathSummary(label, Get("query"), respLineCount),
+			"fetch_url"               => BuildPathSummary(label,   Get("url"), respLineCount),
+			"return_to_caller"        => BuildLineCountSummary(label,   CountLines(Get("output"))),
+			"finish_review"           => BuildLineCountSummary(label, CountLines(Get("comments"))),
+			"state_transition"        => $"{label} {Get("statement")}",
+			"inspect_media"           => BuildInspectMediaSummary(label, parsed ? root : default, parsed, Get("max_dimension")),
+			_                         => BuildGenericSummary(label, parsed ? root : default, parsed)
 		};
 
 		// The collapsed summary must stay a single visual line. Anything past the first newline
@@ -916,7 +917,7 @@ internal static class BlockRenderer
 		if (!string.IsNullOrEmpty(offset) && !string.IsNullOrEmpty(lines))
 		{
 			int.TryParse(offset, out int start);
-			int.TryParse(lines, out int count);
+			int.TryParse( lines, out int count);
 			int end = start + count - 1;
 			return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}  [{offset}-{end}]{tail}";
 		}
@@ -925,11 +926,32 @@ internal static class BlockRenderer
 		return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}{tail}";
 	}
 
+	// The files looked at, comma-joined, then the downscale limit when the call set one.
+	private static string BuildInspectMediaSummary(string label, JsonElement root, bool parsed, string maxDimension)
+	{
+		List<string> paths = new List<string>();
+		if (parsed && root.TryGetProperty("file_paths", out JsonElement list) && list.ValueKind == JsonValueKind.Array)
+		{
+			foreach (JsonElement item in list.EnumerateArray())
+			{
+				if (item.ValueKind == JsonValueKind.String)
+					paths.Add(item.GetString() ?? string.Empty);
+			}
+		}
+
+		string summary = label;
+		if (paths.Count > 0)
+			summary = $"{label} {DisplayScreen.Palette.FileNameAnsi}{string.Join(", ", paths)}{DisplayScreen.Palette.ResetAnsi}";
+		if (!string.IsNullOrEmpty(maxDimension) && maxDimension != "0")
+			summary = $"{summary}  [max {maxDimension} px]";
+		return summary;
+	}
+
 	private static string BuildRunCommandSummary(string label, string command)
 	{
 		if (string.IsNullOrEmpty(command))
 			return "$";
-		int nl = command.IndexOf('\n');
+		int    nl    = command.IndexOf('\n');
 		string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
 		return $"$ {first}";
 	}

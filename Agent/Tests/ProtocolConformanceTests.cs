@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -82,6 +83,7 @@ public static class ProtocolConformanceTests
 				await TestToolRoundTripAsync(ctx, server, api, cts.Token);
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
 				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
+				await TestPixelsReachServerAsync(ctx, server, api, folder, cts.Token);
 				await TestThinkingAnswersMediaAsync(ctx, server, api, folder, cts.Token);
 				await TestDroppedAttachmentAsync(ctx, server, api, cts.Token);
 				await TestImageCountRefusalAsync(ctx, server, api, folder, false, cts.Token);
@@ -176,9 +178,8 @@ public static class ProtocolConformanceTests
 		ctx.Assert( second.Contains("call_echo", StringComparison.Ordinal), $"{api.Name} ToolRoundTrip: paired with the call id");
 	}
 
-	// Several inspects in a row with nothing said between them keep every image in view; the first
-	// turn with real output answers them, and from then on they are gone from the request (except on
-	// Responses, whose thread the server keeps).
+	// Several inspects in a row with nothing said between them keep every image in view, and they stay
+	// in view after the model answers: they are only replaced once newer media arrives.
 	private static async Task TestMediaAcrossToolTurnsAsync(TestContext ctx, FakeProvider server, Api api, string folder, CancellationToken ct)
 	{
 		Rig    rig = Build(server, api);
@@ -200,16 +201,10 @@ public static class ProtocolConformanceTests
 		ctx.AssertEqual(4,                sent.Count, $"{api.Name} MediaAcrossTools: one request per turn");
 		ctx.AssertEqual(1, sent[1].VisibleMediaCount, $"{api.Name} MediaAcrossTools: the first image is sent after its inspect");
 		ctx.AssertEqual(2, sent[2].VisibleMediaCount, $"{api.Name} MediaAcrossTools: a tool-only turn keeps it, so both are in view");
-		if (api.ElidesAnswered)
-		{
-			ctx.AssertEqual(0, sent[3].MediaCount, $"{api.Name} MediaAcrossTools: once answered, neither is sent again");
-			ctx.Assert(sent[3].Body.ToJsonString().Contains(AnsweredMarker, StringComparison.Ordinal), $"{api.Name} MediaAcrossTools: a note stands in for each");
-		}
-		else
-		{
-			ctx.AssertEqual(1,        sent[2].MediaCount, $"{api.Name} MediaAcrossTools: chaining sends only the new image");
-			ctx.AssertEqual(2, sent[3].VisibleMediaCount, $"{api.Name} MediaAcrossTools: the server-side thread is left holding both");
-		}
+		ctx.AssertEqual(2, sent[3].VisibleMediaCount, $"{api.Name} MediaAcrossTools: answered but not superseded, both stay in view");
+		ctx.Assert(!sent[3].Body.ToJsonString().Contains(AnsweredMarker, StringComparison.Ordinal), $"{api.Name} MediaAcrossTools: no removal note until newer media arrives");
+		if (!api.ElidesAnswered)
+			ctx.AssertEqual(1, sent[2].MediaCount, $"{api.Name} MediaAcrossTools: chaining sends only the new image");
 	}
 
 	// One inspect naming two files puts both in front of the model in the same request, in the order
@@ -240,6 +235,224 @@ public static class ProtocolConformanceTests
 		ctx.Assert(before >= 0 && after > before, $"{api.Name} TwoImages: in the order they were asked for");
 	}
 
+	// Three real PNGs, each a solid background with a 4x4 patch of another color in the top-left corner,
+	// sent once as an array and once one call at a time. The images the SERVER received are decoded and
+	// every pixel is checked: each must hold exactly its own two colors (nothing overlaid on it) and
+	// arrive in the order asked.
+	private static async Task TestPixelsReachServerAsync(TestContext ctx, FakeProvider server, Api api, string folder, CancellationToken ct)
+	{
+		(byte R, byte G, byte B)[] backgrounds = { (220, 30, 30), (30, 200, 40), (30, 60, 230) };
+		(byte R, byte G, byte B)[] patches     = { (255, 255, 0), (255, 0, 255), (0, 255, 255) };
+		string[] paths                         = new string[3];
+		for (int i = 0; i < 3; i++)
+		{
+			paths[i] = Path.Combine(folder, $"pixels{i}.png");
+			File.WriteAllBytes(paths[i], SolidPng(24, 16, backgrounds[i], patches[i]));
+		}
+
+		Rig rig = Build(server, api);
+		server.Enqueue(FakeReply.Call("c1", "inspect_media", new JsonObject { ["file_paths"] = new JsonArray(paths[0], paths[1], paths[2]) }.ToJsonString()));
+		server.Enqueue(FakeReply.Say("seen"));
+		rig.Session.Bundle.OnUserMessage("look at all three");
+		await StepAsync(rig, ct);
+		await StepAsync(rig, ct);
+		CheckPixels(ctx, $"{api.Name} Pixels(array)", WireImages(server.Requests()), paths, backgrounds, patches);
+
+		rig = Build(server, api);
+		for (int i = 0; i < 3; i++)
+			server.Enqueue(FakeReply.Call($"s{i}", "inspect_media", Args(paths[i])));
+		server.Enqueue(FakeReply.Say("seen"));
+		rig.Session.Bundle.OnUserMessage("look at them one by one");
+		for (int i = 0; i < 4; i++)
+			await StepAsync(rig, ct);
+		CheckPixels(ctx, $"{api.Name} Pixels(solo)", WireImages(server.Requests()), paths, backgrounds, patches);
+	}
+
+	private static void CheckPixels(TestContext ctx, string label, List<byte[]> received, string[] paths, (byte R, byte G, byte B)[] backgrounds, (byte R, byte G, byte B)[] patches)
+	{
+		ctx.AssertEqual(3, received.Count, $"{label}: three distinct images reach the server");
+		for (int i = 0; i < received.Count && i < 3; i++)
+		{
+			ctx.Assert(received[i].AsSpan().SequenceEqual(File.ReadAllBytes(paths[i])), $"{label}: image {i + 1} is byte-for-byte the file, in the order asked");
+
+			(int width, int height, byte[] rgb) = DecodePng(received[i]);
+			ctx.AssertEqual(24,  width, $"{label}: image {i + 1} width");
+			ctx.AssertEqual(16, height, $"{label}: image {i + 1} height");
+
+			HashSet<int> colors = new HashSet<int>();
+			for (int p = 0; p + 2 < rgb.Length; p += 3)
+				colors.Add((rgb[p] << 16) | (rgb[p + 1] << 8) | rgb[p + 2]);
+			ctx.AssertEqual(2, colors.Count, $"{label}: image {i + 1} holds only its background and patch colors");
+			ctx.AssertEqual(    Pack(patches[i]),   PixelAt(rgb, width, 0, 0), $"{label}: image {i + 1} patch pixel");
+			ctx.AssertEqual(Pack(backgrounds[i]),  PixelAt(rgb, width, 12, 8), $"{label}: image {i + 1} background pixel");
+			ctx.AssertEqual(Pack(backgrounds[i]), PixelAt(rgb, width, 23, 15), $"{label}: image {i + 1} far corner");
+		}
+	}
+
+	// Distinct images found in the requests, in first-appearance order, base64 decoded. A thread that
+	// resends earlier images (or one that chains and sends only the new one) yields the same list.
+	private static List<byte[]> WireImages(List<FakeRequest> requests)
+	{
+		List<string> seen = new List<string>();
+		foreach (FakeRequest request in requests)
+			CollectImageData(request.Body["messages"] ?? request.Body["input"], seen);
+
+		List<byte[]> images = new List<byte[]>();
+		foreach (string data in seen)
+			images.Add(Convert.FromBase64String(data));
+		return images;
+	}
+
+	private static void CollectImageData(JsonNode? node, List<string> seen)
+	{
+		if (node is JsonArray array)
+		{
+			foreach (JsonNode? child in array)
+				CollectImageData(child, seen);
+		}
+		else if (node is JsonObject obj)
+		{
+			string  type = obj["type"] is JsonValue v && v.TryGetValue<string>(out string? s) ? s : string.Empty;
+			string? data = null;
+			if (type == "image")
+				data = obj["source"]?["data"]?.GetValue<string>();
+			else if (type == "image_url")
+				data = obj["image_url"] is JsonObject inner ? inner["url"]?.GetValue<string>() : obj["image_url"]?.GetValue<string>();
+			else if (type == "input_image")
+				data = obj["image_url"]?.GetValue<string>();
+
+			if (data != null)
+			{
+				int    comma   = data.IndexOf("base64,", StringComparison.Ordinal);
+				string payload = comma >= 0 ? data.Substring(comma + "base64,".Length) : data;
+				if (!seen.Contains(payload))
+					seen.Add(payload);
+			}
+			else
+			{
+				foreach ((string _, JsonNode? child) in obj)
+					CollectImageData(child, seen);
+			}
+		}
+	}
+
+	private static int Pack((byte R, byte G, byte B) color)
+	{
+		return (color.R << 16) | (color.G << 8) | color.B;
+	}
+
+	private static int PixelAt(byte[] rgb, int width, int x, int y)
+	{
+		int p = (y * width + x) * 3;
+		return (rgb[p] << 16) | (rgb[p + 1] << 8) | rgb[p + 2];
+	}
+
+	// An RGB PNG, unfiltered rows: a solid background with a 4x4 patch in the top-left corner.
+	private static byte[] SolidPng(int width, int height, (byte R, byte G, byte B) background, (byte R, byte G, byte B) patch)
+	{
+		byte[] raw = new byte[height * (1 + width * 3)];
+		for (int y = 0; y < height; y++)
+		{
+			int row = y * (1 + width * 3);
+			for (int x = 0; x < width; x++)
+			{
+				(byte r, byte g, byte b) = x < 4 && y < 4 ? patch : background;
+				raw[row + 1 + x * 3]     = r;
+				raw[row + 2 + x * 3]     = g;
+				raw[row + 3 + x * 3]     = b;
+			}
+		}
+
+		byte[] header = new byte[13];
+		WriteBigEndian(header, 0,  width);
+		WriteBigEndian(header, 4, height);
+		header[8] = 8;
+		header[9] = 2;
+
+		byte[] compressed;
+		using (MemoryStream packed = new MemoryStream())
+		{
+			using (ZLibStream zlib = new ZLibStream(packed, CompressionLevel.Optimal, true))
+				zlib.Write(raw, 0, raw.Length);
+			compressed = packed.ToArray();
+		}
+
+		using MemoryStream png = new MemoryStream();
+		png.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });
+		WriteChunk(png, "IHDR",              header);
+		WriteChunk(png, "IDAT",          compressed);
+		WriteChunk(png, "IEND", Array.Empty<byte>());
+		return png.ToArray();
+	}
+
+	private static void WriteChunk(MemoryStream png, string type, byte[] data)
+	{
+		byte[] typed = new byte[4 + data.Length];
+		for (int i = 0; i < 4; i++)
+			typed[i] = (byte)type[i];
+		Array.Copy(data, 0, typed, 4, data.Length);
+
+		uint crc = 0xFFFFFFFF;
+		foreach (byte b in typed)
+		{
+			crc ^= b;
+			for (int bit = 0; bit < 8; bit++)
+				crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+		}
+		crc ^= 0xFFFFFFFF;
+
+		byte[] length = new byte[4];
+		WriteBigEndian(length, 0, data.Length);
+		byte[] check = new byte[4];
+		WriteBigEndian(check, 0, (int)crc);
+		png.Write(length);
+		png.Write(typed);
+		png.Write(check);
+	}
+
+	private static void WriteBigEndian(byte[] target, int offset, int value)
+	{
+		target[offset]     = (byte)(value >> 24);
+		target[offset + 1] = (byte)(value >> 16);
+		target[offset + 2] = (byte)(value >> 8);
+		target[offset + 3] = (byte)value;
+	}
+
+	// Width, height and RGB bytes of a PNG made by SolidPng (8-bit RGB, no row filtering).
+	private static (int Width, int Height, byte[] Rgb) DecodePng(byte[] png)
+	{
+		int          width  = 0;
+		int          height = 0;
+		MemoryStream idat   = new MemoryStream();
+		int          at     = 8;
+		while (at + 8 <= png.Length)
+		{
+			int    length = (png[at] << 24) | (png[at + 1] << 16) | (png[at + 2] << 8) | png[at + 3];
+			string type   = System.Text.Encoding.ASCII.GetString(png, at + 4, 4);
+			if (type == "IHDR")
+			{
+				width  = (png[at + 8] << 24) | (png[at + 9] << 16) | (png[at + 10] << 8) | png[at + 11];
+				height = (png[at + 12] << 24) | (png[at + 13] << 16) | (png[at + 14] << 8) | png[at + 15];
+			}
+			else if (type == "IDAT")
+			{
+				idat.Write(png, at + 8, length);
+			}
+			at += 12 + length;
+		}
+
+		idat.Position          = 0;
+		using MemoryStream raw = new MemoryStream();
+		using (ZLibStream zlib = new ZLibStream(idat, CompressionMode.Decompress))
+			zlib.CopyTo(raw);
+		byte[] rows = raw.ToArray();
+
+		byte[] rgb = new byte[width * height * 3];
+		for (int y = 0; y < height; y++)
+			Array.Copy(rows, y * (1 + width * 3) + 1, rgb, y * width * 3, width * 3);
+		return (width, height, rgb);
+	}
+
 	// A PNG signature followed by one repeated letter.
 	private static byte[] LetterPng(byte letter)
 	{
@@ -251,9 +464,8 @@ public static class ProtocolConformanceTests
 		return bytes;
 	}
 
-	// Thinking is an answer where it survives on the wire (Messages replays signed thinking). Chat
-	// Completions strips it from replay, so a thinking-plus-tool-call turn leaves nothing behind but
-	// the image, and the image stays.
+	// Thinking is an answer where it survives on the wire (Messages replays signed thinking), but an
+	// answer alone no longer removes the newest media: with nothing newer, the image stays everywhere.
 	private static async Task TestThinkingAnswersMediaAsync(TestContext ctx, FakeProvider server, Api api, string folder, CancellationToken ct)
 	{
 		Rig    rig = Build(server, api);
@@ -267,9 +479,8 @@ public static class ProtocolConformanceTests
 		await StepAsync(rig, ct);
 		await StepAsync(rig, ct);
 
-		FakeRequest third    = server.Requests()[2];
-		int         expected = api.Protocol == DetectedProtocol.Anthropic ? 0 : 1;
-		ctx.AssertEqual(expected, third.VisibleMediaCount, $"{api.Name} ThinkingAnswers: media after a thinking turn");
+		FakeRequest third = server.Requests()[2];
+		ctx.AssertEqual(1, third.VisibleMediaCount, $"{api.Name} ThinkingAnswers: media after a thinking turn stays until newer media arrives");
 	}
 
 	private static async Task TestDroppedAttachmentAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
@@ -283,8 +494,8 @@ public static class ProtocolConformanceTests
 		await StepAsync(rig, ct);
 
 		List<FakeRequest> sent = server.Requests();
-		ctx.AssertEqual(1, sent[0].MediaCount, $"{api.Name} DroppedAttachment: sent with the question");
-		ctx.AssertEqual(api.ElidesAnswered ? 0 : 1, sent[1].VisibleMediaCount, $"{api.Name} DroppedAttachment: after the answer");
+		ctx.AssertEqual(1,        sent[0].MediaCount, $"{api.Name} DroppedAttachment: sent with the question");
+		ctx.AssertEqual(1, sent[1].VisibleMediaCount, $"{api.Name} DroppedAttachment: after the answer, still in view");
 	}
 
 	// A provider that takes at most two images refuses the third; the oldest goes and the request is

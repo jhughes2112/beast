@@ -4,14 +4,14 @@ using System.Text.Json.Nodes;
 
 // Decides which media an outgoing request carries.
 //
-// Media is sent until the model has ANSWERED it — produced a turn with text or thinking after it —
-// and is then replaced by a note (Messages, ChatCompletions, and the stateless Responses history of
-// the ChatGPT subscription; the regular Responses protocol keeps its history server-side and leaves
-// it alone). Keeping answered media costs twice over: it is re-sent
-// on every later request, so a long visual session grows until the provider refuses the whole thing,
-// and it only gets dearer to remove, because dropping an item invalidates the prompt cache for
-// everything after it — one short reply right after the model has used it, a whole run of work
-// later on. A turn that is nothing but tool calls is not an answer: a model inspecting several
+// Media stays in view while the model reasons about it, and is replaced by a note only once NEWER
+// media arrives after the model has answered (produced a turn with text or thinking) — so the
+// latest batch survives the model's reply and the turns after it, until its next inspect
+// (Messages, ChatCompletions, and the stateless Responses history of the ChatGPT subscription; the
+// regular Responses protocol keeps its history server-side and leaves it alone). Keeping superseded
+// media costs twice over: it is re-sent on every later request, so a long visual session grows until
+// the provider refuses the whole thing, and removal invalidates the prompt cache for everything
+// after it. A turn that is nothing but tool calls is not an answer: a model inspecting several
 // images in a row before saying anything still sees all of them together. Every item is a file on
 // disk, and the model is told it can inspect it again.
 //
@@ -34,7 +34,7 @@ public class MediaBudget
 		+ "If you need it, look at the file again with inspect_media.]";
 
 	private const string AnsweredNote =
-		"[Media removed from context after you responded to it. If you need it again, call inspect_media on its file.]";
+		"[Media removed from context because you inspected newer media after responding to it. If you need it again, call inspect_media on its file.]";
 
 	// Most media items one request may carry, learned by this instance from a refusal; 0 = none.
 	// Kept alongside the config value because the sink that persists a stated cap is absent in tests,
@@ -53,11 +53,13 @@ public class MediaBudget
 	// model's declared cap; 0 means none is known.
 	public void Apply(JsonArray messages, int configMaxImages, string textPartType, bool elideAnswered)
 	{
-		// Everything before the last turn with real output has been answered.
+		// Everything before the last answer that precedes the newest media has been answered AND
+		// superseded; the newest batch stays in view while the model reasons about it.
 		int answered = 0;
 		if (elideAnswered)
 		{
-			for (int i = messages.Count - 1; i >= 0; i--)
+			int newest = NewestMediaIndex(messages);
+			for (int i = newest - 1; i >= 0; i--)
 			{
 				if (messages[i] is JsonObject item && IsAnswer(item))
 				{
@@ -104,6 +106,20 @@ public class MediaBudget
 
 		_itemsSent = kept;
 		_omitted   = omitted;
+	}
+
+	// Index of the last message carrying media, or -1 when there is none.
+	private static int NewestMediaIndex(JsonArray messages)
+	{
+		int newest = -1;
+		for (int i = messages.Count - 1; i >= 0 && newest < 0; i--)
+		{
+			List<(JsonArray Parent, JsonObject Part)> media = new List<(JsonArray Parent, JsonObject Part)>();
+			Collect(messages[i], media);
+			if (media.Count > 0)
+				newest = i;
+		}
+		return newest;
 	}
 
 	// A log line when the trim changed since it was last reported, else null — one note each time the

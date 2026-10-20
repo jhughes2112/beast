@@ -219,9 +219,9 @@ public static class MediaToolResultTests
 		return images;
 	}
 
-	// Media rides in requests only until the model has answered it with text or thinking; after that
-	// it is a note. A turn of nothing but tool calls is not an answer. The history itself keeps the
-	// media, so a retry before the answer still carries it.
+	// Media rides in requests until the model has answered it with text or thinking AND newer media
+	// has arrived; after that it is a note. A turn of nothing but tool calls is not an answer. The
+	// history itself keeps the media, so a retry still carries it.
 	private static void TestMediaSentOnce(TestContext ctx, string path)
 	{
 		ctx.Log("    MediaSentOnce");
@@ -233,8 +233,14 @@ public static class MediaToolResultTests
 		JsonArray answered = ImageHistory(2, 100);
 		answered.Insert(1, new JsonObject { ["role"] = "assistant", ["content"] = "it is a cat" });
 		new MediaBudget().Apply(answered, 0, "text", true);
-		ctx.AssertEqual("text",      answered[0]!["content"]![1]!["type"]!.GetValue<string>(), "SentOnce: answered media becomes a note");
+		ctx.AssertEqual("text",      answered[0]!["content"]![1]!["type"]!.GetValue<string>(), "SentOnce: answered media becomes a note once newer media follows");
 		ctx.AssertEqual("image_url", answered[2]!["content"]![1]!["type"]!.GetValue<string>(), "SentOnce: media after the last answer is still sent");
+
+		// The newest batch outlives the model's reply: with no newer media, answered media stays in view.
+		JsonArray lingering = ImageHistory(1, 100);
+		lingering.Add((JsonNode)new JsonObject { ["role"] = "assistant", ["content"] = "it is a cat" });
+		new MediaBudget().Apply(lingering, 0, "text", true);
+		ctx.AssertEqual(1, ImagesIn(lingering), "SentOnce: answered media stays until the next media arrives");
 
 		// Several inspects in a row with nothing said between them: the model still sees them all.
 		JsonArray toolsOnly = ImageHistory(2, 100);
@@ -246,7 +252,9 @@ public static class MediaToolResultTests
 		JsonArray thought = ImageHistory(1, 100);
 		thought.Add((JsonNode)new JsonObject { ["role"] = "assistant", ["content"] = new JsonArray(new JsonObject { ["type"] = "thinking", ["thinking"] = "a cat", ["signature"] = "s" }, new JsonObject { ["type"] = "tool_use", ["id"] = "t", ["name"] = "ls", ["input"] = new JsonObject() }) });
 		new MediaBudget().Apply(thought, 0, "text", true);
-		ctx.AssertEqual(0, ImagesIn(thought), "SentOnce: thinking answers the media before it");
+		thought.Add((JsonNode)new JsonObject { ["role"] = "user", ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "next" }, new JsonObject { ["type"] = "image_url", ["image_url"] = new JsonObject { ["url"] = "data:image/png;base64,AAAA" } }) });
+		new MediaBudget().Apply(thought, 0, "text", true);
+		ctx.AssertEqual(1, ImagesIn(thought), "SentOnce: thinking answers the media before it, and only the newer image remains");
 
 		// Responses keeps its history server-side and is left alone.
 		JsonArray responses = ImageHistory(1, 100);
@@ -254,7 +262,7 @@ public static class MediaToolResultTests
 		new MediaBudget().Apply(responses, 0, "input_text", false);
 		ctx.AssertEqual(1, ImagesIn(responses), "SentOnce: nothing is removed when answered media is kept");
 
-		// Through a real protocol: the inspect result is sent on the next request, then removed once the
+		// Through a real protocol: the inspect result is sent on the next request, kept after the
 		// model has replied, while the native history keeps it.
 		List<CanonicalMessage>  messages = Conversation(path);
 		ProtocolChatCompletions cc       = new ProtocolProxy(TestModel()).EnsureProtocolChatCompletions(messages);
@@ -266,7 +274,7 @@ public static class MediaToolResultTests
 
 		cc.OnAssistantTurn("the button is misaligned", string.Empty, new List<SemanticToolCall>());
 		JsonObject second = (JsonObject)Reflect.Instance(cc, "BuildRequestBody", types, args)!;
-		ctx.Assert(!second.ToJsonString().Contains("\"image_url\"", StringComparison.Ordinal), "SentOnce: and not sent again after the model answered");
+		ctx.Assert(second.ToJsonString().Contains("\"image_url\"", StringComparison.Ordinal), "SentOnce: and still sent after the model answered, until newer media arrives");
 		JsonArray native = (JsonArray)Reflect.GetField(cc, "_native")!;
 		ctx.Assert(native.ToJsonString().Contains("\"image_url\"", StringComparison.Ordinal), "SentOnce: native history is untouched");
 	}

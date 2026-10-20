@@ -237,7 +237,7 @@ public static class ToolFactory
 				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
 					List<string> filePaths    = StrArray(args, "file_paths");
-					int          maxDimension = IntOpt(args, "max_dimension") ?? 0;
+					int          maxDimension = PixelsOpt(args, "max_dimension") ?? 0;
 					string       goal         = Str(args, "goal");
 					bool         useSubagent  = BoolOpt(args, "use_subagent") ?? false;
 
@@ -593,6 +593,28 @@ public static class ToolFactory
 		if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && int.TryParse(node.ToString(), out int v))
 			return v;
 		return null;
+	}
+
+	// A pixel count however the model spelled it: "1024", 1024, "1024px" and "1024.0" all read as 1024.
+	// Null when the argument is missing or holds no digits.
+	private static int? PixelsOpt(JsonObject args, string key)
+	{
+		int? pixels = null;
+		if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null)
+		{
+			string text  = node.ToString();
+			int    start = 0;
+			while (start < text.Length && !char.IsAsciiDigit(text[start]))
+				start++;
+
+			int stop = start;
+			while (stop < text.Length && char.IsAsciiDigit(text[stop]))
+				stop++;
+
+			if (int.TryParse(text.AsSpan(start, stop - start), out int value))
+				pixels = value;
+		}
+		return pixels;
 	}
 
 	// Returns null when the argument is missing or not a parseable boolean, so callers can surface a malformed
