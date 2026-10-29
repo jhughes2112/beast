@@ -12,6 +12,30 @@ public static class GitTools
 	// message clobbering; this fixes the index and branch races.
 	private static readonly SemaphoreSlim _gitGate = new SemaphoreSlim(1, 1);
 
+	// Whether commit_and_rebase can work at all here, decided once at startup by ProbeAsync. False when
+	// the workspace is not a git repository or git has no committer identity (the host passes it in as
+	// GIT_AUTHOR_*/GIT_COMMITTER_* when it has one). ToolFactory then leaves the tool out entirely, so
+	// the Developer is never told to commit where no commit can succeed.
+	private static bool   _commitAvailable = false;
+	private static string _commitDetail    = "commit_and_rebase has not been probed.";
+
+	public static bool   CommitAvailable => _commitAvailable;
+	public static string CommitDetail    => _commitDetail;
+
+	// Runs the two preconditions as the agent (the repo is root's). `git var GIT_COMMITTER_IDENT` is git's
+	// own identity resolution: it fails exactly when a commit would fail with "Author identity unknown".
+	public static async Task ProbeAsync(CancellationToken ct)
+	{
+		string script =
+			"if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo 'not a git repository'; exit 1; fi\n" +
+			"if ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then echo 'no git user.name/user.email (set them on the host and relaunch)'; exit 1; fi\n" +
+			"git var GIT_COMMITTER_IDENT\n";
+		ToolResult result = await ShellTools.AgentBashAsync("git_probe", script, null, ct);
+		string     output = string.IsNullOrWhiteSpace(result.StdOut) ? result.StdErr.Trim() : result.StdOut.Trim();
+		_commitAvailable  = result.ExitCode == 0;
+		_commitDetail     = _commitAvailable ? $"commit_and_rebase available as {output}" : $"commit_and_rebase disabled: {output}";
+	}
+
 	// Commits the current worktree and integrates it with a strictly linear, rebase-based flow — never a merge
 	// commit. It commits everything onto the feature branch B, finds the base branch A (the branch checked out in
 	// the primary worktree, reached with git -C since B's worktree cannot check A out). B

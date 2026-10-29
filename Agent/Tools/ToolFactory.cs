@@ -387,7 +387,9 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("commit_and_rebase"))
+		// Left out where no commit can succeed (no repository, or no git identity); the Developer prompt
+		// tells it to commit only when the tool is present.
+		if (role.Tools.Contains("commit_and_rebase") && GitTools.CommitAvailable)
 		{
 			ToolConfig tc = toolConfigs["commit_and_rebase"];
 			tools.Add(new Tool

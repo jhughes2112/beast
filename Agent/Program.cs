@@ -79,6 +79,11 @@ public class Program
 		string lockdown = await Sandbox.LockDownAsync(cts.Token);
 		Console.Error.WriteLine($"[Sandbox] {lockdown}");
 
+		// Decide once whether commits are possible here (a repo with a committer identity); roles that
+		// list commit_and_rebase only get it when they are.
+		await GitTools.ProbeAsync(cts.Token);
+		Console.Error.WriteLine($"[Git] {GitTools.CommitDetail}");
+
 		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
 		RoleService     roleService     = new RoleService(Environment.CurrentDirectory);
 

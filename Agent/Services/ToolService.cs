@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 // file is loaded over the defaults, so hand edits to a description or parameter take effect.
 public class ToolService
 {
-	private const int Version = 4;
+	private const int Version = 5;
 
 	private readonly string _toolsPath;
 
@@ -125,7 +125,7 @@ public class ToolService
 		Dictionary<string, ToolConfig> tools = new Dictionary<string, ToolConfig>();
 
 		tools["bash"] = Cfg(
-			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
+			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase, when available, records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
 			("command", "Shell command to execute"),
 			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
 
@@ -200,7 +200,7 @@ public class ToolService
 			("message", "A brief git commit message describing the changes"));
 
 		tools["task_complete"] = Cfg(
-			"Declare this task finished and return your report to the agent that delegated it to you. The normal path is review_work, then commit_and_rebase, then this. If you cannot complete the work, or your budget is nearly spent, call it with success=false and say exactly what state things are in.",
+			"Declare this task finished and return your report to the agent that delegated it to you. The normal path is review_work, then commit_and_rebase when that tool is available, then this. If you cannot complete the work, or your budget is nearly spent, call it with success=false and say exactly what state things are in.",
 			("results_of_review_work", "The entire response the delegating agent receives, so make it self-contained: what was done and where (files), the Reviewer's verdict quoted as given, integration status (committed or not), anything unfinished or any follow-on tasks it should assign, and the exact error output if something failed."),
 			("success", "True if the task was completed, reviewed, and integrated; false if it failed, was blocked, or ran out of budget."));
 
