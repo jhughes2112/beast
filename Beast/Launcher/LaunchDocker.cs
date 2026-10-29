@@ -77,11 +77,28 @@ public class LaunchDocker : ILauncher
 
 		// Docker's WSL2 backend can hand the container the host GPU: /dev/dxg plus the WSL driver libraries
 		// let the browser's WebGL run on the real GPU instead of software rendering.
+		SystemInfoResponse  info    = await _dockerClient.System.GetSystemInfoAsync(cancellationToken);
 		List<DeviceMapping> devices = new List<DeviceMapping>();
-		if (await IsWslBackendAsync(cancellationToken))
+		if (IsWslBackend(info))
 		{
 			devices.Add(new DeviceMapping { PathOnHost = "/dev/dxg", PathInContainer = "/dev/dxg", CgroupPermissions = "rwm" });
 			binds.Add("/usr/lib/wsl:/usr/lib/wsl:ro");
+		}
+
+		// The equivalent of `--gpus all`: when the host has the NVIDIA container runtime, ask it to mount the
+		// driver libraries (CUDA, nvidia-smi, and with the image's NVIDIA_DRIVER_CAPABILITIES=all the video and
+		// graphics families too). Requesting the "nvidia" driver on a host without that runtime fails container
+		// creation outright, hence the gate. /dev/dri is not mapped: Beast's hosts are Windows, and neither
+		// Docker Desktop VM (WSL2 or Hyper-V) exposes it, and a missing host device also fails creation.
+		List<DeviceRequest> deviceRequests = new List<DeviceRequest>();
+		if (HasNvidiaRuntime(info))
+		{
+			deviceRequests.Add(new DeviceRequest
+			{
+				Driver       = "nvidia",
+				Count        = -1,
+				Capabilities = new List<IList<string>> { new List<string> { "gpu" } }
+			});
 		}
 
 		CreateContainerParameters createParams = new CreateContainerParameters
@@ -104,8 +121,9 @@ public class LaunchDocker : ILauncher
 						new PortBinding { HostIP = "127.0.0.1", HostPort = _hostPort.ToString() }
 					}
 				},
-				Binds   = binds,
-				Devices = devices
+				Binds          = binds,
+				Devices        = devices,
+				DeviceRequests = deviceRequests
 			}
 		};
 
@@ -119,10 +137,16 @@ public class LaunchDocker : ILauncher
 	}
 
 	// True when the Docker VM is WSL2, the only backend that exposes /dev/dxg.
-	private async Task<bool> IsWslBackendAsync(CancellationToken cancellationToken)
+	private static bool IsWslBackend(SystemInfoResponse info)
 	{
-		SystemInfoResponse info = await _dockerClient.System.GetSystemInfoAsync(cancellationToken);
 		return info.KernelVersion.Contains("WSL2", StringComparison.OrdinalIgnoreCase);
+	}
+
+	// True when the NVIDIA container runtime is registered with the daemon (Docker Desktop lists it once
+	// GPU support is enabled; a native Linux host lists it after installing nvidia-container-toolkit).
+	private static bool HasNvidiaRuntime(SystemInfoResponse info)
+	{
+		return info.Runtimes != null && info.Runtimes.ContainsKey("nvidia");
 	}
 
 	private static int FindAvailablePort()

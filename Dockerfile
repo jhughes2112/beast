@@ -115,8 +115,23 @@ RUN npm install -g playwright@1.62.1 \
 # Those flags go AFTER "$@" so they win over a script's own --use-angle=swiftshader (last switch wins).
 # MESA_D3D12_DEFAULT_ADAPTER_NAME picks the discrete GPU over an integrated one; an unmatched name
 # falls back to Mesa's default adapter. Without /dev/dxg the browser is launched exactly as before.
+# Vulkan: the loader (libvulkan1), headers for building Vulkan projects (libvulkan-dev), vulkaninfo/vkcube
+# (vulkan-tools), and Mesa's ICDs (mesa-vulkan-drivers: radeon/intel/nouveau for a host that passes
+# /dev/dri, lavapipe as the CPU fallback everywhere). Under Docker Desktop's WSL2 backend only lavapipe
+# enumerates: NVIDIA ships no Vulkan driver for WSL2 and Ubuntu's Mesa omits the D3D12 "dozen" ICD.
+# VK_DRIVER_FILES pins the loader to the lavapipe ICD (libvulkan_lvp.so, API 1.4): /etc/vulkan/icd.d is
+# empty in this image and the loader does not find /usr/share/vulkan/icd.d on its own, so without it
+# no device enumerates at all. An ICD a container runtime mounts in has to be added to this list.
 RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1 \
+        libvulkan1 libvulkan-dev vulkan-tools mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
+ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
+
+# When Beast starts the container with an NVIDIA GPU request (see LaunchDocker), the NVIDIA container
+# runtime mounts every driver library family (compute, video encode/decode, graphics, utility) rather
+# than just CUDA. Ignored on hosts without that runtime.
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+
 RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell) \
     && mv "$BIN" "$BIN.real" \
     && printf '%s\n' '#!/bin/bash' \
