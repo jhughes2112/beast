@@ -18,6 +18,9 @@ public class FakeReply
 	public int    ErrorStatus { get; }
 	public string ErrorBody   { get; }
 
+	// Streams "data:{...}" with no space after the colon — legal SSE, and what uzu sends.
+	public bool CompactSse { get; private set; }
+
 	private FakeReply(string thinking, string text, List<(string Id, string Name, string Args)> calls, int errorStatus, string errorBody)
 	{
 		Thinking    = thinking;
@@ -45,6 +48,12 @@ public class FakeReply
 	public static FakeReply Error(int status, string body)
 	{
 		return new FakeReply(string.Empty, string.Empty, new List<(string, string, string)>(), status, body);
+	}
+
+	public FakeReply WithCompactSse()
+	{
+		CompactSse = true;
+		return this;
 	}
 }
 
@@ -401,7 +410,7 @@ public class FakeProvider
 	private static async Task WriteChatSseAsync(HttpListenerResponse response, FakeReply reply, CancellationToken ct)
 	{
 		string finish             = reply.Calls.Count > 0 ? "tool_calls" : "stop";
-		using StreamWriter writer = OpenSse(response);
+		using StreamWriter writer = OpenSse(response, reply.CompactSse);
 		await DataAsync(writer, ChatChunk(new JsonObject { ["role"] = "assistant" }, null), ct);
 		if (reply.Thinking.Length > 0)
 			await DataAsync(writer, ChatChunk(new JsonObject { ["reasoning_content"] = reply.Thinking }, null), ct);
@@ -422,8 +431,7 @@ public class FakeProvider
 			["usage"]   = new JsonObject { ["prompt_tokens"] = 100, ["completion_tokens"] = 10, ["total_tokens"] = 110 }
 		};
 		await DataAsync(writer, usage.ToJsonString(), ct);
-		await writer.WriteAsync("data: [DONE]\n\n");
-		await writer.FlushAsync(ct);
+		await DataAsync(writer,             "[DONE]", ct);
 	}
 
 	private static string ChatChunk(JsonObject delta, string? finish)
@@ -438,7 +446,7 @@ public class FakeProvider
 
 	private static async Task WriteMessagesAsync(HttpListenerResponse response, FakeReply reply, CancellationToken ct)
 	{
-		using StreamWriter writer = OpenSse(response);
+		using StreamWriter writer = OpenSse(response, reply.CompactSse);
 		JsonObject start          = new JsonObject
 		{
 			["type"]    = "message_start",
@@ -511,7 +519,7 @@ public class FakeProvider
 
 	private static async Task WriteResponsesSseAsync(HttpListenerResponse response, FakeReply reply, string responseId, JsonObject final, CancellationToken ct)
 	{
-		using StreamWriter writer = OpenSse(response);
+		using StreamWriter writer = OpenSse(response, reply.CompactSse);
 		JsonObject created        = new JsonObject { ["id"] = responseId, ["object"] = "response", ["status"] = "in_progress", ["usage"] = new JsonObject { ["input_tokens"] = 100 } };
 		await DataAsync(writer, new JsonObject { ["type"] = "response.created", ["response"] = created }.ToJsonString(), ct);
 		if (reply.Thinking.Length > 0)
@@ -524,17 +532,29 @@ public class FakeProvider
 
 	// ---- Plumbing ----
 
-	private static StreamWriter OpenSse(HttpListenerResponse response)
+	// A stream writer that remembers how this reply frames its data lines.
+	private sealed class SseWriter : StreamWriter
+	{
+		public bool Compact { get; }
+
+		public SseWriter(Stream stream, bool compact) : base(stream, new UTF8Encoding(false))
+		{
+			Compact = compact;
+		}
+	}
+
+	private static StreamWriter OpenSse(HttpListenerResponse response, bool compact)
 	{
 		response.StatusCode  = 200;
 		response.ContentType = "text/event-stream";
 		response.SendChunked = true;
-		return new StreamWriter(response.OutputStream, new UTF8Encoding(false));
+		return new SseWriter(response.OutputStream, compact);
 	}
 
 	private static async Task DataAsync(StreamWriter writer, string json, CancellationToken ct)
 	{
-		await writer.WriteAsync($"data: {json}\n\n");
+		string prefix = writer is SseWriter { Compact: true } ? "data:" : "data: ";
+		await writer.WriteAsync($"{prefix}{json}\n\n");
 		await writer.FlushAsync(ct);
 	}
 

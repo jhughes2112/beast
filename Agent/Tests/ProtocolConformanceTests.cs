@@ -81,6 +81,7 @@ public static class ProtocolConformanceTests
 				ctx.Log($"    {api.Name}");
 				await TestPlainTextAsync(ctx, server, api, cts.Token);
 				await TestToolRoundTripAsync(ctx, server, api, cts.Token);
+				await TestCompactSseAsync(ctx, server, api, cts.Token);
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
 				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
 				await TestPixelsReachServerAsync(ctx, server, api, folder, cts.Token);
@@ -176,6 +177,23 @@ public static class ProtocolConformanceTests
 		string second = server.Requests()[1].Body.ToJsonString();
 		ctx.Assert(second.Contains("echo: ping", StringComparison.Ordinal), $"{api.Name} ToolRoundTrip: the tool output is sent back");
 		ctx.Assert( second.Contains("call_echo", StringComparison.Ordinal), $"{api.Name} ToolRoundTrip: paired with the call id");
+	}
+
+	// "data:{...}" with no space after the colon is legal SSE, and uzu streams exactly that. A reader
+	// that matched only "data: " dropped every line, saw an empty turn, and retried it forever.
+	private static async Task TestCompactSseAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		Rig rig = Build(server, api);
+		server.Enqueue(FakeReply.Call("call_echo", "echo", "{\"text\":\"ping\"}").WithCompactSse());
+		server.Enqueue(FakeReply.Turn("pondering", "done", new List<(string, string, string)>()).WithCompactSse());
+		rig.Session.Bundle.OnUserMessage("run echo");
+
+		await StepAsync(rig, ct);
+		ProtocolResult final = await StepAsync(rig, ct);
+		ctx.AssertEqual(2, server.Requests().Count, $"{api.Name} CompactSse: one request per turn, no retries");
+		ctx.Assert(server.Requests()[1].Body.ToJsonString().Contains("echo: ping", StringComparison.Ordinal), $"{api.Name} CompactSse: the tool call was read and run");
+		ctx.AssertEqual("done",      final.Payload?.AssistantText ?? string.Empty, $"{api.Name} CompactSse: text arrives");
+		ctx.AssertEqual("pondering",      final.Payload?.Thinking ?? string.Empty, $"{api.Name} CompactSse: thinking arrives");
 	}
 
 	// Several inspects in a row with nothing said between them keep every image in view, and they stay

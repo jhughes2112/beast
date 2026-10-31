@@ -27,6 +27,16 @@ static class ProtocolHelpers
 		return SharedClient;
 	}
 
+	// The payload of one SSE "data" line, or null for any other line. The SSE spec makes the single
+	// space after the colon optional, and some local servers (uzu) send "data:{...}" — matching only
+	// "data: " silently dropped their entire reply, which read as an empty turn and got retried.
+	public static string? SseData(string line)
+	{
+		if (!line.StartsWith("data:", StringComparison.Ordinal))
+			return null;
+		return line.Length > 5 && line[5] == ' ' ? line.Substring(6) : line.Substring(5);
+	}
+
 	// The per-request deadline for this model, in seconds. Configurable because "how long may this
 	// endpoint stay silent" is a property of the machine behind it, not of the protocol.
 	public static int RequestTimeoutSeconds(LlmModel model)

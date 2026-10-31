@@ -748,10 +748,10 @@ public class ProtocolResponses
 
 					requestCts.CancelAfter(idleTimeout);
 
-					if (!line.StartsWith("data: "))
+					string? data = ProtocolHelpers.SseData(line);
+					if (data == null)
 						continue;
 
-					string data = line.Substring(6);
 					if (data == "[DONE]")
 						break;
 

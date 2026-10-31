@@ -379,10 +379,11 @@ public class ProtocolAnthropic
 
 				requestCts.CancelAfter(idleTimeout);
 
-				if (!line.StartsWith("data: ", StringComparison.Ordinal))
+				string? data = ProtocolHelpers.SseData(line);
+				if (data == null)
 					continue;
 
-				JsonNode? evt  = JsonNode.Parse(line.Substring(6));
+				JsonNode? evt  = JsonNode.Parse(data);
 				string?   type = evt?["type"]?.GetValue<string>();
 				if (type == null)
 					continue;
