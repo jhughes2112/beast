@@ -15,6 +15,8 @@ internal class RoleOverlay
 	{
 		public string Name = string.Empty;
 		public string Kind = string.Empty;
+		// What the role's models must produce: "text" for every conversation role, "decisions" for HallMonitor.
+		public string Output = string.Empty;
 		public List<(string Id, string Label, bool Available)> Models = new();
 		// Set once the order is changed, so an untouched visit writes nothing.
 		public bool Dirty;
@@ -80,8 +82,9 @@ internal class RoleOverlay
 
 					RoleEntry role = new RoleEntry
 					{
-						Name = entry["name"]?.GetValue<string>() ?? string.Empty,
-						Kind = entry["kind"]?.GetValue<string>() ?? string.Empty
+						Name   = entry["name"]?.GetValue<string>() ?? string.Empty,
+						Kind   = entry["kind"]?.GetValue<string>() ?? string.Empty,
+						Output = entry["output"]?.GetValue<string>() ?? string.Empty
 					};
 					JsonArray? models = entry["models"] as JsonArray;
 					if (models != null)
@@ -244,7 +247,9 @@ internal class RoleOverlay
 		// change it are only discoverable if the name looks like a control.
 		string header = $"◄  {role.Name}  ►";
 		AnsiToScreen.WriteLine(s, 2, 1, Truncate(header, innerW), topFg, bg);
-		AnsiToScreen.WriteLine(s, 2 + header.Length + 2, 1, Truncate($"{role.Kind.ToLowerInvariant()} · role {_roleIndex + 1}/{_roles.Count}", Math.Max(0, innerW - header.Length - 2)), dimFg, bg);
+		// The output is named only when it is not text, the case where the role takes a different kind of model.
+		string output = role.Output.Length > 0 && !string.Equals(role.Output, "text", StringComparison.OrdinalIgnoreCase) ? $"{role.Output} models · " : string.Empty;
+		AnsiToScreen.WriteLine(s, 2 + header.Length + 2, 1, Truncate($"{role.Kind.ToLowerInvariant()} · {output}role {_roleIndex + 1}/{_roles.Count}", Math.Max(0, innerW - header.Length - 2)), dimFg, bg);
 		AnsiToScreen.WriteLine(s, 2, 2, Truncate("↑↓ pick · +/- move up or down · ←→ role · Esc save and close", innerW), dimFg, bg);
 
 		if (role.Models.Count == 0)

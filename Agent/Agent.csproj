@@ -5,8 +5,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>Agent</AssemblyName>
-    <!-- Native AOT: the Agent publishes as a single native linux-x64 binary inside the Docker
-         build stage (which supplies clang). Local dev builds and test runs stay JIT; AOT applies
+    <!-- Native AOT: the Agent publishes as a single native Linux binary (linux-x64 or linux-arm64,
+         matching the image's CPU) inside the Docker build stage (which supplies clang). Local dev builds and test runs stay JIT; AOT applies
          only at publish. All JSON goes through source-generated contexts (BeastJsonContext)
          because the reflection serializer does not exist under AOT. -->
     <PublishAot>true</PublishAot>
@@ -16,5 +16,11 @@
 
   <ItemGroup>
     <PackageReference Include="Nito.AsyncEx.Coordination" Version="5.1.2" />
+  </ItemGroup>
+
+  <!-- Bash commands labelled safe or dangerous, run through every new HallMonitor decision model to
+       calibrate it (HallMonitorCalibration). Built into the binary so it can never drift from the code. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Data\hallmonitor-calibration.jsonl" LogicalName="hallmonitor-calibration.jsonl" />
   </ItemGroup>
 </Project>

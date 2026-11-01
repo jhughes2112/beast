@@ -35,6 +35,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// registry and live sessions and interleave their output.
 	private Task? _testTask;
 
+	// Judges bash commands with the HallMonitor role's decision models, and calibrates each new one the
+	// first time it is assigned. Created in RunAsync once the models are loaded.
+	private HallMonitor? _hallMonitor;
+
+	// The session the client is showing, for agent-wide notices such as calibration progress: the first
+	// session, then whichever one last changed the configuration.
+	private string _noticeSessionId = string.Empty;
+
 	public AgentOrchestrator(
 		LlmRegistry             registry,
 		RoleService             roleService,
@@ -64,6 +72,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		Session initial = LoadOrCreateSession();
 		RegisterSession(initial);
+
+		// HallMonitor calibrates any decision model it has not seen before, starting now; progress shows
+		// in the client's calibration popup.
+		_noticeSessionId = initial.Id;
+		_hallMonitor     = new HallMonitor(_roleService, _registry, new DecisionMemory(DecisionMemory.DefaultPath),
+			new HallMonitorCalibration(HallMonitorCalibration.DefaultPath, SendCalibrationStatus, ct));
+		_hallMonitor.CalibrateNewModels();
 
 		// Nothing configured at all: proactively open the client's /config picker — a fresh
 		// install can do nothing until at least one model is enabled, so don't make the user
@@ -145,6 +160,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		if (role.Kind != RoleKind.Subagent)
 			return (false, $"Role '{roleName}' is not a subagent role.", 0);
+
+		// A subagent is a conversation; a role whose models answer decisions (HallMonitor) cannot hold one.
+		if (!string.Equals(role.Produces, OutputModality.Text, StringComparison.OrdinalIgnoreCase))
+			return (false, $"Role '{roleName}' produces {role.Produces}, not text, so it cannot run as a subagent.", 0);
 
 		LlmService? service = _registry.CreateService(role, string.Empty, 0, false);
 		if (service == null)
@@ -736,6 +755,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (Session s in allSessions)
 				s.RequestRefresh();
 			reloaded = true;
+
+			// A decision model newly assigned to HallMonitor is calibrated now, before its first use.
+			_noticeSessionId = sessionId;
+			_hallMonitor?.CalibrateNewModels();
 		}
 		catch (Exception ex)
 		{
@@ -745,6 +768,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 			_transport.Error(sessionId, $"Reload failed: {ex}. Keeping the previous config.");
 		}
 		return reloaded;
+	}
+
+	// Sends one calibration progress update to the client, which shows it in a popup while it runs and
+	// briefly once it finishes.
+	private void SendCalibrationStatus(CalibrationStatus status)
+	{
+		System.Text.Json.Nodes.JsonObject frame = new System.Text.Json.Nodes.JsonObject
+		{
+			["kind"]      = "hallmonitor-calibration",
+			["model"]     = status.ModelId,
+			["remaining"] = status.Remaining,
+			["total"]     = status.Total,
+			["state"]     = status.State,
+			["message"]   = status.Message
+		};
+		_transport.Config(_noticeSessionId, frame.ToJsonString());
 	}
 
 	// ---- /config flow ----
@@ -817,7 +856,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		foreach ((string name, Role role) in _roleService.Roles)
 		{
-			ConfigRoleInfo info = new ConfigRoleInfo { Name = role.Name, Kind = role.Kind.ToString() };
+			ConfigRoleInfo info = new ConfigRoleInfo { Name = role.Name, Kind = role.Kind.ToString(), Output = role.Produces };
 			foreach (string modelId in role.Models)
 			{
 				LlmModel? model = _registry.GetModel(modelId);
@@ -834,6 +873,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 					}
 					if (modalities.Length > 0)
 						label += "  +" + modalities;
+					if (!OutputModality.Produces(model.Config.Output, OutputModality.Text))
+						label += "  →" + string.Join(",", model.Config.Output);
 				}
 				info.Models.Add(new ConfigRoleModel { Id = modelId, Label = label, Available = model != null });
 			}
@@ -991,6 +1032,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 			payload.Error = error;
 
+			// Remembered so an apply from this picker knows each model's outputs before the reload
+			// registers it — that is what places a newly enabled model on the right roles.
+			if (error.Length == 0 && discovered.Count > 0)
+				_registry.RecordCatalog(baseUrl, discovered);
+
 			foreach (DiscoveredModel d in discovered)
 			{
 				AutoModelConfig? entry = FindAutoModel(existing, d.Id);
@@ -1003,6 +1049,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 					CostInput       = d.CostInput,
 					CostOutput      = d.CostOutput,
 					Modalities      = d.Modalities,
+					Outputs         = d.Outputs,
 					Configured      = entry != null,
 					Enabled         = entry != null && entry.Enabled,
 					Created         = d.Created,
@@ -1140,11 +1187,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			_settings.SaveAutoEndpoint(payload.BaseUrl, payload.ApiKey, payload.Models, payload.Remove);
 
-			List<string> added = new List<string>();
+			// Each newly enabled model carries its declared outputs, so it joins only the roles it can
+			// serve: a decision model goes to HallMonitor, a chat model to the conversation roles.
+			List<DiscoveredModel>?                  catalog = _registry.CachedCatalog(payload.BaseUrl);
+			List<(string Id, List<string> Outputs)> added   = new List<(string Id, List<string> Outputs)>();
 			foreach (string id in nowEnabled)
 			{
 				if (!ContainsIgnoreCase(previouslyEnabled, id))
-					added.Add(id);
+					added.Add((id, CatalogOutputs(catalog, id)));
 			}
 			// A dropped id stays in the roles when ANOTHER source (a second endpoint, a manual
 			// provider) still serves it enabled — checked against the just-saved settings.
@@ -1195,6 +1245,24 @@ public class AgentOrchestrator : ISessionOrchestrator
 				return true;
 		}
 		return false;
+	}
+
+	// A model's declared outputs from the endpoint's catalog; text when the catalog is unknown or says nothing.
+	private static List<string> CatalogOutputs(List<DiscoveredModel>? catalog, string id)
+	{
+		List<string>? outputs = null;
+		if (catalog != null)
+		{
+			foreach (DiscoveredModel d in catalog)
+			{
+				if (string.Equals(d.Id, id, StringComparison.OrdinalIgnoreCase))
+				{
+					outputs = d.Outputs;
+					break;
+				}
+			}
+		}
+		return outputs ?? new List<string> { OutputModality.Text };
 	}
 
 	// True when the id is still enabled by any configured source — another auto endpoint or a

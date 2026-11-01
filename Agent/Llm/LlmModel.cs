@@ -53,6 +53,7 @@ public class LlmModel
 			RequestTimeoutSeconds = Config.RequestTimeoutSeconds,
 			Cost                  = Config.Cost,
 			Input                 = Config.Input,
+			Output                = Config.Output,
 			Extras                = Config.Extras,
 			Headers               = Config.Headers
 		};

@@ -204,6 +204,12 @@ public class ModelConfig
 	[JsonPropertyName("input")]
 	public List<string> Input { get; set; } = new();
 
+	// Output modalities the model produces (see OutputModality). Empty means text. Populated from
+	// catalog discovery for auto models; declarable manually for others. Decides which roles the model
+	// may serve and, for a decisions-only model, that it is called on /v1/systemone instead of chat.
+	[JsonPropertyName("output")]
+	public List<string> Output { get; set; } = new();
+
 	// Most images one request may carry; 0 = no known limit. Some providers cap it (a few at 4),
 	// and since every image in the conversation is re-sent each turn, a long session crosses it.
 	// Requests keep only the newest images within the cap. Learned and written back the first time

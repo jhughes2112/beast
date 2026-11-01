@@ -92,6 +92,8 @@ internal class ConfigOverlay
 		public decimal       DiscCostIn  = -1m;
 		public decimal       DiscCostOut = -1m;
 		public List<string>? DiscModalities;
+		// Declared outputs; null = not declared, which means text. Display only — never overridden.
+		public List<string>? DiscOutputs;
 		// Unix epoch seconds the model was released; 0 = unknown (sorts to the alphabetical tail).
 		public long Created;
 
@@ -288,6 +290,7 @@ internal class ConfigOverlay
 							DiscCostIn     = m["costInput"]?.GetValue<decimal>() ?? -1m,
 							DiscCostOut    = m["costOutput"]?.GetValue<decimal>() ?? -1m,
 							DiscModalities = ReadStringList(m["modalities"]),
+							DiscOutputs    = ReadStringList(m["outputs"]),
 							Enabled        = m["enabled"]?.GetValue<bool>() ?? false,
 							Configured     = m["configured"]?.GetValue<bool>() ?? false,
 							Missing        = m["missing"]?.GetValue<bool>() ?? false,
@@ -1548,7 +1551,7 @@ internal class ConfigOverlay
 					string cost = row.CostIn >= 0 && row.CostOut >= 0
 						? $"{$"${row.CostIn:0.00}",7}/{$"${row.CostOut:0.00}",7}"
 						: "$?".PadLeft(15);
-					string modalities = row.Modalities != null ? ModalityTag(row.Modalities) : "  ?  ";
+					string modalities = (row.Modalities != null ? ModalityTag(row.Modalities) : "  ?  ") + OutputTag(row.DiscOutputs);
 					// A vanished model has no live stats worth faking — say what happened instead.
 					string right   = row.Missing ? "gone from endpoint" : $"{age,5} {window,7} {cost} {modalities}";
 					int    idWidth = Math.Max(8, innerW - right.Length - 5);
@@ -1652,6 +1655,45 @@ internal class ConfigOverlay
 			}
 		}
 		return new string(slots);
+	}
+
+	// What the model produces, after the input strip: →T for text (also when undeclared), →D for a
+	// decision model that only answers /v1/systemone, →E for embeddings, →I / →A for image or audio
+	// generators. One fixed-width column, so it reads in the same place on every row; decisions and
+	// embeddings win over text because they decide which roles the model can serve.
+	private static string OutputTag(List<string>? outputs)
+	{
+		char tag = 'T';
+		if (outputs != null && outputs.Count > 0)
+		{
+			tag = '?';
+			foreach (string o in outputs)
+			{
+				switch (o.ToLowerInvariant())
+				{
+					case "decisions":
+						tag = 'D';
+						break;
+					case "embeddings":
+						if (tag != 'D')
+							tag = 'E';
+						break;
+					case "text":
+						if (tag == '?')
+							tag = 'T';
+						break;
+					case "image":
+						if (tag == '?')
+							tag = 'I';
+						break;
+					case "audio":
+						if (tag == '?')
+							tag = 'A';
+						break;
+				}
+			}
+		}
+		return $"→{tag}";
 	}
 
 	// Days since release, e.g. "5d" / "55d" / "350d"; blank when the release date is unknown.

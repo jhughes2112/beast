@@ -120,6 +120,11 @@ public class DisplayScreen : IDisplay
 	// /role modal overlay: model preference order per role.
 	private RoleOverlay? _roleOverlay;
 
+	// HallMonitor's calibration progress for a new decision model; shown only while one runs or just ended.
+	private readonly CalibrationPopup _calibrationPopup = new CalibrationPopup();
+	// Whether the last frame showed it, so the tick loop redraws once when it should disappear.
+	private bool _calibrationPopupDrawn;
+
 	// Host path of the folder bound to /workspace: dropped files are staged inside it so the agent
 	// can read them and so they die with the worktree. Empty until the launcher supplies it.
 	private string _attachmentRoot = string.Empty;
@@ -474,9 +479,11 @@ public class DisplayScreen : IDisplay
 		bool consumed;
 		lock (_consoleLock)
 		{
-			// The role editor claims only its own payload and declines everything else, so both
-			// overlays can share the one frame type.
-			consumed = _roleOverlay != null && _roleOverlay.OnConfigFrame(json);
+			// The calibration popup and the role editor each claim only their own payload and decline
+			// everything else, so all of them can share the one frame type.
+			consumed = _calibrationPopup.OnConfigFrame(json);
+			if (!consumed)
+				consumed = _roleOverlay != null && _roleOverlay.OnConfigFrame(json);
 			if (!consumed)
 				consumed = _configOverlay != null && _configOverlay.OnConfigFrame(json);
 		}
@@ -943,6 +950,14 @@ public class DisplayScreen : IDisplay
 		{
 			Screen roleScreen = _roleOverlay.Build(w, h);
 			frame.Blit(roleScreen, Math.Max(0, (w - roleScreen.W) / 2), Math.Max(0, (h - roleScreen.H) / 2), BlendMode.Replace, null);
+		}
+
+		// HallMonitor calibration progress: a small box in the top-right corner, above the history.
+		_calibrationPopupDrawn = _calibrationPopup.Visible;
+		if (_calibrationPopupDrawn)
+		{
+			Screen popup = _calibrationPopup.Build(w);
+			frame.Blit(popup, Math.Max(0, w - popup.W - 2), 1, BlendMode.Replace, null);
 		}
 
 		// Cursor glow layer (applied last so it lifts all underlying layers).
@@ -1532,6 +1547,11 @@ public class DisplayScreen : IDisplay
 					if (_transientStatusUntil > 0 && Environment.TickCount64 >= _transientStatusUntil)
 					{
 						// Transient status expired — Redraw will revert to the base (rooted path).
+						needRedraw = true;
+					}
+					if (_calibrationPopupDrawn && !_calibrationPopup.Visible)
+					{
+						// A finished calibration's outcome has been up long enough; take it down.
 						needRedraw = true;
 					}
 					if (_agentBusy)

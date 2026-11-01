@@ -62,6 +62,18 @@ public class Role
 	[JsonPropertyName("no_reasoning")]
 	public bool NoReasoning { get; }
 
+	// The output modality this role needs from its models (see the OutputModality class); blank means
+	// text. Only models declaring it may serve the role: '*' expands to those alone and model selection
+	// skips the rest, so a chat role never lands on a decision model or the reverse. A decisions role
+	// (HallMonitor) keeps its questions in code, not here: they are calibrated per model, and an edit
+	// would silently invalidate every calibration.
+	[JsonPropertyName("output_modality")]
+	public string OutputModality { get; }
+
+	// The output modality with the blank settled, for comparing against what models produce.
+	[JsonIgnore]
+	public string Produces => OutputModality.Length > 0 ? OutputModality : global::OutputModality.Text;
+
 	// Terminator tool this role finishes with when run as a subagent, chosen by its tool list;
 	// return_to_caller is the fallback for roles that declare no explicit terminator. Terminators
 	// are mutually exclusive — a role declares at most one.
@@ -91,7 +103,8 @@ public class Role
 		string                  endOfTurnPrompt,
 		int                     maxTurns,
 		Dictionary<string, int> turnBudgets,
-		bool                    noReasoning)
+		bool                    noReasoning,
+		string                  outputModality)
 	{
 		Name            = name ?? string.Empty;
 		Description     = description ?? string.Empty;
@@ -104,11 +117,31 @@ public class Role
 		MaxTurns        = maxTurns;
 		TurnBudgets     = turnBudgets ?? new Dictionary<string, int>();
 		NoReasoning     = noReasoning;
+		OutputModality  = outputModality ?? string.Empty;
 	}
 
-	// A role with no work budget that reasons as its models are configured.
+	// A text role with a work budget: every agent and subagent that runs a conversation.
+	public Role(string name, string description, RoleKind kind, List<string> models, List<string> tools, string systemPrompt, string summaryPrompt, string endOfTurnPrompt,
+		int maxTurns, Dictionary<string, int> turnBudgets, bool noReasoning)
+		: this(name, description, kind, models, tools, systemPrompt, summaryPrompt, endOfTurnPrompt, maxTurns, turnBudgets, noReasoning, global::OutputModality.Text)
+	{
+	}
+
+	// A text role with no work budget that reasons as its models are configured.
 	public Role(string name, string description, RoleKind kind, List<string> models, List<string> tools, string systemPrompt, string summaryPrompt, string endOfTurnPrompt)
 		: this(name, description, kind, models, tools, systemPrompt, summaryPrompt, endOfTurnPrompt, 0, new Dictionary<string, int>(), false)
 	{
+	}
+
+	// This role with a different model list; everything else is carried over.
+	public Role WithModels(List<string> models)
+	{
+		return new Role(Name, Description, Kind, models, Tools, SystemPrompt, SummaryPrompt, EndOfTurnPrompt, MaxTurns, TurnBudgets, NoReasoning, OutputModality);
+	}
+
+	// This role as the given kind, which roles.json carries by block rather than per role.
+	public Role WithKind(RoleKind kind)
+	{
+		return new Role(Name, Description, kind, Models, Tools, SystemPrompt, SummaryPrompt, EndOfTurnPrompt, MaxTurns, TurnBudgets, NoReasoning, OutputModality);
 	}
 }

@@ -15,7 +15,7 @@ public class RoleService
 	// Bump whenever a default role's prompts or tools change. A home roles.json written by an older
 	// build is then regenerated from the new defaults — the file would otherwise shadow them forever —
 	// keeping each role's model order and any custom roles, with the old copy saved as roles.json.bak.
-	private const int RolesVersion = 8;
+	private const int RolesVersion = 12;
 
 	private readonly string _workDirRolesPath;
 	private readonly string _homeDirRolesPath;
@@ -72,11 +72,12 @@ public class RoleService
 		_rawHomeRoles = snapshot.RawHome;
 	}
 
-	// Expands the '*' entry in role model lists to all enabled model IDs at that position (order
-	// preserved, duplicates skipped). Called by the registry once the model set is known. Each
-	// affected role is REPLACED with a new object and the whole set republished by reference —
+	// Expands the '*' entry in role model lists to the enabled models that produce what the role needs,
+	// at that position (order preserved, duplicates skipped): a chat role's '*' never takes in a decision
+	// model, nor a decisions role's '*' a chat model. Called by the registry once the model set is known.
+	// Each affected role is REPLACED with a new object and the whole set republished by reference —
 	// mutating the published lists in place would race handlers that are enumerating them.
-	public void ExpandModelWildcards(List<string> allModelIds)
+	public void ExpandModelWildcards(List<(string Id, List<string> Outputs)> allModels)
 	{
 		Dictionary<string, Role> updated = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
 		foreach ((string name, Role role) in Roles)
@@ -90,12 +91,12 @@ public class RoleService
 
 			List<string> expanded = new List<string>(role.Models);
 			expanded.RemoveAt(starIdx);
-			foreach (string id in allModelIds)
+			foreach ((string id, List<string> outputs) in allModels)
 			{
-				if (!expanded.Contains(id))
+				if (OutputModality.Produces(outputs, role.Produces) && !expanded.Contains(id))
 					expanded.Insert(starIdx++, id);
 			}
-			updated[name] = new Role(role.Name, role.Description, role.Kind, expanded, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning);
+			updated[name] = role.WithModels(expanded);
 		}
 		Roles = updated;
 	}
@@ -130,7 +131,8 @@ public class RoleService
 			ExplorerRole(),
 			WebFetchRole(),
 			WebSearchRole(),
-			MediaReaderRole()
+			MediaReaderRole(),
+			HallMonitorRole()
 		};
 		foreach (Role role in defaults)
 			fresh[role.Name] = role;
@@ -184,7 +186,7 @@ public class RoleService
 			foreach ((string name, Role role) in _rawHomeRoles)
 			{
 				if (string.Equals(name, roleName, StringComparison.OrdinalIgnoreCase))
-					all.Add(new Role(role.Name, role.Description, role.Kind, saved, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning));
+					all.Add(role.WithModels(saved));
 				else
 					all.Add(role);
 			}
@@ -200,22 +202,30 @@ public class RoleService
 	// Applies a /config enablement change to every persisted role ordering, scope-aware like
 	// SaveRoleModelOrder: ids that are no longer enabled anywhere are removed from each role's
 	// Models list in both the home file and any project override, and newly-enabled ids are
-	// inserted at the TOP of each role carrying the '*' wildcard — a just-enabled model is the one
-	// the user reaches for first. Roles without a wildcard are hand-curated and never gain models
+	// inserted at the TOP of each role carrying the '*' wildcard whose output they produce — a
+	// just-enabled model is the one the user reaches for first, but a decision model never lands on
+	// a chat role or the reverse. Roles without a wildcard are hand-curated and never gain models
 	// here. Reloads only when a file actually changed.
-	public void ApplyModelEnablement(List<string> addedIds, List<string> removedIds)
+	public void ApplyModelEnablement(List<(string Id, List<string> Outputs)> added, List<string> removedIds)
 	{
-		bool wroteHome    = UpdateHomeRolesEnablement(addedIds, removedIds);
-		bool wroteProject = UpdateProjectRolesEnablement(addedIds, removedIds);
+		bool wroteHome    = UpdateHomeRolesEnablement(added, removedIds);
+		bool wroteProject = UpdateProjectRolesEnablement(added, removedIds);
 
 		if (wroteHome || wroteProject)
 			LoadRoles();
 	}
 
-	// Returns the updated model list, or null when the enablement change touches nothing in it.
-	private static List<string>? ApplyEnablementToList(List<string> models, List<string> addedIds, List<string> removedIds)
+	// Returns the role's updated model list, or null when the enablement change touches nothing in it.
+	private static List<string>? ApplyEnablementToList(Role role, List<(string Id, List<string> Outputs)> added, List<string> removedIds)
 	{
-		List<string> updated = new List<string>(models);
+		List<string> addedIds = new List<string>();
+		foreach ((string id, List<string> outputs) in added)
+		{
+			if (OutputModality.Produces(outputs, role.Produces))
+				addedIds.Add(id);
+		}
+
+		List<string> updated = new List<string>(role.Models);
 		bool         changed = false;
 
 		foreach (string id in removedIds)
@@ -255,16 +265,16 @@ public class RoleService
 		return changed ? updated : null;
 	}
 
-	private bool UpdateHomeRolesEnablement(List<string> addedIds, List<string> removedIds)
+	private bool UpdateHomeRolesEnablement(List<(string Id, List<string> Outputs)> added, List<string> removedIds)
 	{
 		bool       changed = false;
 		List<Role> all     = new List<Role>();
 		foreach ((string _, Role role) in _rawHomeRoles)
 		{
-			List<string>? models = ApplyEnablementToList(role.Models, addedIds, removedIds);
+			List<string>? models = ApplyEnablementToList(role, added, removedIds);
 			if (models != null)
 			{
-				all.Add(new Role(role.Name, role.Description, role.Kind, models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning));
+				all.Add(role.WithModels(models));
 				changed = true;
 			}
 			else
@@ -276,7 +286,7 @@ public class RoleService
 		return changed && WriteRolesFile(_homeDirRolesPath, all);
 	}
 
-	private bool UpdateProjectRolesEnablement(List<string> addedIds, List<string> removedIds)
+	private bool UpdateProjectRolesEnablement(List<(string Id, List<string> Outputs)> added, List<string> removedIds)
 	{
 		bool written = false;
 		if (File.Exists(_workDirRolesPath))
@@ -293,10 +303,10 @@ public class RoleService
 						for (int i = 0; i < block.Count; i++)
 						{
 							Role          role   = block[i];
-							List<string>? models = ApplyEnablementToList(role.Models, addedIds, removedIds);
+							List<string>? models = ApplyEnablementToList(role, added, removedIds);
 							if (models != null)
 							{
-								block[i] = new Role(role.Name, role.Description, role.Kind, models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning);
+								block[i] = role.WithModels(models);
 								changed  = true;
 							}
 						}
@@ -344,7 +354,7 @@ public class RoleService
 							List<string> saved = new List<string>(modelIds);
 							if (role.Models.Contains("*"))
 								saved.Add("*");
-							block[i] = new Role(role.Name, role.Description, role.Kind, saved, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning);
+							block[i] = role.WithModels(saved);
 							found    = true;
 						}
 					}
@@ -486,18 +496,18 @@ public class RoleService
 		{
 			defaultNames.Add(role.Name);
 			bool kept = oldModels.TryGetValue(role.Name, out List<string>? models) && models.Count > 0;
-			migrated.Add(new Role(role.Name, role.Description, role.Kind, kept ? models! : role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning));
+			migrated.Add(kept ? role.WithModels(models!) : role);
 		}
 
 		foreach (Role role in old.Agents)
 		{
 			if (!string.IsNullOrEmpty(role.Name) && !defaultNames.Contains(role.Name))
-				migrated.Add(new Role(role.Name, role.Description, RoleKind.Agent, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning));
+				migrated.Add(role.WithKind(RoleKind.Agent));
 		}
 		foreach (Role role in old.Subagents)
 		{
 			if (!string.IsNullOrEmpty(role.Name) && !defaultNames.Contains(role.Name))
-				migrated.Add(new Role(role.Name, role.Description, RoleKind.Subagent, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning));
+				migrated.Add(role.WithKind(RoleKind.Subagent));
 		}
 		return migrated;
 	}
@@ -509,7 +519,7 @@ public class RoleService
 		if (string.IsNullOrEmpty(role.Name))
 			return;
 
-		Role kinded         = new Role(role.Name, role.Description, kind, role.Models, role.Tools, role.SystemPrompt, role.SummaryPrompt, role.EndOfTurnPrompt, role.MaxTurns, role.TurnBudgets, role.NoReasoning);
+		Role kinded         = role.WithKind(kind);
 		target[kinded.Name] = kinded;
 	}
 
@@ -762,5 +772,17 @@ public class RoleService
 			""";
 		List<string> tools = new List<string>();
 		return new Role("WebSearch", description, RoleKind.Subagent, new List<string>(), tools, systemPrompt, string.Empty, string.Empty);
+	}
+
+	// The models HallMonitor asks whether a bash command may run. It is a decisions role: its models are native
+	// decision models answering on /v1/systemone, never chat models, and it runs no conversation, so it has no
+	// tools, prompts, terminator or budget and cannot be spawned as a subagent. Only its model order lives here;
+	// the questions, the framing and the way answers become Allow, Unsure or Block are in code (HallMonitor),
+	// because every model is calibrated against exactly those words (HallMonitorCalibration).
+	private static Role HallMonitorRole()
+	{
+		const string description = "Judges whether a bash command is safe to run automatically";
+		return new Role(HallMonitor.RoleName, description, RoleKind.Subagent, new List<string> { "*" }, new List<string>(), string.Empty, string.Empty, string.Empty,
+			0, new Dictionary<string, int>(), false, OutputModality.Decisions);
 	}
 }

@@ -41,6 +41,7 @@ public class Program
 			await FileToolsTests.TestAsync(ctx);
 			ShellToolsTests.Test(ctx);
 			await FakeLlmTests.TestAsync(ctx);
+			await DecisionRoleTests.TestAsync(ctx);
 			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
 		}

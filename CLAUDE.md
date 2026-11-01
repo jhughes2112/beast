@@ -11,8 +11,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bat
-# Full build: beast.exe + beastagent Docker image
-build.bat
+# Full build for this machine: beast (self-contained single file for the host OS/CPU) + beastagent Docker
+# image (for the Docker VM's CPU). Output: build\bin\release\beast-<rid>\beast[.exe]
+build.bat          # Windows
+./build.sh         # macOS / Linux
+
+# Every platform (win/linux/osx x x64/arm64) plus beastagent:linux-amd64 and :linux-arm64 images, for testing
+build-all.bat
+
+# All three run Beast/publish.sh inside the mcr.microsoft.com/dotnet/sdk:10.0 container, which can
+# publish beast for any OS/CPU; the host scripts only detect the runtime identifier.
 
 # Build only Beast CLI (self-contained exe)
 dotnet publish Beast\Beast.csproj -c Release -r win-x64 --self-contained -o build\bin\release\beast-win-x64

@@ -163,7 +163,6 @@ public class LlmRegistry
 
 		foreach (ProviderConfig provider in settings.Settings.Providers)
 		{
-			string endpoint = provider.BaseUrl.TrimEnd('/');
 			foreach (ModelConfig modelConfig in provider.Models)
 			{
 				if (!modelConfig.Enabled)
@@ -172,6 +171,11 @@ public class LlmRegistry
 				// Settle the blank into the default here, once, so no reader downstream has to know
 				// that "unconfigured" and "explicitly none" are different words for different things.
 				modelConfig.ReasoningEffort = ReasoningEffort.Effective(modelConfig.ReasoningEffort);
+
+				// A decisions-only model is called on /v1/systemone, whatever chat route the provider names.
+				string endpoint = OutputModality.DecisionsOnly(modelConfig.Output)
+					? ModelCatalog.DecisionEndpoint(provider.BaseUrl)
+					: provider.BaseUrl.TrimEnd('/');
 
 				LlmModel model        = new LlmModel(modelConfig.Id, endpoint, provider.ApiKey, modelConfig.Extras, modelConfig.Headers, modelConfig);
 				fresh[modelConfig.Id] = model;
@@ -208,8 +212,8 @@ public class LlmRegistry
 				continue;
 			}
 
-			string                       endpoint = ModelCatalog.NormalizeRequestEndpoint(provider.BaseUrl);
-			Dictionary<string, LlmModel> updated  = new(_models, StringComparer.OrdinalIgnoreCase);
+			string                       chatEndpoint = ModelCatalog.NormalizeRequestEndpoint(provider.BaseUrl);
+			Dictionary<string, LlmModel> updated      = new(_models, StringComparer.OrdinalIgnoreCase);
 			foreach (AutoModelConfig enabled in provider.Models)
 			{
 				// A disabled entry keeps its overrides on disk but registers nothing.
@@ -236,9 +240,13 @@ public class LlmRegistry
 				if (updated.ContainsKey(enabled.Id))
 					continue;
 
+				// A decisions-only model shares the endpoint's api root but answers on /systemone, not chat.
+				ModelConfig config   = BuildModelConfig(enabled, found);
+				string      endpoint = OutputModality.DecisionsOnly(config.Output) ? ModelCatalog.DecisionEndpoint(provider.BaseUrl) : chatEndpoint;
+
 				updated[enabled.Id] = new LlmModel(enabled.Id, endpoint, provider.ApiKey,
 					enabled.Extras ?? new List<System.Text.Json.Nodes.JsonObject>(), enabled.Headers ?? new List<System.Text.Json.Nodes.JsonObject>(),
-					BuildModelConfig(enabled, found));
+					config);
 			}
 			_models = updated;
 		}
@@ -266,6 +274,10 @@ public class LlmRegistry
 
 		List<string> input = enabled.Modalities ?? found.Modalities ?? new List<string> { "text" };
 
+		// Outputs are discovered, never overridden: they decide the protocol, and a catalog that
+		// declares nothing is a text model.
+		List<string> output = found.Outputs ?? new List<string> { OutputModality.Text };
+
 		return new ModelConfig
 		{
 			Id              = enabled.Id,
@@ -281,7 +293,8 @@ public class LlmRegistry
 			MaxImages             = enabled.MaxImages,
 			RequestTimeoutSeconds = enabled.RequestTimeoutSeconds,
 			Cost                  = cost,
-			Input                 = input
+			Input                 = input,
+			Output                = output
 		};
 	}
 
@@ -292,7 +305,24 @@ public class LlmRegistry
 	// place under a handler that is enumerating it.
 	public void ExpandRoleWildcards(RoleService roles)
 	{
-		roles.ExpandModelWildcards(new List<string>(_models.Keys));
+		List<(string Id, List<string> Outputs)> all = new List<(string Id, List<string> Outputs)>();
+		foreach ((string id, LlmModel model) in _models)
+			all.Add((id, model.Config.Output));
+		roles.ExpandModelWildcards(all);
+	}
+
+	// Records a catalog fetched outside a load (the /config picker), so a model enabled from it is
+	// known, outputs included, before the reload that registers it.
+	public void RecordCatalog(string baseUrl, List<DiscoveredModel> models)
+	{
+		_catalogCache[baseUrl] = models;
+	}
+
+	// True when the model produces what the role needs. Every path that walks a role's models checks
+	// this, so an explicitly listed model of the wrong kind is skipped rather than called.
+	private static bool ServesRole(LlmModel model, Role role)
+	{
+		return OutputModality.Produces(model.Config.Output, role.Produces);
 	}
 
 	// True when at least one model is registered (manual or auto). Read at startup to decide
@@ -316,6 +346,10 @@ public class LlmRegistry
 		Dictionary<string, (string apiKey, List<string> modelIds)> unprobed = new(StringComparer.OrdinalIgnoreCase);
 		foreach ((string modelId, LlmModel model) in _models)
 		{
+			// A decisions-only endpoint speaks no chat protocol; there is nothing to detect.
+			if (OutputModality.DecisionsOnly(model.Config.Output))
+				continue;
+
 			string ep = model.Endpoint;
 			if (_probeCache.ContainsKey(ep))
 				continue;
@@ -375,7 +409,9 @@ public class LlmRegistry
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
 		if (withoutReasoning || role.NoReasoning)
 			model = model.WithoutReasoning();
-		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), GetOrCreateEndpointFacts(model.Endpoint), role.Models, ApplyLearnedCapability);
+		// The fallback list is the role's list narrowed to models that serve it, so falling back can
+		// never land on a model of the wrong kind.
+		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), GetOrCreateEndpointFacts(model.Endpoint), ModelIdsServing(role), ApplyLearnedCapability);
 	}
 
 	// Builds a service for the next model below the current one in its role list — the automatic equivalent
@@ -454,18 +490,59 @@ public class LlmRegistry
 		return model;
 	}
 
-	// Returns the role's models filtered to those currently registered (enabled in settings).
+	// Returns the role's models filtered to those currently registered (enabled in settings) that
+	// produce what the role needs.
 	public List<string> GetEnabledModelsForRole(Role role)
 	{
 		List<string> enabled = new List<string>();
 		foreach (string configId in role.Models)
 		{
-			if (_models.ContainsKey(configId))
+			if (_models.TryGetValue(configId, out LlmModel? model) && ServesRole(model, role))
 			{
 				enabled.Add(configId);
 			}
 		}
 		return enabled;
+	}
+
+	// The role's list in order, keeping unregistered ids (they may come back on a reload) but never a
+	// registered model of the wrong kind.
+	private List<string> ModelIdsServing(Role role)
+	{
+		List<string> ids = new List<string>();
+		foreach (string configId in role.Models)
+		{
+			if (!_models.TryGetValue(configId, out LlmModel? model) || ServesRole(model, role))
+				ids.Add(configId);
+		}
+		return ids;
+	}
+
+	// For a role answered outside the chat loop (a decisions role): its models in preference order,
+	// those that can serve now first and those still backing off after, permanently down ones left out.
+	public List<LlmModel> ModelsForRole(Role role)
+	{
+		List<LlmModel> ready      = new List<LlmModel>();
+		List<LlmModel> backingOff = new List<LlmModel>();
+		DateTimeOffset now        = DateTimeOffset.UtcNow;
+		foreach (string configId in role.Models)
+		{
+			if (!_models.TryGetValue(configId, out LlmModel? model) || !ServesRole(model, role))
+				continue;
+			if (_availability.TryGetValue(configId, out ModelAvailability? avail))
+			{
+				if (avail.IsDown)
+					continue;
+				if (avail.AvailableAt > now)
+				{
+					backingOff.Add(model);
+					continue;
+				}
+			}
+			ready.Add(model);
+		}
+		ready.AddRange(backingOff);
+		return ready;
 	}
 
 	// Returns 0 if any model in the role is available right now, the smallest remaining
@@ -477,7 +554,7 @@ public class LlmRegistry
 		DateTimeOffset now  = DateTimeOffset.UtcNow;
 		foreach (string cid in role.Models)
 		{
-			if (!_models.ContainsKey(cid))
+			if (!_models.TryGetValue(cid, out LlmModel? model) || !ServesRole(model, role))
 				continue;
 			if (!_availability.TryGetValue(cid, out ModelAvailability? avail))
 				return 0;
@@ -541,7 +618,7 @@ public class LlmRegistry
 					break;
 				}
 			}
-			if (inRole && _models.TryGetValue(preferredModelId, out LlmModel? preferred))
+			if (inRole && _models.TryGetValue(preferredModelId, out LlmModel? preferred) && ServesRole(preferred, role))
 			{
 				bool down = _availability.TryGetValue(preferredModelId, out ModelAvailability? pa) && pa.IsDown;
 				if (!down && preferred.Config.ContextWindow > minContextRequired)
@@ -565,7 +642,7 @@ public class LlmRegistry
 					break;
 				}
 			}
-			if (stickyInRole && _models.TryGetValue(sticky, out LlmModel? stickyModel) && stickyModel.Config.ContextWindow > minContextRequired)
+			if (stickyInRole && _models.TryGetValue(sticky, out LlmModel? stickyModel) && ServesRole(stickyModel, role) && stickyModel.Config.ContextWindow > minContextRequired)
 			{
 				bool serviceable = true;
 				if (_availability.TryGetValue(stickyModel.ConfigId, out ModelAvailability? sa))
@@ -584,7 +661,7 @@ public class LlmRegistry
 		DateTimeOffset backingOffAt = DateTimeOffset.MaxValue;
 		foreach (string modelId in role.Models)
 		{
-			if (!_models.TryGetValue(modelId, out LlmModel? model))
+			if (!_models.TryGetValue(modelId, out LlmModel? model) || !ServesRole(model, role))
 				continue;
 			if (model.Config.ContextWindow <= minContextRequired)
 				continue;

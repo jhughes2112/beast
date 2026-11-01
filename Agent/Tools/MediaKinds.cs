@@ -129,14 +129,15 @@ public static class MediaKinds
 	// The models from a role's list that can take this kind, IN THE ROLE'S ORDER. The role's
 	// ordering is the user's stated preference (arranged in /role), so it wins over any
 	// cheapest-first heuristic — and selecting outside the role would suggest or use models the
-	// role's own machinery (e.g. /model) refuses.
+	// role's own machinery (e.g. /model) refuses. Inspection is a chat call, so a model that takes the
+	// media but only answers decisions (Clef-Omni) is not a candidate.
 	public static List<LlmModel> CapableModels(LlmRegistry registry, MediaKind kind, IReadOnlyList<string> roleModelIds)
 	{
 		List<LlmModel> capable = new List<LlmModel>();
 		foreach (string modelId in roleModelIds)
 		{
 			LlmModel? model = registry.GetModel(modelId);
-			if (model != null && Supports(model.Config, kind))
+			if (model != null && Supports(model.Config, kind) && OutputModality.Produces(model.Config.Output, OutputModality.Text))
 				capable.Add(model);
 		}
 		return capable;

@@ -4,7 +4,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Native AOT cross-compilation toolchain: the Agent publishes as a native linux-x64 binary.
+# Native AOT toolchain: the Agent publishes as a native Linux binary for the image's own CPU.
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -12,13 +12,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-de
 COPY ["Agent/Agent.csproj", "Agent/"]
 RUN dotnet restore "Agent/Agent.csproj"
 
-# Copy source and publish
+# Copy source and publish. This stage runs as the target platform (natively, or emulated in a
+# cross-platform buildx build), so dpkg reports the image's CPU and AOT compiles for it.
 COPY . .
-RUN dotnet publish "Agent/Agent.csproj" \
-    -c Release \
-    -r linux-x64 \
-    --self-contained \
-    -o /app/publish
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         amd64) RID=linux-x64 ;; \
+         arm64) RID=linux-arm64 ;; \
+         *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+       esac \
+    && dotnet publish "Agent/Agent.csproj" \
+        -c Release \
+        -r $RID \
+        --self-contained \
+        -o /app/publish
 
 
 # -----------------------------
@@ -132,7 +139,10 @@ ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
 # than just CUDA. Ignored on hosts without that runtime.
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 
-RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell) \
+# The browser's path differs by CPU: Chrome for Testing's chrome-headless-shell-linux64/chrome-headless-shell
+# on amd64, Playwright's own chrome-linux/headless_shell build on arm64. Every lookup below accepts either.
+RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell \
+               /opt/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell 2>/dev/null | head -n1) \
     && mv "$BIN" "$BIN.real" \
     && printf '%s\n' '#!/bin/bash' \
          'if [ -e /dev/dxg ]; then' \
@@ -149,13 +159,14 @@ RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-she
 # --log-level/--disable-logging don't suppress; they say "ERROR:" and read as a failed check.
 # Other stderr passes through. fd 3 keeps --dump-dom off the filter; PIPESTATUS keeps chrome's code.
 RUN printf '%s\n' '#!/bin/bash' \
-      'BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | head -n1)' \
+      'BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell /opt/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell 2>/dev/null | head -n1)' \
       '{ "$BIN" --no-sandbox --disable-dev-shm-usage "$@" 2>&1 1>&3 | grep -vE "dbus/bus\.cc|dbus/object_proxy\.cc|vaapi_wrapper\.cc|sandbox_linux\.cc|bluez_dbus_manager\.cc" >&2; } 3>&1' \
       'exit ${PIPESTATUS[0]}' \
       > /usr/local/bin/chromium \
     && chmod +x /usr/local/bin/chromium \
     # Raw binary at a stable path for puppeteer, which passes its own flags.
-    && ln -s "$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | head -n1)" /opt/ms-playwright/chrome
+    && ln -s "$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell \
+                      /opt/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell 2>/dev/null | head -n1)" /opt/ms-playwright/chrome
 
 # Puppeteer, pointed at the browser above instead of downloading its own Chrome (~170MB).
 # A default puppeteer.launch() drives the headless shell fine.
@@ -186,8 +197,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --no-modify-path --profile minimal \
     && chmod -R a+w /usr/local/rustup /usr/local/cargo
 
-# Go — download the latest stable release and install to /usr/local/go.
-RUN curl -fsSL https://go.dev/dl/go1.24.3.linux-amd64.tar.gz \
+# Go — download the latest stable release and install to /usr/local/go. Go names its CPUs the
+# same way dpkg does (amd64, arm64), so the image's own architecture picks the right archive.
+RUN curl -fsSL https://go.dev/dl/go1.24.3.linux-$(dpkg --print-architecture).tar.gz \
         -o /tmp/go.tar.gz \
     && tar -C /usr/local -xzf /tmp/go.tar.gz \
     && rm /tmp/go.tar.gz

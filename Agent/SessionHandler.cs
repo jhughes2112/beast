@@ -1144,6 +1144,10 @@ public class SessionHandler
 		{
 			transport.Error(_activeSession.Id, $"Model '{target.ConfigId}' is not in the '{_activeSession.Role}' role's model list.");
 		}
+		else if (role != null && !OutputModality.Produces(target.Config.Output, role.Produces))
+		{
+			transport.Error(_activeSession.Id, $"Model '{target.ConfigId}' produces {string.Join(", ", target.Config.Output)}, and the '{_activeSession.Role}' role needs {role.Produces}.");
+		}
 		else if (target.Config.ContextWindow <= minRequired)
 		{
 			transport.Error(_activeSession.Id, $"Model '{target.ConfigId}' context window ({target.Config.ContextWindow}) is too small for the current conversation ({minRequired} tokens needed).");

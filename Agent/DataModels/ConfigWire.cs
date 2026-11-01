@@ -74,6 +74,10 @@ public class ConfigRoleInfo
 	[JsonPropertyName("kind")]
 	public string Kind { get; set; } = string.Empty;
 
+	// The output modality the role's models must produce ("text", "decisions"); see OutputModality.
+	[JsonPropertyName("output")]
+	public string Output { get; set; } = string.Empty;
+
 	// The role's models in preference order, each already resolved to a display label.
 	[JsonPropertyName("models")]
 	public List<ConfigRoleModel> Models { get; set; } = new();
@@ -170,6 +174,11 @@ public class ConfigModelInfo
 	// Null = unknown.
 	[JsonPropertyName("modalities")]
 	public List<string>? Modalities { get; set; } = null;
+
+	// Declared output modalities; null = not declared, which means text. Not editable: it decides
+	// which roles the model may serve and how it is called.
+	[JsonPropertyName("outputs")]
+	public List<string>? Outputs { get; set; } = null;
 
 	// True when a settings entry exists for this model at all; Enabled is that entry's flag.
 	// A configured-but-disabled model keeps its overrides and shows as such in the picker.

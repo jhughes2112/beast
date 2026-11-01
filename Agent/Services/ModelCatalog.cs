@@ -21,6 +21,9 @@ public class DiscoveredModel
 	public decimal CostCacheRead { get; set; } = -1m;
 	// Null = unknown; otherwise the declared input modalities ("text", "image", "audio").
 	public List<string>? Modalities { get; set; } = null;
+	// Null = not declared (an ordinary text model); otherwise the declared output modalities
+	// ("text", "decisions", ...). See OutputModality.
+	public List<string>? Outputs { get; set; } = null;
 
 	// Unix epoch seconds the model was released, 0 = unknown. Drives newest-first sorting in the
 	// /config picker — the latest models are almost always the ones being reached for.
@@ -37,7 +40,7 @@ public static class ModelCatalog
 	private static readonly TimeSpan kFetchTimeout = TimeSpan.FromSeconds(10);
 
 	// Suffixes a configured request endpoint may carry; stripped to find the API root.
-	private static readonly string[] kEndpointSuffixes = { "/chat/completions", "/completions", "/messages", "/responses" };
+	private static readonly string[] kEndpointSuffixes = { "/chat/completions", "/completions", "/messages", "/responses", "/systemone" };
 
 	// Returns the discovered catalog, or an empty list plus an error description on failure.
 	public static async Task<(List<DiscoveredModel> Models, string Error)> FetchAsync(string baseUrl, string apiKey, CancellationToken ct)
@@ -174,6 +177,13 @@ public static class ModelCatalog
 			: $"{trimmed}/v1/chat/completions";
 	}
 
+	// Where a decisions-only model is called: POST {api root}/systemone (TypeSafe System One), the
+	// sibling of the chat route that the same configured URL would normalize to.
+	public static string DecisionEndpoint(string url)
+	{
+		return $"{ApiRoot(url)}/systemone";
+	}
+
 	// The api root: the configured URL with any request-path suffix stripped ("…/v1" style).
 	private static string ApiRoot(string url)
 	{
@@ -302,6 +312,10 @@ public static class ModelCatalog
 				}
 			}
 		}
+
+		// Outputs: OpenRouter declares them beside the inputs; llama.cpp marks a native decision model
+		// with ["decisions"]. Absent stays null, which every reader takes as text.
+		model.Outputs = ReadStringList(ReadNode(entry["architecture"], "output_modalities"));
 
 		// Anthropic fallbacks for anything its catalog left unstated — 200k windows hold across
 		// the current fleet, and text+image only fills in when the capabilities object was absent.
@@ -446,6 +460,9 @@ public static class ModelCatalog
 				}
 				if (!match)
 					continue;
+
+				if (model.Outputs == null)
+					model.Outputs = ReadStringList(entry["output_modalities"]);
 
 				if (model.Modalities == null)
 				{
@@ -662,6 +679,26 @@ public static class ModelCatalog
 	private static JsonArray? AsArrayOrNull(JsonNode? node)
 	{
 		return node as JsonArray;
+	}
+
+	// The non-empty strings of an array node; null when the node is absent, not an array, or holds none,
+	// so "not declared" stays distinguishable from a declaration.
+	private static List<string>? ReadStringList(JsonNode? node)
+	{
+		List<string>? values = null;
+		JsonArray?    array  = AsArrayOrNull(node);
+		if (array != null)
+		{
+			foreach (JsonNode? item in array)
+			{
+				string? value = item is JsonValue v && v.TryGetValue(out string? s) ? s : null;
+				if (string.IsNullOrEmpty(value))
+					continue;
+				values ??= new List<string>();
+				values.Add(value);
+			}
+		}
+		return values;
 	}
 
 	// Property access with the same lenience: indexing a NON-OBJECT node throws (a provider that
