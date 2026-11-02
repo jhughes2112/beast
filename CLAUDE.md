@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bat
 # Full build for this machine: beast (self-contained single file for the host OS/CPU) + beastagent Docker
-# image (for the Docker VM's CPU). Output: build\bin\release\beast-<rid>\beast[.exe]
+# image (for the Docker VM's CPU). Output: beast.exe (Windows) or beast, beside the build scripts
 build.bat          # Windows
 ./build.sh         # macOS / Linux
 

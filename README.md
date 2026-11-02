@@ -2,24 +2,48 @@
 
 **It's your new favorite agent harness.**
 
-Beast runs a fleet of cooperating LLM agents **sandboxed inside Docker**, driven from a polished Windows terminal UI. The model can read, write, run shells, browse the web, and hand work to other agents — and it physically cannot touch anything outside the folder you point it at, so it never asks permission.
+Each Beast instance run manages a workflow of LLM agents **sandboxed in Docker**, driven from a polished terminal UI on Windows, macOS or Linux. The model can read, write, run shells, browse the web, and hand off work to other agents. The only way it can reach outside the sandbox goes through a `host_command` tool, guarded by the **HallMonitor**: you decide the trust level (Ask, Block, Allow) and if you configure a Jev-style Decider model, it auto-approves safe commands and asks you only when it isn't sure.
 
 **You own the model routing.** Every agent is a *Role*: an ordered list of models to try, the tools it may call, and its prompt. Put a cheap local model first and fall back to a premium API model only when you need it.
 
-**Bring the plan you already pay for.** Beast runs on a **ChatGPT subscription** (Plus/Pro/Business, signed in like the Codex CLI) or a **Claude subscription** (Pro/Max, via Claude Code), and on **any per-token API endpoint** — OpenAI, Anthropic, OpenRouter, Gemini, xAI, or a local server. Mix them freely in one role. When a subscription hits its usage limit, Beast tells you how much of each window is used and when it resets, falls back to the next model, and — if nothing else can take over — waits out the limit and picks the turn back up on its own.
+**Bring the plan you already pay for.** Beast runs on a **ChatGPT subscription** or a **Claude subscription**, and on **any per-token API endpoint**, including local servers. And you decide which does what.  When a subscription hits its usage limit, Beast continues with the next model automatically.  If you're rate limited, it retries or falls back to another model.
 
 ---
 
 ## Quick start
 
-**You need:** Docker Desktop, and one API key, a ChatGPT or Claude subscription, *or* a local model server.
+**Getting Started:** 
+1. Install Docker Desktop.  
+2. Run `build.bat` (Windows) or `./build.sh` (Mac, Linux)
+3. Move the output `beast.exe` or `beast` executable somewhere accessible by your PATH
+4. cd /wherever/you/want/to/work
+5. beast
+ 
+Notes: The build process itself runs inside a docker image and outputs the executable right next to the build script, super easy. (Don't run `build-all.bat`, that produces Beast for every OS/CPU combination, so it's just for testing and takes a long time.)
 
-```bat
-build.bat          :: produces beast.exe + the beastagent image
-beast              :: run it in the folder you want to work in
-```
+First launch will open the config picker automatically. Use /config to get back there later.
 
-First launch opens the config picker automatically. Add an endpoint, paste your key, spacebar the models you want. Done.
+---
+
+## Recent changes
+
+- **HallMonitor** — a new decider role judges every command the agent wants to run on your host as allow, block or unsure, and only unsure ask for confirmation
+- **HallMonitor auto calibration** — a decision model it hasn't used before is calibrated against a built-in allow/deny command set
+- **`host_command` tool** — Beast attempts to work on your local machine safely (no guarantees, your security posture is your responsibility)
+- **Cross-platform builds** — Windows, Mac, Linux, amd64, arm64
+- **Session launcher** — resume and control is much simpler now
+- **`sessionsDir` setting** — configurable location for worktree checkouts and conversation logs, so you can move it from `~/.beast/` to a drive with more space
+- **Decider model support**
+- **`/clear` and auto-resume**
+- **Improved role prompts**
+- **`settings.json`** — API keys are separated from prompts, tools, and decider config files so they can be edited or deleted and regenerated automatically.
+- **Smarter `commit_and_rebase`** — picks up your git identity from the git folder
+- **GPU-accelerated Chromium** — headless screenshots now take seconds not minutes on machines with a GPU.  Mac will still be slow unless screenshots are taken via host_command, there's no GPU support in Docker.
+- **Vulkan 1.4 container** — uses lavapipe CPU driver so you can do headless dev on graphical apps inside the sandbox
+- **Lingering media** — images stay in context until new images are requested, keeping the prefix cache warm.
+- **Multi-image tool calls** — `inspect_media` takes several images at once with a `max_dimension` the model controls, with drag and drop support
+- **Usage-limit auto-resume** — when a subscription window runs out, or an API is rate limited, Beast waits for the reset and continues the turn by itself.
+- **OpenRouter batch model** — `:batch` aren't supported, so they're filtered out now
 
 ---
 
@@ -28,7 +52,7 @@ First launch opens the config picker automatically. Add an endpoint, paste your 
 <!-- SCREENSHOT: readme/config-endpoints.png — the /config home screen showing endpoints + the web search section -->
 ![The /config screen](readme/config-endpoints.png)
 
-Pick from 27 built-in endpoint presets (llama-server, OpenAI, Anthropic, OpenRouter, Gemini, xAI, Ollama, LM Studio, vLLM…) or type your own URL. Beast then **asks the endpoint what it has** — context windows, pricing, modalities, release dates — so you don't hand-write any of it.
+Pick from 27 built-in endpoint presets or bring your own URL. Beast then **discovers what it serves automatically**.
 
 <!-- SCREENSHOT: readme/config-models.png — the model list for an endpoint, newest first, showing age/context/price/modality columns -->
 ![Choosing models](readme/config-models.png)
@@ -39,30 +63,81 @@ Models sort newest-first. `space` toggles, `Enter` edits a value, type to filter
 - **Only what can't be discovered gets saved.** Your `settings.json` stays tiny.
 - **Disabling isn't forgetting** — a switched-off model keeps its settings.
 
-**Web search** lives on the same screen. Six providers (OpenRouter · Perplexity · Anthropic · OpenAI · xAI · Gemini), each priced per 1k searches. Beast uses **the cheapest one you've enabled** and falls through to the next if it fails. No API key to enter — it borrows the key from the endpoint sharing its domain.
+**Web search** lives on the same screen. Six providers supported. Beast uses the **cheapest one enabled** and falls through to the next if it fails.
 
 ---
 
-## `/role` — who uses which model, in what order
+## `/role` — assign models and fallback order
 
 <!-- SCREENSHOT: readme/role.png — the /role editor showing a role name with arrows and its ordered model list -->
 ![The /role editor](readme/role.png)
 
 `←→` switch role · `↑↓` pick a model · `+`/`-` move it up or down · `Esc` saves.
 
-The first model that's available and fits gets the turn. That's the whole trick: local model first, premium as the fallback rather than the default.
+The first model that's available (and the context fits) gets the next turn. Providers can be flaky, but Beast keeps on going.
 
 | Role | Job |
 |------|-----|
-| **Default** | Chats with you. Read-only. Delegates real work. |
-| **Developer** | Writes the code in an isolated git worktree. |
-| **Reviewer** | Approves or rejects with actionable comments. |
-| **Explorer / WebFetch / WebSearch / MediaReader** | Helpers behind individual tools. |
+| **Default** | Chats with you. Mostly read-only. Delegates real work. |
+| **Developer** | Writes code, and if you use git, does it in an isolated worktree. |
+| **Reviewer** | Checks the Developer's work. |
+| **Explorer / WebFetch / WebSearch / MediaReader** | Cheap helpers that prevent context bloat in expensive models.  This lets you run small local models to do simple tasks not pay smart model prices. |
+| **HallMonitor** | (optional) Checks the safety of host commands. |
 
-Chat with Default → Default assigns to Developer → Developer gets Reviewer's sign-off → commits. Press **F10** to watch any agent's live conversation.
+### Typical Workflow: 
+Default → Assigns work to Developer → Reviewer Approve/Reject → Developer commits.
 
 <!-- SCREENSHOT: readme/sessions.png — F10 agent tree panel open beside a live conversation -->
 ![The agent tree](readme/sessions.png)
+
+---
+
+## Sessions
+
+When you start `beast`, it pulls up a list of "unfinished" sessions.  You can connect and continue any existing session, or start a new one.  Be aware that where you run beast from matters.  A **bare session** sandboxes the agent right in the folder you ran it from.  Inside a git repo you can also start a **worktree session**, which sandboxes the agent **at the root of the git repo, in its own worktree**.  That way it has access to everything without needing to reach through to the host machine as often.
+
+**Worktrees and session logs all live under `~/.beast/` by default, not in your project.** This keeps your project folder clean and makes resuming any project on your machine simpler.  When you Finish a session you are asking Beast to **delete this worktree** because all the work has been merged (by the Developer), then delete the session.  You can control the `sessionsDir` in `$HOME/.beast/settings.json` if your main disk is low on space:
+
+```json
+"sessionsDir": "D:\\BeastSessions"
+```
+
+Caution: If you move a worktree session's folder, go to your main repo and run `git worktree repair <new checkout path>` so it knows where it lives.
+
+`/clear` starts a new conversation and keeps the old one in the F10 list to reopen later.  You can view every version of every conversation this way.
+
+---
+
+## HallMonitor — approving host commands
+
+![HallMonitor Role](readme/deciders.png)
+
+Sometimes you want work done directly on your machine. Both the Default and Developer roles can do this with the `host_command`.
+
+Every host command is checked with the **HallMonitor** first. If you have a Decider model configured, it will return one of three verdicts:
+
+| Verdict | What happens |
+|---------|--------------|
+| **Allow** | Runs. |
+| **Block** | Refused, and the agent is told why. |
+| **Unsure** | Whatever you picked on the `/config` screen: *ask me*, *block it*, or *run it*. |
+
+If you don't set up a Decider model or it's unavailable, ALL commands are considered Unsure, and will follow your instructions accordingly.  If you set it to *run it* and an LLM nukes your home directory, this is on you.
+
+### Approvals
+
+![Approving a host command](readme/host-popup.png)
+
+When a command reaches you for confirmation, you make the call:
+
+- **Always** — run this exact command without asking from now on.
+- **Yes** — run once.
+- **No** — refuse once.
+- **Never** — refuse this exact command from now on.
+
+Always and never answers go in `~/.beast/decisions.json`, shared by every session. Matching must be exact-string.  You can edit the file by hand, and it's re-read before every decision.  The next time a model calibrates, your decisions become part of the calibration set.
+
+**Auto-Calibration.** The first time HallMonitor sees a model, it measures that model against a hefty built-in set of known-safe and known-dangerous commands, plus your always/never answers, to set the model's allow and block boundaries. A popup shows the calibration progress. Until calibration finishes, all commands are treated as Unsure. Results per model are kept in `~/.beast/hallmonitor.json` and may recalibrate from time to time as the algorithm changes.
 
 ---
 
@@ -90,63 +165,50 @@ If the current model takes images, the image goes into the conversation properly
 | `/config` | Endpoints, models, web search |
 | `/role` | Model order per role |
 | `/model <id>` | Switch model now |
+| `/effort <level>` | Reasoning effort: none, minimal, low, medium, high, max |
 | `/compact` | Compact context |
-| `/finish` | Integrate the worktree and exit |
+| `/clear` | Start a new conversation, keep the old one |
+| `/finish` | If the current worktree is finished, delete it and remove this session |
 | `/reload` `/verbose` `/quit` | |
 
-**Exiting:** `/finish` folds the worktree away — but only once everything is committed. `Ctrl+C` leaves it intact to resume later.
+**Exiting:** The agent Docker container may stop, but until it's removed, all temp files and work in progress is still there.  You can resume it anytime.  If you are using git worktrees, even if you delete the agent container, the worktree is still on your disk.  The Developer's job is to `commit_and_rebase` the worktree onto whatever branch it came from when work is done.  However, **Finish** means to remove the worktree, which Beast will only do if your commits are merged in.
 
 ---
 
 ## Scripting
 
+Maybe this is useful?  Beast can be run non-interactively too.  Examples:
+
 ```bat
 beast --worktree featureName -p "Add a health check endpoint"
-beast /p "Summarize the architecture"     :: no git, current folder
+beast --worktree none /p "Summarize the architecture"
 ```
 
-Dash and slash are interchangeable. `-p` must come last.
+`--worktree` skips the session menu and opens or creates the specific worktree session. `none` means use a bare session. Dash and slash are interchangeable on the command line.  For passing in prompts, `-p` must come last because anything after it is passed in as the prompt for convenience.
 
 ---
 
 ## Config files
 
-Everything lives in **`~/.beast/`** — one place, every project.
+Configs live in **`~/.beast/`**
 
-| File | What |
-|------|------|
-| `settings.json` | Endpoints, enabled models, web search. Managed by `/config`. |
-| `roles.json` | Role prompts, tools, model order. Managed by `/role`. |
+A project can have its own `/project/.beast/roles.json` to override system prompts for that repo. Your API keys are entered once only, and stay in your home folder.
 
-A project can drop its own `.beast/roles.json` to override prompts for that repo. API keys stay in your home folder and never land in a project.
-
-**Local models:** point at `host.docker.internal`, not `localhost` — the agent is in a container. `/config` fixes this for you automatically if you get it wrong.
+**Local models:** If you run your LLM on the host machine or in another Docker container, remember the agent is in Docker, so it reaches the host at `host.docker.internal`, not `localhost`. `/config` fixes this for you automatically if you get it wrong.
 
 ---
 
 ## Security model
 
-The agent runs as root inside the container; nothing the model does runs as root.
+The Beast agent program runs as root inside the container, but everything the LLM runs inside it are not.  This is nice because it means folders mounted for the agent, like the API keys and the `~/.beast/` folder where logs are stored, cannot be read or modified by the model.  It cannot steal your keys, cover its tracks, or hack your githooks to backdoor your host machine and elevate access.  All host commands are gated and can be as loose or locked down as you want.  
 
-- **Unprivileged shell.** `bash` runs as a plain user with no sudo and no apt-get. System packages go through the `apt_install` tool (plain package names only); pip, npm, cargo and go install into its home folder. It all disappears with the container.
-- **Keys out of reach.** `~/.beast` is mounted where the shell user can't enter, and the file tools only work inside `/workspace` and `/tmp` — symlinks are resolved before the check.
-- **No git back door to your machine.** The whole repository belongs to the agent: the model's git can look (status, diff, log) but not change anything, so it can't plant a hook, config or anything else your host's git or editor would run. The agent's `commit_and_rebase` records and integrates the work; your main checkout is root-only and nothing else touches it.
-- **Dot-folders are the agent's.** Every top-level folder starting with `.` (`.git`, `.github`, `.vscode`, `.venv`, …) is read-only to the model — including any it creates, which are taken over as soon as the command that made them finishes. CI and editor config stay a human's call.
+Sometimes a task requires packages installed that aren't built into the container, so `apt_install` is provided that allows plainly named packages to be installed.  pip, npm, cargo, and go install into `/home/beast/` which is the unprivileged user inside the container.  This all goes away when the session is deleted.
 
-It's a sandbox, not a code review: still read what it built before you run it on your machine.
+Basically, the model is allowed to modify the environment as it needs, but mainly sticks to `/workspace/` and `/tmp/`.
 
----
+Finally, any top-level dot-folders are read only to the model.  This means `.git`, `.github`, `.vscode`, `.venv`, including any new ones it creates, are not writeable.  This prevents attacks on CI and editor configs.  Any edits to that would have to go through a `host_command` instead, which is actively monitored.
 
-## How it works
-
-```
-Beast (Windows TUI)  ──WebSocket──►  Agent (Docker, port 13131)
-   launches the container                sandboxed to your project folder
-   renders the UI, F10 agent tree        runs the conversation loop + tools
-                                          spawns subagents, each its own session
-```
-
-Anthropic Messages, OpenAI ChatCompletions, and OpenAI Responses are all supported and streamed; the protocol is detected from the endpoint URL. The container ships Python, Node, Rust, Go, Java, Ruby, the .NET SDK, plus jq, sqlite3, pdftotext, pandoc, 7z and friends — so the agent can actually do the work.
+THIS IS NOT A SUBSTITUTE FOR DILIGENCE.  Beast makes a best effort at protecting the user, but these are essentially rogue alien programming agents invited into your computer with the hope they are well behaved.  I cannot be held responsible for the outputs of any LLM.  If you don't agree with that, you may not use this software.
 
 ---
 

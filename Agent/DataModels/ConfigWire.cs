@@ -17,6 +17,10 @@ public class ConfigEndpointsPayload
 	// the whole roster so an unconfigured one can be added and a keyless one explains itself.
 	[JsonPropertyName("search")]
 	public List<ConfigSearchInfo> Search { get; set; } = new();
+
+	// What HallMonitor does with a host command it is unsure about: "ask", "beSafe" or "beUnsafe".
+	[JsonPropertyName("hallMonitorUnsure")]
+	public string HallMonitorUnsure { get; set; } = "ask";
 }
 
 // One web-search provider row for the picker.

@@ -57,6 +57,6 @@ echo "Build Complete!"
 echo "============================================"
 echo
 echo "Outputs:"
-echo "  $PWD/build/bin/release/beast-$rid/beast"
+echo "  $PWD/beast  ($rid)"
 echo "  Docker image: beastagent:latest  (entrypoint: /app/Agent)"
 echo "============================================"

@@ -30,7 +30,18 @@ internal class ConfigOverlay
 
 	// The home screen is one navigable list with two sections; the header row is skipped by
 	// navigation so arrow keys never land on something that cannot be actioned.
-	private enum HomeRowKind { Endpoint, AddEndpoint, Spacer, SearchHeader, Search }
+	private enum HomeRowKind { HallMonitor, Endpoint, AddEndpoint, Spacer, SearchHeader, Search }
+
+	// What HallMonitor does with a host command it is unsure about, as settings.json spells it, in the order
+	// space cycles through them, with how the home screen says each one.
+	private static readonly (string Value, string Label)[] kUnsureChoices =
+	{
+		("ask",      "ask me"),
+		("beSafe",   "block it"),
+		("beUnsafe", "run it")
+	};
+
+	private string _hallMonitorUnsure = "ask";
 
 	// Well-known endpoints offered by "+ Add endpoint": local servers first, then the cloud
 	// providers. URLs are FULL request endpoints (the form NormalizeRequestEndpoint passes
@@ -248,6 +259,7 @@ internal class ConfigOverlay
 						});
 					}
 				}
+				_hallMonitorUnsure = root?["hallMonitorUnsure"]?.GetValue<string>() ?? "ask";
 				RebuildHomeRows();
 				// Only clear the loading placeholder — a "Saved …" notice from an apply that
 				// triggered this refresh stays visible on the endpoint screen.
@@ -471,6 +483,8 @@ internal class ConfigOverlay
 	private void RebuildHomeRows()
 	{
 		_homeRows.Clear();
+		_homeRows.Add((HomeRowKind.HallMonitor, 0));
+		_homeRows.Add((HomeRowKind.Spacer, 0));
 		for (int i = 0; i < _endpoints.Count; i++)
 			_homeRows.Add((HomeRowKind.Endpoint, i));
 		_homeRows.Add((HomeRowKind.AddEndpoint, 0));
@@ -529,6 +543,37 @@ internal class ConfigOverlay
 		else if (key.Key == ConsoleKey.DownArrow)
 		{
 			MoveHome(1);
+		}
+		else if ((key.KeyChar == '+' || key.KeyChar == '-' || key.Key == ConsoleKey.Add || key.Key == ConsoleKey.Subtract) && kind == HomeRowKind.Endpoint)
+		{
+			// + moves the endpoint up the list, - down; the selection goes with it. The agent saves the new
+			// order and resends the list.
+			int delta = key.KeyChar == '-' || key.Key == ConsoleKey.Subtract ? 1 : -1;
+			int to    = index + delta;
+			if (_endpoints[index].Source == "manual")
+			{
+				_status = "Manual endpoints are ordered in settings.json, not here.";
+			}
+			else if (to >= 0 && to < _endpoints.Count && _endpoints[to].Source != "manual")
+			{
+				(string BaseUrl, string Source, int EnabledCount) moved = _endpoints[index];
+				_endpoints[index] = _endpoints[to];
+				_endpoints[to]    = moved;
+				_homeSelected    += delta;
+				_sendCommand($"/config-endpoint-move {delta} {moved.BaseUrl}");
+			}
+		}
+		else if ((key.Key == ConsoleKey.Spacebar || key.KeyChar == ' ' || key.Key == ConsoleKey.Enter) && kind == HomeRowKind.HallMonitor)
+		{
+			// Cycles what HallMonitor does with an Unsure host command; saved at once, read at the next command.
+			int current = 0;
+			for (int i = 0; i < kUnsureChoices.Length; i++)
+			{
+				if (kUnsureChoices[i].Value == _hallMonitorUnsure)
+					current = i;
+			}
+			_hallMonitorUnsure = kUnsureChoices[(current + 1) % kUnsureChoices.Length].Value;
+			_sendCommand($"/config-hallmonitor {_hallMonitorUnsure}");
 		}
 		else if (key.Key == ConsoleKey.Spacebar || key.KeyChar == ' ')
 		{
@@ -1377,29 +1422,14 @@ internal class ConfigOverlay
 
 		Screen s = new Screen(bw, bh, new Cell(' ', textFg, bg, CellStyle.None));
 
-		// Border + title.
-		for (int x = 0; x < bw; x++)
-		{
-			s.Set(x,      0, new Cell('─', borderFg, bg, CellStyle.None));
-			s.Set(x, bh - 1, new Cell('─', borderFg, bg, CellStyle.None));
-		}
-		for (int y = 0; y < bh; y++)
-		{
-			s.Set(     0, y, new Cell('│', borderFg, bg, CellStyle.None));
-			s.Set(bw - 1, y, new Cell('│', borderFg, bg, CellStyle.None));
-		}
-		s.Set(     0,      0, new Cell('┌', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1,      0, new Cell('┐', borderFg, bg, CellStyle.None));
-		s.Set(     0, bh - 1, new Cell('└', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1, bh - 1, new Cell('┘', borderFg, bg, CellStyle.None));
-		AnsiToScreen.WriteLine(s, 2, 0, " Model Configuration ", titleFg, bg);
+		PopupFrame.Draw(s, "Model Configuration", borderFg, titleFg, bg);
 
 		int innerW = bw - 4;
 		switch (_mode)
 		{
 			case Mode.Endpoints:
 			{
-				AnsiToScreen.WriteLine(s, 2, 1, "↑↓ move · Enter open/edit · space toggle · Del remove · Esc close", dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1, PopupFrame.Fit("↑↓ move · Enter open/edit · space toggle · +/- reorder · Del remove · Esc close", innerW), dimFg, bg);
 
 				int visRows = bh - 4;
 				if (_homeSelected < _homeScroll)
@@ -1423,7 +1453,7 @@ internal class ConfigOverlay
 
 					if (kind == HomeRowKind.SearchHeader)
 					{
-						AnsiToScreen.WriteLine(s, 2, row, Truncate("Web search  (the cheapest enabled provider is used)", innerW), dimFg, bg);
+						AnsiToScreen.WriteLine(s, 2, row, PopupFrame.Fit("Web search  (the cheapest enabled provider is used)", innerW), dimFg, bg);
 						continue;
 					}
 
@@ -1434,7 +1464,18 @@ internal class ConfigOverlay
 					s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 
 					string line;
-					if (kind == HomeRowKind.Endpoint)
+					if (kind == HomeRowKind.HallMonitor)
+					{
+						string label = kUnsureChoices[0].Label;
+						foreach ((string value, string choice) in kUnsureChoices)
+						{
+							if (value == _hallMonitorUnsure)
+								label = choice;
+						}
+						line  = $"HallMonitor, when unsure about a host command: {label}   (space changes it)";
+						rowFg = _hallMonitorUnsure == "beUnsafe" ? unknownFg : textFg;
+					}
+					else if (kind == HomeRowKind.Endpoint)
 					{
 						string tag = _endpoints[index].Source == "manual" ? " [manual]" : string.Empty;
 						line       = $"{_endpoints[index].BaseUrl}{tag}  ({_endpoints[index].EnabledCount} enabled)";
@@ -1456,16 +1497,16 @@ internal class ConfigOverlay
 						rowFg       = !provider.HasKey ? dimFg : live ? onFg : textFg;
 					}
 
-					AnsiToScreen.WriteLine(s, 2, row, Truncate(line, innerW), rowFg, rowBg);
+					AnsiToScreen.WriteLine(s, 2, row, PopupFrame.Fit(line, innerW), rowFg, rowBg);
 				}
 				break;
 			}
 			case Mode.SearchModel:
 			{
-				AnsiToScreen.WriteLine(s, 2, 1,  Truncate($"Search model for {_searchModelRow?.Name}", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, 3, Truncate("Model id  [blank = the provider's default]", innerW),  textFg, bg);
-				AnsiToScreen.WriteLine(s, 2,      5, Truncate("> " + _entry + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2,           "Enter accept · Esc cancel",   dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1,  PopupFrame.Fit($"Search model for {_searchModelRow?.Name}", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 3, PopupFrame.Fit("Model id  [blank = the provider's default]", innerW),  textFg, bg);
+				AnsiToScreen.WriteLine(s, 2,      5, PopupFrame.Fit("> " + _entry + "▏", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,                 "Enter accept · Esc cancel",   dimFg, bg);
 				break;
 			}
 			case Mode.AddPreset:
@@ -1492,7 +1533,7 @@ internal class ConfigOverlay
 					string name = kPresets[idx].Name.Length > nameWidth ? kPresets[idx].Name.Substring(0, nameWidth) : kPresets[idx].Name.PadRight(nameWidth);
 					AnsiToScreen.WriteLine(s, 2, r + 3, name, rowFg, rowBg);
 					if (kPresets[idx].Url.Length > 0)
-						AnsiToScreen.WriteLine(s, 2 + nameWidth + 1, r + 3, Truncate(kPresets[idx].Url, innerW - nameWidth - 1), dimFg, rowBg);
+						AnsiToScreen.WriteLine(s, 2 + nameWidth + 1, r + 3, PopupFrame.Fit(kPresets[idx].Url, innerW - nameWidth - 1), dimFg, rowBg);
 				}
 				break;
 			}
@@ -1508,22 +1549,22 @@ internal class ConfigOverlay
 					label = $"API key for {_baseUrl} (blank for none):";
 				AnsiToScreen.WriteLine(s, 2, 2, label, textFg, bg);
 				string shown = _mode == Mode.AddKey && _entry.Length > 0 ? new string('•', _entry.Length) : _entry;
-				AnsiToScreen.WriteLine(s, 2,      4, Truncate("> " + shown + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2,          "Enter continue · Esc back",   dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2,      4, PopupFrame.Fit("> " + shown + "▏", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,                "Enter continue · Esc back",   dimFg, bg);
 				break;
 			}
 			case Mode.Loading:
 			case Mode.Applying:
 			{
-				AnsiToScreen.WriteLine(s, 2, bh / 2, Truncate(_status, innerW), statusFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2,           "Esc to cancel",    dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh / 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
+				AnsiToScreen.WriteLine(s, 2, bh - 2,                 "Esc to cancel",    dimFg, bg);
 				break;
 			}
 			case Mode.Models:
 			{
 				string header = $"{_baseUrl}  —  space toggle · Enter edit · Del forget · type filter · Esc save+back";
-				AnsiToScreen.WriteLine(s, 2, 1, Truncate(header, innerW), dimFg, bg);
-				AnsiToScreen.WriteLine(s, 2, 2, Truncate($"Filter: {_filter}▏   ({CountEnabled()} enabled / {_models.Count} total)", innerW), textFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1, PopupFrame.Fit(header, innerW), dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 2, PopupFrame.Fit($"Filter: {_filter}▏   ({CountEnabled()} enabled / {_models.Count} total)", innerW), textFg, bg);
 
 				int visRows = bh - 5;
 				if (_modelSelected < _modelScroll)
@@ -1555,8 +1596,8 @@ internal class ConfigOverlay
 					// A vanished model has no live stats worth faking — say what happened instead.
 					string right   = row.Missing ? "gone from endpoint" : $"{age,5} {window,7} {cost} {modalities}";
 					int    idWidth = Math.Max(8, innerW - right.Length - 5);
-					string line    = $"{mark} {Truncate(row.Id, idWidth).PadRight(idWidth)} {right}";
-					AnsiToScreen.WriteLine(s, 2, r + 3, Truncate(line, innerW), rowFg, rowBg);
+					string line    = $"{mark} {PopupFrame.Fit(row.Id, idWidth).PadRight(idWidth)} {right}";
+					AnsiToScreen.WriteLine(s, 2, r + 3, PopupFrame.Fit(line, innerW), rowFg, rowBg);
 					if (sel && row.Missing)
 						AnsiToScreen.WriteLine(s, 2, bh - 2, "No longer in the endpoint's catalog — space or Del removes it from your list.", unknownFg, bg);
 					else if (sel && (row.UnknownWindow || row.UnknownCost || row.UnknownModalities) && !row.Enabled)
@@ -1567,7 +1608,7 @@ internal class ConfigOverlay
 			case Mode.Details:
 			{
 				ModelRow? row = _detailRow;
-				AnsiToScreen.WriteLine(s, 2, 1, Truncate($"{(_detailEnableOnFinish ? "Enable" : "Settings for")} {row?.Id}", innerW), titleFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 1, PopupFrame.Fit($"{(_detailEnableOnFinish ? "Enable" : "Settings for")} {row?.Id}", innerW), titleFg, bg);
 				if (row != null)
 				{
 					int visRows = Math.Max(1, bh - 6);
@@ -1592,16 +1633,16 @@ internal class ConfigOverlay
 
 						string name  = (required ? "* " : "  ") + DetailName(field);
 						string value = sel && _detailEditing ? _entry + "▏" : DetailValue(field, row);
-						AnsiToScreen.WriteLine(s, 2, r + 3, Truncate(name.PadRight(labelWidth) + value, innerW), sel && _detailEditing ? titleFg : rowFg, rowBg);
+						AnsiToScreen.WriteLine(s, 2, r + 3, PopupFrame.Fit(name.PadRight(labelWidth) + value, innerW), sel && _detailEditing ? titleFg : rowFg, rowBg);
 					}
 
-					AnsiToScreen.WriteLine(s, 2, bh - 3, Truncate(DetailHelp(kDetailFields[_detailIndex]), innerW), dimFg, bg);
+					AnsiToScreen.WriteLine(s, 2, bh - 3, PopupFrame.Fit(DetailHelp(kDetailFields[_detailIndex]), innerW), dimFg, bg);
 					if (_status.Length == 0)
 					{
 						string hint = _detailEditing
 							? "Enter accept · Esc cancel"
 							: "↑↓ move · Enter edit/toggle · Del reset to auto · Esc done" + (_detailEnableOnFinish ? " (enables)" : string.Empty);
-						AnsiToScreen.WriteLine(s, 2, bh - 2, Truncate(hint, innerW), dimFg, bg);
+						AnsiToScreen.WriteLine(s, 2, bh - 2, PopupFrame.Fit(hint, innerW), dimFg, bg);
 					}
 				}
 				break;
@@ -1609,7 +1650,7 @@ internal class ConfigOverlay
 		}
 
 		if (_status.Length > 0 && _mode != Mode.Loading && _mode != Mode.Applying)
-			AnsiToScreen.WriteLine(s, 2, bh - 2, Truncate(_status, innerW), statusFg, bg);
+			AnsiToScreen.WriteLine(s, 2, bh - 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
 
 		return s;
 	}
@@ -1710,12 +1751,5 @@ internal class ConfigOverlay
 	private static string FormatK(int tokens)
 	{
 		return tokens >= 1000 ? $"{tokens / 1000}k" : tokens.ToString();
-	}
-
-	private static string Truncate(string text, int max)
-	{
-		if (text.Length <= max)
-			return text;
-		return max > 1 ? text.Substring(0, max - 1) + "…" : text.Substring(0, Math.Max(0, max));
 	}
 }

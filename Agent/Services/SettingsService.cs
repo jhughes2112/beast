@@ -12,7 +12,6 @@ using System.Text.Json.Nodes;
 public class SettingsService
 {
 	private readonly string _homeDirSettingsPath;
-	private readonly string _legacyWorkDirSettingsPath;
 
 	// Every write is a read-modify-write of the whole file. Two at once would each drop the other's
 	// change — and a dropped change can be a rotated OAuth refresh token, which signs the user out.
@@ -25,15 +24,9 @@ public class SettingsService
 
 	public Dictionary<string, ToolConfig> Tools => _toolService.Tools;
 
-	// Set when a pre-single-file project settings.json with real content is found: earlier builds
-	// wrote and honored one, so silently ignoring it would lose configured providers, keys, and
-	// search settings on upgrade. Surfaced by the orchestrator as a startup alert.
-	public string? LegacySettingsWarning { get; private set; }
-
-	public SettingsService(string workDir)
+	public SettingsService()
 	{
-		_homeDirSettingsPath       = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "settings.json");
-		_legacyWorkDirSettingsPath = Path.Combine(workDir, ".beast", "settings.json");
+		_homeDirSettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "settings.json");
 
 		Settings = null!;
 		LoadSettings();
@@ -48,17 +41,12 @@ public class SettingsService
 	public void LoadSettings()
 	{
 		// Parse fully before touching Settings: a malformed file throws out of LoadSettingsFromFile,
-		// and the previous configuration must stay in effect rather than a half-swapped state.
+		// and the previous configuration must stay in effect rather than a half-swapped state. Anything
+		// the file leaves out keeps BeastSettings' defaults; anything it has that is no longer a setting is ignored.
 		BeastSettings? home = LoadSettingsFromFile(_homeDirSettingsPath);
 		if (home == null)
 		{
 			home = CreateDefaultHomeSettings();
-			WriteSettings(_homeDirSettingsPath, home);
-		}
-		else if (HasLegacyToolsSection(_homeDirSettingsPath))
-		{
-			// Earlier builds kept tool descriptions here, where they could never be updated; they now
-			// live in tools.json, so rewriting the file drops the stale section.
 			WriteSettings(_homeDirSettingsPath, home);
 		}
 
@@ -67,62 +55,6 @@ public class SettingsService
 		// Published with a single reference assignment: a concurrent reader never sees a
 		// half-populated settings object.
 		Settings = home;
-
-		DetectLegacyProjectSettings();
-	}
-
-	private static bool HasLegacyToolsSection(string path)
-	{
-		bool legacy = false;
-		try
-		{
-			JsonNode? root = JsonNode.Parse(File.ReadAllText(path), null, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
-			legacy         = root is JsonObject obj && obj.ContainsKey("tools");
-		}
-		catch (JsonException)
-		{
-		}
-		return legacy;
-	}
-
-	// Flags a leftover project settings.json that carries real configuration. Empty auto-generated
-	// stubs from old builds are everywhere and mean nothing, so only meaningful content warns; a
-	// file that will not even parse warns too, since it plainly held SOMETHING.
-	private void DetectLegacyProjectSettings()
-	{
-		LegacySettingsWarning = null;
-		if (!File.Exists(_legacyWorkDirSettingsPath))
-			return;
-
-		bool meaningful;
-		try
-		{
-			string         json   = File.ReadAllText(_legacyWorkDirSettingsPath);
-			BeastSettings? legacy = string.IsNullOrWhiteSpace(json)
-				? null
-				: JsonSerializer.Deserialize(json, BeastJson.Config.BeastSettings);
-			// Every field the old project merge honored counts — not just providers and search. A
-			// legacy file holding only a sound path or a compaction reserve was still shaping
-			// behavior before the single-file change, and its owner deserves the same warning.
-			meaningful = legacy != null
-				&& (legacy.Providers.Count > 0 || legacy.Auto.Count > 0 || legacy.WebSearch?.Openrouter != null
-					|| (legacy.WebSearch != null && legacy.WebSearch.Providers.Count > 0)
-					|| !string.IsNullOrEmpty(legacy.IdleSoundFile)
-					|| !string.IsNullOrEmpty(legacy.SubagentSoundFile)
-					|| legacy.CompactionReserveTokens > 0);
-		}
-		catch (Exception)
-		{
-			meaningful = true;
-		}
-
-		if (meaningful)
-		{
-			LegacySettingsWarning =
-				$"This project has a legacy settings file at {_legacyWorkDirSettingsPath} that is NO LONGER READ — configuration now lives only in ~/.beast/settings.json. "
-				+ "Move anything you still need (providers, API keys, web search) into the user file, then delete the project file to silence this.";
-			Console.Error.WriteLine($"[SettingsService] {LegacySettingsWarning}");
-		}
 	}
 
 	private BeastSettings? LoadSettingsFromFile(string path)
@@ -384,6 +316,43 @@ public class SettingsService
 		}
 	}
 
+	// Moves one auto endpoint up (delta < 0) or down (delta > 0) one place in the user settings file. A move
+	// past either end, or an endpoint that is not there, leaves the file as it is.
+	public void MoveAutoEndpoint(string baseUrl, int delta)
+	{
+		lock (_writeGate)
+		{
+			BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+			int           from = -1;
+			for (int i = 0; i < home.Auto.Count; i++)
+			{
+				if (from < 0 && string.Equals(home.Auto[i].BaseUrl, baseUrl, StringComparison.OrdinalIgnoreCase))
+					from = i;
+			}
+			int to = from + Math.Sign(delta);
+			if (from >= 0 && to >= 0 && to < home.Auto.Count)
+			{
+				AutoProviderConfig moved = home.Auto[from];
+				home.Auto.RemoveAt(from);
+				home.Auto.Insert(to, moved);
+				WriteSettings(_homeDirSettingsPath, home);
+				LoadSettings();
+			}
+		}
+	}
+
+	// Persists what HallMonitor does with an Unsure host command ("ask", "beSafe" or "beUnsafe").
+	public void SaveHallMonitorUnsure(string value)
+	{
+		lock (_writeGate)
+		{
+			BeastSettings home     = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
+			home.HallMonitorUnsure = value;
+			WriteSettings(_homeDirSettingsPath, home);
+			LoadSettings();
+		}
+	}
+
 	private void WriteSettings(string path, BeastSettings settings)
 	{
 		try
@@ -404,21 +373,11 @@ public class SettingsService
 		}
 	}
 
+	// A fresh settings file: BeastSettings' defaults, plus an empty web-search block. No example providers:
+	// /config is the onboarding path (endpoint presets, catalog discovery, spacebar enablement), and each
+	// web-search provider borrows its API key from the endpoint sharing its domain, so there is nothing to pre-fill.
 	private static BeastSettings CreateDefaultHomeSettings()
 	{
-		return new BeastSettings
-		{
-			IdleSoundFile           = "C:/Windows/media/Windows Background.wav",
-			SubagentSoundFile       = "C:/Windows/media/Windows Hardware Fail.wav",
-			CompactionReserveTokens = 4096,
-			// No example providers: /config is the onboarding path now (endpoint presets, catalog
-			// discovery, spacebar enablement). The manual section still works for hand-tuned
-			// configs — full ModelConfig with extras/headers/reasoning — it just starts empty
-			// instead of shipping placeholder stubs that showed up as phantom endpoints.
-			Providers = new List<ProviderConfig>(),
-			// No placeholder web-search block: providers are added in /config, and each borrows
-			// its API key from the endpoint sharing its domain, so there is nothing to pre-fill.
-			WebSearch = new WebSearchConfig()
-		};
+		return new BeastSettings { WebSearch = new WebSearchConfig() };
 	}
 }

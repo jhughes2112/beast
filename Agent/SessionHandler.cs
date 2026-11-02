@@ -1210,7 +1210,8 @@ public class SessionHandler
 				orchestrator.SpawnChildAsync(_activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
 			() => _activeSession.BeginWork(),
 			() => _activeSession.EndWork(),
-			_activeSession.OwesReply ? Terminate : null);
+			_activeSession.OwesReply ? Terminate : null,
+			orchestrator.HostCommands);
 
 		if (!windDown)
 			return full;

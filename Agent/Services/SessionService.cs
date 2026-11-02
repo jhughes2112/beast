@@ -5,7 +5,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 
 
-// Persists conversation sessions as JSON files under /workspace/.beast/sessions/.
+// Persists conversation sessions as JSON files in the session's state folder (AgentState.SessionsDir).
 // Each session is one file with a friendly name derived from the worktree branch name.
 // Root session: "{sanitizedBranchName}.json"
 // Child sessions: "{sanitizedBranchName}_child-{N}.json"
@@ -13,7 +13,7 @@ using System.Text.Json;
 // A manifest file maps friendly filenames to internal session IDs.
 public static class SessionService
 {
-	private static string SessionsDir => Path.Combine("/workspace", ".beast", "sessions");
+	private static string SessionsDir  => AgentState.SessionsDir;
 	private static string ManifestFile => Path.Combine(SessionsDir, ".manifest.json");
 
 	// Serializes every read-modify-write against the sessions directory. All persistence flows
@@ -62,8 +62,8 @@ public static class SessionService
 			return new SessionManifest();
 		try
 		{
-			string json = File.ReadAllText(ManifestFile);
-			var result = JsonSerializer.Deserialize(json, BeastJson.Persist.SessionManifest);
+			string json   = File.ReadAllText(ManifestFile);
+			var    result = JsonSerializer.Deserialize(json, BeastJson.Persist.SessionManifest);
 			return result ?? new SessionManifest();
 		}
 		catch
@@ -100,7 +100,7 @@ public static class SessionService
 	private static string SanitizeFilename(string name)
 	{
 		char[] chars = new char[name.Length];
-		int len = 0;
+		int    len   = 0;
 		foreach (char c in name)
 		{
 			if (char.IsLetterOrDigit(c) || c == '-' || c == '_')
@@ -118,11 +118,11 @@ public static class SessionService
 		{
 			var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
 			{
-				FileName = "git",
-				Arguments = "-C /workspace rev-parse --abbrev-ref HEAD",
+				FileName               = "git",
+				Arguments              = "-C /workspace rev-parse --abbrev-ref HEAD",
 				RedirectStandardOutput = true,
-				UseShellExecute = false,
-				CreateNoWindow = true
+				UseShellExecute        = false,
+				CreateNoWindow         = true
 			});
 			// Read before waiting: waiting first deadlocks if the output ever exceeds the pipe
 			// buffer, since nothing is draining it while the child blocks on a full pipe.
@@ -166,7 +166,7 @@ public static class SessionService
 		{
 			Directory.CreateDirectory(SessionsDir);
 
-			var manifest = LoadManifest();
+			var    manifest = LoadManifest();
 			string friendlyName;
 
 			// Check if this session already has a friendly name in the manifest
@@ -188,7 +188,7 @@ public static class SessionService
 					friendlyName = GetRootFriendlyName();
 					// If the name is already taken by another session, add a suffix
 					if (manifest.Entries.ContainsKey(friendlyName) &&
-					    manifest.Entries[friendlyName].SessionId != data.Id)
+						manifest.Entries[friendlyName].SessionId != data.Id)
 					{
 						int suffix = 1;
 						while (manifest.Entries.ContainsKey($"{friendlyName}-{suffix}"))
@@ -199,7 +199,7 @@ public static class SessionService
 				else
 				{
 					// Child session: extract parent ID and find parent's friendly name
-					string parentId = ExtractParentId(data.Id);
+					string  parentId       = ExtractParentId(data.Id);
 					string? parentFriendly = FindFriendlyName(manifest, parentId);
 					if (string.IsNullOrEmpty(parentFriendly))
 					{
@@ -219,8 +219,8 @@ public static class SessionService
 				// Register in manifest
 				manifest.Entries[friendlyName] = new ManifestEntry
 				{
-					SessionId = data.Id,
-					ParentId = IsRootSessionId(data.Id) ? null : ExtractParentId(data.Id),
+					SessionId   = data.Id,
+					ParentId    = IsRootSessionId(data.Id) ? null : ExtractParentId(data.Id),
 					DisplayName = data.DisplayName
 				};
 			}
@@ -328,7 +328,7 @@ public static class SessionService
 
 			try
 			{
-				string json = File.ReadAllText(file);
+				string        json = File.ReadAllText(file);
 				BeastSession? data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				if (data == null)
 					continue;
@@ -362,8 +362,8 @@ public static class SessionService
 	// Session info with creation order for sorting
 	public class SessionFileInfo
 	{
-		public BeastSession Session { get; set; } = null!;
-		public long CreationOrder { get; set; }
+		public BeastSession Session       { get; set; } = null!;
+		public long         CreationOrder { get; set; }
 	}
 
 	// Load ALL sessions for the worktree (both roots and children), returning fully populated BeastSession objects
@@ -378,7 +378,9 @@ public static class SessionService
 		// files behind. They are never valid session data, so clear them here.
 		foreach (string tmp in Directory.GetFiles(SessionsDir, "*.tmp"))
 		{
-			try { File.Delete(tmp); } catch { }
+			try
+			{ File.Delete(tmp); }
+			catch { }
 		}
 
 		foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
@@ -390,7 +392,7 @@ public static class SessionService
 
 			try
 			{
-				string json = File.ReadAllText(file);
+				string        json = File.ReadAllText(file);
 				BeastSession? data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				if (data != null)
 				{
@@ -415,7 +417,7 @@ public static class SessionService
 		if (!Directory.Exists(SessionsDir))
 			return results;
 
-		var manifest = LoadManifest();
+		var    manifest    = LoadManifest();
 		string childPrefix = rootId + "_";
 
 		foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
@@ -427,7 +429,7 @@ public static class SessionService
 
 			try
 			{
-				string json = File.ReadAllText(file);
+				string        json = File.ReadAllText(file);
 				BeastSession? data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 				if (data == null)
 					continue;
@@ -471,7 +473,7 @@ public static class SessionService
 			return ids;
 
 		string childPrefix = rootId + "_";
-		var manifest = LoadManifest();
+		var    manifest    = LoadManifest();
 		foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
 		{
 			string fileName = Path.GetFileNameWithoutExtension(file);
@@ -489,7 +491,7 @@ public static class SessionService
 				try
 				{
 					string json = File.ReadAllText(file);
-					var data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
+					var    data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 					if (data != null)
 						sessionId = data.Id;
 				}
@@ -515,7 +517,7 @@ public static class SessionService
 		if (string.IsNullOrWhiteSpace(sessionId) || !IsSafeSessionId(sessionId))
 			return false;
 
-		var manifest = LoadManifest();
+		var     manifest     = LoadManifest();
 		string? friendlyName = FindFriendlyName(manifest, sessionId);
 
 		if (string.IsNullOrEmpty(friendlyName))
@@ -574,9 +576,9 @@ public static class SessionService
 		if (string.IsNullOrWhiteSpace(sessionId) || !IsSafeSessionId(sessionId) || !Directory.Exists(SessionsDir))
 			return removed;
 
-		string childPrefix = sessionId + "_";
-		var manifest = LoadManifest();
-		List<string> toRemove = new List<string>();
+		string       childPrefix = sessionId + "_";
+		var          manifest    = LoadManifest();
+		List<string> toRemove    = new List<string>();
 
 		foreach (string file in Directory.GetFiles(SessionsDir, "*.json"))
 		{
@@ -594,7 +596,7 @@ public static class SessionService
 				try
 				{
 					string json = File.ReadAllText(file);
-					var data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
+					var    data = JsonSerializer.Deserialize(json, BeastJson.Persist.BeastSession);
 					if (data != null)
 						fileSessionId = data.Id;
 				}
@@ -605,7 +607,7 @@ public static class SessionService
 				continue;
 
 			bool isThisTree = string.Equals(fileSessionId, sessionId, StringComparison.Ordinal) ||
-			                   fileSessionId.StartsWith(childPrefix, StringComparison.Ordinal);
+							   fileSessionId.StartsWith(childPrefix, StringComparison.Ordinal);
 
 			if (isThisTree)
 			{

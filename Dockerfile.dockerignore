@@ -1,0 +1,9 @@
+# Build context for Dockerfile (BuildKit reads <Dockerfile>.dockerignore beside it). The image only compiles
+# the Agent, so everything else (git history, .beast worktrees and sessions, build output, the beast
+# executables) stays out of the context instead of being uploaded on every build.
+*
+!Directory.Build.props
+!Agent
+Agent/**/bin
+Agent/**/obj
+Agent/**/*.user

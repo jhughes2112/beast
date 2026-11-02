@@ -34,7 +34,7 @@ public static class ClaudeCodeLiveTests
 		ctx.Log("  ClaudeCodeLiveTests");
 
 		string token = string.Empty;
-		foreach (AutoProviderConfig auto in new SettingsService(Environment.CurrentDirectory).Settings.Auto)
+		foreach (AutoProviderConfig auto in new SettingsService().Settings.Auto)
 		{
 			if (ClaudeCode.IsEndpoint(auto.BaseUrl))
 				token = auto.ApiKey;

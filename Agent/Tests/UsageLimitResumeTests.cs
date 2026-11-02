@@ -75,7 +75,7 @@ public static class UsageLimitResumeTests
 		using CancellationTokenSource runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 		SessionHandler handler               = new SessionHandler(session);
 		session.TryAttachHandler();
-		Task run = handler.RunAsync(registry, roleService, new SettingsService(Environment.CurrentDirectory), transport, new FakeLlmTests.StubOrchestrator(), false, runCts.Token);
+		Task run = handler.RunAsync(registry, roleService, new SettingsService(), transport, new FakeLlmTests.StubOrchestrator(), false, runCts.Token);
 
 		bool waiting = await WaitForStatusAsync(transport, "resumes automatically", ct);
 		ctx.Assert(waiting, "UsageLimit: with no fallback, the session says it will resume on its own");

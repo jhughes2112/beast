@@ -5,9 +5,9 @@ using System.Collections.Generic;
 // Describes a session entry for display in the session tree overlay.
 public class SessionDisplayInfo
 {
-	public string Id { get; }
-	public string Name { get; }
-	public bool IsBusy { get; }
+	public string Id     { get; }
+	public string Name   { get; }
+	public bool   IsBusy { get; }
 	// Depth in the session hierarchy (0 = root, 1 = first-level child, etc.).
 	public int Depth { get; }
 	// Termination status for non-busy sessions; Ongoing while the session is busy.
@@ -15,10 +15,10 @@ public class SessionDisplayInfo
 
 	public SessionDisplayInfo(string id, string name, bool isBusy, int depth, SessionStatus status)
 	{
-		Id = id;
-		Name = name;
+		Id     = id;
+		Name   = name;
 		IsBusy = isBusy;
-		Depth = depth;
+		Depth  = depth;
 		Status = status;
 	}
 }
@@ -27,18 +27,18 @@ public class SessionDisplayInfo
 // Individual messages can always be toggled regardless of mode.
 public enum CollapseMode
 {
-	Verbose,    // nothing collapsed on arrival
-	Minimized,  // Tool, Thinking, and System collapsed; Output and Error expanded
-	Quiet       // everything collapsed on arrival
+	Verbose,   // nothing collapsed on arrival
+	Minimized, // Tool, Thinking, and System collapsed; Output and Error expanded
+	Quiet      // everything collapsed on arrival
 }
 
 // A single slot in the conversation display. Index is stable; content is overwritten in place for streaming.
 public class DisplayMessage
 {
-	public int Index { get; }
-	public FrameType Type { get; set; }
-	public string Content { get; set; }
-	public bool Collapsed { get; set; }
+	public int       Index     { get; }
+	public FrameType Type      { get; set; }
+	public string    Content   { get; set; }
+	public bool      Collapsed { get; set; }
 	// When this is a ToolCall slot, holds the paired ToolResponse stdout (or null if not yet received).
 	public string? PairedResponseContent { get; set; }
 	// When this is a ToolCall slot, holds the paired ToolResponse stderr (or null if not yet received).
@@ -52,9 +52,9 @@ public class DisplayMessage
 
 	public DisplayMessage(int index, FrameType type, string content)
 	{
-		Index = index;
-		Type = type;
-		Content = content;
+		Index     = index;
+		Type      = type;
+		Content   = content;
 		Collapsed = false;
 	}
 }
@@ -64,7 +64,7 @@ public class DisplayMessage
 public class ConversationModel
 {
 	private readonly List<DisplayMessage> _messages = new List<DisplayMessage>();
-	private CollapseMode _mode = CollapseMode.Minimized;
+	private          CollapseMode         _mode     = CollapseMode.Minimized;
 	// Maps tool call ID → message slot index; populated on ToolCall arrival, consumed on ToolResponse.
 	private readonly Dictionary<string, int> _pendingToolCallById = new Dictionary<string, int>(StringComparer.Ordinal);
 
@@ -101,22 +101,22 @@ public class ConversationModel
 			_messages.Add(new DisplayMessage(_messages.Count, FrameType.Output, ""));
 		}
 
-		DisplayMessage msg = _messages[index];
-		bool typeChanged = msg.Type != type;
+		DisplayMessage msg         = _messages[index];
+		bool           typeChanged = msg.Type != type;
 
 		// Strip the call ID prefix ("callId\x01content") from ToolCall frames.
 		// For ToolResponse frames, format is "callId\x01exitCode\x01stdout\x01stderr".
-		string callId = string.Empty;
-		int exitCode = 0;
-		string stdOut = string.Empty;
-		string stdErr = string.Empty;
+		string callId   = string.Empty;
+		int    exitCode = 0;
+		string stdOut   = string.Empty;
+		string stdErr   = string.Empty;
 
 		if (type == FrameType.ToolCall)
 		{
 			int sep = content.IndexOf('\x01');
 			if (sep >= 0)
 			{
-				callId = content.Substring(0, sep);
+				callId  = content.Substring(0, sep);
 				content = content.Substring(sep + 1);
 			}
 		}
@@ -132,7 +132,7 @@ public class ConversationModel
 			}
 		}
 
-		msg.Type = type;
+		msg.Type    = type;
 		msg.Content = content;
 
 		if (isNew || typeChanged)
@@ -159,16 +159,16 @@ public class ConversationModel
 
 			if (callIndex >= 0)
 			{
-				DisplayMessage callMsg = _messages[callIndex];
+				DisplayMessage callMsg        = _messages[callIndex];
 				callMsg.PairedResponseContent = stdOut;
-				callMsg.PairedResponseError = stdErr;
+				callMsg.PairedResponseError   = stdErr;
 				callMsg.PairedResponseIsError = exitCode != 0;
 				if (callMsg.ToolCallStartedUtc != default)
 					callMsg.ToolDuration = DateTime.UtcNow - callMsg.ToolCallStartedUtc;
 				MessageUpdated?.Invoke(callMsg);
 			}
 			// Mark this slot as hidden (reuse Debug type which is hidden in all non-verbose modes).
-			msg.Type = FrameType.Debug;
+			msg.Type    = FrameType.Debug;
 			msg.Content = string.Empty;
 		}
 
@@ -199,9 +199,10 @@ public class ConversationModel
 			return true;
 
 		// Quiet: hide everything except Output, User, and the error/alert blocks — a
-		// human-actionable Alert must never be hidden by a display mode.
+		// human-actionable Alert must never be hidden by a display mode. A command running on the
+		// user's own machine always shows too.
 		if (mode == CollapseMode.Quiet)
-			return type != FrameType.Output && type != FrameType.User && type != FrameType.Error && type != FrameType.Alert;
+			return type != FrameType.Output && type != FrameType.User && type != FrameType.Error && type != FrameType.Alert && type != FrameType.Host;
 
 		return false;
 	}
@@ -212,8 +213,8 @@ public class ConversationModel
 			return false;
 
 		// Output, User, and Alerts are never collapsed in any mode — an Alert exists precisely
-		// to stay in the user's face until the underlying problem is fixed.
-		if (type == FrameType.Output || type == FrameType.User || type == FrameType.Alert)
+		// to stay in the user's face until the underlying problem is fixed. Neither is a live host command.
+		if (type == FrameType.Output || type == FrameType.User || type == FrameType.Alert || type == FrameType.Host)
 			return false;
 
 		// Minimized: Tool/ToolCall/ToolResponse/Thinking/System shown collapsed.

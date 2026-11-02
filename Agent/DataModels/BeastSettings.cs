@@ -23,15 +23,51 @@ public class BeastSettings
 	[JsonPropertyName("webSearch")]
 	public WebSearchConfig? WebSearch { get; set; }
 
-	[JsonPropertyName("idleSoundFile")]
-	public string IdleSoundFile { get; set; } = string.Empty;
+	// Sounds are lists of candidate paths: the first one that exists on the machine running beast is played,
+	// so one settings.json serves Windows, macOS and Linux alike. Missing from the file means the built-in
+	// sounds below; an empty list means no sound.
+	[JsonPropertyName("idleSounds")]
+	public List<string> IdleSounds { get; set; } = DefaultIdleSounds();
 
-	// Played when a subagent sub-session completes; empty means no sound.
-	[JsonPropertyName("subagentSoundFile")]
-	public string SubagentSoundFile { get; set; } = string.Empty;
+	// Played when a subagent sub-session completes; same rules as IdleSounds.
+	[JsonPropertyName("subagentSounds")]
+	public List<string> SubagentSounds { get; set; } = DefaultSubagentSounds();
 
 	[JsonPropertyName("compactionReserveTokens")]
-	public int CompactionReserveTokens { get; set; } = 0;
+	public int CompactionReserveTokens { get; set; } = 4096;
+
+	// What happens to a host_command HallMonitor is unsure about: "ask" puts it to the user, "beSafe"
+	// refuses it, "beUnsafe" runs it. A command it allows always runs and one it blocks never does.
+	[JsonPropertyName("hallMonitorUnsure")]
+	public string HallMonitorUnsure { get; set; } = "ask";
+
+	// Host folder for sessions and their worktree checkouts; empty means ~/.beast/sessions. Read by the Beast
+	// client before any agent starts; carried here only so the agent's settings writes keep it.
+	[JsonPropertyName("sessionsDir")]
+	public string SessionsDir { get; set; } = "";
+
+	// Built-in sounds for each platform, Windows first. Only one of each list exists on any given machine, and
+	// it is the one that plays: Windows' media folder, macOS's system sounds, or the freedesktop sound theme
+	// most Linux desktops install.
+	public static List<string> DefaultIdleSounds()
+	{
+		return new List<string>
+		{
+			"C:/Windows/media/Windows Background.wav",
+			"/System/Library/Sounds/Glass.aiff",
+			"/usr/share/sounds/freedesktop/stereo/complete.oga"
+		};
+	}
+
+	public static List<string> DefaultSubagentSounds()
+	{
+		return new List<string>
+		{
+			"C:/Windows/media/Windows Hardware Fail.wav",
+			"/System/Library/Sounds/Funk.aiff",
+			"/usr/share/sounds/freedesktop/stereo/message.oga"
+		};
+	}
 }
 
 public class ProviderConfig

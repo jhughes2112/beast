@@ -12,7 +12,7 @@ public class LaunchDebug : ILauncher
 		return Task.FromResult(13131);
 	}
 
-	public Task StopAsync()
+	public Task StopAsync(bool remove)
 	{
 		return Task.CompletedTask;
 	}

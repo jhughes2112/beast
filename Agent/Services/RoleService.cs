@@ -15,7 +15,7 @@ public class RoleService
 	// Bump whenever a default role's prompts or tools change. A home roles.json written by an older
 	// build is then regenerated from the new defaults — the file would otherwise shadow them forever —
 	// keeping each role's model order and any custom roles, with the old copy saved as roles.json.bak.
-	private const int RolesVersion = 12;
+	private const int RolesVersion = 13;
 
 	private readonly string _workDirRolesPath;
 	private readonly string _homeDirRolesPath;
@@ -589,7 +589,7 @@ public class RoleService
 		const string endOfTurnPrompt = """
 			Your last response made no tool call. Check your spec. If every task is done or consciously dropped, call stop_work with the final checklist and a brief summary of the outcome. If a task remains, call assign_work for the next one. If you need a decision from the user to continue, call stop_work and state the question.
 			""";
-		List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "internet_search", "readonly_bash", "inspect_media" };
+		List<string> tools = new List<string> { "read_file", "find_relevant_file_sections", "ls", "assign_work", "fetch_url", "internet_search", "readonly_bash", "inspect_media", "host_command" };
 		return new Role("Default", description, RoleKind.Agent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt);
 	}
 
@@ -638,7 +638,7 @@ public class RoleService
 		// review_work, commit_and_rebase, and task_complete are markers: they have no registry entry and are
 		// injected in code by SubagentRunner (review_work spawns the Reviewer; commit_and_rebase integrates the
 		// work; task_complete is this role's terminator).
-		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "review_work", "commit_and_rebase", "task_complete", "inspect_media", "apt_install" };
+		List<string> tools = new List<string> { "bash", "read_file", "find_relevant_file_sections", "write_file", "edit_file", "ls", "fetch_url", "internet_search", "review_work", "commit_and_rebase", "task_complete", "inspect_media", "apt_install", "host_command" };
 		return new Role("Developer", description, RoleKind.Subagent, new List<string> { "*" }, tools, systemPrompt, summaryPrompt, endOfTurnPrompt, 60, new Dictionary<string, int> { { "small", 30 }, { "medium", 60 }, { "large", 120 } }, false);
 	}
 

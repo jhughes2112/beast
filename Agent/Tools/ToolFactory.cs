@@ -31,7 +31,8 @@ public static class ToolFactory
 		SpawnSubagent?        spawnSubagent,
 		Action?               onWorkAssigned,
 		Action?               onStopWork,
-		Action<bool, string>? onTerminate)
+		Action<bool, string>? onTerminate,
+		HostCommands?         hostCommands)
 	{
 		List<Tool> tools = new List<Tool>();
 
@@ -57,6 +58,28 @@ public static class ToolFactory
 					string command        = Str(args, "command");
 					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
 					return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
+				});
+		}
+
+		// Runs on the user's own machine through the client, never in this container, and only after
+		// HallMonitor's judgment (HostCommands). The shell argument lists only the shells the client found
+		// on its machine; with no client, or none found, the tool is not offered.
+		List<string> hostShells = hostCommands != null ? hostCommands.Shells : new List<string>();
+		if (role.Tools.Contains("host_command") && hostCommands != null && hostShells.Count > 0)
+		{
+			ToolConfig tc        = toolConfigs["host_command"];
+			JsonObject shellProp = Req("shell", "string", $"{tc.Parameters["shell"]} Available on this host: {string.Join(", ", hostShells)}.");
+			JsonArray  shellEnum = new JsonArray();
+			foreach (string shell in hostShells)
+				shellEnum.Add((JsonNode?)JsonValue.Create(shell));
+			shellProp["enum"] = shellEnum;
+			Register(tools, "host_command", tc.Description, Params(shellProp, Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+				async (args, toolCallId, ct, transport, sessionId) =>
+				{
+					string shell          = Str(args, "shell");
+					string command        = Str(args, "command");
+					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
+					return await hostCommands.RunAsync(sessionId, toolCallId, shell, command, timeoutSeconds, ct);
 				});
 		}
 

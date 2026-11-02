@@ -12,8 +12,9 @@ public interface ILauncher : IDisposable
 	// Must complete before RetryConnectAsync is called by BeastApp.
 	Task<int> StartAsync(string name, CancellationToken cancellationToken);
 
-	// Stops the agent backend gracefully. Called during BeastApp dispose.
-	Task StopAsync();
+	// Stops the agent backend gracefully. Called during BeastApp dispose. remove also deletes what it ran
+	// in; otherwise it is kept, stopped, for the next launch here to reconnect to.
+	Task StopAsync(bool remove);
 
 	// True while the agent backend is still running. False once it has exited/crashed, which means its
 	// WebSocket server will never come up and the client should stop waiting to connect.

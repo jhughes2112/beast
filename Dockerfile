@@ -8,13 +8,15 @@ WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy project file and restore
+# Copy project file and restore. Directory.Build.props sets the output paths the project builds with.
+COPY ["Directory.Build.props", "./"]
 COPY ["Agent/Agent.csproj", "Agent/"]
 RUN dotnet restore "Agent/Agent.csproj"
 
-# Copy source and publish. This stage runs as the target platform (natively, or emulated in a
-# cross-platform buildx build), so dpkg reports the image's CPU and AOT compiles for it.
-COPY . .
+# Copy source and publish. Only the Agent's own source is needed here (Dockerfile.dockerignore keeps the
+# rest of the repo out of the build context). This stage runs as the target platform (natively, or emulated
+# in a cross-platform buildx build), so dpkg reports the image's CPU and AOT compiles for it.
+COPY ["Agent/", "Agent/"]
 RUN ARCH=$(dpkg --print-architecture) \
     && case "$ARCH" in \
          amd64) RID=linux-x64 ;; \
@@ -69,6 +71,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     # Image conversion, resizing, compositing, and inspection (`convert`/`identify`/`mogrify`)
     imagemagick \
+    # Image/media metadata (EXIF, XMP, IPTC, GPS, camera and container tags)
+    libimage-exiftool-perl \
     # ICU/SSL/zlib: the AOT Agent itself needs only libssl3/zlib1g (it is InvariantGlobalization);
     # libicu74 stays for the .NET SDK below and any user projects that need globalization
     libicu74 libssl3 zlib1g \
@@ -275,6 +279,10 @@ RUN mkdir -p /opt/agent-bins/readonly \
          target="$(command -v "$cmd" || true)" ; \
          if [ -n "$target" ]; then ln -sf "$target" "/opt/agent-bins/readonly/$cmd" ; fi ; \
        done
+
+# exiftool cannot go in the list above as itself: -if and -p evaluate Perl (a shell escape) and -TAG=value,
+# -o and -w write files. readonly_bash gets a wrapper that passes only read options, with no config file.
+COPY --chmod=755 ["Agent/Docker/exiftool-readonly.sh", "/opt/agent-bins/readonly/exiftool"]
 
 # Copy the single-file published executable from the build stage
 COPY --from=build /app/publish/Agent .

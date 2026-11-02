@@ -12,9 +12,20 @@ public class TestCaptureTransport : ITransportServer
 
 	public IReadOnlyList<(FrameType Type, string Text)> Sent => _sent;
 
+	// A copy safe to read while another thread is still sending.
+	public List<(FrameType Type, string Text)> Snapshot()
+	{
+		lock (_sent)
+			return new List<(FrameType Type, string Text)>(_sent);
+	}
+
 	public void EnqueueRead(string text) => _pendingReads.Enqueue(text);
 
-	private void Send(FrameType type, string sessionId, string text) => _sent.Add((type, text));
+	private void Send(FrameType type, string sessionId, string text)
+	{
+		lock (_sent)
+			_sent.Add((type, text));
+	}
 
 	public void Output  (string sessionId, string text) => Send(  FrameType.Output, sessionId, text);
 	public void Error   (string sessionId, string text) => Send(   FrameType.Error, sessionId, text);

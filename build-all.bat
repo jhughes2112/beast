@@ -20,7 +20,15 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-set BEAST_RIDS=win-x64 win-arm64 linux-x64 linux-arm64 osx-x64 osx-arm64
+REM Every platform publishes to the same beast.exe / beast beside this script, each overwriting the last, so
+REM this machine's own runtime identifier goes last and the beast.exe left behind is the one that runs here.
+set HOST_ARCH=%PROCESSOR_ARCHITECTURE%
+if defined PROCESSOR_ARCHITEW6432 set HOST_ARCH=%PROCESSOR_ARCHITEW6432%
+if /i "%HOST_ARCH%"=="ARM64" (
+    set BEAST_RIDS=linux-x64 linux-arm64 osx-x64 osx-arm64 win-x64 win-arm64
+) else (
+    set BEAST_RIDS=linux-x64 linux-arm64 osx-x64 osx-arm64 win-arm64 win-x64
+)
 
 echo Building beast for %BEAST_RIDS% inside Docker (mcr.microsoft.com/dotnet/sdk:10.0)...
 docker run --rm -v "%CD%:/src" -v "%USERPROFILE%/.nuget/packages:/root/.nuget/packages" mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh %BEAST_RIDS%
@@ -63,7 +71,8 @@ echo Build-All Complete!
 echo ============================================
 echo.
 echo Outputs:
-for %%R in (%BEAST_RIDS%) do echo   %CD%\build\bin\release\beast-%%R\
+echo   %CD%\beast.exe  (this machine's Windows build)
+echo   %CD%\beast      (last of the macOS/Linux builds; every platform was published and verified to build)
 echo   Docker images: beastagent:latest, beastagent:linux-amd64, beastagent:linux-arm64
 echo ============================================
 

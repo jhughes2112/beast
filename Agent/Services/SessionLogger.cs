@@ -10,7 +10,7 @@ using System.Text;
 // of unexplained repeats.
 public class SessionLogger
 {
-	private static string LogsDir => Path.Combine(Environment.CurrentDirectory, ".beast", "logs");
+	private static string LogsDir => AgentState.LogsDir;
 
 	private readonly        string _path;
 	private static readonly object _fileLock = new object();

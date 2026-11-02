@@ -68,7 +68,7 @@ echo Build Complete!
 echo ============================================
 echo.
 echo Outputs:
-echo   %CD%\build\bin\release\beast-%BEAST_RID%\beast.exe
+echo   %CD%\beast.exe  (%BEAST_RID%)
 echo   Docker image: beastagent:latest  (entrypoint: /app/Agent)
 echo ============================================
 

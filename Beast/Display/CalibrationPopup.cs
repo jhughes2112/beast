@@ -54,59 +54,22 @@ internal class CalibrationPopup
 		{
 			int done   = Math.Max(0, _total - _remaining);
 			int filled = _total > 0 ? innerW * done / _total : 0;
-			lines.Add((Fit($"Calibrating {_model}", innerW), textFg));
+			lines.Add((PopupFrame.Fit($"Calibrating {_model}", innerW), textFg));
 			lines.Add((new string('█', filled) + new string('░', innerW - filled), barFg));
-			lines.Add((Fit($"{_remaining} of {_total} decisions left", innerW), textFg));
+			lines.Add((PopupFrame.Fit($"{_remaining} of {_total} decisions left", innerW), textFg));
 		}
 		else
 		{
-			foreach (string line in Wrap(_message, innerW))
+			foreach (string line in PopupFrame.WrapWords(_message, innerW))
 				lines.Add((line, _state == "done" ? textFg : warnFg));
 		}
 
 		int    bh = lines.Count + 2;
 		Screen s  = new Screen(bw, bh, new Cell(' ', textFg, bg, CellStyle.None));
-		for (int x = 0; x < bw; x++)
-		{
-			s.Set(x,      0, new Cell('─', borderFg, bg, CellStyle.None));
-			s.Set(x, bh - 1, new Cell('─', borderFg, bg, CellStyle.None));
-		}
-		for (int y = 0; y < bh; y++)
-		{
-			s.Set(     0, y, new Cell('│', borderFg, bg, CellStyle.None));
-			s.Set(bw - 1, y, new Cell('│', borderFg, bg, CellStyle.None));
-		}
-		s.Set(     0,      0, new Cell('┌', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1,      0, new Cell('┐', borderFg, bg, CellStyle.None));
-		s.Set(     0, bh - 1, new Cell('└', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1, bh - 1, new Cell('┘', borderFg, bg, CellStyle.None));
-		AnsiToScreen.WriteLine(s, 2, 0, " HallMonitor ", titleFg, bg);
+		PopupFrame.Draw(s, "HallMonitor", borderFg, titleFg, bg);
 
 		for (int i = 0; i < lines.Count; i++)
 			AnsiToScreen.WriteLine(s, 2, i + 1, lines[i].Text, lines[i].Fg, bg);
 		return s;
-	}
-
-	private static string Fit(string text, int width)
-	{
-		return text.Length <= width ? text : text.Substring(0, Math.Max(0, width - 1)) + "…";
-	}
-
-	private static List<string> Wrap(string text, int width)
-	{
-		List<string> lines   = new List<string>();
-		string       current = string.Empty;
-		foreach (string word in text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-		{
-			if (current.Length > 0 && current.Length + 1 + word.Length > width)
-			{
-				lines.Add(current);
-				current = string.Empty;
-			}
-			current = current.Length == 0 ? Fit(word, width) : $"{current} {word}";
-		}
-		if (current.Length > 0)
-			lines.Add(current);
-		return lines;
 	}
 }

@@ -65,10 +65,13 @@ public class CalibrationStatus
 // Calibrates each decision model for HallMonitor the first time it is used, automatically. Every model
 // scores on its own scale, so the boundaries between Allow, Unsure and Block are measured per model by
 // running it over a built-in set of bash commands labelled safe or dangerous (Data/hallmonitor-
-// calibration.jsonl, 594 commands): Allow goes AllowMargin below the lowest score any dangerous command
-// reached, and Block just above the highest any safe command reached, never under MinimumBlock. Results
-// are kept in ~/.beast/hallmonitor-calibration.json, shared by every session (re-read when it changes,
-// and every save is a load, modify, save). One model is calibrated at a time, in the background.
+// calibration.jsonl, 594 commands), plus the person's own Always (safe) and Never (dangerous) answers from
+// DecisionMemory, which are labelled data too: Allow goes AllowMargin below the lowest score any dangerous
+// command reached, and Block just above the highest any safe command reached, never under MinimumBlock.
+// The answers join whatever calibration runs next but are not part of the fingerprint, so a new answer
+// never triggers a recalibration on its own. Results are kept in ~/.beast/hallmonitor.json, shared by
+// every session (re-read when it changes, and every save is a load, modify, save). One model is
+// calibrated at a time, in the background.
 public class HallMonitorCalibration
 {
 	// How far below the lowest-scoring dangerous command Allow is placed, so a dangerous command scoring a
@@ -88,6 +91,7 @@ public class HallMonitorCalibration
 	private static readonly Lazy<string> s_fingerprint = new Lazy<string>(ComputeFingerprint);
 
 	private readonly string                    _path;
+	private readonly DecisionMemory            _memory;
 	private readonly Action<CalibrationStatus> _report;
 	private readonly CancellationToken         _lifetime;
 	private readonly object                    _lock = new object();
@@ -98,18 +102,42 @@ public class HallMonitorCalibration
 	private readonly Queue<LlmModel> _queue = new Queue<LlmModel>();
 	private          bool            _working;
 
-	public HallMonitorCalibration(string path, Action<CalibrationStatus> report, CancellationToken lifetime)
+	public HallMonitorCalibration(string path, DecisionMemory memory, Action<CalibrationStatus> report, CancellationToken lifetime)
 	{
 		_path     = path;
+		_memory   = memory;
 		_report   = report;
 		_lifetime = lifetime;
 	}
 
-	public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "hallmonitor-calibration.json");
+	public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "hallmonitor.json");
 
 	public static string Fingerprint => s_fingerprint.Value;
 
 	public static List<(string Command, bool Dangerous)> Commands => s_commands.Value;
+
+	// What a calibration run measures: the built-in commands, then each Always answer as safe and each Never
+	// answer as dangerous. An answer repeating a built-in command keeps the built-in label.
+	public List<(string Command, bool Dangerous)> CalibrationSet()
+	{
+		List<(string Command, bool Dangerous)> set     = new List<(string Command, bool Dangerous)>(Commands);
+		HashSet<string>                        builtIn = new HashSet<string>(StringComparer.Ordinal);
+		foreach ((string command, bool _) in Commands)
+			builtIn.Add(command);
+
+		(List<string> Always, List<string> Never) answers = _memory.Snapshot();
+		foreach (string command in answers.Always)
+		{
+			if (builtIn.Add(command))
+				set.Add((command, false));
+		}
+		foreach (string command in answers.Never)
+		{
+			if (builtIn.Add(command))
+				set.Add((command, true));
+		}
+		return set;
+	}
 
 	// The model's current calibration, or null when it has none for these questions and commands.
 	public CalibrationResult? ResultFor(LlmModel model)
@@ -132,7 +160,8 @@ public class HallMonitorCalibration
 			{
 				if (!_active.ContainsKey(model.ConfigId))
 				{
-					_active[model.ConfigId] = (Commands.Count, Commands.Count);
+					int total               = CalibrationSet().Count;
+					_active[model.ConfigId] = (total, total);
 					_queue.Enqueue(model);
 					start    = !_working;
 					_working = true;
@@ -175,13 +204,14 @@ public class HallMonitorCalibration
 
 	private async Task CalibrateAsync(LlmModel model)
 	{
-		string id    = model.ConfigId;
-		int    total = Commands.Count;
+		string id = model.ConfigId;
+		List<(string Command, bool Dangerous)> set = CalibrationSet();
+		int total = set.Count;
 		_report(new CalibrationStatus(id, total, total, "running", $"HallMonitor is calibrating {id}"));
 
 		try
 		{
-			CalibrationResult result = await RunAsync(model, remaining =>
+			CalibrationResult result = await RunAsync(model, set, remaining =>
 			{
 				lock (_lock)
 					_active[id] = (remaining, total);
@@ -217,16 +247,16 @@ public class HallMonitorCalibration
 		}
 	}
 
-	// Scores every calibration command with the model and derives its boundaries. Progress receives the
+	// Scores every command in the set with the model and derives its boundaries. Progress receives the
 	// number of commands still to go after each one.
-	public static async Task<CalibrationResult> RunAsync(LlmModel model, Action<int> progress, CancellationToken ct)
+	public static async Task<CalibrationResult> RunAsync(LlmModel model, List<(string Command, bool Dangerous)> commands, Action<int> progress, CancellationToken ct)
 	{
 		List<(double AllowScore, double BlockScore, bool Dangerous)> scored = new List<(double AllowScore, double BlockScore, bool Dangerous)>();
 		int failed    = 0;
-		int remaining = Commands.Count;
-		foreach ((string command, bool dangerous) in Commands)
+		int remaining = commands.Count;
+		foreach ((string command, bool dangerous) in commands)
 		{
-			string state                        = HallMonitor.BuildState(new List<string>(), new List<string>(), command);
+			string state                        = HallMonitor.BuildState(string.Empty, new List<string>(), new List<string>(), command);
 			(JsonObject? answers, string error) = await DecisionClient.AskAsync(model, state, HallMonitor.Questions, ct);
 			if (answers != null)
 			{
@@ -261,7 +291,7 @@ public class HallMonitorCalibration
 			}
 		}
 
-		return new CalibrationResult(Fingerprint, problem.Length == 0, allow, block, problem, Commands.Count, failed,
+		return new CalibrationResult(Fingerprint, problem.Length == 0, allow, block, problem, commands.Count, failed,
 			safe > 0 ? (double)safeAllowed / safe : 0, dangerousCount > 0 ? (double)dangerousBlocked / dangerousCount : 0, DateTime.UtcNow);
 	}
 

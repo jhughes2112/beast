@@ -28,7 +28,8 @@ public enum FrameType : byte
 	SessionStatus   = 20, // agent reports a session's termination status; content is a SessionStatus enum name
 	PendingQueue    = 21, // agent sends the current pending-input queue snapshot; content is newline-delimited lines
 	Alert           = 22, // human-actionable failure (credits exhausted, bad API key). Rendered as a loud persistent banner in the chat, never collapsed or hidden.
-	Config          = 23  // /config flow payload (JSON with a "kind" discriminator: endpoints, catalog, applied)
+	Config          = 23, // /config flow payload (JSON with a "kind" discriminator: endpoints, catalog, applied)
+	Host            = 24  // a host_command's live block in the client; only ever streamed (StreamTag.Host), never sent as a frame
 }
 
 // Session termination status reported via SessionStatus frames.
@@ -49,6 +50,8 @@ public static class StreamTag
 	public const string Tool      = "T";
 	public const string Thinking  = "K";
 	public const string System    = "S";
+	// A host_command running on the user's own machine: the command, then each line of its output.
+	public const string Host = "H";
 }
 
 // Framed communication between Agent and Beast.

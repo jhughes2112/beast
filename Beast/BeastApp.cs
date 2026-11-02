@@ -1,4 +1,3 @@
-using NAudio.Wave;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -47,24 +46,40 @@ public class BeastApp : IAsyncDisposable
 		public SessionStatus Status = SessionStatus.Ongoing;
 	}
 
-	private readonly ILauncher            _agentContext;
-	private readonly List<string>         _messages;
-	private readonly IDisplay             _display;
-	private readonly ClientLog            _log;
-	private readonly string               _agentName;
-	private readonly Worktrees.Selection? _worktree;
-	// Set when the agent reports a successful /finish; on shutdown the worktree's host folder is removed.
-	private bool    _worktreeFinished;
-	private string? _idleSoundFile;
-	private string? _subagentSoundFile;
+	private readonly ILauncher      _agentContext;
+	private readonly List<string>   _messages;
+	private readonly IDisplay       _display;
+	private readonly ClientLog      _log;
+	private readonly string         _agentName;
+	private readonly SessionRecord? _session;
+	// Set when the session is finished (the agent's /finish, or Finish after the connection was lost); on
+	// shutdown its container and its folder under the sessions folder are removed.
+	private bool _sessionFinished;
+	// Candidate sound paths; the first one that exists on this machine is played.
+	private List<string> _idleSounds     = new List<string>();
+	private List<string> _subagentSounds = new List<string>();
 
 	private CancellationTokenSource? _cts;
 	private ITransportClient?        _wsClient;
 
+	// Runs the agent's host_command on this machine once HallMonitor has let it through.
+	private HostCommandRunner? _hostRunner;
+
+	// The exit question is on screen, so another Ctrl+C does not stack a second one.
+	private volatile bool _exitAsked;
+
+	// Set once Beast has asked the agent to quit, so its disconnect is expected.
+	private volatile bool _quitting;
+
+	// The agent disconnected without being asked to; see OnConnectionLost.
+	private volatile bool _connectionLost;
+
 	// Per-session models and streaming state.
 	private readonly Dictionary<string, SessionState> _sessions = new Dictionary<string, SessionState>(StringComparer.Ordinal);
-	private          string          _activeSessionId = "";
-	private readonly HashSet<string> _busySessions    = new HashSet<string>(StringComparer.Ordinal);
+	private          string _activeSessionId = "";
+	// The queued steering messages have gone to the first session the agent announced.
+	private          bool            _queuedSent;
+	private readonly HashSet<string> _busySessions = new HashSet<string>(StringComparer.Ordinal);
 	// Display names announced by the agent via SessionAnnounce frames, keyed by session ID.
 	private readonly Dictionary<string, string> _sessionDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -75,27 +90,114 @@ public class BeastApp : IAsyncDisposable
 	private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string SessionId, string Content)> _frameQueue
 		= new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string, string)>();
 
-	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, ClientLog log, string agentName, Worktrees.Selection? worktree)
+	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, ClientLog log, string agentName, SessionRecord? session)
 	{
 		_agentContext = agentContext;
 		_messages     = messages;
 		_display      = display;
 		_log          = log;
 		_agentName    = agentName;
-		_worktree     = worktree;
+		_session      = session;
 	}
 
-	// Sends /quit to the agent so it saves the session, then waits for it to disconnect.
-	// Falls back to hard cancel after a timeout.
+	// Leaving a worktree asks first: Finish runs /finish (which removes the worktree, its branch and the
+	// session once the work is integrated, and otherwise says what is left and stays open); Stop quits and
+	// keeps the session, stopped, with its worktree, conversations and agent container, to start again from
+	// the session menu. Anywhere else, and once /finish has gone through, it just quits. With the agent gone
+	// (the connection was lost) there is no one to tell, so it just closes.
 	private void RequestGracefulExit()
 	{
-		_ = SendQuitAsync();
+		bool inWorktree = _session != null && !_session.IsBare && !_sessionFinished;
+		if (_connectionLost)
+		{
+			if (!_exitAsked)
+				_cts?.Cancel();
+		}
+		else if (_wsClient == null)
+		{
+			// Still launching: there is no agent to ask yet, so abandon the launch.
+			_cts?.Cancel();
+		}
+		else if (!inWorktree)
+		{
+			_ = SendQuitAsync();
+		}
+		else if (!_exitAsked)
+		{
+			_exitAsked         = true;
+			List<string> lines = new List<string>
+			{
+				$"You are leaving worktree '{_session!.Worktree}'.",
+				string.Empty,
+				"Finish: remove the worktree, its branch and this session, once its work has been merged. If it has not, nothing is removed and Beast says what is left.",
+				"Stop: keep the session, stopped, with its worktree and conversations, to start again from the session menu."
+			};
+			List<string> labels = new List<string> { "&Finish", "&Stop", "&Cancel" };
+			_display.AskChoice("Exit", lines, labels, 1, 2, choice =>
+			{
+				_exitAsked = false;
+				if (choice == 0)
+					_ = _wsClient?.SendAsync(_activeSessionId + "|/finish", _cts!.Token);
+				else if (choice == 1)
+					_ = SendQuitAsync();
+			});
+		}
+	}
+
+	// The agent went away without being asked to (its container was stopped, from another Beast window's
+	// session menu or by hand, or it crashed). Says so, and for a worktree session says what it holds and
+	// offers to finish it here on the host, as /finish would, when its work is all committed and merged.
+	private void OnConnectionLost()
+	{
+		_connectionLost         = true;
+		_exitAsked              = true;
+		bool         finishable = false;
+		List<string> lines      = new List<string>
+		{
+			"The connection to the agent was lost: its container stopped, or the agent crashed.",
+			string.Empty
+		};
+		if (_session != null && !_session.IsBare)
+		{
+			HostGit.WorktreeStatus status = HostGit.Status(_session);
+			lines.AddRange(status.Describe(_session.Worktree));
+			lines.Add(string.Empty);
+			finishable = status.Finishable;
+			lines.Add(finishable
+				? "Finish: remove the worktree, its branch and this session, as /finish would. Exit: keep the session, stopped, to start again from the session menu."
+				: "It cannot be finished yet: that needs every change committed and merged. The session is kept, stopped, to start again from the session menu.");
+		}
+		else
+		{
+			lines.Add("The session is kept, stopped, to start again from the session menu.");
+		}
+
+		List<string> labels = finishable ? new List<string> { "&Finish", "&Exit" } : new List<string> { "&Exit" };
+		_display.AskChoice("Connection lost", lines, labels, labels.Count - 1, labels.Count - 1, choice =>
+		{
+			_exitAsked = false;
+			if (finishable && choice == 0)
+				FinishOnHost();
+			_cts?.Cancel();
+		});
+	}
+
+	// Finishes the worktree session without its agent: removes the checkout, its registration and its
+	// merged branch from the repository; shutdown then removes the container and the session's folder.
+	private void FinishOnHost()
+	{
+		(_, string error) = HostGit.RemoveWorktree(_session!);
+		if (error.Length > 0)
+			_log.Error($"Could not finish worktree '{_session!.Worktree}': {error}. The session is kept.");
+		else
+			_sessionFinished = true;
 	}
 
 	// Sends /quit to the agent so it saves the session, then waits for it to disconnect.
 	// Falls back to hard cancel after a timeout.
 	private async Task SendQuitAsync()
 	{
+		_quitting = true;
 		try
 		{
 			if (_wsClient != null)
@@ -109,8 +211,18 @@ public class BeastApp : IAsyncDisposable
 		_cts?.Cancel();
 	}
 
-	// Sends the queued steering messages to the agent's ready session.
-	private async Task SendInitialMessagesAsync(string sessionId)
+	// Tells the agent which shells host_command may use on this machine. Sent as soon as the connection is up,
+	// before any queued message can start a turn, so the first toolset already has them; the agent takes
+	// /host- lines whatever session they name.
+	private async Task SendHostShellsAsync()
+	{
+		if (_hostRunner != null)
+			await _wsClient!.SendAsync("|/host-shells " + _hostRunner.ShellNames, _cts!.Token);
+	}
+
+	// Sends the queued steering messages (command-line switches, prompt, /quit) to the first session the
+	// agent announces, once.
+	private async Task SendQueuedMessagesAsync(string sessionId)
 	{
 		foreach (string msg in _messages)
 			await _wsClient!.SendAsync(sessionId + "|" + msg, _cts!.Token);
@@ -138,21 +250,21 @@ public class BeastApp : IAsyncDisposable
 		// Dropped files stage into the folder bound to /workspace — the worktree for a normal
 		// launch, the current folder for an ephemeral one — so the agent can read them and they go
 		// away when the worktree does.
-		if (_worktree.HasValue)
-			_display.SetAttachmentRoot(_worktree.Value.Ephemeral ? _worktree.Value.RepoCwd : _worktree.Value.HostPath);
-		else
-			_display.SetAttachmentRoot(Environment.CurrentDirectory);
+		// host_command runs in the same folder, so the agent's relative paths mean the same on both sides.
+		string workspaceRoot = _session != null ? _session.WorkspacePath : Environment.CurrentDirectory;
+		_display.SetAttachmentRoot(workspaceRoot);
+		_hostRunner = new HostCommandRunner((sessionId, text) => _wsClient!.SendAsync(sessionId + "|" + text, _cts!.Token), workspaceRoot, _cts.Token);
 
 		// Put the worktree (or agent) name in the console tab title so multiple Beast tabs are
 		// distinguishable; the separator animates while the agent is busy.
-		ConsoleChrome.Configure(_worktree.HasValue ? _worktree.Value.Name : _agentName);
+		ConsoleChrome.Configure(_session == null ? _agentName : _session.IsBare ? Path.GetFileName(_session.Folder) : _session.Worktree);
 
 		// Load settings to pick up the optional notification sound paths.
 		try
 		{
-			SettingsService settings = new SettingsService(Directory.GetCurrentDirectory());
-			_idleSoundFile           = settings.Settings.IdleSoundFile;
-			_subagentSoundFile       = settings.Settings.SubagentSoundFile;
+			SettingsService settings = new SettingsService();
+			_idleSounds              = settings.Settings.IdleSounds;
+			_subagentSounds          = settings.Settings.SubagentSounds;
 		}
 		catch (ConfigException)
 		{
@@ -167,10 +279,18 @@ public class BeastApp : IAsyncDisposable
 
 			_wsClient = await RetryConnectAsync($"ws://localhost:{hostPort}/", _agentContext, _log, _cts.Token);
 
+			await SendHostShellsAsync();
+
 			_readCts  = new CancellationTokenSource();
 			_readTask = ReadLoop(_wsClient, _readCts.Token);
 
 			await _display.RunAsync(_cts.Token);
+		}
+		catch (OperationCanceledException) when (_wsClient == null)
+		{
+			// Ctrl+C during the launch: leave quietly, on the normal screen.
+			_display.RestoreTerminal();
+			exitCode = 1;
 		}
 		catch (Exception ex)
 		{
@@ -205,11 +325,20 @@ public class BeastApp : IAsyncDisposable
 			_display.SetStatus($"[read error] {ex.Message}");
 		}
 
-		// Agent connection is gone — stop the busy animation and any open stream.
+		// Agent connection is gone — stop the busy animation and any open stream. Expected after /quit; otherwise
+		// the user is told and asked what to do before Beast closes.
 		_display.OnStreamEnd();
 		_display.SetAgentBusy(false, 0);
-		_display.SetStatus("Agent disconnected.");
-		_cts?.Cancel();
+		if (_quitting || _sessionFinished || token.IsCancellationRequested || _cts == null || _cts.IsCancellationRequested)
+		{
+			_display.SetStatus("Agent disconnected.");
+			_cts?.Cancel();
+		}
+		else
+		{
+			_display.SetStatus("Connection to the agent lost.");
+			OnConnectionLost();
+		}
 	}
 
 	// Drains all queued inbound frames. Must be called under the display's lock.
@@ -217,6 +346,19 @@ public class BeastApp : IAsyncDisposable
 	{
 		while (_frameQueue.TryDequeue(out (FrameType Type, string SessionId, string Content) frame))
 			ProcessFrame(frame.Type, frame.SessionId, frame.Content);
+	}
+
+	// The kind of block a stream with this tag fills.
+	private static FrameType StreamFrameType(string tag)
+	{
+		FrameType type = FrameType.Output;
+		if (tag == StreamTag.Thinking)
+			type = FrameType.Thinking;
+		else if (tag == StreamTag.Tool)
+			type = FrameType.Tool;
+		else if (tag == StreamTag.Host)
+			type = FrameType.Host;
+		return type;
 	}
 
 	// Wire format: N|sessionId|content (sessionId may be empty for orchestrator-level frames).
@@ -247,6 +389,11 @@ public class BeastApp : IAsyncDisposable
 		{
 			_activeSessionId = sessionId;
 			_display.Attach(state.Model);
+		}
+		if (!_queuedSent)
+		{
+			_queuedSent = true;
+			_           = SendQueuedMessagesAsync(sessionId);
 		}
 
 		NotifySessionList();
@@ -337,10 +484,15 @@ state.StatsContextTokens, state.StatsCachedTokens);
 	// DOES: a session that began streaming before the user switched away emits only chunks, so
 	// excluding them would leave focus unable to ever drift back to it. The FollowDelayMs gate in
 	// IsAutoTrackSuppressed prevents per-chunk thrash between concurrent streams.
+	// Conversation content, the only kind of frame that may pull the view to its session. Bookkeeping the agent
+	// sends to every session at once (stats after a /config model change, status lines, queue snapshots, busy
+	// and idle) must not, or the view and the F10 selection jump to whichever session heard first.
 	private static bool IsMessageFrame(FrameType type)
 	{
-		bool plumbing = type == FrameType.Busy || type == FrameType.Idle || type == FrameType.StreamEnd || type == FrameType.SessionAnnounce;
-		return !plumbing;
+		bool content = type == FrameType.Output || type == FrameType.Error || type == FrameType.Tool || type == FrameType.ToolCall
+			|| type == FrameType.ToolResponse || type == FrameType.Thinking || type == FrameType.System || type == FrameType.StreamStart
+			|| type == FrameType.StreamChunk || type == FrameType.User || type == FrameType.Alert;
+		return content;
 	}
 
 	private void ProcessFrame(FrameType type, string sessionId, string content)
@@ -357,17 +509,12 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		switch (type)
 		{
 			case FrameType.Status:
-				if (content == "ready")
-				{
-					string readySessionId = sessionId;
-					_                     = SendInitialMessagesAsync(readySessionId);
-				}
-				else if (content == "worktree-finished")
+				if (content == "worktree-finished")
 				{
 					// The agent detached and deleted its worktree/branch on /finish. Flag it so shutdown
-					// removes the now-empty host folder, then drive the graceful exit (sends /quit, waits for
+					// removes the container and the session's folder, then drive the graceful exit (sends /quit, waits for
 					// the agent to disconnect, tears the container down) — the agent does not exit itself.
-					_worktreeFinished = true;
+					_sessionFinished = true;
 					_display.SetStatus("Worktree finished — cleaning up.");
 					RequestGracefulExit();
 				}
@@ -515,12 +662,12 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					_display.SetAgentBusy(false, 0);
 				}
 				// Content "subagent" marks a sub-session completion; it gets its own sound.
-				PlaySound(content == "subagent" ? _subagentSoundFile : _idleSoundFile);
+				Platform.Current.PlaySound(content == "subagent" ? _subagentSounds : _idleSounds);
 				NotifySessionList();
 				break;
 
 			case FrameType.StreamStart:
-				FrameType startType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
+				FrameType startType = StreamFrameType(content);
 				session.StreamContent.Clear();
 				session.StreamIndex                    = session.NextIndex++;
 				session.StreamTagToSlot[content]       = session.StreamIndex;
@@ -541,10 +688,15 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				break;
 
 			case FrameType.StreamEnd:
-				FrameType endType = content == StreamTag.Thinking ? FrameType.Thinking : content == StreamTag.Tool ? FrameType.Tool : FrameType.Output;
+				FrameType endType = StreamFrameType(content);
 				if (session.StreamTagToSlot.TryGetValue(content, out int endSlot))
 				{
-					session.PendingCommit[endType] = endSlot;
+					// A finished host command's live block goes away: its tool call above now holds the
+					// output, under the same HOST: header. Hidden the way a paired ToolResponse slot is.
+					if (endType == FrameType.Host)
+						session.Model.Update(endSlot, FrameType.Debug, string.Empty);
+					else
+						session.PendingCommit[endType] = endSlot;
 					session.StreamTagToSlot.Remove(content);
 				}
 				session.StreamIndex = -1;
@@ -570,8 +722,10 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				break;
 
 			case FrameType.Config:
-				// /config flow payload for the picker overlay; never rendered in the transcript.
-				_display.OnConfigFrame(content);
+				// A host_command to run or stop here; otherwise a /config flow payload for the picker
+				// overlay or a popup. Never rendered in the transcript.
+				if (_hostRunner == null || !_hostRunner.OnConfigFrame(effectiveId, content))
+					_display.OnConfigFrame(content);
 				break;
 
 			case FrameType.SessionAnnounce:
@@ -621,30 +775,6 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				session.Model.Update(slotIndex, type, content);
 				break;
 		}
-	}
-
-	// Plays the given sound file via NAudio, which supports WAV, MP3, and most other formats.
-	// Playback is fire-and-forget on a threadpool thread; the player is disposed when playback stops.
-	// Errors are silently swallowed — a missing or unplayable file is not fatal.
-	private static void PlaySound(string? soundFile)
-	{
-		if (string.IsNullOrEmpty(soundFile))
-			return;
-		if (!File.Exists(soundFile))
-			return;
-		try
-		{
-			AudioFileReader reader = new AudioFileReader(soundFile);
-			WaveOutEvent    output = new WaveOutEvent();
-			output.Init(reader);
-			output.PlaybackStopped += (s, e) =>
-			{
-				output.Dispose();
-				reader.Dispose();
-			};
-			output.Play();
-		}
-		catch { }
 	}
 
 	// Retries WebSocket connection until success or cancellation, with 200ms delays.
@@ -701,30 +831,34 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		_readCts?.Dispose();
 		_wsClient?.Dispose();
 
-		// Tell the sandbox to shut down, but don't block the user's exit on the container actually stopping
-		// and being removed. The /quit sent during graceful exit already makes the agent exit (so the
-		// container is usually stopping on its own); this stop+remove is best-effort cleanup, and anything
-		// left behind is reaped on the next launch into the same worktree. Cap the wait so closing stays
-		// snappy — the stop request reaches the Docker daemon well within the cap, and it finishes the job
-		// independently of this process.
+		// Tell the sandbox to shut down, but don't block the user's exit on the container actually stopping.
+		// The /quit sent during graceful exit already makes the agent exit (so the container is usually
+		// stopping on its own). The container is kept, stopped, for the session to start again; only a
+		// finished session's is removed. Cap the wait so closing stays snappy — the stop request reaches the
+		// Docker daemon well within the cap, and it finishes the job independently of this process. Removing a
+		// finished session's container gets longer, so it is not left behind belonging to no session.
 		Task stop = StopSandboxAsync();
-		await Task.WhenAny(stop, Task.Delay(2000));
+		await Task.WhenAny(stop, Task.Delay(_sessionFinished ? 20000 : 2000));
 
-		// After /finish the container is gone and the worktree detached; remove its host folder so the
-		// next launch's menu no longer lists it. Only on an explicit finish — ordinary exits keep it. Never
-		// for an ephemeral run: there is no worktree folder, and Name there is the current folder's leaf.
-		if (_worktreeFinished && _worktree != null && !_worktree.Value.Ephemeral)
-			Worktrees.RemoveFolder(_worktree.Value.RepoCwd, _worktree.Value.Name);
+		// A finished session is gone: its folder under the sessions folder (record, emptied worktree folder,
+		// conversations and logs) goes too, so the session menu no longer lists it.
+		if (_sessionFinished && _session != null)
+		{
+			string error = SessionStore.DeleteDir(_session);
+			if (error.Length > 0)
+				_log.Error($"Could not remove the finished session's folder {_session.Dir}: {error}");
+		}
 
 		_cts?.Dispose();
 	}
 
-	// Stops and removes the container, then disposes the launcher. Run detached from the exit path so a slow
-	// or stuck container cannot hold up closing Beast; errors are swallowed since we are tearing down anyway.
+	// Stops the container (removing it only after /finish), then disposes the launcher. Run detached from the
+	// exit path so a slow or stuck container cannot hold up closing Beast; errors are swallowed since we are
+	// tearing down anyway.
 	private async Task StopSandboxAsync()
 	{
 		try
-		{ await _agentContext.StopAsync(); }
+		{ await _agentContext.StopAsync(_sessionFinished); }
 		catch { }
 		_agentContext.Dispose();
 	}

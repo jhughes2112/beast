@@ -39,6 +39,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// first time it is assigned. Created in RunAsync once the models are loaded.
 	private HallMonitor? _hallMonitor;
 
+	// Runs host_command on the user's machine through the client, after HallMonitor's judgment.
+	private HostCommands? _hostCommands;
+
+	public HostCommands? HostCommands => _hostCommands;
+
 	// The session the client is showing, for agent-wide notices such as calibration progress: the first
 	// session, then whichever one last changed the configuration.
 	private string _noticeSessionId = string.Empty;
@@ -70,14 +75,19 @@ public class AgentOrchestrator : ISessionOrchestrator
 		_registry.ExpandRoleWildcards(_roleService);
 		await _registry.ProbeEndpointsAsync(ct);
 
+		// Both exist before any session does, so the first toolset built already has host_command.
+		// One memory for both: exact repeats are decided from it, and calibration measures with its answers.
+		DecisionMemory memory = new DecisionMemory(DecisionMemory.DefaultPath);
+		_hallMonitor          = new HallMonitor(_roleService, _registry, memory,
+			new HallMonitorCalibration(HallMonitorCalibration.DefaultPath, memory, SendCalibrationStatus, ct));
+		_hostCommands = new HostCommands(_hallMonitor, _settings, _transport);
+
 		Session initial = LoadOrCreateSession();
 		RegisterSession(initial);
 
 		// HallMonitor calibrates any decision model it has not seen before, starting now; progress shows
 		// in the client's calibration popup.
 		_noticeSessionId = initial.Id;
-		_hallMonitor     = new HallMonitor(_roleService, _registry, new DecisionMemory(DecisionMemory.DefaultPath),
-			new HallMonitorCalibration(HallMonitorCalibration.DefaultPath, SendCalibrationStatus, ct));
 		_hallMonitor.CalibrateNewModels();
 
 		// Nothing configured at all: proactively open the client's /config picker — a fresh
@@ -85,11 +95,6 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// discover the command on their own.
 		if (!_registry.HasModels)
 			_transport.Config(initial.Id, "{\"kind\":\"no-models\"}");
-
-		// A project settings.json from before the single-file change still holds real config that
-		// is no longer read; the user has to migrate it by hand, so say so loudly once.
-		if (_settings.LegacySettingsWarning != null)
-			_transport.Alert(initial.Id, _settings.LegacySettingsWarning);
 
 		// Restore all saved sessions to the client before the first handler starts so the F10 session
 		// tree shows the complete worktree history. The resumed root is replayed last inside
@@ -636,7 +641,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	public static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
 		"quit", "finish", "reload", "help", "delete-session", "test", "clear",
-		"config-endpoints", "config-catalog", "config-apply", "config-search-apply",
+		"config-endpoints", "config-catalog", "config-apply", "config-search-apply", "config-endpoint-move", "config-hallmonitor",
 		"config-roles", "config-role-apply"
 	};
 
@@ -667,6 +672,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			int    pipe    = line.IndexOf('|');
 			string content = pipe >= 0 ? line.Substring(pipe + 1) : line;
 			if (content.Length == 0)
+				continue;
+
+			// A running host_command's output, exit or approval coming back from the client.
+			if (content.StartsWith("/host-", StringComparison.Ordinal) && _hostCommands != null && _hostCommands.HandleInbound(content))
 				continue;
 
 			if (content.StartsWith("/", StringComparison.Ordinal) && IsGlobalCommand(content))
@@ -837,7 +846,39 @@ public class AgentOrchestrator : ISessionOrchestrator
 			});
 		}
 
+		payload.HallMonitorUnsure = HostCommands.ParsePolicy(_settings.Settings.HallMonitorUnsure) switch
+		{
+			UnsurePolicy.BeSafe   => "beSafe",
+			UnsurePolicy.BeUnsafe => "beUnsafe",
+			_                     => "ask"
+		};
+
 		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigEndpointsPayload));
+	}
+
+	// Moves one auto endpoint up (delta -1) or down (+1) in settings.json, then resends the endpoint list.
+	// "config-endpoint-move <-1|1> <baseUrl>". The order is the user's own, for the picker and nothing else.
+	private void HandleConfigEndpointMove(string sessionId, string args)
+	{
+		int    space   = args.IndexOf(' ');
+		string baseUrl = space >= 0 ? args.Substring(space + 1).Trim() : string.Empty;
+		if (space < 0 || !int.TryParse(args.Substring(0, space), out int delta) || baseUrl.Length == 0)
+			_transport.Error(sessionId, $"config-endpoint-move: expected '<-1|1> <baseUrl>', got '{args}'");
+		else
+			_settings.MoveAutoEndpoint(baseUrl, delta);
+		HandleConfigEndpoints(sessionId);
+	}
+
+	// Sets what HallMonitor does with an Unsure host command: "config-hallmonitor ask|beSafe|beUnsafe".
+	// HostCommands reads the setting at every command, so nothing needs reloading.
+	private void HandleConfigHallMonitor(string sessionId, string args)
+	{
+		string value = args.Trim();
+		if (value == "ask" || value == "beSafe" || value == "beUnsafe")
+			_settings.SaveHallMonitorUnsure(value);
+		else
+			_transport.Error(sessionId, $"config-hallmonitor: expected ask, beSafe or beUnsafe, got '{value}'");
+		HandleConfigEndpoints(sessionId);
 	}
 
 	// Sends every role with its model order for the /role editor. Models are labelled with cost and
@@ -1366,6 +1407,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 			case "config-search-apply":
 				await HandleConfigSearchApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
+			case "config-endpoint-move":
+				HandleConfigEndpointMove(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty);
+				break;
+			case "config-hallmonitor":
+				HandleConfigHallMonitor(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty);
+				break;
 			case "config-roles":
 				HandleConfigRoles(sessionId);
 				break;
@@ -1539,9 +1586,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 		}
 
-		// No session-file deletion here: the worktree removal below deletes /workspace (sessions
-		// included) wholesale, and deleting them early meant a FAILED removal had already lost
-		// every conversation.
+		// No session-file deletion here: Beast deletes the session's whole folder (conversations and
+		// logs) once it hears the worktree is finished, so a FAILED removal loses no conversation.
 		// Root: removing the worktree deletes what the sandbox made root-owned (the .git pointer, the
 		// locked dot-folders, .beast), which the shell user cannot.
 		ToolResult remove = await ShellTools.AgentBashAsync("finish_remove", FinishRemoveScript, null, ct);

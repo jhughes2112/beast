@@ -25,6 +25,15 @@ internal static class BlockRenderer
 		(      Rgb fg,       Rgb? bg) = ColorsForType(msg.Type,       false);
 		(Rgb headerFg, Rgb? headerBg) = ColorsForType(msg.Type, headerError);
 		int spacer                    = 0;
+		// A live host command: the HOST: line in bright yellow, its output a little softer.
+		if (msg.Type == FrameType.Host)
+		{
+			headerFg = DisplayScreen.Palette.HostFg;
+			fg       = DisplayScreen.Palette.HostOutputFg;
+		}
+		// Its finished record keeps the yellow HOST: header, unless it failed.
+		if (isToolCall && !headerError && msg.Content.StartsWith("host_command(", StringComparison.Ordinal))
+			headerFg = DisplayScreen.Palette.HostFg;
 
 		string prefix  = PrefixTextForType(msg.Type);
 		string summary = isToolCall
@@ -64,7 +73,7 @@ internal static class BlockRenderer
 		if (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseContent))
 		{
 			string[] respLines = msg.PairedResponseContent!.Replace("\r\n", "\n").Split('\n');
-			if (toolName == "bash")
+			if (toolName == "bash" || toolName == "host_command")
 			{
 				int start = Math.Max(0, respLines.Length - 5);
 				for (int i = start; i < respLines.Length; i++)
@@ -240,6 +249,8 @@ internal static class BlockRenderer
 				return (DisplayScreen.Palette.Orange, null);
 			case FrameType.Debug:
 				return (DisplayScreen.Palette.MedGrey, null);
+			case FrameType.Host:
+				return (DisplayScreen.Palette.HostFg, null);
 			default:
 				return (DisplayScreen.Palette.Silver, null);
 		}
@@ -253,6 +264,8 @@ internal static class BlockRenderer
 				return "";
 			case FrameType.Tool:
 				return "[tool] ";
+			case FrameType.Host:
+				return "HOST: ";
 			case FrameType.ToolCall:
 				return "";
 			case FrameType.ToolResponse:
@@ -837,6 +850,7 @@ internal static class BlockRenderer
 			"read_file" => BuildReadFileSummary(label, Get("file_path"), Get("offset"), Get("lines"), respLineCount),
 			"write_file" or "edit_file" or "edit_file_replace" or "edit_file_insert" => BuildWriteFileSummary(label, Get("file_path"), writeLineCount),
 			"bash" or "readonly_bash" => BuildRunCommandSummary(label, Get("command")),
+			"host_command"            => BuildHostCommandSummary(Get("command")),
 			"internet_search"         => BuildPathSummary(label, Get("query"), respLineCount),
 			"fetch_url"               => BuildPathSummary(label,   Get("url"), respLineCount),
 			"return_to_caller"        => BuildLineCountSummary(label,   CountLines(Get("output"))),
@@ -954,6 +968,13 @@ internal static class BlockRenderer
 		int    nl    = command.IndexOf('\n');
 		string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
 		return $"$ {first}";
+	}
+
+	// A command run on the user's own machine reads the same as its live block: HOST: and the first line.
+	private static string BuildHostCommandSummary(string command)
+	{
+		int nl = command.IndexOf('\n');
+		return "HOST: " + (nl >= 0 ? command.Substring(0, nl).TrimEnd() : command);
 	}
 
 	private static string BuildGenericSummary(string label, JsonElement root, bool parsed)

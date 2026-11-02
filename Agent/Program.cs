@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,6 +43,7 @@ public class Program
 			ShellToolsTests.Test(ctx);
 			await FakeLlmTests.TestAsync(ctx);
 			await DecisionRoleTests.TestAsync(ctx);
+			await HostCommandTests.TestAsync(ctx);
 			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
 		}
@@ -57,13 +59,30 @@ public class Program
 			return ctx.Failed > 0 ? 1 : 0;
 		}
 
+		// --test-hallmonitor-learning [modelId ...]: a live experiment on how much a person's Always/Never commands
+		// improve a decision model's judgment. Kept out of --test because it sends thousands of requests.
+		if (args.Length > 0 && args[0] == "--test-hallmonitor-learning")
+		{
+			TestContext  ctx      = new TestContext(new TransportConsoleDebug());
+			List<string> modelIds = new List<string>();
+			for (int i = 1; i < args.Length; i++)
+				modelIds.Add(args[i]);
+			await HallMonitorLearningLiveTests.TestAsync(ctx, modelIds);
+			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
+			return ctx.Failed > 0 ? 1 : 0;
+		}
+
 		// Create/attach the git worktree at /workspace before anything reads the working tree. The branch
 		// comes from the --worktree-branch startup argument (never an env var). No-op for debug/native runs
 		// without the /git mount. A failure here means /workspace is unusable, so abort.
 		string worktreeBranch = ArgValue(args, "--worktree-branch");
+		// The session's own folder for conversations and logs (see AgentState); a run without it uses .beast here.
+		string stateDir = ArgValue(args, "--state-dir");
+		if (stateDir.Length > 0)
+			AgentState.Initialize(stateDir);
 		// No worktree branch means a current-folder launch: no git worktree is set up, but the session is saved and
-		// resumed like any other, under /workspace/.beast/sessions. Only a run with no /workspace at all (a native
-		// debugger run) keeps its session in memory, since there is nowhere to save it.
+		// resumed like any other, in its state folder. Only a run with no /workspace at all (a native debugger
+		// run) keeps its session in memory, since there is nowhere to save it.
 		bool ephemeral               = !Directory.Exists("/workspace");
 		(bool wtOk, string wtDetail) = await WorktreeBootstrap.EnsureAsync(worktreeBranch, cts.Token);
 		if (!wtOk)
@@ -85,7 +104,7 @@ public class Program
 		await GitTools.ProbeAsync(cts.Token);
 		Console.Error.WriteLine($"[Git] {GitTools.CommitDetail}");
 
-		SettingsService settingsService = new SettingsService(Environment.CurrentDirectory);
+		SettingsService settingsService = new SettingsService();
 		RoleService     roleService     = new RoleService(Environment.CurrentDirectory);
 
 		// The ChatGPT subscription's tokens live in settings.json beside every other key.

@@ -105,6 +105,12 @@ public class DisplayConsole : IDisplay
 		// No interactive input in non-interactive mode.
 	}
 
+	// Nobody to ask in non-interactive mode: take the default answer.
+	public void AskChoice(string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice)
+	{
+		onChoice(defaultIndex);
+	}
+
 	public void SetFrameDrain(Action drain)
 	{
 		_frameDrain = drain;

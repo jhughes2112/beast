@@ -46,4 +46,8 @@ public interface ISessionOrchestrator
 	// Resolves and clears the completion callback waiting on this session, if any. Loaded-from-disk
 	// sessions never have one — a callback is a live caller in this process, not persistable state.
 	void CompleteSession(string sessionId, bool ok, string text, int responseTokens);
+
+	// Runs host_command on the user's machine through the client; null where there is no client to run
+	// it, and then the tool is not offered.
+	HostCommands? HostCommands { get; }
 }

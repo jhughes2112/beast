@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 
 
 // Unit tests for CharWidth — terminal column width calculations.
@@ -10,20 +12,38 @@ public static class CharWidthTests
 	public static void TestPathMarkers(TestContext ctx)
 	{
 		List<string> one = InputLayer.ExtractPathMarkers("look at [ path D:\\shots\\bug.png ] please");
-		ctx.AssertEqual(1, one.Count, "PathMarkers: one marker found");
-		ctx.AssertEqual("D:\\shots\\bug.png", one[0], "PathMarkers: path extracted verbatim");
+		ctx.AssertEqual(                   1, one.Count, "PathMarkers: one marker found");
+		ctx.AssertEqual("D:\\shots\\bug.png",    one[0], "PathMarkers: path extracted verbatim");
 
 		List<string> two = InputLayer.ExtractPathMarkers("[ path a\\one.png ] and [ path b\\two.wav ]");
-		ctx.AssertEqual(2, two.Count, "PathMarkers: multiple markers in order");
-		ctx.AssertEqual("b\\two.wav", two[1], "PathMarkers: second path");
+		ctx.AssertEqual(           2, two.Count, "PathMarkers: multiple markers in order");
+		ctx.AssertEqual("b\\two.wav",    two[1], "PathMarkers: second path");
 
-		ctx.AssertEqual(0, InputLayer.ExtractPathMarkers("no markers here").Count, "PathMarkers: plain text yields none");
+		ctx.AssertEqual(0,     InputLayer.ExtractPathMarkers("no markers here").Count, "PathMarkers: plain text yields none");
 		ctx.AssertEqual(0, InputLayer.ExtractPathMarkers("[ path unterminated").Count, "PathMarkers: unterminated marker ignored");
 
 		// Ordinary pasted text must never be mistaken for a dropped file.
-		ctx.AssertNull(InputLayer.TryMakePathMarker("just some words"), "PathMarkers: prose is not a path");
+		ctx.AssertNull(              InputLayer.TryMakePathMarker("just some words"), "PathMarkers: prose is not a path");
 		ctx.AssertNull(InputLayer.TryMakePathMarker("D:\\definitely\\not\\here.png"), "PathMarkers: a non-existent path is not a drop");
-		ctx.AssertNull(InputLayer.TryMakePathMarker("line one\nline two"), "PathMarkers: multi-line paste is not a drop");
+		ctx.AssertNull(           InputLayer.TryMakePathMarker("line one\nline two"), "PathMarkers: multi-line paste is not a drop");
+
+		// Several dropped files arrive as one paste of space-separated paths, quoted when they hold spaces.
+		string dir = Path.Combine(Path.GetTempPath(), $"beast-drop-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(dir);
+		try
+		{
+			string plain  = Path.Combine(dir, "one.png");
+			string spaced = Path.Combine(dir, "two words.jpg");
+			File.WriteAllText( plain, "x");
+			File.WriteAllText(spaced, "x");
+			ctx.AssertEqual($"[ path {plain} ]",                                InputLayer.TryMakePathMarker($"\"{plain}\""), "PathMarkers: a single quoted drop");
+			ctx.AssertEqual($"[ path {plain} ] [ path {spaced} ]", InputLayer.TryMakePathMarker($"\"{plain}\" \"{spaced}\""), "PathMarkers: several dropped files each become a marker");
+			ctx.AssertNull(InputLayer.TryMakePathMarker($"\"{plain}\" and more"), "PathMarkers: a path inside prose is not a drop");
+		}
+		finally
+		{
+			Directory.Delete(dir, true);
+		}
 	}
 
 	public static void Test(TestContext ctx)
@@ -62,10 +82,10 @@ public static class CharWidthTests
 
 	private static void TestAscii(TestContext ctx)
 	{
-		AssertWidth(ctx, 'A', 1, "ASCII: 'A' is single-width");
-		AssertWidth(ctx, 'z', 1, "ASCII: 'z' is single-width");
-		AssertWidth(ctx, '0', 1, "ASCII: '0' is single-width");
-		AssertWidth(ctx, ' ', 1, "ASCII: space is single-width");
+		AssertWidth(ctx,  'A', 1, "ASCII: 'A' is single-width");
+		AssertWidth(ctx,  'z', 1, "ASCII: 'z' is single-width");
+		AssertWidth(ctx,  '0', 1, "ASCII: '0' is single-width");
+		AssertWidth(ctx,  ' ', 1, "ASCII: space is single-width");
 		AssertWidth(ctx, '\n', 1, "ASCII: newline is single-width");
 		AssertWidth(ctx, '\t', 1, "ASCII: tab is single-width");
 	}
@@ -304,7 +324,7 @@ public static class CharWidthTests
 
 	private static void TestAgreement(TestContext ctx, char c, string name)
 	{
-		int ofWidth = CharWidth.Of(c);
+		int ofWidth   = CharWidth.Of(c);
 		int ansiWidth = AnsiString.CharWidth(c);
 		ctx.AssertEqual(ofWidth, ansiWidth, $"AnsiString.CharWidth agrees with CharWidth.Of for {name} (U+{c:X4}): expected {ofWidth}");
 	}

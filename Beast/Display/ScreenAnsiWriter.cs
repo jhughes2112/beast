@@ -42,7 +42,7 @@ public static class ScreenAnsiWriter
 			return;
 
 		SgrTracker tracker = new SgrTracker();
-		bool wrote = false;
+		bool       wrote   = false;
 
 		for (int y = 0; y < screen.H; y++)
 		{
@@ -86,9 +86,13 @@ public static class ScreenAnsiWriter
 	{
 		buf.Append('\x1b').Append('[').Append(startRow + y).Append(';').Append(startCol + x0).Append('H');
 
+		// Set after a non-ASCII glyph: the terminal's idea of its width may not match ours, so the next
+		// cell is placed by absolute column rather than trusting the cursor's advance.
+		bool anchor = false;
+
 		for (int x = x0; x <= x1; x++)
 		{
-			Cell c = screen.Get(x, y);
+			Cell c       = screen.Get(x, y);
 			bool changed = !tracker.Valid
 				|| !ColorEquals(c.Fg, tracker.Fg)
 				|| !ColorEquals(c.Bg, tracker.Bg)
@@ -97,21 +101,54 @@ public static class ScreenAnsiWriter
 			if (changed)
 			{
 				EmitState(buf, c.Fg, c.Bg, c.Style, tracker.Fg, tracker.Bg, tracker.Style, tracker.Valid);
-				tracker.Fg = c.Fg;
-				tracker.Bg = c.Bg;
+				tracker.Fg    = c.Fg;
+				tracker.Bg    = c.Bg;
 				tracker.Style = c.Style;
 				tracker.Valid = true;
 			}
 
-			buf.Append(c.Ch == '\0' ? ' ' : c.Ch);
+			if (anchor)
+			{
+				AppendColumn(buf, startCol + x);
+				anchor = false;
+			}
+
+			char ch = c.Ch == '\0' ? ' ' : c.Ch;
 
 			// A wide glyph (CJK, emoji, checkbox mark) advances the terminal cursor two columns on its
 			// own, so skip the reserved trailing cell the layout left blank — keeping the grid and the
 			// terminal column-aligned. Driving the skip off the glyph's width (not a marker cell) also
 			// keeps a wide glyph two columns wide even if an overlay overwrote the cell behind it.
-			if (CharWidth.Of(c.Ch) == 2)
+			if (CharWidth.Of(ch) == 2)
+			{
+				// Blank both cells first, so a terminal that draws the glyph one column wide leaves a
+				// space in the trailing cell rather than whatever was there before.
+				if (x + 1 < screen.W)
+				{
+					buf.Append("  ");
+					AppendColumn(buf, startCol + x);
+				}
+				buf.Append(ch);
 				x++;
+			}
+			else
+			{
+				buf.Append(ch);
+			}
+
+			// Any non-ASCII glyph may advance a different distance on this terminal than CharWidth
+			// predicts (the probe can be off, or unavailable). Re-anchoring after it confines the damage
+			// to the glyph itself — clipped, or followed by a gap — instead of sliding everything after it
+			// on the row, which is what pushed the F10 panel sideways.
+			if (ch >= '\x80')
+				anchor = true;
 		}
+	}
+
+	// Moves the cursor to a 1-based column on the current row (CHA).
+	private static void AppendColumn(StringBuilder buf, int col)
+	{
+		buf.Append('\x1b').Append('[').Append(col).Append('G');
 	}
 
 	// Whether two cells render identically on the terminal. '\0' and ' ' are the same visible glyph.
@@ -146,8 +183,8 @@ public static class ScreenAnsiWriter
 		{
 			buf.Append("\x1b[0m");
 			haveLast = false;
-			lastFg = null;
-			lastBg = null;
+			lastFg   = null;
+			lastBg   = null;
 		}
 
 		CellStyle baseline = haveLast ? lastStyle : CellStyle.None;

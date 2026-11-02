@@ -3,7 +3,8 @@
 # (win-x64, osx-arm64, linux-x64, ...). Runs inside the mcr.microsoft.com/dotnet/sdk:10.0 container with
 # the repo bind-mounted at /src; the host build scripts only pick the identifiers and start the container.
 # The build runs on a private copy of the source, so the host's build/obj folders are never touched and a
-# native Linux host is not left with root-owned files. Output: /src/build/bin/release/beast-<rid>/beast[.exe]
+# native Linux host is not left with root-owned files. Output: /src/beast.exe (Windows) or /src/beast,
+# beside the build scripts. With several identifiers, each one overwrites the last of the same name.
 set -e
 
 if [ $# -eq 0 ]; then
@@ -29,11 +30,8 @@ for rid in "$@"; do
 		*)     exe=beast;     built=Beast     ;;
 	esac
 
-	out="/src/build/bin/release/beast-$rid"
-	rm -rf "$out"
-	mkdir -p "$out"
-	cp "/tmp/publish/$rid/$built" "$out/$exe"
-	chmod +x "$out/$exe"
-	chown -R "$owner" "/src/build" 2>/dev/null || true
-	echo "  -> build/bin/release/beast-$rid/$exe"
+	cp "/tmp/publish/$rid/$built" "/src/$exe"
+	chmod +x "/src/$exe"
+	chown "$owner" "/src/$exe" 2>/dev/null || true
+	echo "  -> $exe ($rid)"
 done

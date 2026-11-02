@@ -13,12 +13,12 @@ internal static class InputLayer
 	// Builds the input text area with ghost-text completion preview.
 	internal static Screen Build(string text, int w, int inputRows, int skip, string ghostSuffix)
 	{
-		Screen s = new Screen(w, inputRows, new Cell(' ', DisplayScreen.Palette.InputFg, DisplayScreen.Palette.InputBg, CellStyle.None));
+		Screen       s          = new Screen(w, inputRows, new Cell(' ', DisplayScreen.Palette.InputFg, DisplayScreen.Palette.InputBg, CellStyle.None));
 		List<string> inputLines = WrapInput(text, w);
 		for (int r = 0; r < inputRows; r++)
 		{
-			int lineIdx = skip + r;
-			string line = lineIdx < inputLines.Count ? inputLines[lineIdx] : PromptPrefix;
+			int    lineIdx             = skip + r;
+			string line                = lineIdx < inputLines.Count ? inputLines[lineIdx] : PromptPrefix;
 			(int endX, Rgb? _, Rgb? _) = AnsiToScreen.WriteLine(s, 0, r, line, DisplayScreen.Palette.InputFg, DisplayScreen.Palette.InputBg);
 			AnsiToScreen.PadRowBackground(s, endX, r, DisplayScreen.Palette.InputFg, DisplayScreen.Palette.InputBg);
 
@@ -53,9 +53,9 @@ internal static class InputLayer
 			int idx = first + r;
 			if (idx >= total)
 				break;
-			bool isSel = idx == selected;
-			Rgb bg = isSel ? DisplayScreen.Palette.PopupSelBg : DisplayScreen.Palette.InputBg;
-			string line = "  " + matches[idx];
+			bool   isSel = idx == selected;
+			Rgb    bg    = isSel ? DisplayScreen.Palette.PopupSelBg : DisplayScreen.Palette.InputBg;
+			string line  = "  " + matches[idx];
 			s.Fill(new Rect(0, r, w, 1), new Cell(' ', DisplayScreen.Palette.InputFg, bg, CellStyle.None));
 			(int endX, Rgb? _, Rgb? _) = AnsiToScreen.WriteLine(s, 0, r, line, DisplayScreen.Palette.InputFg, bg);
 			AnsiToScreen.PadRowBackground(s, endX, r, DisplayScreen.Palette.InputFg, bg);
@@ -66,12 +66,12 @@ internal static class InputLayer
 	// Wraps input text into screen lines, applying PromptPrefix on the first logical line.
 	internal static List<string> WrapInput(string text, int w)
 	{
-		List<string> result = new List<string>();
-		string[] logicalLines = text.Split('\n');
+		List<string> result       = new List<string>();
+		string[]     logicalLines = text.Split('\n');
 		for (int li = 0; li < logicalLines.Length; li++)
 		{
 			string prefix = li == 0 ? PromptPrefix : "  ";
-			string full = prefix + ExpandTabs(logicalLines[li]);
+			string full   = prefix + ExpandTabs(logicalLines[li]);
 			if (full.Length == 0)
 			{ result.Add(prefix); continue; }
 			foreach (string wl in AnsiString.Wrap(full, w))
@@ -88,13 +88,13 @@ internal static class InputLayer
 	internal static (int LineIdx, int Col) CursorInInputLines(string text, int cursor, int w)
 	{
 		string[] logicalLines = text.Split('\n');
-		int remaining = cursor;
-		int screenLine = 0;
+		int      remaining    = cursor;
+		int      screenLine   = 0;
 
 		for (int li = 0; li < logicalLines.Length; li++)
 		{
 			string prefix = li == 0 ? PromptPrefix : "  ";
-			int logLen = logicalLines[li].Length;
+			int    logLen = logicalLines[li].Length;
 
 			if (remaining <= logLen || li == logicalLines.Length - 1)
 			{
@@ -102,7 +102,7 @@ internal static class InputLayer
 				return (screenLine + colInFull / w, colInFull % w);
 			}
 
-			remaining -= logLen + 1;
+			remaining  -= logLen + 1;
 			int fullLen = prefix.Length + logicalLines[li].Length;
 			screenLine += Math.Max(1, (int)Math.Ceiling((double)fullLen / w));
 		}
@@ -114,25 +114,25 @@ internal static class InputLayer
 	internal static int CharFromInputLines(string text, int targetLine, int targetCol, int w)
 	{
 		string[] logicalLines = text.Split('\n');
-		int screenLine = 0;
-		int charPos = 0;
+		int      screenLine   = 0;
+		int      charPos      = 0;
 
 		for (int li = 0; li < logicalLines.Length; li++)
 		{
-			string prefix = li == 0 ? PromptPrefix : "  ";
-			int fullLen = prefix.Length + logicalLines[li].Length;
-			int wrappedRows = Math.Max(1, (int)Math.Ceiling((double)fullLen / w));
+			string prefix      = li == 0 ? PromptPrefix : "  ";
+			int    fullLen     = prefix.Length + logicalLines[li].Length;
+			int    wrappedRows = Math.Max(1, (int)Math.Ceiling((double)fullLen / w));
 
 			if (screenLine + wrappedRows > targetLine)
 			{
 				int rowWithin = targetLine - screenLine;
-				int colInFull = Math.Min(rowWithin * w + targetCol, fullLen);
-				int chars = Math.Max(0, colInFull - prefix.Length);
+				int colInFull = Math.Min(rowWithin * w + targetCol,                   fullLen);
+				int chars     = Math.Max(                        0, colInFull - prefix.Length);
 				return charPos + chars;
 			}
 
 			screenLine += wrappedRows;
-			charPos += logicalLines[li].Length + (li < logicalLines.Length - 1 ? 1 : 0);
+			charPos    += logicalLines[li].Length + (li < logicalLines.Length - 1 ? 1 : 0);
 		}
 
 		return text.Length;
@@ -162,31 +162,80 @@ internal static class InputLayer
 	// that is expanded back to full content when the line is committed.
 	// Dragging a file onto a Windows terminal types its path into the input as if pasted, so the
 	// drop is caught here rather than through any drag-and-drop API: a pasted single line that
-	// resolves to an existing file becomes a path marker, which the submit path turns into a real
-	// attachment. Returns null when the paste is ordinary text.
+	// resolves to existing files becomes path markers, which the submit path turns into real
+	// attachments. Dropping several files pastes their paths separated by spaces (or newlines), so every
+	// path must name an existing file for the paste to count as a drop. Returns null when the paste is
+	// ordinary text.
 	internal static string? TryMakePathMarker(string pasted)
 	{
-		string trimmed = pasted.Trim();
-		if (trimmed.Length == 0 || trimmed.IndexOf('\n') >= 0)
-			return null;
-
-		// Terminals quote a dropped path when it contains spaces.
-		if (trimmed.Length > 1 && trimmed[0] == '"' && trimmed[trimmed.Length - 1] == '"')
-			trimmed = trimmed.Substring(1, trimmed.Length - 2);
-		if (trimmed.Length > 1 && trimmed[0] == '\'' && trimmed[trimmed.Length - 1] == '\'')
-			trimmed = trimmed.Substring(1, trimmed.Length - 2);
-
-		try
+		List<string>  paths    = SplitDroppedPaths(pasted.Trim());
+		StringBuilder markers  = new StringBuilder();
+		bool          allFiles = paths.Count > 0;
+		foreach (string path in paths)
 		{
-			if (!File.Exists(trimmed))
-				return null;
-			return $"[ path {Path.GetFullPath(trimmed)} ]";
+			try
+			{
+				if (File.Exists(path))
+				{
+					if (markers.Length > 0)
+						markers.Append(' ');
+					markers.Append($"[ path {Path.GetFullPath(path)} ]");
+				}
+				else
+				{
+					allFiles = false;
+				}
+			}
+			catch (Exception)
+			{
+				// A malformed path is just text.
+				allFiles = false;
+			}
 		}
-		catch (Exception)
+		return allFiles ? markers.ToString() : null;
+	}
+
+	// Splits pasted text the way terminals write dropped paths: separated by whitespace, each quoted ("..."
+	// or '...') when it contains spaces, or on macOS and Linux with its spaces backslash-escaped instead.
+	// Backslashes are path separators on Windows, so they escape nothing there.
+	private static List<string> SplitDroppedPaths(string text)
+	{
+		List<string>  paths   = new List<string>();
+		StringBuilder current = new StringBuilder();
+		char          quote   = '\0';
+		bool          escapes = !OperatingSystem.IsWindows();
+		for (int i = 0; i < text.Length; i++)
 		{
-			// A malformed path is just text.
-			return null;
+			char c = text[i];
+			if (quote != '\0')
+			{
+				if (c == quote)
+					quote = '\0';
+				else
+					current.Append(c);
+			}
+			else if (c == '"' || c == '\'')
+			{
+				quote = c;
+			}
+			else if (escapes && c == '\\' && i + 1 < text.Length)
+			{
+				current.Append(text[++i]);
+			}
+			else if (char.IsWhiteSpace(c))
+			{
+				if (current.Length > 0)
+					paths.Add(current.ToString());
+				current.Clear();
+			}
+			else
+			{
+				current.Append(c);
+			}
 		}
+		if (current.Length > 0)
+			paths.Add(current.ToString());
+		return paths;
 	}
 
 	// Pulls every "[ path ... ]" marker out of a submitted line, in order. The markers stay in the
@@ -195,7 +244,7 @@ internal static class InputLayer
 	internal static List<string> ExtractPathMarkers(string text)
 	{
 		List<string> paths = new List<string>();
-		const string open = "[ path ";
+		const string open  = "[ path ";
 		const string close = " ]";
 
 		int scan = 0;
@@ -225,8 +274,8 @@ internal static class InputLayer
 		if (content.Length < 256)
 			return content;
 
-		int byteCount = Encoding.UTF8.GetByteCount(content);
-		string placeholder = $"[Pasted {byteCount} bytes from clipboard #{++pasteSeq}]";
+		int    byteCount          = Encoding.UTF8.GetByteCount(content);
+		string placeholder        = $"[Pasted {byteCount} bytes from clipboard #{++pasteSeq}]";
 		pasteBuffers[placeholder] = content;
 		return placeholder;
 	}

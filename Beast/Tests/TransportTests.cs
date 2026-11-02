@@ -21,8 +21,9 @@ file sealed class NullDisplay : IDisplay
 	public void SetAgentBusy            (  bool busy,  long startTick)      { }
 	public void SetSendAsync            (Func<string, Task> sendAsync)      { }
 	public void SetRequestExit          (Action requestExit)                { }
-	public void SetFrameDrain           (Action drain)                      { }
-	public void SetSessionCounts        (int active, int total)             { }
+	public void AskChoice               (string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice) { onChoice(defaultIndex); }
+	public void SetFrameDrain           (Action drain)          { }
+	public void SetSessionCounts        (int active, int total) { }
 	public void SetSessionList          (IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
 	public void SetSessionSwitchCallback(Action<string> switchTo)                                     { }
 	public void SetSessionDeleteCallback(Action<string> deleteSession)                                { }

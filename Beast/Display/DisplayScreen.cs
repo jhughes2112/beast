@@ -5,7 +5,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using TextCopy;
 
 
 // IDisplay implementation that builds a frame by compositing independent layer Screens:
@@ -59,6 +58,8 @@ public class DisplayScreen : IDisplay
 		public static readonly Rgb Blue          = new Rgb( 98, 158, 204); // softened accent blue
 		public static readonly Rgb Orange        = new Rgb(204, 140,  82); // softened amber (system)
 		public static readonly Rgb Yellow        = new Rgb(206, 182, 112); // softened gold
+		public static readonly Rgb HostFg        = new Rgb(255, 224,  64); // bright yellow: a command running on the user's own machine
+		public static readonly Rgb HostOutputFg  = new Rgb(232, 214, 150); // its output, a step softer than the HOST: line
 		public static readonly Rgb BrightWhite   = new Rgb(232, 232, 234);
 		public static readonly Rgb ToolCallFg    = new Rgb(126, 192, 196); // calm teal header (was harsh cyan)
 		public static readonly Rgb ToolCallBg    = new Rgb( 40,  48,  72); // dark blue-slate tool block; kept brighter than the response body so the call header reads as distinct
@@ -125,19 +126,27 @@ public class DisplayScreen : IDisplay
 	// Whether the last frame showed it, so the tick loop redraws once when it should disappear.
 	private bool _calibrationPopupDrawn;
 
+	// Questions waiting for the user, asked one at a time, the first on screen and modal: a host_command
+	// HallMonitor was unsure about, or what to do with the worktree on exit (AskChoice).
+	private readonly List<ChoicePopup> _choices = new List<ChoicePopup>();
+	// Whether the last frame showed the question's answers greyed out, so the tick loop redraws once they arm.
+	private bool _choiceDrawnArming;
+
 	// Host path of the folder bound to /workspace: dropped files are staged inside it so the agent
 	// can read them and so they die with the worktree. Empty until the launcher supplies it.
 	private string _attachmentRoot = string.Empty;
 
 	// Serializes submissions so an /attach and the text it belongs to always reach the agent as an
 	// unbroken pair.
-	private readonly SemaphoreSlim            _sendGate            = new SemaphoreSlim(1, 1);
-	private          int                      _sessionTreeSelected = 0;
-	private          int                      _sessionTreeScroll   = 0;
-	private          int                      _sessionActive       = 0;
-	private          int                      _sessionTotal        = 0;
-	private readonly List<SessionDisplayInfo> _sessionList         = new List<SessionDisplayInfo>();
-	private          string                   _sessionActiveId     = "";
+	private readonly SemaphoreSlim _sendGate            = new SemaphoreSlim(1, 1);
+	private          int           _sessionTreeSelected = 0;
+	// Sessions the user marked with Delete in the F10 tree; Enter asks before deleting them.
+	private readonly HashSet<string>          _sessionMarked     = new HashSet<string>(StringComparer.Ordinal);
+	private          int                      _sessionTreeScroll = 0;
+	private          int                      _sessionActive     = 0;
+	private          int                      _sessionTotal      = 0;
+	private readonly List<SessionDisplayInfo> _sessionList       = new List<SessionDisplayInfo>();
+	private          string                   _sessionActiveId   = "";
 
 	private readonly List<string> _completions = new List<string> { "/verbose" };
 	private readonly object       _consoleLock = new object();
@@ -483,6 +492,8 @@ public class DisplayScreen : IDisplay
 			// everything else, so all of them can share the one frame type.
 			consumed = _calibrationPopup.OnConfigFrame(json);
 			if (!consumed)
+				consumed = OnHostAskFrame(json);
+			if (!consumed)
 				consumed = _roleOverlay != null && _roleOverlay.OnConfigFrame(json);
 			if (!consumed)
 				consumed = _configOverlay != null && _configOverlay.OnConfigFrame(json);
@@ -500,7 +511,119 @@ public class DisplayScreen : IDisplay
 		if (consumed)
 			Redraw();
 	}
-	public void SetRequestExit          (Action requestExit)           { _requestExit = requestExit; }
+	public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
+
+	public void AskChoice(string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice)
+	{
+		List<ChoiceLine> text = new List<ChoiceLine>();
+		foreach (string line in lines)
+			text.Add(new ChoiceLine(line, null, false));
+		lock (_consoleLock)
+			_choices.Add(new ChoicePopup(string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, onChoice));
+		Redraw();
+	}
+
+	// The answers offered for a host command HallMonitor was unsure about, in this order; they go back to
+	// the agent as /host-answer. Always and Never are remembered there, in ~/.beast/decisions.json.
+	private static readonly string[] HostAnswers = { "always", "yes", "no", "never" };
+
+	// A host command HallMonitor was unsure about, put to the user (host-ask), or taken back because its
+	// tool call went away (host-ask-cancel). Called under the console lock. No is preselected and keys are
+	// ignored for a moment, so a keystroke meant for the input line cannot approve a command.
+	private bool OnHostAskFrame(string json)
+	{
+		bool claimed = false;
+		if (json.Contains("\"host-ask", StringComparison.Ordinal))
+		{
+			System.Text.Json.Nodes.JsonNode? root = System.Text.Json.Nodes.JsonNode.Parse(json);
+			string kind = root?["kind"]?.GetValue<string>() ?? string.Empty;
+			string id   = root?["id"]?.GetValue<string>() ?? string.Empty;
+			if (kind == "host-ask" && id.Length > 0)
+			{
+				string           shell   = root?["shell"]?.GetValue<string>() ?? string.Empty;
+				string           command = root?["command"]?.GetValue<string>() ?? string.Empty;
+				string           reason  = root?["reason"]?.GetValue<string>() ?? string.Empty;
+				List<ChoiceLine> lines   = new List<ChoiceLine>
+				{
+					new ChoiceLine($"Run this {shell} command on your computer?", null, false),
+					new ChoiceLine(string.Empty,           null, false),
+					new ChoiceLine(     command, Palette.HostFg,  true)
+				};
+				if (reason.Length > 0)
+				{
+					lines.Add(new ChoiceLine(string.Empty, null, false));
+					lines.Add(new ChoiceLine("HallMonitor is unsure: " + reason, Palette.MedGrey, false));
+				}
+				List<string> labels = new List<string> { "&Always", "&Yes", "&No", "Ne&ver" };
+				_choices.Add(new ChoicePopup(id, "HOST command", Palette.HostFg, lines, labels, 2, 2, 700, choice =>
+				{
+					if (_sendAsync != null)
+						_ = _sendAsync($"/host-answer {id} {HostAnswers[choice]}");
+				}));
+				claimed = true;
+			}
+			else if (kind == "host-ask-cancel")
+			{
+				for (int i = _choices.Count - 1; i >= 0; i--)
+				{
+					if (_choices[i].Id == id)
+						_choices.RemoveAt(i);
+				}
+				claimed = true;
+			}
+		}
+		return claimed;
+	}
+	// Asks before deleting the sessions marked in the F10 tree (each with its descendants, from memory and
+	// disk). A session still running is left alone. Deleting the root tears its whole tree down and the agent
+	// starts a fresh session in its place. Called under the console lock; No is preselected.
+	private void AskDeleteMarked()
+	{
+		List<string> ids   = new List<string>();
+		List<string> lines = new List<string>();
+		int          busy  = 0;
+		foreach (SessionDisplayInfo s in _sessionList)
+		{
+			if (!_sessionMarked.Contains(s.Id))
+				continue;
+			if (s.IsBusy)
+			{
+				busy++;
+			}
+			else
+			{
+				ids.Add(s.Id);
+				lines.Add("  " + s.Name);
+			}
+		}
+		if (busy > 0)
+			lines.Add($"({busy} marked session(s) still running will be kept.)");
+
+		List<ChoiceLine> text = new List<ChoiceLine> { new ChoiceLine($"Delete {ids.Count} session(s) and everything under them?", null, false), new ChoiceLine(string.Empty, null, false) };
+		foreach (string line in lines)
+			text.Add(new ChoiceLine(line, null, false));
+		List<string> labels = new List<string> { "&Delete", "&Cancel" };
+		_choices.Add(new ChoicePopup(string.Empty, "Delete sessions", new Rgb(230, 90, 90), text, labels, 1, 1, 0, choice =>
+		{
+			lock (_consoleLock)
+			{
+				if (choice == 0)
+				{
+					// Each callback rebuilds the list via SetSessionList; clamp afterward, then preview whatever
+					// now sits at the selection so the view follows.
+					foreach (string id in ids)
+						_sessionDeleteCallback?.Invoke(id);
+					if (_sessionTreeSelected >= _sessionList.Count)
+						_sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
+					PreviewSelectedSession();
+				}
+				_sessionMarked.Clear();
+				Redraw();
+			}
+		}));
+		Redraw();
+	}
+
 	public void SetFrameDrain           (Action drain)                 { _frameDrain = drain; }
 	public void SetSessionSwitchCallback(Action<string> switchTo)      { _sessionSwitchCallback = switchTo; }
 	public void SetSessionDeleteCallback(Action<string> deleteSession) { _sessionDeleteCallback = deleteSession; }
@@ -585,6 +708,19 @@ public class DisplayScreen : IDisplay
 				_sessionList.Add(s);
 			_sessionActiveId = activeId;
 
+			// A marked session that has gone away is no longer marked.
+			List<string> gone = new List<string>();
+			foreach (string id in _sessionMarked)
+			{
+				bool present = false;
+				foreach (SessionDisplayInfo s in _sessionList)
+					present = present || string.Equals(s.Id, id, StringComparison.Ordinal);
+				if (!present)
+					gone.Add(id);
+			}
+			foreach (string id in gone)
+				_sessionMarked.Remove(id);
+
 			// The F10 selection drives the view, so it must always point at the session currently
 			// being viewed. When the view changes on its own (auto-track follows a subagent) or the
 			// tree is reordered, snap the cursor to the active session so the highlight and the view
@@ -621,8 +757,8 @@ public class DisplayScreen : IDisplay
 
 		Console.OutputEncoding = new UTF8Encoding(false);
 		Console.InputEncoding  = new UTF8Encoding(false);
-		WindowsConsole.EnableVirtualTerminal();
-		WindowsConsole.ReapplyModes();
+		Platform.Current.EnterTerminalModes();
+		Platform.Current.ReapplyTerminalModes();
 
 		_bufferedOut = new StreamWriter(
 		Console.OpenStandardOutput(131072),
@@ -653,7 +789,7 @@ public class DisplayScreen : IDisplay
 		InputLoop(_runCts.Token);
 
 		RestoreTerminal();
-		WindowsConsole.Restore();
+		Platform.Current.RestoreTerminalModes();
 
 		if (_bufferedOut != null)
 		{
@@ -935,7 +1071,7 @@ public class DisplayScreen : IDisplay
 		// rather than on top of it.
 		if (_sessionTreeOpen)
 		{
-			Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId);
+			Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId, _sessionMarked);
 			// Replace (opaque) so underline/italic in the content behind the panel does not bleed through.
 			frame.Blit(treeOverlay, historyW, 0, BlendMode.Replace, null);
 		}
@@ -958,6 +1094,14 @@ public class DisplayScreen : IDisplay
 		{
 			Screen popup = _calibrationPopup.Build(w);
 			frame.Blit(popup, Math.Max(0, w - popup.W - 2), 1, BlendMode.Replace, null);
+		}
+
+		// A question waiting for the user: centered above everything else.
+		_choiceDrawnArming = _choices.Count > 0 && _choices[0].Arming;
+		if (_choices.Count > 0)
+		{
+			Screen question = _choices[0].Build(w, h, _choices.Count - 1);
+			frame.Blit(question, Math.Max(0, (w - question.W) / 2), Math.Max(0, (h - question.H) / 2), BlendMode.Replace, null);
 		}
 
 		// Cursor glow layer (applied last so it lifts all underlying layers).
@@ -1385,13 +1529,13 @@ public class DisplayScreen : IDisplay
 
 		if (add)
 		{
-			string existing = ClipboardService.GetText() ?? string.Empty;
-			ClipboardService.SetText(existing.Length == 0 ? text : existing + "\n\n" + text);
+			string existing = Platform.Current.GetClipboardText();
+			Platform.Current.SetClipboardText(existing.Length == 0 ? text : existing + "\n\n" + text);
 			SetStatus("Added block to clipboard");
 		}
 		else
 		{
-			ClipboardService.SetText(text);
+			Platform.Current.SetClipboardText(text);
 			SetStatus("Copied block to clipboard");
 		}
 		return true;
@@ -1554,6 +1698,11 @@ public class DisplayScreen : IDisplay
 						// A finished calibration's outcome has been up long enough; take it down.
 						needRedraw = true;
 					}
+					if (_choiceDrawnArming && (_choices.Count == 0 || !_choices[0].Arming))
+					{
+						// A question's answers light up once keys start counting.
+						needRedraw = true;
+					}
 					if (_agentBusy)
 					{
 						// The spinner frames, elapsed-time label, and tab-title animation are all
@@ -1575,7 +1724,7 @@ public class DisplayScreen : IDisplay
 				pollTimeout    = animating ? 16 : 32;
 			}
 
-			ConsoleInputEvent? evOpt = WindowsConsole.ReadInputWithTimeout(pollTimeout);
+			ConsoleInputEvent? evOpt = Platform.Current.ReadInput(pollTimeout);
 			if (evOpt == null)
 				continue;
 			ConsoleInputEvent inputEv = evOpt.Value;
@@ -1733,13 +1882,38 @@ public class DisplayScreen : IDisplay
 			bool           alt   = key.Modifiers.HasFlag(ConsoleModifiers.Alt);
 			bool           shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
 
-			// The /config and /role overlays are modal: while one is open it consumes every key.
-			bool configOpen;
-			bool roleOpen;
+			// Ctrl+C asks to leave whatever is open, as it did when it was a console signal; the exit path
+			// keeps a second press from stacking another question.
+			if (key.Key == ConsoleKey.C && ctrl)
+			{
+				lock (_consoleLock)
+					_followReadyTick = 0;
+				_requestExit?.Invoke();
+				continue;
+			}
+
+			// The /config and /role overlays are modal: while one is open it consumes every key. A question
+			// waiting for the user comes first of all: whoever asked it is blocked on the answer.
+			bool         configOpen;
+			bool         roleOpen;
+			ChoicePopup? question;
 			lock (_consoleLock)
 			{
 				configOpen = _configOverlay != null && _configOverlay.IsOpen;
 				roleOpen   = _roleOverlay != null && _roleOverlay.IsOpen;
+				question   = _choices.Count > 0 ? _choices[0] : null;
+			}
+			if (question != null)
+			{
+				int chosen = question.HandleKey(key);
+				if (chosen >= 0)
+				{
+					lock (_consoleLock)
+						_choices.Remove(question);
+					question.Choose(chosen);
+				}
+				Redraw();
+				continue;
 			}
 			if (roleOpen)
 			{
@@ -1796,24 +1970,21 @@ public class DisplayScreen : IDisplay
 					}
 					else if (key.Key == ConsoleKey.Delete && inputBuffer.Length == 0)
 					{
-						// Delete removes a session and its descendants from memory and disk — but only when
-						// the input line is empty, so it never steals the forward-delete from text editing. A
-						// session still running is left alone. Deleting the root tears the whole tree down and
-						// the agent starts a fresh session in its place.
+						// Delete only marks (or unmarks) the selected session; nothing is deleted until Enter is
+						// answered. Holding Delete to clear the input line therefore cannot run on into deleting
+						// the session once the line is empty.
 						if (_sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
 						{
-							SessionDisplayInfo target = _sessionList[_sessionTreeSelected];
-							if (!target.IsBusy)
-							{
-								// The callback rebuilds the list via SetSessionList; clamp afterward,
-								// then preview whatever now sits at the selection so the view follows.
-								_sessionDeleteCallback?.Invoke(target.Id);
-								if (_sessionTreeSelected >= _sessionList.Count)
-									_sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
-								PreviewSelectedSession();
-								Redraw();
-							}
+							string id = _sessionList[_sessionTreeSelected].Id;
+							if (!_sessionMarked.Remove(id))
+								_sessionMarked.Add(id);
+							Redraw();
 						}
+						treeHandled = true;
+					}
+					else if (key.Key == ConsoleKey.Enter && inputBuffer.Length == 0 && _sessionMarked.Count > 0 && !shift && !alt)
+					{
+						AskDeleteMarked();
 						treeHandled = true;
 					}
 				}
@@ -2188,6 +2359,7 @@ public class DisplayScreen : IDisplay
 					if (_sessionList.Count > 0)
 					{
 						_sessionTreeOpen = !_sessionTreeOpen;
+						_sessionMarked.Clear();
 						if (_sessionTreeOpen)
 						{
 							// Pre-select the currently active session.
@@ -2239,18 +2411,12 @@ public class DisplayScreen : IDisplay
 					_followReadyTick = 0;
 				if (inputBuffer.Length > 0)
 				{
-					ClipboardService.SetText(inputBuffer.ToString());
+					Platform.Current.SetClipboardText(inputBuffer.ToString());
 					inputBuffer.Clear();
 					cursorPos    = 0;
 					inCompletion = false;
 					SetInput("", 0);
 				}
-			}
-			else if (key.Key == ConsoleKey.C && ctrl)
-			{
-				lock (_consoleLock)
-					_followReadyTick = 0;
-				_requestExit?.Invoke();
 			}
 			else if (key.Key == ConsoleKey.D && ctrl)
 			{
@@ -2333,7 +2499,7 @@ public class DisplayScreen : IDisplay
 		(string insert, string report) = PasteMediaMarkers();
 		if (insert.Length == 0)
 		{
-			string? clip = ClipboardService.GetText();
+			string clip = Platform.Current.GetClipboardText();
 			if (!string.IsNullOrEmpty(clip))
 				insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
 			else
@@ -2360,7 +2526,7 @@ public class DisplayScreen : IDisplay
 
 		StringBuilder markers   = new StringBuilder();
 		int           fileCount = 0;
-		foreach (string file in ClipboardMedia.GetFiles())
+		foreach (string file in Platform.Current.GetClipboardFiles())
 		{
 			markers.Append($"[ path {file} ] ");
 			fileCount++;
@@ -2368,7 +2534,7 @@ public class DisplayScreen : IDisplay
 		if (fileCount > 0)
 			return (markers.ToString(), fileCount == 1 ? "Attached 1 file from the clipboard." : $"Attached {fileCount} files from the clipboard.");
 
-		string image = ClipboardMedia.SaveImage(MediaIntake.EnsureStagingFolder(_attachmentRoot));
+		string image = Platform.Current.SaveClipboardImage(MediaIntake.EnsureStagingFolder(_attachmentRoot));
 		if (image.Length > 0)
 			return ($"[ path {image} ] ", "Attached the clipboard image.");
 
@@ -2428,6 +2594,13 @@ public class DisplayScreen : IDisplay
 			if (verb.Equals("help", StringComparison.OrdinalIgnoreCase))
 			{
 				SetStatus(HelpText);
+				return;
+			}
+
+			// Leaving goes through the same path as Ctrl+C, which asks about the worktree first.
+			if (verb.Equals("quit", StringComparison.OrdinalIgnoreCase) || verb.Equals("exit", StringComparison.OrdinalIgnoreCase))
+			{
+				_requestExit?.Invoke();
 				return;
 			}
 

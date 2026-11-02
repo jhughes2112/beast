@@ -191,12 +191,12 @@ public static class ToolSandboxTests
 
 		// The default tool configuration overlays whatever tools.json holds, in memory only, so the
 		// rig drives the in-code tool definitions regardless of the local file.
-		SettingsService                settings = new SettingsService(Environment.CurrentDirectory);
+		SettingsService                settings = new SettingsService();
 		Dictionary<string, ToolConfig> defaults = ToolService.Defaults();
 		foreach (string name in ToolNames)
 			settings.Tools[name] = defaults[name];
 		Role   role  = new Role("ToolTester", "drives the tools", RoleKind.Subagent, new List<string> { config.Id }, new List<string>(ToolNames), "test", string.Empty, string.Empty);
-		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, false, null, null, null, null);
+		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, false, null, null, null, null, null);
 		return new Rig(session, service, tools, transport);
 	}
 

@@ -13,7 +13,8 @@ internal static class SessionTreeLayer
 		int                      scroll,
 		int                      panelW,
 		int                      h,
-		string                   activeId)
+		string                   activeId,
+		HashSet<string>          marked)
 	{
 		Rgb panelBg      = new Rgb( 28,  28,  28);
 		Rgb borderFg     = new Rgb( 65,  65,  65);
@@ -32,7 +33,9 @@ internal static class SessionTreeLayer
 		for (int r = 0; r < h; r++)
 			AnsiToScreen.WriteLine(s, 0, r, "│", borderFg, panelBg);
 
-		string header = " Sessions  (↑↓ · Enter · Del · Esc)";
+		Rgb markFg = new Rgb(230,  90,  90); // marked for deletion
+
+		string header = marked.Count > 0 ? $" Sessions  ({marked.Count} marked · Enter deletes)" : " Sessions  (↑↓ · Enter · Del marks · Esc)";
 		AnsiToScreen.WriteLine(s, 1, 0, header, headerFg, panelBg);
 
 		int visibleRows = h - 1;
@@ -72,13 +75,15 @@ internal static class SessionTreeLayer
 			s.Fill(new Rect(1, r + 1, panelW - 1, 1), new Cell(' ', nameFg, bg, CellStyle.None));
 
 			string indent = new string(' ', info.Depth * 2);
-			string marker = isActive ? "▶ " : "  ";
-			string dot    = isLive ? "●" : "○";
+			// A session marked for deletion shows a red X where the active arrow would be.
+			bool   isMarked = marked.Contains(info.Id);
+			string marker   = isMarked ? "✗ " : isActive ? "▶ " : "  ";
+			string dot      = isLive ? "●" : "○";
 
 			int col = 1; // start after border
 			AnsiToScreen.WriteLine(s, col, r + 1, indent, nameFg, bg);
 			col += indent.Length;
-			AnsiToScreen.WriteLine(s, col, r + 1, marker, nameFg, bg);
+			AnsiToScreen.WriteLine(s, col, r + 1, marker, isMarked ? markFg : nameFg, bg);
 			col += marker.Length;
 			AnsiToScreen.WriteLine(s, col, r + 1, dot, dotFg, bg);
 			col += 1;

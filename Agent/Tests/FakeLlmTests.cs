@@ -509,7 +509,7 @@ public static class FakeLlmTests
 	private static async Task TestCompactionSpinStopsAsync(TestContext ctx, FakeLlm server, LlmModel model, LlmRegistry registry, RoleService roleService, CancellationToken ct)
 	{
 		TestCaptureTransport transport    = new TestCaptureTransport();
-		SettingsService      settings     = new SettingsService(Environment.CurrentDirectory);
+		SettingsService      settings     = new SettingsService();
 		StubOrchestrator     orchestrator = new StubOrchestrator();
 
 		BeastSession data = new BeastSession(Guid.NewGuid().ToString("N"), "spin", FakeLlm.AlwaysFullModelId, kStuckRoleName,
@@ -643,7 +643,7 @@ public static class FakeLlmTests
 	private static async Task TestFreshSessionIsCountedFirstAsync(TestContext ctx, FakeLlm server, LlmModel model, LlmRegistry registry, RoleService roleService, CancellationToken ct)
 	{
 		TestCaptureTransport transport    = new TestCaptureTransport();
-		SettingsService      settings     = new SettingsService(Environment.CurrentDirectory);
+		SettingsService      settings     = new SettingsService();
 		StubOrchestrator     orchestrator = new StubOrchestrator();
 
 		// Seeded history and no measurement: a compaction successor exactly as CompactAsync builds it.
@@ -708,7 +708,7 @@ public static class FakeLlmTests
 	private static async Task TestCostReachesIdleAncestorsEachRoundAsync(TestContext ctx, LlmModel model, LlmRegistry registry, RoleService roleService, CancellationToken ct)
 	{
 		TestCaptureTransport transport = new TestCaptureTransport();
-		SettingsService      settings  = new SettingsService(Environment.CurrentDirectory);
+		SettingsService      settings  = new SettingsService();
 
 		Session          root           = BuildSession("cost-root",   model, transport);
 		Session          parent         = BuildSession("cost-parent", model, transport);
@@ -750,13 +750,14 @@ public static class FakeLlmTests
 		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
 			=> Task.FromResult((false, "no subagents in this test", 0));
 
-		public void     Deliver           (string sessionId, string content) { }
-		public void     RegisterSession   (Session session)                  { }
-		public void     UnregisterSession (string sessionId)                 { }
-		public void     EnsureHandler     (Session session)                  { }
-		public Session? FindParent        (Session session) => Parents.TryGetValue(session.Id, out Session? parent) ? parent : null;
-		public void     TransferCompletion(string fromSessionId, string toSessionId)                   { }
-		public void     CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
+		public void          Deliver           (string sessionId, string content) { }
+		public void          RegisterSession   (Session session)                  { }
+		public void          UnregisterSession (string sessionId)                 { }
+		public void          EnsureHandler     (Session session)                  { }
+		public Session?      FindParent        (Session session) => Parents.TryGetValue(session.Id, out Session? parent) ? parent : null;
+		public void          TransferCompletion(string fromSessionId, string toSessionId)                   { }
+		public void          CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
+		public HostCommands? HostCommands => null;
 	}
 
 	// Minimal orchestrator for driving a SessionHandler in isolation: it records nothing and starts
@@ -766,13 +767,14 @@ public static class FakeLlmTests
 		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
 			=> Task.FromResult((false, "no subagents in this test", 0));
 
-		public void     Deliver           (string sessionId, string content) { }
-		public void     RegisterSession   (Session session)                  { }
-		public void     UnregisterSession (string sessionId)                 { }
-		public void     EnsureHandler     (Session session)                  { }
-		public Session? FindParent        (Session session) => null;
-		public void     TransferCompletion(string fromSessionId, string toSessionId)                   { }
-		public void     CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
+		public void          Deliver           (string sessionId, string content) { }
+		public void          RegisterSession   (Session session)                  { }
+		public void          UnregisterSession (string sessionId)                 { }
+		public void          EnsureHandler     (Session session)                  { }
+		public Session?      FindParent        (Session session) => null;
+		public void          TransferCompletion(string fromSessionId, string toSessionId)                   { }
+		public void          CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
+		public HostCommands? HostCommands => null;
 	}
 
 	private static LlmService BuildService(LlmModel model)

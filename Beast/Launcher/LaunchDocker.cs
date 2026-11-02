@@ -15,64 +15,193 @@ using System.Threading.Tasks;
 // Implements IAgentContext so BeastApp can swap it for NativeContext.
 public class LaunchDocker : ILauncher
 {
-	private readonly string              _image;
-	private readonly DockerClient        _dockerClient;
-	private readonly ClientLog           _log;
-	private readonly Worktrees.Selection _worktree;
-	private          string?             _containerId;
-	private          int                 _hostPort;
+	private readonly string          _image;
+	private readonly DockerClient    _dockerClient;
+	private readonly ClientLog       _log;
+	private readonly SessionRecord   _session;
+	private readonly AgentContainer? _existing;
+	private          string?         _containerId;
+	private          int             _hostPort;
 
-	public LaunchDocker(string image, ClientLog log, Worktrees.Selection worktree)
+	// Every agent container carries the id of the session it serves, read back to pair sessions with
+	// their containers. Containers from earlier Beasts carry the old folder label, or none.
+	public const  string SessionLabel   = "beast.session";
+	private const string OldFolderLabel = "beast.folder";
+
+	// One agent container on this machine. SessionId is empty for a container from an earlier Beast; such a
+	// container serves no session and is only listed so it can be deleted.
+	public sealed class AgentContainer
+	{
+		public readonly string Id;
+		public readonly string Name;
+		public readonly string SessionId;
+		public readonly bool   Running;
+		public readonly bool   CurrentImage;
+
+		public AgentContainer(string id, string name, string sessionId, bool running, bool currentImage)
+		{
+			Id           = id;
+			Name         = name;
+			SessionId    = sessionId;
+			Running      = running;
+			CurrentImage = currentImage;
+		}
+	}
+
+	// existing: the session's container, to start again; null to create one.
+	public LaunchDocker(string image, ClientLog log, SessionRecord session, AgentContainer? existing)
 	{
 		_image        = image;
 		_log          = log;
-		_worktree     = worktree;
-		_dockerClient = new DockerClientConfiguration().CreateClient();
+		_session      = session;
+		_existing     = existing;
+		_dockerClient = DockerEndpoint.CreateClient();
 	}
 
 	public int HostPort => _hostPort;
 
-	// Reaps a stale (exited) container with this name, then creates and starts a fresh one. A container
-	// with this name that is still running means the worktree is occupied by another Beast instance —
-	// that is refused rather than killed, since the deterministic name is the per-worktree lock.
-	public async Task<int> StartAsync(string name, CancellationToken cancellationToken)
+	// Every Beast agent container on this machine: those labelled with a session, and older ones (the
+	// previous folder label, or an unlabelled beast_* name). Best effort: Docker unreachable reads as none.
+	public static async Task<List<AgentContainer>> ListAgentsAsync(string image)
 	{
-		bool reaped = await RemoveStaleContainerByNameAsync(name);
-		if (!reaped)
-			throw new InvalidOperationException($"'{_worktree.Name}' is already in use by a running container ('{name}').");
-
-		// Worktree run: the real repo is bound to /git as a pristine reference checkout and the worktree folder
-		// to /workspace, where all tools operate. The agent runs `git worktree add /workspace` against /git once
-		// it is up, using the branch passed as the --worktree-branch startup argument.
-		// Ephemeral run: the current folder is bound straight to /workspace with no /git and no branch, so the
-		// agent operates in place and skips all git worktree setup.
-		string repoCwd          = _worktree.RepoCwd;
-		string worktreeHostPath = _worktree.HostPath;
-		string beastConfigDir   = Path.Combine(
-			Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
-		Directory.CreateDirectory(beastConfigDir);
-
-		List<string> cmd;
-		List<string> binds;
-		if (_worktree.Ephemeral)
+		List<AgentContainer> agents = new List<AgentContainer>();
+		try
 		{
-			cmd   = new List<string>();
-			binds = new List<string>
+			using DockerClient client = DockerEndpoint.CreateClient();
+			string current            = string.Empty;
+			try
 			{
-				$"{repoCwd}:/workspace",
-				$"{beastConfigDir}:/root/.beast"
-			};
+				ImageInspectResponse img = await client.Images.InspectImageAsync(image);
+				current                  = img.ID;
+			}
+			catch (DockerImageNotFoundException)
+			{
+			}
+
+			IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(new ContainersListParameters { All = true });
+			foreach (ContainerListResponse container in containers)
+			{
+				string  name      = container.Names.Count > 0 ? container.Names[0].TrimStart('/') : string.Empty;
+				string? sessionId = null;
+				bool    labelled  = container.Labels != null && container.Labels.TryGetValue(SessionLabel, out sessionId);
+				bool    older     = container.Labels != null && container.Labels.ContainsKey(OldFolderLabel);
+				if (labelled || older || name.StartsWith("beast_", StringComparison.Ordinal))
+					agents.Add(new AgentContainer(container.ID, name, labelled ? sessionId ?? string.Empty : string.Empty,
+						string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase), current.Length > 0 && container.ImageID == current));
+			}
+		}
+		catch (Exception)
+		{
+		}
+		return agents;
+	}
+
+	// Deletes a stopped agent container. Nothing of the user's is in it (the workspace, the worktree and the
+	// session's conversations are host folders); only what was installed inside goes. Returns why not, or empty.
+	public static async Task<string> RemoveStoppedAsync(AgentContainer agent)
+	{
+		string error = string.Empty;
+		if (agent.Running)
+		{
+			error = "it is running; stop it first";
 		}
 		else
 		{
-			cmd   = new List<string> { "--worktree-branch", _worktree.Branch };
-			binds = new List<string>
+			try
 			{
-				$"{repoCwd}:/git",
-				$"{worktreeHostPath}:/workspace",
-				$"{beastConfigDir}:/root/.beast"
-			};
+				using DockerClient client = DockerEndpoint.CreateClient();
+				await client.Containers.RemoveContainerAsync(agent.Id, new ContainerRemoveParameters());
+			}
+			catch (Exception ex)
+			{
+				error = ex.Message;
+			}
 		}
+		return error;
+	}
+
+	// Stops a running agent container. The Beast window connected to it loses its connection. Returns why
+	// it could not, or empty.
+	public static async Task<string> StopAgentAsync(AgentContainer agent)
+	{
+		string error = string.Empty;
+		try
+		{
+			using DockerClient client = DockerEndpoint.CreateClient();
+			await client.Containers.StopContainerAsync(agent.Id, new ContainerStopParameters { WaitBeforeKillSeconds = 10 });
+		}
+		catch (Exception ex)
+		{
+			error = ex.Message;
+		}
+		return error;
+	}
+
+	// Starts the session's container again when it has one made from the current agent image, keeping
+	// everything inside it. A container from an older image is replaced, as is having none: the new one is
+	// created under name. The caller never hands over a running container: that session is busy elsewhere.
+	public async Task<int> StartAsync(string name, CancellationToken cancellationToken)
+	{
+		int port;
+		if (_existing != null && _existing.CurrentImage)
+		{
+			port = await ResumeAsync(_existing, cancellationToken);
+		}
+		else
+		{
+			if (_existing != null)
+				await _dockerClient.Containers.RemoveContainerAsync(_existing.Id, new ContainerRemoveParameters { Force = true }, cancellationToken);
+			port = await CreateAsync(name, cancellationToken);
+		}
+		return port;
+	}
+
+	private async Task<int> ResumeAsync(AgentContainer existing, CancellationToken cancellationToken)
+	{
+		_containerId = existing.Id;
+		await _dockerClient.Containers.StartContainerAsync(existing.Id, new ContainerStartParameters(), cancellationToken);
+
+		ContainerInspectResponse info = await _dockerClient.Containers.InspectContainerAsync(existing.Id, cancellationToken);
+		_hostPort                     = 0;
+		if (info.HostConfig?.PortBindings != null && info.HostConfig.PortBindings.TryGetValue("13131/tcp", out IList<PortBinding>? bindings) && bindings.Count > 0)
+			int.TryParse(bindings[0].HostPort, out _hostPort);
+		if (_hostPort == 0)
+			throw new InvalidOperationException("The session's agent container has no published port; delete its agent from the session menu and start again.");
+		_log.Verbose($"[docker] Started container {existing.Id} again on host port {_hostPort}");
+		return _hostPort;
+	}
+
+	private async Task<int> CreateAsync(string name, CancellationToken cancellationToken)
+	{
+		// Worktree session: the repository is bound to /git as the reference checkout and the session's
+		// worktree folder to /workspace, where all tools operate. The agent runs `git worktree add /workspace`
+		// against /git once it is up, using the branch passed as the --worktree-branch startup argument.
+		// Bare session: the folder is bound straight to /workspace with no /git and no branch, so the agent
+		// operates in place and skips all git worktree setup.
+		// Either way ~/.beast is bound to /root/.beast, and the agent keeps its conversations and logs in the
+		// session's own state folder (--state-dir), out of the user's project. That folder is bound on its own
+		// at /root/.beast-state, since the sessions folder may live outside ~/.beast (sessionsDir); /root is
+		// root's alone, so the sandboxed shell cannot reach it any more than /root/.beast.
+		string beastConfigDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast");
+		Directory.CreateDirectory(beastConfigDir);
+		Directory.CreateDirectory(_session.StateDir);
+
+		List<string> cmd   = new List<string> { "--state-dir", "/root/.beast-state" };
+		List<string> binds = new List<string>();
+		if (_session.IsBare)
+		{
+			binds.Add($"{_session.Folder}:/workspace");
+		}
+		else
+		{
+			Directory.CreateDirectory(_session.WorktreePath);
+			cmd.Add("--worktree-branch");
+			cmd.Add(_session.Worktree);
+			binds.Add($"{_session.Folder}:/git");
+			binds.Add($"{_session.WorktreePath}:/workspace");
+		}
+		binds.Add($"{beastConfigDir}:/root/.beast");
+		binds.Add($"{_session.StateDir}:/root/.beast-state");
 
 		// Find an available port on the host
 		_hostPort = FindAvailablePort();
@@ -83,8 +212,8 @@ public class LaunchDocker : ILauncher
 		// the agent's commit_and_rebase and the model's own shell both see them. Resolved from the launch
 		// folder so a repo-local identity wins over the global one, exactly as the host's git would do.
 		List<string> env      = new List<string>();
-		string       gitName  = await HostGitConfigAsync(repoCwd, "user.name",  cancellationToken);
-		string       gitEmail = await HostGitConfigAsync(repoCwd, "user.email", cancellationToken);
+		string       gitName  = await HostGitConfigAsync(_session.Folder, "user.name",  cancellationToken);
+		string       gitEmail = await HostGitConfigAsync(_session.Folder, "user.email", cancellationToken);
 		if (gitName.Length > 0 && gitEmail.Length > 0)
 		{
 			env.Add($"GIT_AUTHOR_NAME={gitName}");
@@ -129,8 +258,10 @@ public class LaunchDocker : ILauncher
 			Name       = name,
 			WorkingDir = "/workspace",
 			Env        = env,
+			// Which session this is, read back by every launch (ListAgentsAsync) to pair it with its record.
+			Labels = new Dictionary<string, string> { [SessionLabel] = _session.Id },
 			// Startup arguments to the agent entrypoint (config never travels as env vars; the git identity
-			// above is the one exception because git reads it natively); empty for an ephemeral run.
+			// above is the one exception because git reads it natively).
 			Cmd          = cmd,
 			ExposedPorts = new Dictionary<string, EmptyStruct> { ["13131/tcp"] = default },
 			HostConfig   = new HostConfig
@@ -286,87 +417,29 @@ public class LaunchDocker : ILauncher
 		}
 	}
 
-	// Stops and removes the container started by StartAsync.
-	public async Task StopAsync()
+	// Stops the container started or reconnected by StartAsync. It is kept, with whatever was installed
+	// in it, for the next launch here to reconnect to; remove deletes it too (after /finish, when the
+	// worktree it served is gone).
+	public async Task StopAsync(bool remove)
 	{
-		if (_containerId == null)
-			return;
-		string id = _containerId;
-		try
+		if (_containerId != null)
 		{
-			await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKillSeconds = 15 });
-			_log.Verbose($"[docker] Container stopped: {id}");
-			await _dockerClient.Containers.RemoveContainerAsync(id, new ContainerRemoveParameters());
-			_log.Verbose($"[docker] Container removed: {id}");
-		}
-		catch (Exception ex)
-		{
-			_log.Error($"[docker] Error stopping container: {ex}");
-		}
-	}
-
-	// Reaps a stale (non-running) container with this name so a relaunch into the same worktree works.
-	// Returns false without removing anything if a container with this name is still running — the caller
-	// must not kill it, since one running container per name is the per-worktree occupancy lock. Returns
-	// true when the name is free (nothing there, or a stopped container was removed).
-	private async Task<bool> RemoveStaleContainerByNameAsync(string name)
-	{
-		try
-		{
-			IList<ContainerListResponse> containers = await _dockerClient.Containers.ListContainersAsync(
-			new ContainersListParameters { All = true });
-
-			foreach (ContainerListResponse container in containers)
+			string id = _containerId;
+			try
 			{
-				foreach (string n in container.Names)
+				await _dockerClient.Containers.StopContainerAsync(id, new ContainerStopParameters { WaitBeforeKillSeconds = 15 });
+				_log.Verbose($"[docker] Container stopped: {id}");
+				if (remove)
 				{
-					if (n == $"/{name}" || n == name)
-					{
-						bool running = string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase);
-						if (running)
-							return false;
-
-						await _dockerClient.Containers.RemoveContainerAsync(
-							container.ID, new ContainerRemoveParameters { Force = true });
-						return true;
-					}
+					await _dockerClient.Containers.RemoveContainerAsync(id, new ContainerRemoveParameters());
+					_log.Verbose($"[docker] Container removed: {id}");
 				}
 			}
-		}
-		catch (Exception ex)
-		{
-			_log.Error($"[docker] Failed to inspect container {name}: {ex}");
-		}
-
-		return true;
-	}
-
-	// Worktree names whose beast_<name> container is currently running, so the launch menu can mark them
-	// occupied. Best effort: if Docker is unreachable, returns an empty set (nothing shown as in use).
-	public static async Task<HashSet<string>> RunningWorktreeNamesAsync()
-	{
-		HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
-		try
-		{
-			using DockerClient client               = new DockerClientConfiguration().CreateClient();
-			IList<ContainerListResponse> containers = await client.Containers.ListContainersAsync(
-				new ContainersListParameters { All = false });
-
-			foreach (ContainerListResponse container in containers)
+			catch (Exception ex)
 			{
-				foreach (string n in container.Names)
-				{
-					string bare = n.TrimStart('/');
-					if (bare.StartsWith("beast_", StringComparison.Ordinal))
-						names.Add(bare.Substring("beast_".Length));
-				}
+				_log.Error($"[docker] Error stopping container: {ex}");
 			}
 		}
-		catch
-		{
-		}
-
-		return names;
 	}
 
 	public void Dispose()

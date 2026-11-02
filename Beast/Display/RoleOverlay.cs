@@ -218,26 +218,12 @@ internal class RoleOverlay
 
 		Screen s = new Screen(bw, bh, new Cell(' ', textFg, bg, CellStyle.None));
 
-		for (int x = 0; x < bw; x++)
-		{
-			s.Set(x,      0, new Cell('─', borderFg, bg, CellStyle.None));
-			s.Set(x, bh - 1, new Cell('─', borderFg, bg, CellStyle.None));
-		}
-		for (int y = 0; y < bh; y++)
-		{
-			s.Set(     0, y, new Cell('│', borderFg, bg, CellStyle.None));
-			s.Set(bw - 1, y, new Cell('│', borderFg, bg, CellStyle.None));
-		}
-		s.Set(     0,      0, new Cell('┌', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1,      0, new Cell('┐', borderFg, bg, CellStyle.None));
-		s.Set(     0, bh - 1, new Cell('└', borderFg, bg, CellStyle.None));
-		s.Set(bw - 1, bh - 1, new Cell('┘', borderFg, bg, CellStyle.None));
-		AnsiToScreen.WriteLine(s, 2, 0, " Role Models ", titleFg, bg);
+		PopupFrame.Draw(s, "Role Models", borderFg, titleFg, bg);
 
 		int innerW = bw - 4;
 		if (_roles.Count == 0)
 		{
-			AnsiToScreen.WriteLine(s, 2, bh / 2, Truncate(_status.Length > 0 ? _status : "No roles.", innerW), statusFg, bg);
+			AnsiToScreen.WriteLine(s, 2, bh / 2, PopupFrame.Fit(_status.Length > 0 ? _status : "No roles.", innerW), statusFg, bg);
 			return s;
 		}
 
@@ -246,15 +232,15 @@ internal class RoleOverlay
 		// The role name is the headline: it is what the whole screen is about, and the arrows that
 		// change it are only discoverable if the name looks like a control.
 		string header = $"◄  {role.Name}  ►";
-		AnsiToScreen.WriteLine(s, 2, 1, Truncate(header, innerW), topFg, bg);
+		AnsiToScreen.WriteLine(s, 2, 1, PopupFrame.Fit(header, innerW), topFg, bg);
 		// The output is named only when it is not text, the case where the role takes a different kind of model.
 		string output = role.Output.Length > 0 && !string.Equals(role.Output, "text", StringComparison.OrdinalIgnoreCase) ? $"{role.Output} models · " : string.Empty;
-		AnsiToScreen.WriteLine(s, 2 + header.Length + 2, 1, Truncate($"{role.Kind.ToLowerInvariant()} · {output}role {_roleIndex + 1}/{_roles.Count}", Math.Max(0, innerW - header.Length - 2)), dimFg, bg);
-		AnsiToScreen.WriteLine(s, 2, 2, Truncate("↑↓ pick · +/- move up or down · ←→ role · Esc save and close", innerW), dimFg, bg);
+		AnsiToScreen.WriteLine(s, 2 + header.Length + 2, 1, PopupFrame.Fit($"{role.Kind.ToLowerInvariant()} · {output}role {_roleIndex + 1}/{_roles.Count}", Math.Max(0, innerW - header.Length - 2)), dimFg, bg);
+		AnsiToScreen.WriteLine(s, 2, 2, PopupFrame.Fit("↑↓ pick · +/- move up or down · ←→ role · Esc save and close", innerW), dimFg, bg);
 
 		if (role.Models.Count == 0)
 		{
-			AnsiToScreen.WriteLine(s, 2, 4, Truncate("This role has no models. Enable some in /config.", innerW), statusFg, bg);
+			AnsiToScreen.WriteLine(s, 2, 4, PopupFrame.Fit("This role has no models. Enable some in /config.", innerW), statusFg, bg);
 			return s;
 		}
 
@@ -294,22 +280,13 @@ internal class RoleOverlay
 			s.Fill(new Rect(1, r + 4, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 
 			string note = available ? label : "not currently available";
-			string line = $"{idx + 1,2}. {Truncate(id, idWidth).PadRight(idWidth)}  {note}";
-			AnsiToScreen.WriteLine(s, 2, r + 4, Truncate(line, innerW), rowFg, rowBg);
+			string line = $"{idx + 1,2}. {PopupFrame.Fit(id, idWidth).PadRight(idWidth)}  {note}";
+			AnsiToScreen.WriteLine(s, 2, r + 4, PopupFrame.Fit(line, innerW), rowFg, rowBg);
 		}
 
 		if (_status.Length > 0)
-			AnsiToScreen.WriteLine(s, 2, bh - 2, Truncate(_status, innerW), statusFg, bg);
+			AnsiToScreen.WriteLine(s, 2, bh - 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
 
 		return s;
-	}
-
-	private static string Truncate(string text, int max)
-	{
-		if (max <= 0)
-			return string.Empty;
-		if (text.Length <= max)
-			return text;
-		return max > 1 ? text.Substring(0, max - 1) + "…" : text.Substring(0, max);
 	}
 }

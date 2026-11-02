@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 // file is loaded over the defaults, so hand edits to a description or parameter take effect.
 public class ToolService
 {
-	private const int Version = 5;
+	private const int Version = 7;
 
 	private readonly string _toolsPath;
 
@@ -127,6 +127,12 @@ public class ToolService
 		tools["bash"] = Cfg(
 			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase, when available, records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
 			("command", "Shell command to execute"),
+			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
+
+		tools["host_command"] = Cfg(
+			"Runs a shell command on the user's own computer, outside your container, for what only the host can do: its GPU, devices, installed apps and SDKs, or a build or launch the user wants run natively. Use bash for everything else. Each command is checked for safety first and may be refused or put to the user for approval; a refused command must not be retried or reworded. The user watches the output live. CWD is the host folder that is mounted at /workspace, so use relative paths, never /workspace/.",
+			("shell",   "The shell that runs the command, which must be written in that shell's syntax. cmd takes a single line."),
+			("command", "Command to run on the host, exactly as you would type it at that shell's prompt"),
 			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
 
 		tools["apt_install"] = Cfg(

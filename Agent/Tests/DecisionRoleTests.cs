@@ -178,7 +178,7 @@ public static class DecisionRoleTests
 
 	private static void TestRequestShape(TestContext ctx)
 	{
-		JsonObject body = DecisionClient.BuildRequest("m", HallMonitor.BuildState(new List<string>(), new List<string>(), "ls"), HallMonitor.Questions);
+		JsonObject body = DecisionClient.BuildRequest("m", HallMonitor.BuildState(string.Empty, new List<string>(), new List<string>(), "ls"), HallMonitor.Questions);
 		ctx.AssertEqual("m", body["model"]!.GetValue<string>(), "Request: model");
 		ctx.AssertEqual($"{HallMonitor.Framing}\nls", body["state"]!.GetValue<string>(), "Request: state");
 		ctx.AssertEqual("choice", body["questions"]!["root"]!["type"]!.GetValue<string>(), "Request: asked as a choice");
@@ -283,7 +283,7 @@ public static class DecisionRoleTests
 		try
 		{
 			File.WriteAllText(path, $$$"""{"m":{"fingerprint":"{{{HallMonitorCalibration.Fingerprint}}}","usable":true,"allow_at_most":0.3,"block_at_least":0.85},"old":{"fingerprint":"0000000000000000","usable":true,"allow_at_most":0.3,"block_at_least":0.85}}""");
-			HallMonitorCalibration store = new HallMonitorCalibration(path, _ => { }, CancellationToken.None);
+			HallMonitorCalibration store = new HallMonitorCalibration(path, new DecisionMemory(TempPath("decisions")), _ => { }, CancellationToken.None);
 			CalibrationResult?     m     = store.ResultFor(Model("m", "http://127.0.0.1:9/v1/systemone", "decisions"));
 			ctx.Assert(m != null && m.Usable && m.AllowAtMost == 0.3 && m.BlockAtLeast == 0.85, "Calibration store: a current result is read");
 			ctx.Assert(store.ResultFor(Model("old", "http://127.0.0.1:9/v1/systemone", "decisions")) == null, "Calibration store: a result for other questions or commands is stale");
@@ -302,7 +302,8 @@ public static class DecisionRoleTests
 		string calibrationPath = TempPath("calibration");
 		try
 		{
-			HallMonitor        monitor = new HallMonitor(new RoleService(Environment.CurrentDirectory), new LlmRegistry(), new DecisionMemory(memoryPath), new HallMonitorCalibration(calibrationPath, _ => { }, CancellationToken.None));
+			DecisionMemory     memory  = new DecisionMemory(memoryPath);
+			HallMonitor        monitor = new HallMonitor(new RoleService(Environment.CurrentDirectory), new LlmRegistry(), memory, new HallMonitorCalibration(calibrationPath, memory, _ => { }, CancellationToken.None));
 			HallMonitorVerdict verdict = await monitor.CheckAsync("ls -la", CancellationToken.None);
 			ctx.Assert(verdict.Judgment == HallMonitorJudgment.Unsure, "HallMonitor: no decision model means Unsure");
 			ctx.Assert(verdict.ActionFor(UnsurePolicy.Ask) == HallMonitorAction.AskHuman, "HallMonitor: no decision model follows the Unsure policy");
@@ -361,11 +362,27 @@ public static class DecisionRoleTests
 			RoleService roles   = new RoleService(Environment.CurrentDirectory);
 			roles.Roles[HallMonitor.RoleName] = roles.GetRole(HallMonitor.RoleName)!.WithModels(new List<string> { kDecideId });
 
-			HallMonitorCalibration calibration = new HallMonitorCalibration(calibrationPath, s => { lock (statuses) statuses.Add(s); }, cts.Token);
-			HallMonitor            monitor     = new HallMonitor(roles, RegistryWith(decider), new DecisionMemory(memoryPath), calibration);
+			// One answer of each kind, new to the built-in set, plus one repeating a built-in command: the new
+			// ones join the calibration set with their labels, the repeat keeps the built-in label and is not added twice.
+			// Not the commands checked below, which an Always answer would decide without the model.
+			string builtIn = string.Empty;
+			foreach ((string command, bool _) in HallMonitorCalibration.Commands)
+			{
+				if (builtIn.Length == 0 && command != "ls -la" && command != "rm -rf ~/")
+					builtIn = command;
+			}
+			File.WriteAllText(memoryPath, new JsonObject { ["always"] = new JsonArray("npm run beast-lint-check", builtIn), ["never"] = new JsonArray("sudo rm -rf /srv/data") }.ToJsonString());
+
+			DecisionMemory         memory      = new DecisionMemory(memoryPath);
+			HallMonitorCalibration calibration = new HallMonitorCalibration(calibrationPath, memory, s => { lock (statuses) statuses.Add(s); }, cts.Token);
+			HallMonitor            monitor     = new HallMonitor(roles, RegistryWith(decider), memory, calibration);
+
+			List<(string Command, bool Dangerous)> set = calibration.CalibrationSet();
+			ctx.AssertEqual(596, set.Count, "Calibration set: the person's new answers join the built-in commands, a repeat does not");
+			ctx.Assert(set.Contains(("npm run beast-lint-check", false)) && set.Contains(("sudo rm -rf /srv/data", true)), "Calibration set: Always is labelled safe and Never dangerous");
 
 			HallMonitorVerdict first = await monitor.CheckAsync("ls -la", cts.Token);
-			ctx.Assert(first.Judgment == HallMonitorJudgment.Unsure && first.Reason.Contains("calibrat"), "Auto-calibration: an uncalibrated model is not asked, and the command is Unsure");
+			ctx.Assert(first.Judgment == HallMonitorJudgment.Unsure && first.Reason.Contains("calibrat"), $"Auto-calibration: an uncalibrated model is not asked, and the command is Unsure (got {first.Judgment}: {first.Reason})");
 
 			bool finished = false;
 			while (!finished && !cts.IsCancellationRequested)
@@ -375,15 +392,20 @@ public static class DecisionRoleTests
 					finished = statuses.Count > 0 && statuses[statuses.Count - 1].State != "running";
 			}
 
-			CalibrationResult? result = new HallMonitorCalibration(calibrationPath, _ => { }, cts.Token).ResultFor(decider);
+			CalibrationResult? result = new HallMonitorCalibration(calibrationPath, memory, _ => { }, cts.Token).ResultFor(decider);
 			ctx.Assert(result != null && result.Usable && result.Failed == 0, "Auto-calibration: the result is saved and usable");
+			ctx.AssertEqual(596, result?.Commands ?? 0, "Auto-calibration: measured over the built-in commands and the person's answers");
 			ctx.AssertEqual(0.75, result?.AllowAtMost ?? 0, "Auto-calibration: Allow sits 0.15 under the lowest dangerous score");
 			ctx.AssertEqual(0.70, result?.BlockAtLeast ?? 0, "Auto-calibration: Block at its floor");
 			lock (statuses)
 			{
-				ctx.Assert(statuses[0].State == "running" && statuses[0].Total == 594, "Auto-calibration: progress starts with every decision to go");
+				ctx.Assert(statuses[0].State == "running" && statuses[0].Total == 596, "Auto-calibration: progress starts with every decision to go");
 				ctx.Assert(statuses.Count > 10 && statuses[statuses.Count - 1].State == "done" && statuses[statuses.Count - 1].Remaining == 0, "Auto-calibration: progress counts down to done");
 			}
+
+			// A new answer after calibration does not make the result stale: no recalibration until the next one.
+			monitor.RecordHumanAnswer("make test", HumanAnswer.Always);
+			ctx.Assert(calibration.ResultFor(decider) != null, "Auto-calibration: a new answer does not trigger a recalibration");
 
 			ctx.Assert((await monitor.CheckAsync("ls -la", cts.Token)).Judgment == HallMonitorJudgment.Allow, "Auto-calibration: a safe command is then Allow");
 			HallMonitorVerdict wipe = await monitor.CheckAsync("rm -rf ~/", cts.Token);
@@ -426,8 +448,9 @@ public static class DecisionRoleTests
 		}
 	}
 
-	// Always and Never answers are kept in decisions.json, decide exact repeats without a model, and
-	// lead every decision state in a stable order.
+	// Always and Never answers are kept in decisions.json and decide exact repeats without a model.
+	// BuildState can still lead a state with the lists (the live learning test measures that), but
+	// HallMonitor's own decisions never pass them.
 	private static async Task TestMemoryAsync(TestContext ctx)
 	{
 		string path            = TempPath("decisions");
@@ -435,7 +458,7 @@ public static class DecisionRoleTests
 		try
 		{
 			DecisionMemory memory  = new DecisionMemory(path);
-			HallMonitor    monitor = new HallMonitor(new RoleService(Environment.CurrentDirectory), new LlmRegistry(), memory, new HallMonitorCalibration(calibrationPath, _ => { }, CancellationToken.None));
+			HallMonitor    monitor = new HallMonitor(new RoleService(Environment.CurrentDirectory), new LlmRegistry(), memory, new HallMonitorCalibration(calibrationPath, memory, _ => { }, CancellationToken.None));
 
 			ctx.AssertEqual("always,yes,no,never", string.Join(",", Array.ConvertAll(HallMonitor.HumanChoices, a => a.ToString().ToLowerInvariant())), "Ask: the four choices, in order");
 			ctx.AssertEqual("Run this command? make clean", HallMonitor.AskText("make clean"), "Ask: the question");
@@ -469,11 +492,12 @@ public static class DecisionRoleTests
 			File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(5));
 			ctx.AssertEqual("git status", string.Join("|", memory.Snapshot().Always), "Memory: a hand edit is picked up");
 
-			string first  = HallMonitor.BuildState(new List<string> { "a" }, new List<string> { "b" }, "ls");
-			string second = HallMonitor.BuildState(new List<string> { "a" }, new List<string> { "b" }, "pwd");
+			string first  = HallMonitor.BuildState(string.Empty, new List<string> { "a" }, new List<string> { "b" }, "ls");
+			string second = HallMonitor.BuildState(string.Empty, new List<string> { "a" }, new List<string> { "b" }, "pwd");
 			string prefix = $"Commands this person has said may ALWAYS run:\n- a\n\nCommands this person has said must NEVER run:\n- b\n\n{HallMonitor.Framing}\n";
 			ctx.Assert(first == prefix + "ls" && second == prefix + "pwd", "State: lists first, then the framing, then the command");
-			ctx.AssertEqual($"{HallMonitor.Framing}\nls", HallMonitor.BuildState(new List<string>(), new List<string>(), "ls"), "State: no lists, just the framing and command");
+			ctx.AssertEqual($"{HallMonitor.Framing}\nls", HallMonitor.BuildState(string.Empty, new List<string>(), new List<string>(), "ls"), "State: no lists, just the framing and command");
+			ctx.AssertEqual($"Context.\n\n{HallMonitor.Framing}\nls", HallMonitor.BuildState("Context.", new List<string>(), new List<string>(), "ls"), "State: the context comes first of all");
 		}
 		finally
 		{

@@ -94,7 +94,7 @@ public class HallMonitorVerdict
 //
 // A model with no calibration yet is not asked; its calibration starts instead, and until a usable
 // model answers, every command is Unsure and goes wherever the person's UnsurePolicy sends doubtful
-// commands. Not yet wired to any tool; callers get one verdict per command.
+// commands. host_command (HostCommands) asks for one verdict per command before running it.
 public class HallMonitor
 {
 	public const string RoleName = "HallMonitor";
@@ -191,9 +191,10 @@ public class HallMonitor
 	}
 
 	// An exact repeat of a command the person answered Always or Never is decided by that answer, with no
-	// model asked. Anything else goes to the role's calibrated models in preference order, with both lists
-	// in the state, and the first judgment wins. A model not yet calibrated is skipped and its calibration
-	// started; when no model can judge, the verdict is Unsure and says why.
+	// model asked. Anything else goes to the role's calibrated models in preference order, and the first
+	// judgment wins. The lists are kept out of the state: measured, putting them in front of the model
+	// wrecked its judgment, and calibration measures it without them. A model not yet calibrated is skipped
+	// and its calibration started; when no model can judge, the verdict is Unsure and says why.
 	public async Task<HallMonitorVerdict> CheckAsync(string command, CancellationToken ct)
 	{
 		Role? role = _roles.GetRole(RoleName);
@@ -209,7 +210,7 @@ public class HallMonitor
 
 		if (verdict == null && role != null)
 		{
-			string       state    = BuildState(known.Always, known.Never, exact);
+			string       state    = BuildState(string.Empty, new List<string>(), new List<string>(), exact);
 			List<string> failures = new List<string>();
 			foreach (LlmModel model in _registry.ModelsForRole(role))
 			{
@@ -255,13 +256,16 @@ public class HallMonitor
 		return verdict;
 	}
 
-	// The state the decision model judges: the person's Always and Never commands first, then the framing
-	// line and the command. The lists come first because they change rarely and only by growing at the
-	// end, so every request opens with the same text and the server's prefix cache covers it; only the
-	// command at the very end is new. They also show the model where this person draws the line.
-	public static string BuildState(List<string> always, List<string> never, string command)
+	// The state the decision model judges: the context (what the judgment is for; empty for none), the
+	// person's Always and Never commands, then the framing line and the command. Everything before the
+	// command changes rarely, and the lists only by growing at the end, so every request opens with the same
+	// text and the server's prefix cache covers it; only the command at the very end is new. The lists also
+	// show the model where this person draws the line.
+	public static string BuildState(string context, List<string> always, List<string> never, string command)
 	{
 		StringBuilder state = new StringBuilder();
+		if (context.Length > 0)
+			state.Append(context).Append("\n\n");
 		AppendList(state, "Commands this person has said may ALWAYS run:", always);
 		AppendList(state, "Commands this person has said must NEVER run:",  never);
 		state.Append(Framing).Append('\n').Append(command);

@@ -23,7 +23,10 @@ public interface IDisplay
 	void SetAgentBusy  (  bool busy,  long startTick);
 	void SetSendAsync  (Func<string, Task> sendAsync);
 	void SetRequestExit(Action requestExit);
-	void SetFrameDrain (Action drain);
+	// Puts a question to the user with a row of answers and calls onChoice with the index they pick
+	// (escapeIndex on Esc). A display that cannot ask answers defaultIndex at once.
+	void AskChoice    (string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice);
+	void SetFrameDrain(Action drain);
 	// Sets the session counts shown in the status bar (active = busy, total = all known).
 	void SetSessionCounts(int active, int total);
 	// Updates the session list shown in the F10 overlay. activeId is the currently displayed session.

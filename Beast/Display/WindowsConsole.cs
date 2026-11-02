@@ -4,29 +4,16 @@ using System.Text;
 using System.Threading;
 
 
-internal enum InputEventType { Key, MouseClick, MouseWheel, MouseMove, Paste }
-
-internal struct ConsoleInputEvent
-{
-	internal InputEventType Type;
-	internal ConsoleKeyInfo Key;
-	internal int            Col;
-	internal int            Row;
-	internal short          WheelDelta; // wheel: positive = up / right, negative = down / left
-	internal bool           Shift;      // Shift held during a MouseClick or wheel (shift-click = add-to-clipboard; shift+wheel = pan)
-	internal bool           Horizontal; // a horizontal wheel (tilt / trackpad) rather than the vertical wheel
-	internal bool           Right;      // MouseClick: the right button rather than the left (right-click = paste)
-	internal string         Text;       // full text for a coalesced paste burst (newlines preserved)
-}
-
 // Manages Windows console mode and provides a unified ReadInputWithTimeout that surfaces
 // both KEY_EVENT and MOUSE_EVENT records via ReadConsoleInput. Console.ReadKey discards
-// mouse events, so we call ReadConsoleInput directly.
+// mouse events, so we call ReadConsoleInput directly. Used through PlatformWindows; the sequence
+// decoding it shares with macOS/Linux lives in VtKeys.
 internal static class WindowsConsole
 {
 	private const int StdInputHandle  = -10;
 	private const int StdOutputHandle = -11;
 
+	private const uint EnableProcessedInput            = 0x0001;
 	private const uint EnableVirtualTerminalProcessing = 0x0004;
 	private const uint EnableVirtualTerminalInput      = 0x0200;
 	private const uint DisableQuickEditMode            = 0x0040;
@@ -130,8 +117,9 @@ internal static class WindowsConsole
 
 		SetConsoleMode(hOut, outMode | EnableVirtualTerminalProcessing);
 		// Enable VT input so bracketed-paste markers are delivered to us, and disable Quick Edit so
-		// mouse clicks are not swallowed for text selection.
-		SetConsoleMode(hIn, (inMode | EnableExtendedFlags | EnableVirtualTerminalInput) & ~DisableQuickEditMode);
+		// mouse clicks are not swallowed for text selection. Processed input off makes Ctrl+C a key
+		// rather than a signal, as it is in raw mode on macOS/Linux.
+		SetConsoleMode(hIn, (inMode | EnableExtendedFlags | EnableVirtualTerminalInput) & ~(DisableQuickEditMode | EnableProcessedInput));
 
 		Console.Out.Write(DisableVtMouseModes);
 		Console.Out.Write(EnableBracketedPaste);
@@ -154,7 +142,7 @@ internal static class WindowsConsole
 			return;
 
 		SetConsoleMode(hOut, outMode | EnableVirtualTerminalProcessing);
-		SetConsoleMode(hIn, (inMode | EnableExtendedFlags | EnableVirtualTerminalInput) & ~DisableQuickEditMode);
+		SetConsoleMode(hIn, (inMode | EnableExtendedFlags | EnableVirtualTerminalInput) & ~(DisableQuickEditMode | EnableProcessedInput));
 
 		Console.Out.Write(DisableVtMouseModes);
 		Console.Out.Write(EnableBracketedPaste);
@@ -221,7 +209,7 @@ internal static class WindowsConsole
 			// arrive as char records carrying a control character in UnicodeChar with wVirtualKeyCode == 0.
 			// Translate the control char back into the ConsoleKey/modifier shape DisplayScreen expects.
 			// Printable characters and keys that already carry a virtual key code fall through unchanged.
-			ConsoleInputEvent? ctl = TryTranslateControlChar(k.UnicodeChar, shift, alt, ctrl);
+			ConsoleInputEvent? ctl = VtKeys.TranslateControlChar(k.UnicodeChar, shift, alt, ctrl);
 			if (ctl != null)
 				return ctl;
 
@@ -257,30 +245,6 @@ internal static class WindowsConsole
 			{
 				return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = m.MouseX, Row = m.MouseY };
 			}
-		}
-
-		return null;
-	}
-
-	// Translates a control character delivered under VT input into the ConsoleKey/modifier shape the
-	// consumer expects. Returns null for non-control characters so printable input falls through.
-	private static ConsoleInputEvent? TryTranslateControlChar(char c, bool shift, bool alt, bool ctrl)
-	{
-		// Named editing keys. These overlap with Ctrl-I/M/H but the terminal meaning is the named key.
-		if (c == '\t')
-			return KeyEvent('\t', ConsoleKey.Tab, shift, alt, ctrl);
-		if (c == '\r' || c == '\n')
-			return KeyEvent('\r', ConsoleKey.Enter, shift, alt, ctrl);
-		if (c == '\b' || c == '\x7f')
-			return KeyEvent('\b', ConsoleKey.Backspace, shift, alt, ctrl);
-
-		// Remaining control chars 0x01-0x1A are Ctrl + a letter (A=0x01 .. Z=0x1A). Surface them as the
-		// letter key with the Control modifier so DisplayScreen's Ctrl-A/E/V/X/C/D/O/J handlers fire.
-		// The KeyChar stays the control char so any consumer that inspects it sees the real value.
-		if (c >= '\x01' && c <= '\x1a')
-		{
-			ConsoleKey letter = (ConsoleKey)('A' + (c - 1));
-			return KeyEvent(c, letter, shift, alt, true);
 		}
 
 		return null;
@@ -349,7 +313,7 @@ internal static class WindowsConsole
 			if (k.UnicodeChar == '\0')
 				continue;
 
-			AppendPasteChar(sb, k.UnicodeChar);
+			VtKeys.AppendPasteChar(sb, k.UnicodeChar);
 		}
 
 		return sb.ToString();
@@ -386,12 +350,12 @@ internal static class WindowsConsole
 	private static ConsoleInputEvent? TryReadSs3(IntPtr hIn)
 	{
 		char       final = PeekCharAt(hIn, 1);
-		ConsoleKey key   = FinalToKey(final);
+		ConsoleKey key   = VtKeys.FinalToKey(final);
 		if (key == (ConsoleKey)0)
 			return null;
 
 		DrainChars(hIn, 2);
-		return KeyEvent('\0', key, false, false, false);
+		return VtKeys.KeyEvent('\0', key, false, false, false);
 	}
 
 	// CSI: ESC [ <params> <final>. Collects numeric/';' params up to a small bound, then maps the final
@@ -431,29 +395,12 @@ internal static class WindowsConsole
 		if (final == '\0')
 			return null;
 
-		string paramStr = param.ToString();
-
-		bool shift = false, alt = false, ctrl = false;
-		int  semi  = paramStr.IndexOf(';');
-		if (semi >= 0 && int.TryParse(paramStr.Substring(semi + 1), out int mod))
-		{
-			int m = mod - 1;
-			shift = (m & 1) != 0;
-			alt   = (m & 2) != 0;
-			ctrl  = (m & 4) != 0;
-		}
-
-		ConsoleKey key;
-		if (final == '~')
-			key = TildeCodeToKey(ParseLeadingInt(paramStr));
-		else
-			key = FinalToKey(final);
-
-		if (key == (ConsoleKey)0)
+		ConsoleInputEvent? ev = VtKeys.CsiToEvent(param.ToString(), final);
+		if (ev == null)
 			return null;
 
 		DrainChars(hIn, idx + 1); // params plus the final byte (idx is the final's offset)
-		return KeyEvent('\0', key, shift, alt, ctrl);
+		return ev;
 	}
 
 	// SGR mouse report: ESC [ < Cb ; Cx ; Cy (M=press, m=release). Cx/Cy are 1-based columns/rows.
@@ -485,37 +432,8 @@ internal static class WindowsConsole
 
 		DrainChars(hIn, idx + 1); // '[' '<' params and the M/m terminator
 
-		string[] parts = body.ToString().Split(';');
-		if (parts.Length != 3
-			|| !int.TryParse(parts[0], out int cb)
-			|| !int.TryParse(parts[1], out int cx)
-			|| !int.TryParse(parts[2], out int cy))
-			return null; // malformed but consumed — swallow it
-
-		int  col   = cx - 1;
-		int  row   = cy - 1;
-		bool press = terminator == 'M';
-
-		if ((cb & 0x40) != 0) // wheel
-		{
-			// Low two bits select the wheel axis/direction: 0=up, 1=down, 2=left, 3=right. Without this the
-			// horizontal (trackpad/tilt) deltas fold onto the vertical axis and scroll the view up/down.
-			int   btn        = cb & 0x03;
-			bool  horizontal = btn == 2 || btn == 3;
-			short delta      = horizontal
-				? (short)(btn == 3 ? 120 : -120)  // right vs left
-				: (short)(btn == 0 ? 120 : -120); // up vs down
-			bool wheelShift = (cb & 0x04) != 0;
-			return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta, Horizontal = horizontal, Shift = wheelShift };
-		}
-
-		if ((cb & 0x20) != 0) // motion
-			return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
-
-		if (press && (cb & 0x03) == 0) // left button press
-			return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row, Shift = (cb & 0x04) != 0 };
-
-		return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
+		// Null when malformed: consumed either way, so a bad report is swallowed rather than leaked.
+		return VtKeys.DecodeSgrMouse(body.ToString(), terminator);
 	}
 
 	// Normal/X10 mouse report: ESC [ M Cb Cx Cy, where Cb/Cx/Cy are single bytes biased by 32.
@@ -529,104 +447,14 @@ internal static class WindowsConsole
 			return null; // not fully present yet
 
 		DrainChars(hIn, 5); // '[' 'M' and the three encoded bytes
-
-		int cb  = b1 - 32;
-		int col = b2 - 32 - 1;
-		int row = b3 - 32 - 1;
-
-		if ((cb & 0x40) != 0)
-		{
-			// 0=up, 1=down, 2=left, 3=right — keep the horizontal deltas off the vertical axis.
-			int   btn        = cb & 0x03;
-			bool  horizontal = btn == 2 || btn == 3;
-			short delta      = horizontal
-				? (short)(btn == 3 ? 120 : -120)
-				: (short)(btn == 0 ? 120 : -120);
-			bool wheelShift = (cb & 0x04) != 0;
-			return new ConsoleInputEvent { Type = InputEventType.MouseWheel, Col = col, Row = row, WheelDelta = delta, Horizontal = horizontal, Shift = wheelShift };
-		}
-
-		if ((cb & 0x20) != 0)
-			return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
-
-		if ((cb & 0x03) == 0)
-			return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row, Shift = (cb & 0x04) != 0 };
-
-		return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
+		return VtKeys.DecodeX10Mouse(b1, b2, b3);
 	}
 
 	// ESC + <char>: the char is the next record. Translate it as if it stood alone, then add Alt.
 	private static ConsoleInputEvent? ReadAltPrefixedKey(IntPtr hIn, char c)
 	{
-		ConsoleInputEvent? ctl = TryTranslateControlChar(c, false, true, false);
-		if (ctl != null)
-		{
-			DrainChars(hIn, 1);
-			return ctl;
-		}
-
-		// Printable char: Alt + that character. Map letters to their ConsoleKey, leave others as the char.
-		ConsoleKey key = (ConsoleKey)0;
-		if (c >= 'a' && c <= 'z')
-			key = (ConsoleKey)('A' + (c - 'a'));
-		else if (c >= 'A' && c <= 'Z')
-			key = (ConsoleKey)c;
-		else if (c >= '0' && c <= '9')
-			key = (ConsoleKey)c;
-
 		DrainChars(hIn, 1);
-		return KeyEvent(c, key, false, true, false);
-	}
-
-	// Final byte of a CSI/SS3 sequence (non-tilde) to ConsoleKey.
-	private static ConsoleKey FinalToKey(char final)
-	{
-		return final switch
-		{
-			'A' => ConsoleKey.UpArrow,
-			'B' => ConsoleKey.DownArrow,
-			'C' => ConsoleKey.RightArrow,
-			'D' => ConsoleKey.LeftArrow,
-			'H' => ConsoleKey.Home,
-			'F' => ConsoleKey.End,
-			'P' => ConsoleKey.F1,
-			'Q' => ConsoleKey.F2,
-			'R' => ConsoleKey.F3,
-			'S' => ConsoleKey.F4,
-			_   => (ConsoleKey)0,
-		};
-	}
-
-	// Numeric parameter of a 'ESC [ <n> ~' sequence to ConsoleKey.
-	private static ConsoleKey TildeCodeToKey(int code)
-	{
-		return code switch
-		{
-			1 or 7 => ConsoleKey.Home,
-			2      => ConsoleKey.Insert,
-			3      => ConsoleKey.Delete,
-			4 or 8 => ConsoleKey.End,
-			5      => ConsoleKey.PageUp,
-			6      => ConsoleKey.PageDown,
-			11     => ConsoleKey.F1,
-			12     => ConsoleKey.F2,
-			13     => ConsoleKey.F3,
-			14     => ConsoleKey.F4,
-			15     => ConsoleKey.F5,
-			17     => ConsoleKey.F6,
-			18     => ConsoleKey.F7,
-			19     => ConsoleKey.F8,
-			20     => ConsoleKey.F9,
-			21     => ConsoleKey.F10,
-			23     => ConsoleKey.F11,
-			24     => ConsoleKey.F12,
-			_      => (ConsoleKey)0,
-		};
-	}
-
-	private static ConsoleInputEvent KeyEvent(char keyChar, ConsoleKey key, bool shift, bool alt, bool ctrl)
-	{
-		return new ConsoleInputEvent { Type = InputEventType.Key, Key = new ConsoleKeyInfo(keyChar, key, shift, alt, ctrl) };
+		return VtKeys.AltKey(c);
 	}
 
 	// Returns the UnicodeChar of the key-down record at the given offset in the peek queue, or '\0' if
@@ -650,30 +478,49 @@ internal static class WindowsConsole
 		ReadConsoleInputW(hIn, buf, (uint)count, out _);
 	}
 
-	private static int ParseLeadingInt(string s)
+	// Drains any pending records from the console input buffer.
+	internal static void DiscardPendingInput()
 	{
-		int i = 0;
-		while (i < s.Length && char.IsDigit(s[i]))
-			i++;
-		return i > 0 && int.TryParse(s.Substring(0, i), out int v) ? v : -1;
+		const int maxFlush = 256;
+		IntPtr         hIn = GetStdHandle(StdInputHandle);
+		INPUT_RECORD[] buf = new INPUT_RECORD[maxFlush];
+		while (PeekConsoleInputW(hIn, buf, maxFlush, out uint peeked) && peeked > 0)
+			ReadConsoleInputW(hIn, buf, peeked, out _);
 	}
 
-	private static void AppendPasteChar(StringBuilder sb, char c)
+	// Reads one CPR response (ESC [ <row> ; <col> R) from the console input buffer and returns its
+	// column, or -1 on timeout. Requires ENABLE_VIRTUAL_TERMINAL_INPUT so the response arrives as
+	// key-event records (EnableVirtualTerminal sets it before probing runs).
+	internal static int ReadCursorColumn(long deadline)
 	{
-		if (c == '\r')
+		IntPtr        hIn  = GetStdHandle(StdInputHandle);
+		StringBuilder sb   = new StringBuilder(16);
+		int           col  = -1;
+		bool          done = false;
+		while (!done && Environment.TickCount64 < deadline)
 		{
-			sb.Append('\n');
+			uint result = WaitForSingleObject(hIn, (uint)Math.Max(1, deadline - Environment.TickCount64));
+			if (result != WAIT_OBJECT_0)
+				break; // timeout
+
+			INPUT_RECORD[] buf = new INPUT_RECORD[1];
+			if (!ReadConsoleInputW(hIn, buf, 1, out uint read) || read == 0)
+				continue;
+			if (buf[0].EventType != KEY_EVENT_TYPE || buf[0].KeyEvent.bKeyDown == 0)
+				continue;
+
+			char ch = buf[0].KeyEvent.UnicodeChar;
+			if (ch == 'R')
+			{
+				col  = VtKeys.ParseCursorColumn(sb.ToString());
+				done = true;
+			}
+			else
+			{
+				sb.Append(ch);
+			}
 		}
-		else if (c == '\n')
-		{
-			// Collapse '\r\n' into the single '\n' already appended.
-			if (sb.Length == 0 || sb[sb.Length - 1] != '\n')
-				sb.Append('\n');
-		}
-		else
-		{
-			sb.Append(c);
-		}
+		return col;
 	}
 
 	internal static void Restore()

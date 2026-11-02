@@ -7,19 +7,17 @@ using System.Text.Json.Nodes;
 
 // The commands a person answered "always" or "never" when asked whether to run them, kept in
 // ~/.beast/decisions.json as two arrays: {"always": [...], "never": [...]}. An exact repeat is decided
-// from here without asking a model; every other command is judged with both lists in front of the
-// decision model, so it learns the person's line. New entries are appended, so the lists' text — the
-// start of every decision request — stays the same between calls and the server's prefix cache holds.
-// The file is shared by every session and may change outside this one, so it is re-read whenever it
-// changed on disk (no /reload needed) and every change is a load, modify, save.
+// from here without asking a model. The lists are never put in front of the decision model when it
+// judges a command: measured, that wrecked its judgment. New entries are appended, so the file's order
+// is the order the person answered in. The file is shared by every session and may change outside this one, so it is re-read before every
+// decision (no /reload needed; it is small) and every change is a load, modify, save.
 public class DecisionMemory
 {
 	private readonly string _path;
 	private readonly object _lock = new object();
 
-	private List<string> _always          = new List<string>();
-	private List<string> _never           = new List<string>();
-	private DateTime     _loadedWriteTime = DateTime.MinValue;
+	private List<string> _always = new List<string>();
+	private List<string> _never  = new List<string>();
 
 	public DecisionMemory(string path)
 	{
@@ -28,12 +26,12 @@ public class DecisionMemory
 
 	public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "decisions.json");
 
-	// The current lists, re-read first if the file changed. Copies, so a caller cannot race a write.
+	// The current lists, re-read from the file first. Copies, so a caller cannot race a write.
 	public (List<string> Always, List<string> Never) Snapshot()
 	{
 		lock (_lock)
 		{
-			ReloadIfChanged();
+			Reload();
 			return (new List<string>(_always), new List<string>(_never));
 		}
 	}
@@ -48,7 +46,7 @@ public class DecisionMemory
 		{
 			lock (_lock)
 			{
-				ReloadIfChanged();
+				Reload();
 				List<string> into = always ? _always : _never;
 				if (!into.Contains(normalized))
 					into.Add(normalized);
@@ -63,36 +61,31 @@ public class DecisionMemory
 		return command.Trim();
 	}
 
-	private void ReloadIfChanged()
+	private void Reload()
 	{
-		DateTime stamp = File.Exists(_path) ? File.GetLastWriteTimeUtc(_path) : DateTime.MinValue;
-		if (stamp != _loadedWriteTime)
+		List<string> always = new List<string>();
+		List<string> never  = new List<string>();
+		bool         read   = true;
+		try
 		{
-			List<string> always = new List<string>();
-			List<string> never  = new List<string>();
-			bool         read   = true;
-			try
+			if (File.Exists(_path))
 			{
-				if (stamp != DateTime.MinValue)
-				{
-					JsonNode? root = JsonNode.Parse(File.ReadAllText(_path));
-					ReadList(root?["always"], always);
-					ReadList( root?["never"],  never);
-				}
+				JsonNode? root = JsonNode.Parse(File.ReadAllText(_path));
+				ReadList(root?["always"], always);
+				ReadList( root?["never"],  never);
 			}
-			catch (Exception ex)
-			{
-				// A broken hand edit must not take decisions down; the lists stay as last read until it is fixed.
-				Console.Error.WriteLine($"[DecisionMemory] Could not read {_path}: {ex.Message}");
-				read = false;
-			}
+		}
+		catch (Exception ex)
+		{
+			// A broken hand edit must not take decisions down; the lists stay as last read until it is fixed.
+			Console.Error.WriteLine($"[DecisionMemory] Could not read {_path}: {ex.Message}");
+			read = false;
+		}
 
-			if (read)
-			{
-				_always          = always;
-				_never           = never;
-				_loadedWriteTime = stamp;
-			}
+		if (read)
+		{
+			_always = always;
+			_never  = never;
 		}
 	}
 
@@ -130,7 +123,6 @@ public class DecisionMemory
 			using (FileStream stream = File.Create(_path))
 			using (Utf8JsonWriter writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
 				root.WriteTo(writer);
-			_loadedWriteTime = File.GetLastWriteTimeUtc(_path);
 		}
 		catch (Exception ex)
 		{
