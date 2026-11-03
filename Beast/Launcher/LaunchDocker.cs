@@ -156,6 +156,58 @@ public class LaunchDocker : ILauncher
 		return port;
 	}
 
+	// /etc/hosts entries for the container: host.docker.internal, plus every name this machine's own DNS gives
+	// it, all pointing at Docker's host gateway (which reaches the host's own ports under Docker Desktop). The
+	// names are the hostname, the canonical name and aliases the resolver returns for it, and, for an
+	// unqualified hostname, the hostname with each DNS suffix the network configured, as a resolver's search
+	// list would. A container can't use the host's resolver, so without these the machine's name is unknown inside.
+	private static async Task<List<string>> HostAliasesAsync(CancellationToken cancellationToken)
+	{
+		List<string> names    = new List<string>();
+		string       hostname = Dns.GetHostName();
+		AddName(names, hostname);
+		try
+		{
+			IPHostEntry entry = await Dns.GetHostEntryAsync(hostname, cancellationToken);
+			AddName(names, entry.HostName);
+			foreach (string alias in entry.Aliases)
+				AddName(names, alias);
+		}
+		catch (SocketException)
+		{
+		}
+
+		if (!hostname.Contains('.'))
+		{
+			AddName(names, $"{hostname}.{IPGlobalProperties.GetIPGlobalProperties().DomainName}");
+			foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+			{
+				try
+				{
+					if (nic.OperationalStatus == OperationalStatus.Up)
+						AddName(names, $"{hostname}.{nic.GetIPProperties().DnsSuffix}");
+				}
+				catch (PlatformNotSupportedException)
+				{
+				}
+			}
+		}
+
+		List<string> hosts = new List<string> { "host.docker.internal:host-gateway" };
+		foreach (string name in names)
+			hosts.Add($"{name}:host-gateway");
+		return hosts;
+	}
+
+	// Adds a host name once (names are case-insensitive), without a trailing dot. Blank names, a hostname
+	// with an empty suffix ("omegasaur."), and localhost are skipped.
+	private static void AddName(List<string> names, string name)
+	{
+		string clean = name.Trim().TrimEnd('.').ToLowerInvariant();
+		if (clean.Length > 0 && clean != "localhost" && !names.Contains(clean))
+			names.Add(clean);
+	}
+
 	private async Task<int> ResumeAsync(AgentContainer existing, CancellationToken cancellationToken)
 	{
 		_containerId = existing.Id;
@@ -241,6 +293,7 @@ public class LaunchDocker : ILauncher
 		// graphics families too). Requesting the "nvidia" driver on a host without that runtime fails container
 		// creation outright, hence the gate. /dev/dri is not mapped: Beast's hosts are Windows, and neither
 		// Docker Desktop VM (WSL2 or Hyper-V) exposes it, and a missing host device also fails creation.
+		List<string>        extraHosts     = await HostAliasesAsync(cancellationToken);
 		List<DeviceRequest> deviceRequests = new List<DeviceRequest>();
 		if (HasNvidiaRuntime(info))
 		{
@@ -267,7 +320,7 @@ public class LaunchDocker : ILauncher
 			HostConfig   = new HostConfig
 			{
 				AutoRemove   = false,
-				ExtraHosts   = new List<string> { "host.docker.internal:host-gateway" },
+				ExtraHosts   = extraHosts,
 				PortBindings = new Dictionary<string, IList<PortBinding>>
 				{
 					["13131/tcp"] = new List<PortBinding>
