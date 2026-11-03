@@ -9,11 +9,11 @@ internal static class BlockRenderer
 {
 	// Upper bound on an expanded block's pixel width. Wide code/tables render at natural width for horizontal
 	// scrolling, but this caps the backing Screen so a pathological minified line can't allocate unbounded.
-	private const int MaxBlockWidth = 2000;
+	internal const int MaxBlockWidth = 2000;
 
-	// Builds (or rebuilds) one BlockLayer for a single DisplayMessage.
-	// plainText skips markdown rendering (used for streaming slots where content changes every frame).
-	internal static BlockLayer Build(DisplayMessage msg, int w, bool plainText)
+	// Builds (or rebuilds) one BlockLayer for a single DisplayMessage that is not markdown. Markdown messages
+	// (MarkdownBlock.Handles) render through MarkdownBlock alone, whether they arrive whole or streaming.
+	internal static BlockLayer Build(DisplayMessage msg, int w)
 	{
 		bool isToolCall = msg.Type == FrameType.ToolCall;
 		bool isError    = isToolCall && msg.PairedResponseIsError;
@@ -38,7 +38,7 @@ internal static class BlockRenderer
 		string prefix  = PrefixTextForType(msg.Type);
 		string summary = isToolCall
 			? FormatToolCallSummary(msg.Content, msg.PairedResponseContent)
-			: msg.Content.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
+			: HeaderSummary(msg.Content, Math.Max(1, w));
 
 		string toolName = string.Empty;
 		if (isToolCall)
@@ -50,14 +50,9 @@ internal static class BlockRenderer
 		// Thinking/tool/tool-response blocks indent their whole expanded body (header included) two spaces
 		// so it nests under the message. The collapsed header must carry the same indent or the text shifts
 		// right when the block is expanded.
-		string headerIndent = (msg.Type == FrameType.Thinking || msg.Type == FrameType.Tool
-							|| msg.Type == FrameType.ToolResponse) ? "  " : string.Empty;
+		string headerIndent = IndentsBlock(msg.Type) ? "  " : string.Empty;
 
 		int availW = Math.Max(1, w - prefix.Length - headerIndent.Length);
-		// The collapsed header shows up to availW visible chars, so it is only actually truncated past availW.
-		// (Using availW - 1 here flagged a summary that exactly fills the line, producing an ellipsis with
-		// nothing extra to reveal when expanded.)
-		bool truncated = AnsiString.VisibleLength(summary) > availW;
 
 		// The collapsed preview is always stdout (bash output, a file's contents) — never stderr — so it
 		// keeps the normal body background regardless of exit code.
@@ -67,8 +62,10 @@ internal static class BlockRenderer
 					  || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
 			fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
 
+		// Row 0 is the header; it is filled in once the expanded rows are known, since whether it carries an
+		// ellipsis depends on whether expanding reveals more.
 		List<string> collapsedLines = new List<string>();
-		collapsedLines.Add(headerIndent + prefix + AnsiString.TruncateVisible(summary, availW));
+		collapsedLines.Add("");
 
 		if (isToolCall && !string.IsNullOrEmpty(msg.PairedResponseContent))
 		{
@@ -110,28 +107,21 @@ internal static class BlockRenderer
 			}
 		}
 
-		// While streaming (plainText), tool calls stay on the raw path — partial markdown (half-open fences,
-		// dangling tables) renders badly mid-stream, and a tool call's arguments are not markdown anyway.
-		// Thinking and assistant output both render as markdown as they arrive: it reads well streaming, and
-		// because committed output already renders as markdown, routing the streaming preview through the same
-		// path means the live view matches the final render rather than reflowing when streaming ends.
+		// A block renders the same way whether it is still streaming or finished, so the live view is the final
+		// render and nothing reflows when the stream ends. A tool call's arguments are not markdown.
 		List<string> ansiLines;
-		// Row index where the tool's returned output begins (-1 when there is none, or on the streaming raw
-		// path). Output rows render on a slightly darker body background so the response reads as distinct
-		// from the call header and its arguments above it.
+		// Row index where the tool's returned output begins (-1 when there is none). Output rows render on a
+		// slightly darker body background so the response reads as distinct from the call header and its
+		// arguments above it.
 		int responseStart = -1;
 		// Row index where the stderr block begins (-1 when there is none). Those rows are painted red.
 		int errorStart = -1;
 		if (isToolCall)
-			ansiLines = plainText ? RenderMessageRowsRaw(msg, w) : RenderToolCallRows(msg, w, out responseStart, out errorStart);
-		else if (plainText && msg.Type != FrameType.Thinking && msg.Type != FrameType.Output)
-			ansiLines = RenderMessageRowsRaw(msg, w);
+			ansiLines = RenderToolCallRows(msg, w, out responseStart, out errorStart);
 		else
 			ansiLines = RenderMessageRows(msg, w);
 
-		bool needsEllipsis = truncated || ansiLines.Count > collapsedLines.Count;
-		if (needsEllipsis)
-			collapsedLines[0] = headerIndent + prefix + AnsiString.TruncateVisible(summary, availW - 1) + "…";
+		collapsedLines[0] = HeaderRow(headerIndent, prefix, summary, availW, ansiLines.Count > collapsedLines.Count);
 
 		Cell   rowBg     = new Cell(' ', fg, bg, CellStyle.None);
 		Screen collapsed = new Screen(w, collapsedLines.Count + spacer, rowBg);
@@ -188,12 +178,6 @@ internal static class BlockRenderer
 			StampRightOnRow( expanded, 0, tag, headerFg, headerBg);
 		}
 
-		if (msg.Type == FrameType.Thinking)
-		{
-			ApplyStyle(collapsed, CellStyle.Italic);
-			ApplyStyle( expanded, CellStyle.Italic);
-		}
-
 		return new BlockLayer(msg.Index, collapsed, expanded, isExpanded: !msg.Collapsed);
 	}
 
@@ -211,19 +195,20 @@ internal static class BlockRenderer
 			s.Set(startCol + i, row, new Cell(text[i], fg, bg, CellStyle.None));
 	}
 
-	private static void ApplyStyle(Screen s, CellStyle add)
+	// The style every cell of a block carries on top of its own: Thinking reads as an aside, in italics.
+	internal static CellStyle StyleForType(FrameType type)
 	{
-		for (int y = 0; y < s.H; y++)
-		{
-			for (int x = 0; x < s.W; x++)
-			{
-				Cell c = s.Get(x, y);
-				s.Set(x, y, new Cell(c.Ch, c.Fg, c.Bg, c.Style | add));
-			}
-		}
+		return type == FrameType.Thinking ? CellStyle.Italic : CellStyle.None;
 	}
 
-	private static (Rgb Fg, Rgb? Bg) ColorsForType(FrameType type, bool isError)
+	// The cell a block row starts from before its text is laid in.
+	internal static Cell RowFill(FrameType type)
+	{
+		(Rgb fg, Rgb? bg) = ColorsForType(type, false);
+		return new Cell(' ', fg, bg, StyleForType(type));
+	}
+
+	internal static (Rgb Fg, Rgb? Bg) ColorsForType(FrameType type, bool isError)
 	{
 		if (isError)
 			return (DisplayScreen.Palette.ToolCallErrFg, DisplayScreen.Palette.ToolCallErrBg);
@@ -256,7 +241,7 @@ internal static class BlockRenderer
 		}
 	}
 
-	private static string PrefixTextForType(FrameType type)
+	internal static string PrefixTextForType(FrameType type)
 	{
 		switch (type)
 		{
@@ -285,89 +270,103 @@ internal static class BlockRenderer
 		}
 	}
 
+	// Plain-text rows for a block that is not markdown. The system prompt is plain instructional text, not
+	// markdown: rendering it through Markdig drops angle-bracket tokens (parsed as HTML) and collapses single
+	// newlines, so it is rendered verbatim.
 	private static List<string> RenderMessageRows(DisplayMessage msg, int w)
 	{
-		List<string> result = new List<string>();
-		string       prefix = PrefixTextForType(msg.Type);
-		// The system prompt is plain instructional text, not markdown: rendering it through Markdig drops
-		// angle-bracket tokens (parsed as HTML) and collapses single newlines, so it is rendered verbatim.
-		// Thinking renders as markdown unconditionally, exactly like assistant output, so a completed block
-		// always renders the same as its streamed preview — a content-sniffing gate here made formatting
-		// vanish whenever the full text scored differently than the partial stream. Newlines survive the
-		// markdown path: the renderer emits every LineBreakInline as a real line break.
-		bool useMarkdown = msg.Type == FrameType.Output || msg.Type == FrameType.User
-						|| msg.Type == FrameType.Thinking;
-		bool wordWrap = msg.Type == FrameType.Output || msg.Type == FrameType.User
-					 || msg.Type == FrameType.System || msg.Type == FrameType.Thinking
-					 || msg.Type == FrameType.Alert;
+		List<string> result   = new List<string>();
+		string       prefix   = PrefixTextForType(msg.Type);
+		bool         wordWrap = WordWraps(msg.Type);
+		string       indent   = IndentsBlock(msg.Type) ? "  " : "";
+		int          wrapW    = WrapWidth(msg.Type, w);
 
-		// Thinking and tool output nest under their headers: indent the whole block two spaces (wrapping
-		// to the narrower width first so the indent doesn't clip the trailing characters).
-		bool indentBlock = msg.Type == FrameType.Thinking || msg.Type == FrameType.Tool
-						|| msg.Type == FrameType.ToolResponse;
-		int wrapW = indentBlock ? Math.Max(1, w - 2) : w;
-
-		if (useMarkdown)
+		string[] logicalLines = msg.Content.Split('\n');
+		bool     first        = true;
+		foreach (string line in logicalLines)
 		{
-			List<RenderLine> mdLines   = MarkdownAnsi.Render(ExpandTabs(msg.Content), msg.Type, wrapW);
-			bool             firstLine = true;
-			foreach (RenderLine mdLine in mdLines)
-			{
-				string full = firstLine ? prefix + mdLine.Text : mdLine.Text;
-				firstLine   = false;
-				// Code blocks and tables are NoWrap — leave them at natural width so the block scrolls
-				// horizontally; only prose reflows to the viewport.
-				if (mdLine.NoWrap)
-				{
-					result.Add(full);
-					continue;
-				}
-				List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
-				foreach (string wrapped in wrappedLines)
-					result.Add(wrapped);
-			}
-			if (result.Count == 0)
-				result.Add(prefix);
-		}
-		else
-		{
-			string[] logicalLines = msg.Content.Split('\n');
-			bool     first        = true;
-			foreach (string line in logicalLines)
-			{
-				string full               = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
-				first                     = false;
-				List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
-				foreach (string wl in wrappedLines)
-					result.Add(wl);
-			}
-		}
-
-		if (indentBlock)
-		{
-			for (int i = 0; i < result.Count; i++)
-				result[i] = "  " + result[i];
+			string full               = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
+			first                     = false;
+			List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
+			foreach (string wl in wrappedLines)
+				result.Add(indent + wl);
 		}
 
 		return result;
 	}
 
-	private static List<string> RenderMessageRowsRaw(DisplayMessage msg, int w)
+	// The one-line summary a collapsed block shows: its text with line breaks and tabs flattened to spaces.
+	// Only enough of the text to fill the line is read, so a long message costs no more than a short one.
+	internal static string HeaderSummary(string content, int availW)
 	{
-		List<string> result       = new List<string>();
-		string       prefix       = PrefixTextForType(msg.Type);
-		string[]     logicalLines = msg.Content.Split('\n');
-		bool         first        = true;
-		foreach (string line in logicalLines)
+		string head = content.Substring(0, Math.Min(content.Length, availW * 2 + 2));
+		return head.Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
+	}
+
+	// The collapsed view's header row. The summary shows up to availW visible chars, so it is only truncated
+	// past availW (using availW - 1 there flagged a summary that exactly fills the line, producing an
+	// ellipsis with nothing extra to reveal); the ellipsis marks a cut summary or more rows when expanded.
+	internal static string HeaderRow(string headerIndent, string prefix, string summary, int availW, bool hasMoreRows)
+	{
+		bool more = hasMoreRows || AnsiString.VisibleLength(summary) > availW;
+		return more
+			? headerIndent + prefix + AnsiString.TruncateVisible(summary, availW - 1) + "…"
+			: headerIndent + prefix + AnsiString.TruncateVisible(summary,     availW);
+	}
+
+	// Whether prose in this block word-wraps (rather than hard-wrapping at the column).
+	internal static bool WordWraps(FrameType type)
+	{
+		return type == FrameType.Output || type == FrameType.User || type == FrameType.System
+			|| type == FrameType.Thinking || type == FrameType.Alert;
+	}
+
+	// Thinking and tool output nest under their headers: the whole block is indented two spaces.
+	internal static bool IndentsBlock(FrameType type)
+	{
+		return type == FrameType.Thinking || type == FrameType.Tool || type == FrameType.ToolResponse;
+	}
+
+	// The width text wraps to: narrower for indented blocks, so the indent doesn't clip trailing characters.
+	internal static int WrapWidth(FrameType type, int w)
+	{
+		return IndentsBlock(type) ? Math.Max(1, w - 2) : w;
+	}
+
+	// Wraps rendered markdown lines into display rows, the first line carrying prefix. Code blocks and tables
+	// are NoWrap — left at natural width so the block scrolls horizontally; only prose reflows. Rows are not
+	// yet block-indented.
+	internal static void AppendMarkdownRows(List<RenderLine> mdLines, string prefix, bool wordWrap, int wrapW, List<string> result)
+	{
+		bool firstLine = true;
+		foreach (RenderLine mdLine in mdLines)
 		{
-			string full = first ? prefix + ExpandTabs(line) : ExpandTabs(line);
-			first       = false;
-			foreach (string wl in AnsiString.Wrap(full, w))
-				result.Add(wl);
+			string full = firstLine ? prefix + mdLine.Text : mdLine.Text;
+			firstLine   = false;
+			if (mdLine.NoWrap)
+			{
+				result.Add(full);
+				continue;
+			}
+			List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
+			foreach (string wrapped in wrappedLines)
+				result.Add(wrapped);
 		}
-		if (result.Count == 0)
-			result.Add(prefix);
-		return result;
+	}
+
+	// Writes one display row into a markdown block's Screen: the row cleared to the block's fill, the ANSI
+	// text laid in, the remainder padded, and the block's own style carried by every cell.
+	internal static void WriteBlockRow(Screen s, int row, string ansiLine, FrameType type)
+	{
+		Cell fill = RowFill(type);
+		s.Fill(new Rect(0, row, s.W, 1), fill);
+		(int endX, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(s, 0, row, ansiLine, fill.Fg, fill.Bg);
+		AnsiToScreen.PadRowBackground(s, endX, row, eFg, eBg);
+		for (int x = 0; x < s.W; x++)
+		{
+			Cell c = s.Get(x, row);
+			s.Set(x, row, new Cell(c.Ch, c.Fg, c.Bg, c.Style | fill.Style));
+		}
 	}
 
 	private static List<string> RenderToolCallRows(DisplayMessage msg, int w, out int responseStart, out int errorStart)

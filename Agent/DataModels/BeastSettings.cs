@@ -137,11 +137,11 @@ public class AutoModelConfig
 	[JsonPropertyName("reasoningEffort")]
 	public string ReasoningEffort { get; set; } = string.Empty;
 
-	// False (the default and the behavior for every other model) = the model's reasoning is never
-	// replayed to the server. Not discoverable — no catalog states it — so it is always the user's
-	// call. See ModelConfig.RetainReasoning for what it does.
+	// True (the default) = the model's reasoning is replayed to the server. Like reasoningSummaries this
+	// is not a sparse override — no catalog states it — and it is written back to false automatically
+	// when an endpoint refuses the replayed field. See ModelConfig.RetainReasoning for what it does.
 	[JsonPropertyName("retainReasoning")]
-	public bool RetainReasoning { get; set; } = false;
+	public bool RetainReasoning { get; set; } = true;
 
 	// True (the default) = ask for thinking summaries. Unlike the fields above this is not a sparse
 	// override — there is nothing to discover — and it is written back to false automatically when an
@@ -216,14 +216,18 @@ public class ModelConfig
 	public bool ReasoningSummaries { get; set; } = true;
 
 	// Replay this model's own reasoning back to it on later turns, in the shape the server emitted.
-	// Off by default and for every other model: unsigned thinking is normally stripped, because most
-	// providers either ignore it or reject it. A few models are trained on preserved thinking and get
-	// measurably worse without it — Moonshot's Kimi K3 states that the complete assistant message,
-	// reasoning_content included, must be passed back unchanged in multi-turn and tool-calling
-	// conversations. ChatCompletions only; the Anthropic and Responses protocols carry their own
-	// native reasoning state (signed blocks, server-side threads) and ignore this.
+	// On by default: the open-weight reasoning models are trained on their thinking being there, and
+	// their chat templates render it back. Moonshot's Kimi K3 states that the complete assistant
+	// message, reasoning_content included, must be passed back unchanged in multi-turn and tool-calling
+	// conversations; Qwen3.8's template re-renders every earlier turn's reasoning unless told not to,
+	// and Qwen3.5's keeps it for the tool-calling steps of the current turn — stripped, each of those
+	// steps reads as an empty <think></think>. A provider that refuses the replayed field (a strict
+	// hosted API) teaches that once: the field is dropped, the request retried, and this is written
+	// back to false. Turn it off by hand to keep earlier thinking out of the context.
+	// ChatCompletions only; the Anthropic and Responses protocols carry their own native reasoning
+	// state (signed blocks, server-side threads) and ignore this.
 	[JsonPropertyName("retainReasoning")]
-	public bool RetainReasoning { get; set; } = false;
+	public bool RetainReasoning { get; set; } = true;
 
 	// How long a single request to this model may stay SILENT before it is abandoned and retried.
 	// Streaming readers push this deadline out again on every chunk that arrives, so it never bounds

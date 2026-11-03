@@ -284,7 +284,7 @@ public class ProtocolAnthropic
 					{
 						_thinkingSupported = false;
 						logger.Write(model.Config.Name, model.Endpoint, "[thinking] model does not support extended thinking; recording it as none and re-sending without it");
-						_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null);
+						_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null, null);
 						continue;
 					}
 

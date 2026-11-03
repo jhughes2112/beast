@@ -244,7 +244,8 @@ public class LaunchDocker : ILauncher
 		// against /git once it is up, using the branch passed as the --worktree-branch startup argument.
 		// Bare session: the folder is bound straight to /workspace with no /git and no branch, so the agent
 		// operates in place and skips all git worktree setup.
-		// Either way ~/.beast is bound to /root/.beast, and the agent keeps its conversations and logs in the
+		// Either way ~/.beast is bound to /root/.beast, and the agent keeps its conversations, logs and the
+		// attachments the client stages in the
 		// session's own state folder (--state-dir), out of the user's project. That folder is bound on its own
 		// at /root/.beast-state, since the sessions folder may live outside ~/.beast (sessionsDir); /root is
 		// root's alone, so the sandboxed shell cannot reach it any more than /root/.beast.

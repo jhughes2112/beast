@@ -76,7 +76,7 @@ public class Program
 		// comes from the --worktree-branch startup argument (never an env var). No-op for debug/native runs
 		// without the /git mount. A failure here means /workspace is unusable, so abort.
 		string worktreeBranch = ArgValue(args, "--worktree-branch");
-		// The session's own folder for conversations and logs (see AgentState); a run without it uses .beast here.
+		// The session's own folder for conversations, logs and staged attachments (see AgentState); a run without it uses .beast here.
 		string stateDir = ArgValue(args, "--state-dir");
 		if (stateDir.Length > 0)
 			AgentState.Initialize(stateDir);

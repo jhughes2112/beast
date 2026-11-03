@@ -8,7 +8,7 @@ using System.Text.Json;
 // One Beast session: an agent working on a folder, either in place (a bare session, at most one per folder)
 // or on its own git worktree of a repository. Everything a session owns lives in its own directory under
 // the sessions folder (SessionStore.Root, normally ~/.beast/sessions): <id>/ holds the record (session.json), the worktree checkout, and the agent's saved
-// conversations and logs. Nothing is written into the user's project, and finishing or deleting a session
+// conversations, logs and staged attachments. Nothing is written into the user's project, and finishing or deleting a session
 // is removing that one directory (plus the worktree's registration and branch in the repository).
 public sealed class SessionRecord
 {
@@ -37,10 +37,10 @@ public sealed class SessionRecord
 	// The worktree checkout, bound to /workspace. Only meaningful for a worktree session.
 	public string WorktreePath => Path.Combine(Dir, "worktree");
 
-	// The agent's conversations and logs (AgentState on the agent side).
+	// The agent's conversations, logs and staged attachments (AgentState on the agent side).
 	public string StateDir => Path.Combine(Dir, "state");
 
-	// The host folder bound to /workspace: where host_command runs and dropped files are staged.
+	// The host folder bound to /workspace: where host_command runs.
 	public string WorkspacePath => IsBare ? Folder : WorktreePath;
 
 	public string ContainerName => "beast_" + Id;

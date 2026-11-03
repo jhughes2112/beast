@@ -110,7 +110,7 @@ public class LlmRegistry
 	// A model with no settings entry (a manual provider defined outside the user file) still gets
 	// the in-memory change; only the write is skipped. Returns what actually happened so callers
 	// can say so rather than promising a save that did not occur.
-	public bool UpdateModelReasoning(string configId, string? effort, bool? summaries)
+	public bool UpdateModelReasoning(string configId, string? effort, bool? summaries, bool? retainReasoning)
 	{
 		if (!_models.TryGetValue(configId, out LlmModel? model))
 			return false;
@@ -119,19 +119,21 @@ public class LlmRegistry
 			model.Config.ReasoningEffort = effort;
 		if (summaries.HasValue)
 			model.Config.ReasoningSummaries = summaries.Value;
+		if (retainReasoning.HasValue)
+			model.Config.RetainReasoning = retainReasoning.Value;
 
-		return _settings != null && _settings.SaveModelReasoning(configId, effort, summaries);
+		return _settings != null && _settings.SaveModelReasoning(configId, effort, summaries, retainReasoning);
 	}
 
 	// The ModelCapabilitySink handed to every service this registry builds. Swallows nothing: a fact
 	// learned from a provider that could not be written down is worth a line on stderr, because the
 	// next run will pay to learn it again. The image cap is applied in place for the same reason the
 	// reasoning fields are (see UpdateModelReasoning): every session on the model holds this config.
-	private void ApplyLearnedCapability(string configId, string? effort, bool? summaries, int? maxImages)
+	private void ApplyLearnedCapability(string configId, string? effort, bool? summaries, bool? retainReasoning, int? maxImages)
 	{
 		bool saved = true;
-		if (effort != null || summaries.HasValue)
-			saved = UpdateModelReasoning(configId, effort, summaries);
+		if (effort != null || summaries.HasValue || retainReasoning.HasValue)
+			saved = UpdateModelReasoning(configId, effort, summaries, retainReasoning);
 
 		if (maxImages.HasValue && _models.TryGetValue(configId, out LlmModel? model))
 		{

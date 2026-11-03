@@ -306,7 +306,7 @@ public static class MediaToolResultTests
 	{
 		ctx.Log("    MediaBudgetLearnsImageCount");
 		List<(string Id, int? MaxImages)> learned = new List<(string, int?)>();
-		ModelCapabilitySink               sink    = (id, effort, summaries, maxImages) => learned.Add((id, maxImages));
+		ModelCapabilitySink               sink    = (id, effort, summaries, retainReasoning, maxImages) => learned.Add((id, maxImages));
 		SessionLogger                     logger  = new SessionLogger("media-budget-test");
 		MediaBudget                       budget  = new MediaBudget();
 

@@ -144,8 +144,8 @@ public class MediaInspector
 		if (string.IsNullOrWhiteSpace(filePath))
 			return (null, "Error: file_paths cannot contain an empty path");
 
-		// The resolved path, symlinks followed, is the one read. Dropped attachments in .beast are
-		// the one place outside the model's reach it may look, since it is told it can look again.
+		// The resolved path, symlinks followed, is the one read. Dropped attachments in the agent's state
+		// folder are the one place outside the model's reach it may look, since it is told it can look again.
 		(string? confined, string denied) = Sandbox.Confine(filePath, false, true);
 		if (confined == null)
 			return (null, denied);
@@ -184,7 +184,7 @@ public class MediaInspector
 		FileInfo info      = new FileInfo(source);
 		byte[]   identity  = SHA256.HashData(Encoding.UTF8.GetBytes($"{source}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{ScaleFlags}"));
 		string   name      = $"{Path.GetFileNameWithoutExtension(source)}-{Convert.ToHexString(identity, 0, 4).ToLowerInvariant()}-max{maxDimension}{(jpeg ? ".jpg" : ".png")}";
-		string   target    = Path.Combine(MediaIntake.EnsureStagingFolder(Environment.CurrentDirectory), name);
+		string   target    = Path.Combine(MediaIntake.EnsureStagingFolder(AgentState.Root), name);
 		string   mimeType  = jpeg ? "image/jpeg" : "image/png";
 		string   error     = string.Empty;
 

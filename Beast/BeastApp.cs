@@ -16,7 +16,6 @@ public class BeastApp : IAsyncDisposable
 		public ConversationModel          Model { get; } = new ConversationModel();
 		public int                        NextIndex;
 		public int                        StreamIndex     = -1;
-		public StringBuilder              StreamContent   = new StringBuilder();
 		public Dictionary<string, int>    StreamTagToSlot = new Dictionary<string, int>();
 		public Dictionary<int, FrameType> SlotTypes       = new Dictionary<int, FrameType>();
 		public Dictionary<FrameType, int> PendingCommit   = new Dictionary<FrameType, int>();
@@ -247,13 +246,17 @@ public class BeastApp : IAsyncDisposable
 		_display.SetSessionSwitchCallback(SwitchActiveSession);
 		_display.SetSessionDeleteCallback(DeleteSession);
 
-		// Dropped files stage into the folder bound to /workspace — the worktree for a normal
-		// launch, the current folder for an ephemeral one — so the agent can read them and they go
-		// away when the worktree does.
-		// host_command runs in the same folder, so the agent's relative paths mean the same on both sides.
+		// Dropped files stage into the session's agent state folder (bound at /root/.beast-state), so
+		// the agent can read them, the project stays clean, and they go when the session is deleted.
+		// Without a session (a debug run against a native agent) that is the working folder's .beast,
+		// which is where a native agent keeps its state.
+		string stateDir = _session != null ? _session.StateDir : Path.Combine(Environment.CurrentDirectory, ".beast");
+		_display.SetAgentStateDir(stateDir);
+
+		// host_command runs in the folder bound to /workspace, so the agent's relative paths mean the
+		// same on both sides.
 		string workspaceRoot = _session != null ? _session.WorkspacePath : Environment.CurrentDirectory;
-		_display.SetAttachmentRoot(workspaceRoot);
-		_hostRunner = new HostCommandRunner((sessionId, text) => _wsClient!.SendAsync(sessionId + "|" + text, _cts!.Token), workspaceRoot, _cts.Token);
+		_hostRunner          = new HostCommandRunner((sessionId, text) => _wsClient!.SendAsync(sessionId + "|" + text, _cts!.Token), workspaceRoot, _cts.Token);
 
 		// Put the worktree (or agent) name in the console tab title so multiple Beast tabs are
 		// distinguishable; the separator animates while the agent is busy.
@@ -415,6 +418,12 @@ public class BeastApp : IAsyncDisposable
 		_display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext,
 state.StatsContextTokens, state.StatsCachedTokens);
 		_display.Attach(state.Model);
+
+		// A stream still running in the session now on screen must be shown as streaming again: without
+		// this its block renders through the full per-frame rebuild, and can be collapsed, until it ends.
+		if (state.StreamIndex >= 0 && state.SlotTypes.TryGetValue(state.StreamIndex, out FrameType streamType))
+			_display.OnStreamStart(state.StreamIndex, streamType);
+
 		NotifySessionList();
 	}
 
@@ -667,8 +676,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				break;
 
 			case FrameType.StreamStart:
-				FrameType startType = StreamFrameType(content);
-				session.StreamContent.Clear();
+				FrameType startType                    = StreamFrameType(content);
 				session.StreamIndex                    = session.NextIndex++;
 				session.StreamTagToSlot[content]       = session.StreamIndex;
 				session.SlotTypes[session.StreamIndex] = startType;
@@ -680,9 +688,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 			case FrameType.StreamChunk:
 				if (session.StreamIndex < 0)
 					break;
-				session.StreamContent.Append(content);
-				session.SlotTypes.TryGetValue(session.StreamIndex, out FrameType chunkType);
-				session.Model.Update(session.StreamIndex, chunkType, session.StreamContent.ToString());
+				// Appended, never re-sent whole: rebuilding the full text per token copied the message on every
+				// chunk, and past ~85 KB each copy landed on the large-object heap.
+				session.Model.Append(session.StreamIndex, content);
 				if (isActive)
 					_display.OnStreamChunk(content);
 				break;
@@ -700,7 +708,6 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					session.StreamTagToSlot.Remove(content);
 				}
 				session.StreamIndex = -1;
-				session.StreamContent.Clear();
 				if (isActive)
 					_display.OnStreamEnd();
 				break;

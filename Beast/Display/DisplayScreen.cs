@@ -139,9 +139,10 @@ public class DisplayScreen : IDisplay
 	// Whether the last frame showed the question's answers greyed out, so the tick loop redraws once they arm.
 	private bool _choiceDrawnArming;
 
-	// Host path of the folder bound to /workspace: dropped files are staged inside it so the agent
-	// can read them and so they die with the worktree. Empty until the launcher supplies it.
-	private string _attachmentRoot = string.Empty;
+	// Host path of the session's agent state folder (bound at /root/.beast-state): dropped files are
+	// staged in its attachments so the agent can read them and they go when the session is deleted.
+	// Empty until the launcher supplies it.
+	private string _agentStateDir = string.Empty;
 
 	// Serializes submissions so an /attach and the text it belongs to always reach the agent as an
 	// unbroken pair.
@@ -214,9 +215,12 @@ public class DisplayScreen : IDisplay
 
 	private int _streamingSlot = -1;
 
+
 	// Per-slot cached BlockLayer (collapsed + expanded Screens). Invalidated on width change or message update.
-	private readonly Dictionary<int, BlockLayer> _blockCache    = new Dictionary<int, BlockLayer>();
-	private          int                         _renderedWidth = 0;
+	private readonly Dictionary<int, BlockLayer> _blockCache = new Dictionary<int, BlockLayer>();
+	// Per-slot render of each markdown message, kept across updates so new content is pushed, not re-parsed.
+	private readonly Dictionary<int, MarkdownBlock> _markdownBlocks = new Dictionary<int, MarkdownBlock>();
+	private          int _renderedWidth = 0;
 
 	// Effective width of the history area (full terminal width, minus the session-tree panel when open).
 	// Set every Redraw; used by mouse hit-testing so column math matches the reflowed layout.
@@ -309,6 +313,7 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 		{
 			_blockCache.Clear();
+			_markdownBlocks.Clear();
 			_historyScrollOffset = 0f;
 			_scrollTarget        = 0f;
 			// Viewing a new session restarts the follow timer from scratch.
@@ -453,8 +458,8 @@ public class DisplayScreen : IDisplay
 	// Session-pinned send, used by multi-part submissions so every part reaches the same session.
 	public void SetSendToAsync(Func<string, string, Task> sendToAsync) { _sendToAsync = sendToAsync; }
 
-	// The host folder bound to /workspace, so dropped files can be staged where the agent sees them.
-	public void SetAttachmentRoot(string root) { _attachmentRoot = root; }
+	// The host folder holding the session's agent state, so dropped files can be staged where the agent sees them.
+	public void SetAgentStateDir(string stateDir) { _agentStateDir = stateDir; }
 
 	// Opens the /config picker (invoked when the user submits "/config").
 	private void OpenConfigOverlay()
@@ -870,6 +875,7 @@ public class DisplayScreen : IDisplay
 		if (layoutW != _renderedWidth)
 		{
 			_blockCache.Clear();
+			_markdownBlocks.Clear();
 			// Block widths change with the viewport, so horizontal offsets no longer mean the same thing.
 			_blockHScroll.Clear();
 			_renderedWidth = layoutW;
@@ -1173,7 +1179,7 @@ public class DisplayScreen : IDisplay
 			{
 				if (ConversationModel.ShouldHide(msg.Type, _model.Mode))
 					continue;
-				if (string.IsNullOrEmpty(msg.Content))
+				if (msg.Length == 0)
 					continue;
 				stack.Add(BuildLayerFor(msg, w));
 			}
@@ -1185,32 +1191,34 @@ public class DisplayScreen : IDisplay
 	// expanded Screens are pre-rendered so toggles and copies swap between them without re-rendering.
 	private BlockLayer BuildLayerFor(DisplayMessage msg, int w)
 	{
-		bool isStreaming = msg.Index == _streamingSlot;
+		BlockLayer built = MarkdownBlock.Handles(msg.Type) ? MarkdownLayer(msg, w) : PlainLayer(msg, w);
+		// Force the streaming slot fully expanded so the user always sees content as it arrives. Once
+		// streaming ends the normal collapsed state takes over. This picks a view only; it never changes
+		// how the block renders.
+		bool expanded = !msg.Collapsed || msg.Index == _streamingSlot;
+		return new BlockLayer(msg.Index, built.Collapsed, built.Expanded, expanded);
+	}
 
-		// Streaming slots bypass cache (content changes constantly).
-		BlockLayer layer;
-		if (isStreaming || !_blockCache.TryGetValue(msg.Index, out BlockLayer? cached))
+	// A markdown message keeps one MarkdownBlock per slot: content that only grew is pushed onto it, so a
+	// streaming message re-parses just its open block and a finished one is never re-parsed at all.
+	private BlockLayer MarkdownLayer(DisplayMessage msg, int w)
+	{
+		if (!_markdownBlocks.TryGetValue(msg.Index, out MarkdownBlock? block) || !block.Follows(msg, w))
 		{
-			layer = BlockRenderer.Build(msg, w, isStreaming);
-			// Force streaming slots fully expanded so the user always sees content as it arrives.
-			// Once streaming ends the normal collapsed state takes over.
-			if (isStreaming)
-				layer = new BlockLayer(layer.SlotIndex, layer.Collapsed, layer.Expanded, isExpanded: true);
-			else
-				_blockCache[msg.Index] = layer;
+			block                      = new MarkdownBlock(msg, w);
+			_markdownBlocks[msg.Index] = block;
 		}
-		else
+		return block.Build(msg);
+	}
+
+	// Any other message is rebuilt after it changes (OnMessageUpdated drops its cached layer) and reused
+	// until then.
+	private BlockLayer PlainLayer(DisplayMessage msg, int w)
+	{
+		if (!_blockCache.TryGetValue(msg.Index, out BlockLayer? layer))
 		{
-			// Cache stores a layer with whichever IsExpanded was current when built; rebuild if it has changed.
-			if (cached.IsExpanded == !msg.Collapsed)
-			{
-				layer = cached;
-			}
-			else
-			{
-				layer                  = new BlockLayer(msg.Index, cached.Collapsed, cached.Expanded, !msg.Collapsed);
-				_blockCache[msg.Index] = layer;
-			}
+			layer                  = BlockRenderer.Build(msg, w);
+			_blockCache[msg.Index] = layer;
 		}
 		return layer;
 	}
@@ -1229,7 +1237,7 @@ public class DisplayScreen : IDisplay
 				if (slot < 0 || slot >= _model.Messages.Count)
 					continue;
 				DisplayMessage msg     = _model.Messages[slot];
-				bool           visible = !ConversationModel.ShouldHide(msg.Type, _model.Mode) && !string.IsNullOrEmpty(msg.Content);
+				bool           visible = !ConversationModel.ShouldHide(msg.Type, _model.Mode) && msg.Length > 0;
 				bool           present = stack.PlacementOfSlot(slot).HasValue;
 				if (visible != present)
 				{
@@ -2469,9 +2477,9 @@ public class DisplayScreen : IDisplay
 	}
 
 	// Sends a submitted line, staging any "[ path ... ]" markers first. Each dropped file is copied
-	// into ~/.beast/attachments — the one folder mounted into the agent's container — and announced
-	// with /attach, so a file dragged from anywhere on this machine is readable by an agent that
-	// cannot otherwise see the host filesystem. The sends are awaited in order so every /attach
+	// into the attachments folder of the session's agent state — bound into the agent's container —
+	// and announced with /attach, so a file dragged from anywhere on this machine is readable by an
+	// agent that cannot otherwise see the host filesystem. The sends are awaited in order so every /attach
 	// lands before the text it belongs to.
 	private async Task SendWithAttachmentsAsync(string text)
 	{
@@ -2547,7 +2555,7 @@ public class DisplayScreen : IDisplay
 
 	private (string Markers, string Report) PasteMediaMarkers()
 	{
-		if (_attachmentRoot.Length == 0)
+		if (_agentStateDir.Length == 0)
 			return (string.Empty, string.Empty);
 
 		StringBuilder markers   = new StringBuilder();
@@ -2560,7 +2568,7 @@ public class DisplayScreen : IDisplay
 		if (fileCount > 0)
 			return (markers.ToString(), fileCount == 1 ? "Attached 1 file from the clipboard." : $"Attached {fileCount} files from the clipboard.");
 
-		string image = Platform.Current.SaveClipboardImage(MediaIntake.EnsureStagingFolder(_attachmentRoot));
+		string image = Platform.Current.SaveClipboardImage(MediaIntake.EnsureStagingFolder(_agentStateDir));
 		if (image.Length > 0)
 			return ($"[ path {image} ] ", "Attached the clipboard image.");
 
@@ -2570,18 +2578,18 @@ public class DisplayScreen : IDisplay
 		return (string.Empty, "Clipboard holds no image or files.");
 	}
 
-	// Copies one dropped file into the workspace staging folder under a collision-proof name, and
+	// Copies one dropped file into the session's staging folder under a collision-proof name, and
 	// returns that name. A file already sitting in the staging folder (a pasted screenshot) is used
 	// where it lies rather than duplicated. Empty on failure — an unreadable file must not block
 	// the message.
 	private string StageAttachment(string path)
 	{
-		if (_attachmentRoot.Length == 0)
+		if (_agentStateDir.Length == 0)
 			return string.Empty;
 
 		try
 		{
-			string  folder = MediaIntake.EnsureStagingFolder(_attachmentRoot);
+			string  folder = MediaIntake.EnsureStagingFolder(_agentStateDir);
 			string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
 			if (parent != null && string.Equals(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar), parent.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
 				return Path.GetFileName(path);

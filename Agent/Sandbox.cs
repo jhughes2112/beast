@@ -10,7 +10,8 @@ using System.Threading.Tasks;
 // Keeps what the model can reach apart from what only the agent may touch.
 //
 // Two users. The agent is root: it can see and change everything — the API keys in /root/.beast, its
-// own state in .beast, the git repository, the main checkout — and it alone commits (commit_and_rebase).
+// own state (conversations, logs, staged attachments) in /root/.beast-state, the git repository, the
+// main checkout — and it alone commits (commit_and_rebase).
 // Everything the MODEL can cause to run — bash, readonly_bash, ls — runs as ShellUser, a normal user
 // that owns the workspace's working files and nothing else:
 //   - every top-level dot-folder (.git, .github, .vscode, .venv, ...) is root's and read-only to it,
@@ -23,7 +24,8 @@ using System.Threading.Tasks;
 //
 // The in-process file tools cannot lean on permissions — they run inside the root agent — so they
 // resolve every path through its symlinks and are confined to the workspace and the temp folder,
-// with .beast off limits and nothing inside a top-level dot-folder writable.
+// with the agent's state and a workspace .beast off limits (save reading staged attachments) and
+// nothing inside a top-level dot-folder writable.
 //
 // Where there is no ShellUser (a native debug run, the test harness on Windows) processes run as
 // whoever started the agent and the lockdown is skipped; the path confinement always applies.
@@ -107,8 +109,10 @@ public static class Sandbox
 
 	// Resolves a tool's path argument to the real file it names, following every symlink, and checks
 	// it against the confinement rules. On success Path is what the caller must use for the I/O — never
-	// the original argument, which a symlink swapped in afterwards could redirect. allowAttachments
-	// opens the one reading hole in .beast: dropped files the model is told it can inspect again.
+	// the original argument, which a symlink swapped in afterwards could redirect. The agent's state
+	// folder is off limits, and so is a .beast folder in the workspace (a project's own roles.json);
+	// allowAttachments opens the one reading hole: the staged attachments the model is told it can
+	// inspect again, which live in the state folder (outside the workspace, in the container).
 	public static (string? Path, string Error) Confine(string path, bool write, bool allowAttachments)
 	{
 		string? resolved = null;
@@ -116,17 +120,22 @@ public static class Sandbox
 
 		string real   = ResolveLinks(System.IO.Path.IsPathRooted(path) ? path : System.IO.Path.Combine(Environment.CurrentDirectory, path));
 		string root   = Root;
-		string beast  = System.IO.Path.Combine( root, ".beast");
-		string staged = System.IO.Path.Combine(beast, "attachments");
+		string state  = ResolveLinks(System.IO.Path.GetFullPath(AgentState.Root));
+		string staged = ResolveLinks(System.IO.Path.GetFullPath(MediaIntake.StagingFolder()));
+		string beast  = System.IO.Path.Combine(root, ".beast");
 		string temp   = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetTempPath());
 
-		if (!IsUnder(real, root) && !IsUnder(real, temp))
+		if (allowAttachments && !write && IsUnder(real, staged))
+		{
+			resolved = real;
+		}
+		else if (IsUnder(real, state) || IsUnder(real, beast))
+		{
+			error = $"Error: {path} is in the agent's own state (.beast), which is off limits.";
+		}
+		else if (!IsUnder(real, root) && !IsUnder(real, temp))
 		{
 			error = $"Error: {path} is outside the workspace ({root}). File tools only work inside the workspace and {temp}.";
-		}
-		else if (IsUnder(real, beast) && !(allowAttachments && !write && IsUnder(real, staged)))
-		{
-			error = $"Error: {path} is inside .beast, which holds the agent's own state and is off limits.";
 		}
 		else if (write && IsUnder(real, root) && IsLockedForWrite(real, root))
 		{
@@ -301,9 +310,11 @@ public static class Sandbox
 
 	// The lockdown, as root. In order:
 	//   1. Every top-level entry of the workspace whose name starts with '.' is root's (sealed) — .git
-	//      and every other dot-folder, with no exceptions — except .beast, which is root's alone, and
-	//      dot FILES (.gitignore, .editorconfig), which stay the shell user's like every other file.
-	//      A dot-symlink is sealed as a link; one the shell makes later is removed (SealScript).
+	//      and every other dot-folder, with no exceptions — except a .beast folder, which is root's
+	//      alone (a project's own roles.json; it is never created here, the agent's state lives in
+	//      /root/.beast-state), and dot FILES (.gitignore, .editorconfig), which stay the shell user's
+	//      like every other file. A dot-symlink is sealed as a link; one the shell makes later is
+	//      removed (SealScript).
 	//   2. The git dir is wholly root's. In a worktree that is the main repository's .git, found by
 	//      reading the root-owned pointer file rather than by running git — root never runs git over
 	//      metadata the shell might have touched. A commondir file in it is removed: git follows one
@@ -322,7 +333,7 @@ public static class Sandbox
 			"  [ -e \"$e\" ] || [ -L \"$e\" ] || continue\n" +
 			"  n=${e##*/}\n" +
 			"  case \"$n\" in\n" +
-			"    .beast) ;;\n" +
+			"    .beast) if [ -d \"$e\" ] && [ ! -L \"$e\" ]; then chown root:root \"$e\"; chmod 700 \"$e\"; else seal \"$e\"; fi; echo \"LOCKED $n\" ;;\n" +
 			"    .git) seal \"$e\"; echo \"LOCKED $n\" ;;\n" +
 			"    .*) if [ -d \"$e\" ] || [ -L \"$e\" ]; then seal \"$e\"; echo \"LOCKED $n\"; else give \"$e\"; fi ;;\n" +
 			"    *) give \"$e\" ;;\n" +
@@ -345,7 +356,6 @@ public static class Sandbox
 			"  done\n" +
 			"fi\n" +
 			"chown root:root \"$W\"; chmod 1777 \"$W\"\n" +
-			"mkdir -p \"$W/.beast\"; chown root:root \"$W/.beast\"; chmod 700 \"$W/.beast\"\n" +
 			"exit 0\n";
 	}
 

@@ -560,7 +560,7 @@ public class ProtocolResponses
 		{
 			_summarySupported = false;
 			logger.Write(model.Config.Name, model.Endpoint, "[reasoning] endpoint refused thinking summaries; disabling them for this model and re-sending (its thinking will not be visible)");
-			_onCapabilityLearned?.Invoke(model.ConfigId, null, false, null);
+			_onCapabilityLearned?.Invoke(model.ConfigId, null, false, null, null);
 			return true;
 		}
 
@@ -568,7 +568,7 @@ public class ProtocolResponses
 		{
 			_reasoningSupported = false;
 			logger.Write(model.Config.Name, model.Endpoint, "[reasoning] model does not accept a reasoning effort; recording it as none and re-sending");
-			_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null);
+			_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null, null);
 			return true;
 		}
 

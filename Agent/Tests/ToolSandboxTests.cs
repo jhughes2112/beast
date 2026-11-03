@@ -181,7 +181,7 @@ public static class ToolSandboxTests
 		server.Reset();
 		ModelConfig config  = new ModelConfig { Id = "fake-tools", Name = "Fake Tools", ContextWindow = 200000, MaxOutputTokens = 4096 };
 		LlmModel    model   = new LlmModel(config.Id, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), config);
-		LlmService  service = new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new EndpointFacts(), new List<string> { config.Id }, (id, effort, summaries, maxImages) => { });
+		LlmService  service = new LlmService(model, DetectedProtocol.ChatCompletions, new ModelAvailability(), new EndpointFacts(), new List<string> { config.Id }, (id, effort, summaries, retainReasoning, maxImages) => { });
 
 		TestCaptureTransport transport = new TestCaptureTransport();
 		BeastSession         data      = new BeastSession(Guid.NewGuid().ToString("N"), "tools", config.Id, "ToolTester",

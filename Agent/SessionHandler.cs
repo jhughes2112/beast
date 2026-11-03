@@ -1101,7 +1101,7 @@ public class SessionHandler
 		// "off" is accepted at the prompt but stored as the canonical word, so settings only ever
 		// carry the vocabulary the rest of the system reads.
 		string stored = word == "off" ? "none" : word;
-		bool   saved  = registry.UpdateModelReasoning(model.ConfigId, stored, null);
+		bool   saved  = registry.UpdateModelReasoning(model.ConfigId, stored, null, null);
 		string suffix = saved ? "saved" : "for this run only — the model has no settings entry to write to";
 
 		// Session carries a cached "(high)" suffix for its committed stat frames, stamped when the

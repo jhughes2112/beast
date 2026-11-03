@@ -46,9 +46,23 @@ public static class CharWidthTests
 		}
 	}
 
+	// A code block's box is padded by display width: a line holding wide glyphs must close its right border
+	// in the same column as the plain lines around it, not one column further out per wide glyph.
+	private static void TestCodeBoxWideGlyphs(TestContext ctx)
+	{
+		List<RenderLine> lines = MarkdownAnsi.Render("```\nplain line here\n\"禅の庭 · Voxel Tea Garden\"\n✅ done\n```", FrameType.Output, 80);
+		int              width = AnsiString.VisibleLength(lines[0].Text);
+		bool             same  = true;
+		foreach (RenderLine line in lines)
+			same = same && AnsiString.VisibleLength(line.Text) == width;
+		ctx.Assert(same, "CodeBoxWideGlyphs: every box row closes in the same column");
+	}
+
 	public static void Test(TestContext ctx)
 	{
 		ctx.Log("  CharWidthTests");
+
+		TestCodeBoxWideGlyphs(ctx);
 
 		TestAscii(ctx);
 		TestHangulJamow(ctx);

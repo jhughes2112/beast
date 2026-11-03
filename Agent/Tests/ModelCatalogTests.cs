@@ -42,7 +42,7 @@ public static class ModelCatalogTests
 	// whatever file it escaped to.
 	private static void TestStagedNameTraversal(TestContext ctx)
 	{
-		string staging = MediaIntake.EnsureStagingFolder(Environment.CurrentDirectory);
+		string staging = MediaIntake.EnsureStagingFolder(AgentState.Root);
 		string victim  = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(staging)!, "victim.txt");
 		System.IO.File.WriteAllText(victim, "do not delete");
 		try
@@ -94,17 +94,20 @@ public static class ModelCatalogTests
 		ctx.AssertEqual("what is this?", wordlessParts[0]?["text"]?.GetValue<string>(), "MediaMerge: with the merged text");
 	}
 
-	// Thinking is stripped from the ChatCompletions chain unless the model is configured to retain
-	// it — and when it is retained, it goes back in the field and shape the server emitted, because
-	// the models that ask for this (Kimi K3) require the assistant message returned unchanged.
+	// Thinking goes back to the model on the ChatCompletions chain unless the model is configured not to
+	// retain it — and it goes back in the field and shape the server emitted, because the models that
+	// rely on it (Kimi K3, the Qwen templates) expect the assistant message returned unchanged.
 	private static void TestRetainReasoning(TestContext ctx)
 	{
 		List<SemanticToolCall> noCalls = new List<SemanticToolCall>();
 
+		ctx.Assert(new ModelConfig().RetainReasoning, "RetainReasoning: on is the default for a model");
+		ctx.Assert(new AutoModelConfig().RetainReasoning, "RetainReasoning: and for an auto-discovered model's settings");
+
 		ProtocolChatCompletions off = new ProtocolChatCompletions(false, "test-model", null);
 		off.OnAssistantTurn("done", "first I considered", noCalls);
 		JsonArray offNative = (JsonArray)Reflect.GetField(off, "_native")!;
-		ctx.Assert(offNative[0]?["reasoning_content"] == null, "RetainReasoning: off is the default — no thinking reaches the wire");
+		ctx.Assert(offNative[0]?["reasoning_content"] == null, "RetainReasoning: turned off, no thinking reaches the wire");
 
 		ProtocolChatCompletions on = new ProtocolChatCompletions(true, "test-model", null);
 		on.OnAssistantTurn("done", "first I considered", noCalls);
@@ -133,6 +136,41 @@ public static class ModelCatalogTests
 		// The captured shape belongs to exactly one turn: a second turn must not inherit it.
 		structured.OnAssistantTurn("more", string.Empty, noCalls);
 		ctx.Assert(structuredNative[1]?["reasoning_details"] == null, "RetainReasoning: the captured shape is consumed by the turn it came from");
+
+		TestRetainReasoningRefused(ctx);
+	}
+
+	// A strict server that refuses the replayed field is taught once: the reasoning comes off the chain,
+	// replay stops, and the model is recorded as retainReasoning false. A 400 that mentions reasoning
+	// for some other reason (an effort it will not take) is left alone for the effort fallback.
+	private static void TestRetainReasoningRefused(TestContext ctx)
+	{
+		List<SemanticToolCall> noCalls = new List<SemanticToolCall>();
+		Type[]                 types   = new Type[] { typeof(int), typeof(string), typeof(LlmModel), typeof(SessionLogger) };
+		LlmModel               model   = new LlmModel("test-model", "http://localhost/v1/chat/completions", "", new List<JsonObject>(), new List<JsonObject>(),
+										 new ModelConfig { Id = "test-model", Name = "test-model" });
+		SessionLogger          logger  = new SessionLogger("retain-reasoning-test");
+
+		bool?                   learned  = null;
+		ProtocolChatCompletions protocol = new ProtocolChatCompletions(true, "test-model", (id, effort, summaries, retain, images) => learned = retain);
+		protocol.OnAssistantTurn("done", "first I considered", noCalls);
+		JsonArray native = (JsonArray)Reflect.GetField(protocol, "_native")!;
+
+		string effortBody = "{\"error\":{\"message\":\"reasoning_effort is not supported by this model\"}}";
+		bool   effortOnly = (bool)Reflect.Instance(protocol, "TryDropReplayedReasoning", types, new object[] { 400, effortBody, model, logger })!;
+		ctx.Assert(!effortOnly, "RetainReasoning: a refused effort is not taken for a refused replay");
+		ctx.AssertNotNull(native[0]?["reasoning_content"], "RetainReasoning: and the replayed reasoning stays");
+
+		string strictBody = "{\"error\":{\"message\":\"'messages.0' : property 'reasoning_content' is unsupported\"}}";
+		bool   dropped    = (bool)Reflect.Instance(protocol, "TryDropReplayedReasoning", types, new object[] { 400, strictBody, model, logger })!;
+		ctx.Assert(dropped, "RetainReasoning: a refusal naming the replayed field is learned");
+		ctx.Assert(native[0]?["reasoning_content"] == null, "RetainReasoning: the field comes off the messages already in the chain");
+		ctx.AssertEqual(false, learned ?? true, "RetainReasoning: and the model is recorded as retainReasoning false");
+
+		protocol.OnAssistantTurn("more", "then I decided", noCalls);
+		ctx.Assert(native[1]?["reasoning_content"] == null, "RetainReasoning: later turns are no longer replayed");
+		bool again = (bool)Reflect.Instance(protocol, "TryDropReplayedReasoning", types, new object[] { 400, strictBody, model, logger })!;
+		ctx.Assert(!again, "RetainReasoning: once off, the same refusal is not learned twice");
 	}
 
 	// A reasoning model that is never asked for a summary spends the whole turn thinking silently,
@@ -213,7 +251,7 @@ public static class ModelCatalogTests
 			new List<JsonObject>(), new List<JsonObject>(), config);
 
 		List<(string Id, string? Effort, bool? Summaries)> learned = new List<(string, string?, bool?)>();
-		ModelCapabilitySink sink = (id, effort, summaries, maxImages) => learned.Add((id, effort, summaries));
+		ModelCapabilitySink sink = (id, effort, summaries, retainReasoning, maxImages) => learned.Add((id, effort, summaries));
 
 		ProtocolResponses protocol = new ProtocolResponses(sink, new EndpointFacts(), false);
 		Type[]   types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int?), typeof(Dictionary<string, JsonNode?>) };

@@ -8,10 +8,10 @@ using System.Threading.Tasks;
 
 // Turns files the user dropped into the input box into something the conversation can carry.
 //
-// The client stages each dropped file into the shared .beast/attachments folder (the one directory
-// mounted into the container, so a file dragged from anywhere on the host is readable by the agent)
-// and sends its staged name ahead of the message text. This resolves those into either real
-// attachments on the user turn or text standing in for them:
+// The client stages each dropped file into the attachments folder of the session's agent state (bound
+// into the container, so a file dragged from anywhere on the host is readable by the agent) and sends
+// its staged name ahead of the message text. This resolves those into either real attachments on the
+// user turn or text standing in for them:
 //
 //   - the current model declares the modality  -> attach it, so the model's attention runs over
 //     the media itself; it leaves the context once answered, and the kept staged copy is how the
@@ -33,39 +33,27 @@ public static class MediaIntake
 	// Inlined text is capped so dropping a huge log cannot swallow the whole window.
 	private const int MaxInlineTextChars = 40000;
 
-	// The folder dropped files are staged into, under the WORKSPACE rather than the user's home:
-	// the workspace is the other bind-mounted folder, and it is deleted when the worktree is
-	// finished, so a dropped screenshot lives exactly as long as the work it belonged to instead
-	// of accumulating in the user profile forever.
-	public static string StagingFolder(string workspaceRoot)
+	// The folder dropped files (and inspect_media's downscaled copies) are staged into: attachments/
+	// inside the session's agent state folder. That folder is the session's own (~/.beast/sessions/<id>/
+	// state on the host, /root/.beast-state in the container), so nothing is left in the user's project
+	// and deleting the session removes its attachments with everything else. The model's shell cannot
+	// reach it; only the agent reads it, for inspect_media (see Sandbox.Confine).
+	public static string StagingFolder(string stateDir)
 	{
-		return Path.Combine(workspaceRoot, ".beast", "attachments");
+		return Path.Combine(stateDir, "attachments");
 	}
 
-	// The agent's own view of it. Its working directory IS the workspace (/workspace in the
-	// container, the project folder on a native run).
+	// The agent's own view of it: its state folder (the --state-dir argument; the working folder's
+	// .beast on a native run without one).
 	public static string StagingFolder()
 	{
-		return StagingFolder(Environment.CurrentDirectory);
+		return StagingFolder(AgentState.Root);
 	}
 
-	// Creates the staging folder and marks it ignored. The folder lives inside a git checkout, so
-	// without this a dropped screenshot shows up as an untracked file and can be swept into a
-	// commit. A "*" gitignore inside the folder covers its contents and itself, independent of
-	// whatever the surrounding project's ignore rules happen to be.
-	public static string EnsureStagingFolder(string workspaceRoot)
+	public static string EnsureStagingFolder(string stateDir)
 	{
-		string folder = StagingFolder(workspaceRoot);
+		string folder = StagingFolder(stateDir);
 		Directory.CreateDirectory(folder);
-		try
-		{
-			string ignore = Path.Combine(folder, ".gitignore");
-			if (!File.Exists(ignore))
-				File.WriteAllText(ignore, "# Beast-generated: dropped attachments are transient local state.\n*\n");
-		}
-		catch (Exception)
-		{
-		}
 		return folder;
 	}
 

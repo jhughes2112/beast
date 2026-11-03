@@ -18,12 +18,12 @@ public enum LlmExitReason
 public delegate void LiveUsageProgress(int inputTokens, int outputTokens, decimal turnCost, int cachedTokens);
 
 // Raised by a protocol when a provider teaches it something durable about a model: an endpoint that
-// refuses thinking summaries, a model that rejects reasoning parameters outright, or one that caps
-// how many images a request may carry. The registry applies it to the live config and writes it to
-// settings, so the next run — and every other session using that model right now — starts from what
-// was learned instead of rediscovering it one rejected request at a time. Null fields mean
-// "unchanged"; effort is a ReasoningEffort word.
-public delegate void ModelCapabilitySink(string configId, string? effort, bool? summaries, int? maxImages);
+// refuses thinking summaries, a model that rejects reasoning parameters outright, one that refuses its
+// own reasoning replayed, or one that caps how many images a request may carry. The registry applies it
+// to the live config and writes it to settings, so the next run — and every other session using that
+// model right now — starts from what was learned instead of rediscovering it one rejected request at a
+// time. Null fields mean "unchanged"; effort is a ReasoningEffort word.
+public delegate void ModelCapabilitySink(string configId, string? effort, bool? summaries, bool? retainReasoning, int? maxImages);
 
 // Result returned by LlmService after running a conversation to completion.
 public class LlmResult

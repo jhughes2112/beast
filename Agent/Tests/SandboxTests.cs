@@ -27,6 +27,7 @@ public static class SandboxTests
 			Directory.SetCurrentDirectory(workspace);
 			Sandbox.Initialize(workspace);
 			TestConfinement(ctx, workspace);
+			TestStateOutsideWorkspace(ctx, workspace);
 			TestSymlinkEscape(ctx, workspace);
 			await TestToolsRefuseAsync(ctx, workspace);
 			await TestAptNamesAsync(ctx);
@@ -43,6 +44,17 @@ public static class SandboxTests
 				finally
 				{
 					await ShellTools.AgentBashAsync("cleanup", $"rm -rf '{scratch}'", null, CancellationToken.None);
+				}
+
+				string bare = Path.Combine(previous, $"beast-lockdown-{Guid.NewGuid():N}");
+				try
+				{
+					await TestLockDownAddsNoBeastAsync(ctx, bare);
+				}
+				finally
+				{
+					Sandbox.Initialize(workspace);
+					await ShellTools.AgentBashAsync("cleanup", $"rm -rf '{bare}'", null, CancellationToken.None);
 				}
 			}
 			else
@@ -80,6 +92,47 @@ public static class SandboxTests
 		ctx.Assert(     Sandbox.Confine(".brand-new/file.txt", true, false).Path == null, "Confine: including one that does not exist yet");
 		ctx.Assert(              Sandbox.Confine(".gitignore", true, false).Path != null, "Confine: top-level dot FILES stay writable");
 		ctx.Assert(    Sandbox.Confine("src/.hidden/file.txt", true, false).Path != null, "Confine: dot-folders below the top level are ordinary folders");
+	}
+
+	// The container's layout: the agent's state folder (--state-dir) sits beside the workspace, not in it,
+	// and holds the staged attachments. inspect_media may read those, nothing may write them, and the rest
+	// of the state folder stays off limits even though it is outside the workspace — here it is under the
+	// temp folder, which the file tools are otherwise allowed, so the state rule must come first. A
+	// project's own .beast in the workspace (its roles.json) stays off limits too.
+	private static void TestStateOutsideWorkspace(TestContext ctx, string workspace)
+	{
+		string state = Path.Combine(Path.GetDirectoryName(workspace)!, "state");
+		string drop  = Path.Combine(state, "attachments", "drop.png");
+		Directory.CreateDirectory(Path.Combine(state, "attachments"));
+		File.WriteAllText(drop, "png");
+		File.WriteAllText(Path.Combine(state, "session.json"), "{}");
+
+		AgentState.Initialize(state);
+		try
+		{
+			ctx.AssertEqual(Path.Combine(state, "attachments"), MediaIntake.StagingFolder(), "State: attachments are staged in the state folder");
+			ctx.Assert( Sandbox.Confine(drop, false, true).Path != null, "State: inspect_media may read an attachment staged there");
+			ctx.Assert(Sandbox.Confine(drop, false, false).Path == null, "State: the general tools may not");
+			ctx.Assert(  Sandbox.Confine(drop, true, true).Path == null, "State: and nothing may write one");
+			ctx.Assert(                     Sandbox.Confine(Path.Combine(state, "session.json"), false, true).Path == null, "State: the rest of the state folder stays off limits");
+			ctx.Assert(Sandbox.Confine(Path.Combine(state, "attachments", "..", "session.json"), false, true).Path == null, "State: .. out of attachments is caught");
+			ctx.Assert(Sandbox.Confine(".beast/settings.json", false, false).Path == null, "State: a .beast in the workspace stays off limits");
+		}
+		finally
+		{
+			AgentState.Initialize(string.Empty);
+		}
+	}
+
+	// The lockdown never creates a .beast in the workspace: the agent's state, attachments included, lives
+	// in its own state folder, so a bare session must leave the user's folder as it found it.
+	private static async Task TestLockDownAddsNoBeastAsync(TestContext ctx, string bare)
+	{
+		Directory.CreateDirectory(bare);
+		File.WriteAllText(Path.Combine(bare, "README.md"), "hello\n");
+		Sandbox.Initialize(bare);
+		string summary = await Sandbox.LockDownAsync(CancellationToken.None);
+		ctx.Assert(!Directory.Exists(Path.Combine(bare, ".beast")), $"LockDown: no .beast is created in the workspace — {summary}");
 	}
 
 	// A symlink the model's shell plants inside the workspace must not carry the file tools out of it.

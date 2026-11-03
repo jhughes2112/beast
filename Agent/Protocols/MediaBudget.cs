@@ -155,7 +155,7 @@ public class MediaBudget
 				// A number the provider stated is a fact about the model worth keeping; a cap reached by
 				// dropping items one at a time may only reflect this request's bytes.
 				if (stated > 0)
-					sink?.Invoke(model.ConfigId, null, null, stated);
+					sink?.Invoke(model.ConfigId, null, null, null, stated);
 			}
 		}
 		return retry;

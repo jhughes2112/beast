@@ -7,35 +7,35 @@ using System.Collections.Generic;
 // Construct once per (block, terminal-width); rebuild on resize or content change.
 public sealed class BlockLayer
 {
-	public int SlotIndex { get; }
-	public Screen Collapsed { get; }
-	public Screen Expanded { get; }
-	public bool IsExpanded { get; }
+	public int    SlotIndex  { get; }
+	public Screen Collapsed  { get; }
+	public Screen Expanded   { get; }
+	public bool   IsExpanded { get; }
 
 	public BlockLayer(int slotIndex, Screen collapsed, Screen expanded, bool isExpanded)
 	{
-		SlotIndex = slotIndex;
-		Collapsed = collapsed;
-		Expanded = expanded;
+		SlotIndex  = slotIndex;
+		Collapsed  = collapsed;
+		Expanded   = expanded;
 		IsExpanded = isExpanded;
 	}
 
 	public Screen Current { get { return IsExpanded ? Expanded : Collapsed; } }
-	public int Height { get { return Current.H; } }
+	public int    Height  { get { return Current.H; } }
 }
 
 // Where a block was placed on the composed long Screen.
 public readonly struct BlockPlacement
 {
 	public readonly int SlotIndex;
-	public readonly int Top;     // top row in the composite Screen, inclusive
-	public readonly int Height;  // number of rows
+	public readonly int Top;    // top row in the composite Screen, inclusive
+	public readonly int Height; // number of rows
 
 	public BlockPlacement(int slotIndex, int top, int height)
 	{
 		SlotIndex = slotIndex;
-		Top = top;
-		Height = height;
+		Top       = top;
+		Height    = height;
 	}
 
 	public int Bottom { get { return Top + Height; } } // exclusive
@@ -46,16 +46,16 @@ public readonly struct BlockPlacement
 // SpacerRows > 0; spacers don't get a slot mapping.
 public sealed class StackLayout
 {
-	public int Width { get; }
+	public int Width      { get; }
 	public int SpacerRows { get; }
 
-	private readonly List<BlockLayer>      _blocks     = new List<BlockLayer>();
-	private readonly List<BlockPlacement>  _placements = new List<BlockPlacement>();
-	private int                            _totalRows;
+	private readonly List<BlockLayer>     _blocks     = new List<BlockLayer>();
+	private readonly List<BlockPlacement> _placements = new List<BlockPlacement>();
+	private          int                  _totalRows;
 
 	public StackLayout(int width, int spacerRows)
 	{
-		Width = width;
+		Width      = width;
 		SpacerRows = spacerRows;
 	}
 
@@ -72,7 +72,9 @@ public sealed class StackLayout
 
 	// Swaps in a rebuilt block for the same slot when its height is unchanged, leaving every placement
 	// valid — the in-place patch for a content change that didn't move anything. Returns false when the
-	// slot is absent or the height differs, in which case the caller must rebuild the layout.
+	// slot is absent or the height differs, in which case the caller must rebuild the layout. Compared
+	// against the recorded placement, not the old block: a streaming block grows its Screen in place, so
+	// the old and new layers can share one Screen whose height has already moved on.
 	public bool TryReplaceBlock(BlockLayer block)
 	{
 		bool replaced = false;
@@ -80,10 +82,10 @@ public sealed class StackLayout
 		{
 			if (_placements[i].SlotIndex == block.SlotIndex)
 			{
-				if (_blocks[i].Height == block.Height)
+				if (_placements[i].Height == block.Height)
 				{
 					_blocks[i] = block;
-					replaced = true;
+					replaced   = true;
 				}
 				break;
 			}
@@ -144,9 +146,9 @@ public sealed class StackLayout
 		{
 			BlockPlacement p = _placements[i];
 			if (p.Bottom <= viewTop)
-				continue;  // entirely above the window
+				continue; // entirely above the window
 			if (p.Top >= viewBottom)
-				break;      // entirely below; placements are top-ascending, so done
+				break; // entirely below; placements are top-ascending, so done
 
 			// Intersect the block with the window, then map to block-local (srcY) and viewport (dstY) rows.
 			int srcTop    = p.Top > viewTop ? p.Top : viewTop;
@@ -161,7 +163,7 @@ public sealed class StackLayout
 			if (hOffsets != null && hOffsets.TryGetValue(p.SlotIndex, out int off) && blockW > Width)
 			{
 				int maxOff = blockW - Width;
-				srcX = off < 0 ? 0 : (off > maxOff ? maxOff : off);
+				srcX       = off < 0 ? 0 : (off > maxOff ? maxOff : off);
 			}
 
 			viewport.Blit(_blocks[i].Current, 0, dstY, BlendMode.Normal, new Rect(srcX, srcY, Width, rows));

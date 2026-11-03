@@ -320,7 +320,7 @@ internal class ConfigOverlay
 							}
 							row.OvrModalities      = ReadStringList(over["modalities"]);
 							row.OvrEffort          = over["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
-							row.OvrRetainReasoning = over["retainReasoning"]?.GetValue<bool>() ?? false;
+							row.OvrRetainReasoning = over["retainReasoning"]?.GetValue<bool>() ?? true;
 							row.OvrSummaries       = over["reasoningSummaries"]?.GetValue<bool>() ?? true;
 							row.OvrMaxImages       = over["maxImages"]?.GetValue<int>() ?? 0;
 							row.OvrTimeout         = over["requestTimeoutSeconds"]?.GetValue<int>() ?? 0;
@@ -887,7 +887,7 @@ internal class ConfigOverlay
 		row.OvrCostOut         = -1m;
 		row.OvrModalities      = null;
 		row.OvrEffort          = string.Empty;
-		row.OvrRetainReasoning = false;
+		row.OvrRetainReasoning = true;
 		row.OvrSummaries       = true;
 		row.OvrMaxImages       = 0;
 		_dirty                 = true;
@@ -1191,7 +1191,7 @@ internal class ConfigOverlay
 					row.OvrSummaries = true;
 					break;
 				case "retain":
-					row.OvrRetainReasoning = false;
+					row.OvrRetainReasoning = true;
 					break;
 				case "timeout":
 					row.OvrTimeout = 0;
@@ -1344,10 +1344,10 @@ internal class ConfigOverlay
 			}
 			if (!string.IsNullOrEmpty(row.OvrEffort))
 				entry["reasoningEffort"] = row.OvrEffort;
-			if (row.OvrRetainReasoning)
-				entry["retainReasoning"] = true;
-			// Written only when OFF: on is the default, and an absent field is what the agent
-			// rewrites when an endpoint refuses summaries mid-run.
+			// These two are written only when OFF: on is the default for both, and the agent writes them
+			// off itself when an endpoint refuses them mid-run.
+			if (!row.OvrRetainReasoning)
+				entry["retainReasoning"] = false;
 			if (!row.OvrSummaries)
 				entry["reasoningSummaries"] = false;
 			if (row.OvrMaxImages > 0)

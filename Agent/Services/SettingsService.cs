@@ -203,12 +203,12 @@ public class SettingsService
 	}
 
 	// Persists a durable reasoning fact about one model — the effort word chosen with /effort, or a
-	// capability the provider taught us mid-run (an endpoint that refuses thinking summaries, a model
-	// that refuses to reason at all). Only the arguments supplied are written; null leaves that field
-	// as it is. The model is looked up in both tiers, since it may be configured either way.
-	// Returns false when no entry exists to write to: the fact still holds for this run (the registry
-	// applies it in memory), it simply has nowhere on disk to live.
-	public bool SaveModelReasoning(string modelId, string? effort, bool? summaries)
+	// capability the provider taught us mid-run (an endpoint that refuses thinking summaries or its own
+	// reasoning replayed, a model that refuses to reason at all). Only the arguments supplied are
+	// written; null leaves that field as it is. The model is looked up in both tiers, since it may be
+	// configured either way. Returns false when no entry exists to write to: the fact still holds for
+	// this run (the registry applies it in memory), it simply has nowhere on disk to live.
+	public bool SaveModelReasoning(string modelId, string? effort, bool? summaries, bool? retainReasoning)
 	{
 		bool found = false;
 		lock (_writeGate)
@@ -225,6 +225,8 @@ public class SettingsService
 						model.ReasoningEffort = effort;
 					if (summaries.HasValue)
 						model.ReasoningSummaries = summaries.Value;
+					if (retainReasoning.HasValue)
+						model.RetainReasoning = retainReasoning.Value;
 					found = true;
 				}
 			}
@@ -239,6 +241,8 @@ public class SettingsService
 						model.ReasoningEffort = effort;
 					if (summaries.HasValue)
 						model.ReasoningSummaries = summaries.Value;
+					if (retainReasoning.HasValue)
+						model.RetainReasoning = retainReasoning.Value;
 					found = true;
 				}
 			}

@@ -45,8 +45,8 @@ public interface IDisplay
 	// Feeds a /config flow payload (endpoint list, catalog, apply ack) to the picker overlay.
 	void OnConfigFrame(string json);
 
-	// The host folder bound to /workspace; dropped files are staged inside it for the agent.
-	void SetAttachmentRoot(string root);
+	// The host folder holding the session's agent state; dropped files are staged in its attachments.
+	void SetAgentStateDir(string stateDir);
 
 	// Session-pinned send used by multi-part submissions (attachments + text), so a session switch
 	// mid-sequence cannot split the parts across two sessions.

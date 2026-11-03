@@ -17,15 +17,15 @@ using System.Threading.Tasks;
 //
 // This protocol maintains its own separate copy of messages (_native) that are sent to the
 // server each turn. The native state is rebuilt from canonical by Rehydrate and kept in sync
-// through the IProtocolListener events. Thinking is stripped by default because the server
-// should not see unsigned thinking blocks — unless the model is configured with
-// retainReasoning, which the constructor takes and which reverses that for this instance only.
+// through the IProtocolListener events. The model's own thinking is replayed to it when the model is
+// configured with retainReasoning (the default), which the constructor takes; a server that refuses
+// the replayed field turns it off for this instance (see TryDropReplayedReasoning).
 public class ProtocolChatCompletions
 {
-	// Model config: replay this model's reasoning back to it (see ModelConfig.RetainReasoning).
-	// Fixed for the life of the instance because the proxy builds one protocol per model, and it
-	// has to be known at Rehydrate time — the native chain is built before the first turn runs.
-	private readonly bool _retainReasoning;
+	// Model config: replay this model's reasoning back to it (see ModelConfig.RetainReasoning). Taken
+	// at construction because it has to be known at Rehydrate time — the native chain is built before
+	// the first turn runs — and only ever turned off afterwards, when the server refuses the field.
+	private bool _retainReasoning;
 
 	// The reasoning field of the turn most recently parsed off the wire, held verbatim so it can be
 	// replayed in the exact shape the server emitted rather than a normalized rebuild. Set by both
@@ -98,8 +98,8 @@ public class ProtocolChatCompletions
 	// working form is reused on later turns of the same session.
 	private int _toolChoiceMode = 0;
 
-	// Native runtime state: the message chain that will be sent to the server. Thinking blocks
-	// are never included. This is in-memory only and rebuilt from canonical by Rehydrate.
+	// Native runtime state: the message chain that will be sent to the server. Thinking is included
+	// only while _retainReasoning holds. This is in-memory only and rebuilt from canonical by Rehydrate.
 	private readonly JsonArray _native = new JsonArray();
 
 	// The trailing user message carrying media from the current run of tool results. A "tool"
@@ -109,7 +109,7 @@ public class ProtocolChatCompletions
 	// by any other append, which ends the run.
 	private JsonObject? _toolMediaCarrier;
 
-	// Rebuilds the native message chain from canonical. Thinking is intentionally dropped.
+	// Rebuilds the native message chain from canonical. Thinking is carried only when retained.
 	// Called by ProtocolProxy right after creating or switching in.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
@@ -551,6 +551,11 @@ public class ProtocolChatCompletions
 
 				// Over-window only by the output we asked for: the same prompt with a smaller ask will go.
 				if (TryLearnPromptSkew(body, (int)httpResponse.StatusCode, responseBody, model, bundle, logger))
+					continue;
+
+				// Ahead of TryAdaptToError, whose reasoning-effort fallback matches any body that says
+				// "reasoning" and would otherwise take a refused replay for a refused effort.
+				if (TryDropReplayedReasoning((int)httpResponse.StatusCode, responseBody, model, logger))
 					continue;
 
 				bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
@@ -1577,6 +1582,51 @@ httpResponse);
 		return (usage, cost);
 	}
 
+	// The fields this protocol replays a model's reasoning in: reasoning_content (the flattened form and
+	// what most servers emit) and reasoning_details (OpenRouter's structured, signed form).
+	private static readonly string[] ReplayedReasoningFields = { "reasoning_content", "reasoning_details" };
+
+	// A server that refuses the replayed reasoning (a strict hosted API naming the field as unsupported)
+	// teaches that once: the field comes off every message already in the chain, replay stops for this
+	// instance, the model is written back as retainReasoning false, and the request goes again without it.
+	// Only a refusal that names a field the chain actually carries counts, so an unrelated 400 that happens
+	// to mention reasoning is left to the other learners.
+	private bool TryDropReplayedReasoning(int statusCode, string responseBody, LlmModel model, SessionLogger logger)
+	{
+		bool dropped = false;
+		if (_retainReasoning && statusCode >= 400 && statusCode < 500 && statusCode != 429)
+		{
+			string lowerBody = responseBody.ToLowerInvariant();
+			bool   named     = false;
+			foreach (string field in ReplayedReasoningFields)
+				named = named || lowerBody.Contains(field);
+
+			if (named && StripReplayedReasoning())
+			{
+				_retainReasoning = false;
+				logger.Note($"[reasoning] {model.Config.Name} refused its own reasoning replayed; dropped it from the conversation, recorded retainReasoning false, re-sending");
+				_onCapabilityLearned?.Invoke(_configId, null, null, false, null);
+				dropped = true;
+			}
+		}
+		return dropped;
+	}
+
+	// Removes the replayed reasoning fields from every message in the native chain; true if any was there.
+	private bool StripReplayedReasoning()
+	{
+		bool removed = false;
+		foreach (JsonNode? node in _native)
+		{
+			if (node is JsonObject msg)
+			{
+				foreach (string field in ReplayedReasoningFields)
+					removed = msg.Remove(field) || removed;
+			}
+		}
+		return removed;
+	}
+
 	private bool TryAdaptToError(HttpResponseMessage response, string responseBody, bool reasoningConfigured)
 	{
 		int statusCode = (int)response.StatusCode;
@@ -1595,7 +1645,7 @@ httpResponse);
 			// effort now defaults to medium for models nobody configured). Record it so the next run —
 			// and every other session on this model — stops paying a rejected request to find out.
 			if (_reasoningMode == 2)
-				_onCapabilityLearned?.Invoke(_configId, "none", null, null);
+				_onCapabilityLearned?.Invoke(_configId, "none", null, null, null);
 			return true;
 		}
 

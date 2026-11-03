@@ -7,15 +7,18 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// No-op IDisplay for use in tests — suppresses all console output and side-effects.
+// No-op IDisplay for use in tests — suppresses all console output and side-effects. Records the streams it
+// is told have started, so tests can check which slot the display believes is streaming.
 file sealed class NullDisplay : IDisplay
 {
+	public readonly List<(int Slot, FrameType Type)> StreamStarts = new List<(int Slot, FrameType Type)>();
+
 	public void Attach                  (ConversationModel model) { }
 	public void SetStatus               (string text)             { }
 	public void SetStatsInfo            (string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens) { }
 	public void SetActiveTime           (long activeMs)                     { }
 	public void SetCompletions          (IReadOnlyList<string> completions) { }
-	public void OnStreamStart           (int streamIndex, FrameType type)   { }
+	public void OnStreamStart           (int streamIndex, FrameType type)   { StreamStarts.Add((streamIndex, type)); }
 	public void OnStreamChunk           (string chunk)                      { }
 	public void OnStreamEnd             ()                                  { }
 	public void SetAgentBusy            (  bool busy,  long startTick)      { }
@@ -30,7 +33,7 @@ file sealed class NullDisplay : IDisplay
 	public void ClearPendingGhost       (string sessionId)                       { }
 	public void SetPendingGhost         (string sessionId, string[] lines)       { }
 	public void OnConfigFrame           (string json)                            { }
-	public void SetAttachmentRoot       (string root)                            { }
+	public void SetAgentStateDir        (string stateDir)                        { }
 	public void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }
 	public void OnConfigError           (string text)                            { }
 	public bool IsAutoTrackSuppressed   () => false;
@@ -59,6 +62,29 @@ public static class TransportTests
 		TestConversationModelUpdate(ctx);
 		TestConversationModelCollapseMode(ctx);
 		TestAgentTransportProcessing(ctx);
+		TestStreamSurvivesSessionSwitch(ctx);
+	}
+
+	// Auto-track switching away from a streaming session and back must tell the display the stream is still
+	// running; otherwise the block falls back to a full rebuild every frame and becomes collapsible.
+	private static void TestStreamSurvivesSessionSwitch(TestContext ctx)
+	{
+		NullDisplay display = new NullDisplay();
+		BeastApp    app     = new BeastApp(new LaunchDebug(), new List<string>(), display, new ClientLog(false), "beast_test", null);
+
+		ProcessFrame(app,      FrameType.Output, "A",            "hello");
+		ProcessFrame(app, FrameType.StreamStart, "A", StreamTag.Thinking);
+		ProcessFrame(app, FrameType.StreamChunk, "A",      "thinking...");
+		int slot = display.StreamStarts[display.StreamStarts.Count - 1].Slot;
+
+		// Output in B pulls the view over to B; A's next chunk pulls it back.
+		ProcessFrame(app,      FrameType.Output, "B", "subagent says hi");
+		ProcessFrame(app, FrameType.StreamChunk, "A", " more");
+
+		(int lastSlot, FrameType lastType) = display.StreamStarts[display.StreamStarts.Count - 1];
+		ctx.AssertEqual(2, display.StreamStarts.Count, "SessionSwitch: returning to a streaming session re-announces its stream");
+		ctx.AssertEqual(              slot, lastSlot, "SessionSwitch: same slot");
+		ctx.AssertEqual(FrameType.Thinking, lastType, "SessionSwitch: same stream type");
 	}
 
 	// ---- Frame wire format ----

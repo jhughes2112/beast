@@ -618,7 +618,7 @@ public static class ProtocolConformanceTests
 		registry.RestoreModels(models);
 
 		List<int>           learned = new List<int>();
-		ModelCapabilitySink sink    = (id, effort, summaries, maxImages) =>
+		ModelCapabilitySink sink    = (id, effort, summaries, retainReasoning, maxImages) =>
 		{
 			if (maxImages.HasValue)
 				learned.Add(maxImages.Value);

@@ -91,6 +91,7 @@ public class Program
 			CharWidthTests.TestPathMarkers(ctx);
 			HostCommandRunnerTests.Test(ctx);
 			SessionTests.Test(ctx);
+			MarkdownBlockTests.Test(ctx);
 			Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
 		}

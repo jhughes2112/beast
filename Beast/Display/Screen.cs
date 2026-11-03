@@ -15,7 +15,7 @@ public readonly struct Rgb
 		B = b;
 	}
 
-	public static Rgb Black => new Rgb(0, 0, 0);
+	public static Rgb Black => new Rgb(  0,   0,   0);
 	public static Rgb White => new Rgb(255, 255, 255);
 
 	// Per-channel multiply by [0..1+] factor, saturating at 255.
@@ -71,16 +71,16 @@ public enum CellStyle : byte
 // A single terminal cell. Ch is a printable char (space for blank). Fg/Bg null means transparent.
 public readonly struct Cell
 {
-	public readonly char       Ch;
-	public readonly Rgb?       Fg;
-	public readonly Rgb?       Bg;
-	public readonly CellStyle  Style;
+	public readonly char      Ch;
+	public readonly Rgb?      Fg;
+	public readonly Rgb?      Bg;
+	public readonly CellStyle Style;
 
 	public Cell(char ch, Rgb? fg, Rgb? bg, CellStyle style)
 	{
-		Ch = ch;
-		Fg = fg;
-		Bg = bg;
+		Ch    = ch;
+		Fg    = fg;
+		Bg    = bg;
 		Style = style;
 	}
 
@@ -115,7 +115,7 @@ public readonly struct Rect
 		H = h < 0 ? 0 : h;
 	}
 
-	public int Right { get { return X + W; } }
+	public int Right  { get { return X + W; } }
 	public int Bottom { get { return Y + H; } }
 
 	public bool Contains(int px, int py)
@@ -156,10 +156,12 @@ public enum BlendMode
 // by blitting it onto another Screen.
 public sealed class Screen
 {
-	public int W { get; }
-	public int H { get; }
+	public int W { get { return _w; } }
+	public int H { get { return _h; } }
 
-	private readonly Cell[] _cells;
+	private int    _w;
+	private int    _h;
+	private Cell[] _cells;
 
 	public Screen(int w, int h, Cell fill)
 	{
@@ -167,8 +169,8 @@ public sealed class Screen
 			w = 0;
 		if (h < 0)
 			h = 0;
-		W = w;
-		H = h;
+		_w     = w;
+		_h     = h;
 		_cells = new Cell[w * h];
 		if (w > 0 && h > 0)
 		{
@@ -178,6 +180,30 @@ public sealed class Screen
 	}
 
 	public Screen(int w, int h) : this(w, h, Cell.Transparent) { }
+
+	// Changes the size in place, keeping the cells that still fit and filling the new ones. Spare capacity
+	// is kept, so a block that grows a row at a time (a streaming message) does not copy itself per row.
+	public void Resize(int w, int h, Cell fill)
+	{
+		if (w == _w && w * h <= _cells.Length)
+		{
+			for (int i = _h * w; i < h * w; i++)
+				_cells[i] = fill;
+		}
+		else
+		{
+			Cell[] cells = new Cell[Math.Max(w * h, w * h * 3 / 2)];
+			for (int i = 0; i < cells.Length; i++)
+				cells[i] = fill;
+			int keepW = Math.Min(w, _w);
+			int keepH = Math.Min(h, _h);
+			for (int y = 0; y < keepH; y++)
+				Array.Copy(_cells, y * _w, cells, y * w, keepW);
+			_cells = cells;
+		}
+		_w = w;
+		_h = h;
+	}
 
 	public Cell Get(int x, int y)
 	{
@@ -217,14 +243,14 @@ public sealed class Screen
 		if (y < 0 || y >= H)
 			return x;
 		int rowBase = y * W;
-		int cx = x;
+		int cx      = x;
 		foreach (char c in text)
 		{
 			// Surrogate halves can't occupy a single-char cell; placeholder keeps columns aligned.
 			char glyph = char.IsSurrogate(c) ? '?' : c;
-			int width = CharWidth.Of(glyph);
+			int  width = CharWidth.Of(glyph);
 			if (width == 0)
-				continue;               // zero-width combining mark: consumes no column
+				continue; // zero-width combining mark: consumes no column
 			if (cx >= W)
 				break;
 			// A wide glyph at the right edge has no room for its second column; pad with a space instead.
@@ -247,7 +273,7 @@ public sealed class Screen
 			int rowBase = y * W;
 			for (int x = clipped.X; x < clipped.Right; x++)
 			{
-				Cell existing = _cells[rowBase + x];
+				Cell existing       = _cells[rowBase + x];
 				_cells[rowBase + x] = new Cell(existing.Ch == '\0' ? ' ' : existing.Ch, existing.Fg, bg, existing.Style);
 			}
 		}
@@ -275,8 +301,8 @@ public sealed class Screen
 			int syRow = (srcOffsetY + row) * src.W;
 			for (int col = 0; col < dr.W; col++)
 			{
-				Cell s = src._cells[syRow + (srcOffsetX + col)];
-				int di = dyRow + (dr.X + col);
+				Cell s     = src._cells[syRow + (srcOffsetX + col)];
+				int  di    = dyRow + (dr.X + col);
 				_cells[di] = BlendCell(_cells[di], s, mode);
 			}
 		}
@@ -292,10 +318,10 @@ public sealed class Screen
 		if (src.IsTransparent)
 			return dst;
 
-		char outCh        = src.Ch != '\0' ? src.Ch : dst.Ch;
+		char      outCh    = src.Ch != '\0' ? src.Ch : dst.Ch;
 		CellStyle outStyle = src.Style != CellStyle.None ? src.Style : dst.Style;
-		Rgb? outFg;
-		Rgb? outBg;
+		Rgb?      outFg;
+		Rgb?      outBg;
 
 		if (mode == BlendMode.Normal)
 		{

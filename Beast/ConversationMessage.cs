@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 
 
 // Describes a session entry for display in the session tree overlay.
@@ -32,13 +33,58 @@ public enum CollapseMode
 	Quiet      // everything collapsed on arrival
 }
 
-// A single slot in the conversation display. Index is stable; content is overwritten in place for streaming.
+// A single slot in the conversation display. Index is stable; content is overwritten in place, or appended to
+// while it streams. Appending never copies what is already there, so a long stream costs each chunk only its
+// own length; the whole text is materialized only when something reads Content.
 public class DisplayMessage
 {
 	public int       Index     { get; }
 	public FrameType Type      { get; set; }
-	public string    Content   { get; set; }
 	public bool      Collapsed { get; set; }
+
+	private readonly StringBuilder _text = new StringBuilder();
+	private          string?       _content;
+	private          int           _generation;
+
+	// The whole text. Setting it replaces the text (a no-op when it is unchanged); reading it after appends
+	// builds the string once and keeps it until the next append.
+	public string Content
+	{
+		get
+		{
+			_content ??= _text.ToString();
+			return _content;
+		}
+		set
+		{
+			if (!string.Equals(value, Content, StringComparison.Ordinal))
+			{
+				_text.Clear();
+				_text.Append(value);
+				_content = value;
+				_generation++;
+			}
+		}
+	}
+
+	// Moves on whenever the text is replaced rather than appended to, so a renderer that has consumed the
+	// text so far can tell growth from a rewrite without comparing it.
+	public int Generation => _generation;
+
+	public int Length => _text.Length;
+
+	public void Append(string chunk)
+	{
+		_text.Append(chunk);
+		_content = null;
+	}
+
+	// The text from start to the end: what arrived since a reader last consumed start characters.
+	public string Since(int start) => _text.ToString(start, _text.Length - start);
+
+	// Up to count characters from the start of the text.
+	public string Head(int count) => _text.ToString(0, Math.Min(count, _text.Length));
+
 	// When this is a ToolCall slot, holds the paired ToolResponse stdout (or null if not yet received).
 	public string? PairedResponseContent { get; set; }
 	// When this is a ToolCall slot, holds the paired ToolResponse stderr (or null if not yet received).
@@ -54,8 +100,9 @@ public class DisplayMessage
 	{
 		Index     = index;
 		Type      = type;
-		Content   = content;
 		Collapsed = false;
+		_text.Append(content);
+		_content = content;
 	}
 }
 
@@ -172,6 +219,14 @@ public class ConversationModel
 			msg.Content = string.Empty;
 		}
 
+		MessageUpdated?.Invoke(msg);
+	}
+
+	// Appends a streamed chunk to an existing slot, keeping its type and collapse state.
+	public void Append(int index, string chunk)
+	{
+		DisplayMessage msg = _messages[index];
+		msg.Append(chunk);
 		MessageUpdated?.Invoke(msg);
 	}
 

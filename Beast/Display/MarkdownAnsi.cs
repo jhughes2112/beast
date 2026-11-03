@@ -17,8 +17,25 @@ public readonly struct RenderLine
 
 	public RenderLine(string text, bool noWrap)
 	{
-		Text = text;
+		Text   = text;
 		NoWrap = noWrap;
+	}
+}
+
+// One top-level markdown block's rendered lines. Start is its offset in the parsed text (negative for a
+// block Markdig synthesizes with no source position); SectionIndentAfter is the heading indent in force
+// after it, which the next block renders under.
+public readonly struct RenderedBlock
+{
+	public readonly int              Start;
+	public readonly List<RenderLine> Lines;
+	public readonly string           SectionIndentAfter;
+
+	public RenderedBlock(int start, List<RenderLine> lines, string sectionIndentAfter)
+	{
+		Start              = start;
+		Lines              = lines;
+		SectionIndentAfter = sectionIndentAfter;
 	}
 }
 
@@ -40,42 +57,70 @@ public static class MarkdownAnsi
 	// the caller wraps the wrappable lines to its own width.
 	public static List<RenderLine> Render(string markdown, FrameType type, int w)
 	{
-		List<RenderLine> lines = new List<RenderLine>();
-		if (string.IsNullOrEmpty(markdown))
-			return lines;
-
-		MarkdownDocument doc = Markdown.Parse(markdown, Pipeline);
-		RenderTopLevel(doc, lines, type, w);
-		// Trim trailing blank lines.
-		while (lines.Count > 0 && string.IsNullOrEmpty(lines[lines.Count - 1].Text))
-			lines.RemoveAt(lines.Count - 1);
+		List<RenderedBlock> blocks = RenderTopLevelBlocks(markdown, type, w, "");
+		List<RenderLine>    lines  = new List<RenderLine>();
+		AppendBlocks(blocks, 0, blocks.Count, false, lines);
+		TrimTrailingBlank(lines);
 		return lines;
 	}
 
-	// Top-level pass: tracks the current heading section so blocks beneath a heading are indented
-	// two spaces per heading level. A heading itself renders at its parent level's indent; the body
-	// that follows it (until the next heading of equal-or-shallower level) is pushed in one level.
-	private static void RenderTopLevel(MarkdownDocument doc, List<RenderLine> lines, FrameType type, int w)
+	// Parses markdown and renders each top-level block separately, starting under the given heading section
+	// indent. Lines carry no blank separators between blocks; AppendBlocks places them. This is what lets a
+	// message keep the blocks that have closed and re-parse only the one still open.
+	public static List<RenderedBlock> RenderTopLevelBlocks(string markdown, FrameType type, int w, string sectionIndent)
 	{
-		string sectionIndent = "";
-		bool first = true;
+		List<RenderedBlock> blocks = new List<RenderedBlock>();
+		MarkdownDocument    doc    = Markdown.Parse(markdown, Pipeline);
+		string              indent = sectionIndent;
 		foreach (Block block in doc)
 		{
-			if (!first)
-				lines.Add(new RenderLine("", false));
-			first = false;
-
-			if (block is HeadingBlock heading)
-			{
-				string headIndent = new string(' ', Math.Max(0, heading.Level - 1) * 2);
-				RenderBlock(block, lines, headIndent, type, w);
-				sectionIndent = new string(' ', heading.Level * 2);
-			}
-			else
-			{
-				RenderBlock(block, lines, sectionIndent, type, w);
-			}
+			List<RenderLine> lines = new List<RenderLine>();
+			indent                 = RenderTopLevelBlock(block, lines, indent, type, w);
+			// A block Markdig synthesizes (a link reference definition group) carries the empty span
+			// (0, -1); report it as unpositioned rather than as sitting at the start of the text.
+			int start = block.Span.End >= block.Span.Start ? block.Span.Start : -1;
+			blocks.Add(new RenderedBlock(start, lines, indent));
 		}
+		return blocks;
+	}
+
+	// Appends the lines of blocks [from, to) with a blank line between top-level blocks — and before the
+	// first of them too when separateFirst, because a block already rendered precedes it.
+	public static void AppendBlocks(List<RenderedBlock> blocks, int from, int to, bool separateFirst, List<RenderLine> lines)
+	{
+		for (int i = from; i < to; i++)
+		{
+			if (i > from || separateFirst)
+				lines.Add(new RenderLine("", false));
+			lines.AddRange(blocks[i].Lines);
+		}
+	}
+
+	// Trailing blank lines are trimmed off the end of a message.
+	public static void TrimTrailingBlank(List<RenderLine> lines)
+	{
+		while (lines.Count > 0 && string.IsNullOrEmpty(lines[lines.Count - 1].Text))
+			lines.RemoveAt(lines.Count - 1);
+	}
+
+	// Renders one top-level block under the current heading section and returns the section indent in
+	// force after it. Blocks beneath a heading are indented two spaces per heading level: a heading itself
+	// renders at its parent level's indent, and the body that follows it (until the next heading of
+	// equal-or-shallower level) is pushed in one level.
+	private static string RenderTopLevelBlock(Block block, List<RenderLine> lines, string sectionIndent, FrameType type, int w)
+	{
+		string after = sectionIndent;
+		if (block is HeadingBlock heading)
+		{
+			string headIndent = new string(' ', Math.Max(0, heading.Level - 1) * 2);
+			RenderBlock(block, lines, headIndent, type, w);
+			after = new string(' ', heading.Level * 2);
+		}
+		else
+		{
+			RenderBlock(block, lines, sectionIndent, type, w);
+		}
+		return after;
 	}
 
 	private static void RenderBlocks(IEnumerable<Block> blocks, List<RenderLine> lines, string indent, FrameType type, int w)
@@ -94,8 +139,8 @@ public static class MarkdownAnsi
 	{
 		if (block is HeadingBlock heading)
 		{
-			string text = InlinesToString(heading.Inline);
-			int level = heading.Level;
+			string text  = InlinesToString(heading.Inline);
+			int    level = heading.Level;
 			// No literal '#' markers — hierarchy is conveyed by the section indent and a muted color
 			// per level (kept calm for a medium-dark background). H1 also carries an underline rule.
 			string code = level == 1 ? Codes.H1 : level == 2 ? Codes.H2 : Codes.H3;
@@ -110,7 +155,7 @@ public static class MarkdownAnsi
 		else if (block is FencedCodeBlock fenced)
 		{
 			string lang = fenced.Info ?? "";
-			string raw = fenced.Lines.ToString();
+			string raw  = fenced.Lines.ToString();
 			RenderCodeBlock(raw, lang, lines, indent, w);
 		}
 		else if (block is CodeBlock code)
@@ -125,18 +170,18 @@ public static class MarkdownAnsi
 			{
 				if (item is ListItemBlock listItem)
 				{
-					string bullet = list.IsOrdered ? $"{ordinal++}. " : "• ";
-					bool firstChild = true;
+					string bullet     = list.IsOrdered ? $"{ordinal++}. " : "• ";
+					bool   firstChild = true;
 					foreach (Block child in listItem)
 					{
 						string childIndent = firstChild ? indent + bullet : indent + new string(' ', bullet.Length);
-						firstChild = false;
+						firstChild         = false;
 						if (child is ParagraphBlock cp)
 						{
 							// First wrapped line carries the bullet (in childIndent); any line breaks
 							// inside the item continue under the bullet's hanging indent.
 							string hangingIndent = indent + new string(' ', bullet.Length);
-							bool firstSegment = true;
+							bool   firstSegment  = true;
 							foreach (string segment in InlinesToAnsi(cp.Inline, type).Split('\n'))
 							{
 								lines.Add(new RenderLine((firstSegment ? childIndent : hangingIndent) + segment + Codes.Reset, false));
@@ -160,8 +205,8 @@ public static class MarkdownAnsi
 			// Start the rule flush with the block's own indent (not pushed in further), and pull the right end
 			// in by the same indent width so it sits symmetrically inside the block rather than running the full
 			// width of the screen. Plain (non-dim) grey so the rule sits on the block's own background.
-			int ruleLen = Math.Max(4, w - indent.Length * 2);
-			string rule = new string('─', ruleLen);
+			int    ruleLen = Math.Max(4, w - indent.Length * 2);
+			string rule    = new string('─', ruleLen);
 			lines.Add(new RenderLine(indent + Codes.Border + rule + Codes.Reset, true));
 		}
 		else if (block is Table table)
@@ -180,16 +225,16 @@ public static class MarkdownAnsi
 	private static void RenderTable(Table table, List<RenderLine> lines, string indent, FrameType type, int w)
 	{
 		// First pass: extract cell text and measure column widths.
-		List<List<string>> rows = new List<List<string>>();
-		List<bool> isHeader = new List<bool>();
-		List<int> colWidths = new List<int>();
+		List<List<string>> rows      = new List<List<string>>();
+		List<bool>         isHeader  = new List<bool>();
+		List<int>          colWidths = new List<int>();
 
 		foreach (Block rowBlock in table)
 		{
 			if (rowBlock is not TableRow row)
 				continue;
 			List<string> cells = new List<string>();
-			int ci = 0;
+			int          ci    = 0;
 			foreach (Block cellBlock in row)
 			{
 				if (cellBlock is not TableCell cell)
@@ -240,11 +285,11 @@ public static class MarkdownAnsi
 			List<string> cells = rows[r];
 
 			// Wrap every cell to its column width up front and find the tallest cell — that is the row height.
-			List<List<string>> wrapped = new List<List<string>>();
-			int rowHeight = 1;
+			List<List<string>> wrapped   = new List<List<string>>();
+			int                rowHeight = 1;
 			for (int ci = 0; ci < colWidths.Count; ci++)
 			{
-				string cell = ci < cells.Count ? cells[ci] : string.Empty;
+				string       cell      = ci < cells.Count ? cells[ci] : string.Empty;
 				List<string> cellLines = AnsiString.WordWrap(cell, colWidths[ci]);
 				if (cellLines.Count == 0)
 					cellLines.Add(string.Empty);
@@ -263,9 +308,9 @@ public static class MarkdownAnsi
 				for (int ci = 0; ci < colWidths.Count; ci++)
 				{
 					List<string> cellLines = wrapped[ci];
-					string frag = sub < cellLines.Count ? cellLines[sub] : string.Empty;
-					int vis = AnsiString.VisibleLength(frag);
-					int pad = colWidths[ci] - vis;
+					string       frag      = sub < cellLines.Count ? cellLines[sub] : string.Empty;
+					int          vis       = AnsiString.VisibleLength(frag);
+					int          pad       = colWidths[ci] - vis;
 					if (pad < 0)
 						pad = 0;
 					sb.Append(' ');
@@ -337,29 +382,31 @@ public static class MarkdownAnsi
 	// at full width.
 	private static void RenderCodeBlock(string raw, string lang, List<RenderLine> lines, string indent, int w)
 	{
-		string[] codeLines = raw.TrimEnd('\n', '\r').Split('\n');
+		string[] codeLines   = raw.TrimEnd('\n', '\r').Split('\n');
 		string[] highlighted = new string[codeLines.Length];
-		int[] visLens = new int[codeLines.Length];
+		int[]    visLens     = new int[codeLines.Length];
 
 		// First pass: highlight and measure.
 		int maxContent = 0;
 		for (int i = 0; i < codeLines.Length; i++)
 		{
 			highlighted[i] = SyntaxHighlight(codeLines[i].TrimEnd('\r'), lang);
-			visLens[i] = codeLines[i].TrimEnd('\r').Length;
+			// Display columns, not chars: a wide glyph (CJK, emoji) fills two cells, so counting it as one
+			// over-pads the line and pushes the closing border out a column per wide glyph.
+			visLens[i] = AnsiString.VisibleLength(codeLines[i].TrimEnd('\r'));
 			if (visLens[i] > maxContent)
 				maxContent = visLens[i];
 		}
 
 		// Box width = the natural content width, clamped only by the overscan (the viewport plus headroom)
 		// so wide code keeps its true width and is reachable by horizontal scroll instead of being truncated.
-		int maxBox = Math.Max(1, w + MaxOverscan - indent.Length - 2);
+		int maxBox     = Math.Max(1, w + MaxOverscan - indent.Length - 2);
 		int boxContent = Math.Min(maxContent, maxBox);
 		if (boxContent < 1)
 			boxContent = 1;
 
-		string labelSuffix = !string.IsNullOrEmpty(lang) ? $" {lang} " : "";
-		int topFillLen = Math.Max(0, boxContent - labelSuffix.Length);
+		string labelSuffix  = !string.IsNullOrEmpty(lang) ? $" {lang} " : "";
+		int    topFillLen   = Math.Max(0, boxContent - labelSuffix.Length);
 		string topBorder    = Codes.Border + "╭" + labelSuffix + new string('─', topFillLen) + "╮" + Codes.Reset;
 		string bottomBorder = Codes.Border + "╰" + new string('─', boxContent) + "╯" + Codes.Reset;
 
@@ -369,8 +416,8 @@ public static class MarkdownAnsi
 		for (int i = 0; i < codeLines.Length; i++)
 		{
 			// Truncate visible content to boxContent chars.
-			string hl = AnsiString.TruncateVisible(highlighted[i], boxContent);
-			int pad = Math.Max(0, boxContent - Math.Min(visLens[i], boxContent));
+			string hl  = AnsiString.TruncateVisible(highlighted[i], boxContent);
+			int    pad = Math.Max(0, boxContent - Math.Min(visLens[i], boxContent));
 			lines.Add(new RenderLine(indent + Codes.Border + "│" + Codes.Reset + Codes.CodeBg + hl + Codes.CodeBg + new string(' ', pad) + Codes.Reset + Codes.Border + "│" + Codes.Reset, true));
 		}
 
@@ -493,11 +540,11 @@ public static class MarkdownAnsi
 		return type switch
 		{
 			FrameType.Thinking => Codes.Thinking,
-			FrameType.Tool => Codes.Tool,
-			FrameType.System => Codes.System,
-			FrameType.User => Codes.User,
-			FrameType.Error => Codes.Error,
-			_ => Codes.Output
+			FrameType.Tool     => Codes.Tool,
+			FrameType.System   => Codes.System,
+			FrameType.User     => Codes.User,
+			FrameType.Error    => Codes.Error,
+			_                  => Codes.Output
 		};
 	}
 
@@ -524,9 +571,9 @@ public static class MarkdownAnsi
 		if (string.IsNullOrWhiteSpace(text))
 			return false;
 
-		string[] lines = text.Replace("\r\n", "\n").Split('\n');
-		int signals = 0;
-		bool fence = false;
+		string[] lines   = text.Replace("\r\n", "\n").Split('\n');
+		int      signals = 0;
+		bool     fence   = false;
 
 		foreach (string raw in lines)
 		{
@@ -535,7 +582,7 @@ public static class MarkdownAnsi
 			if (line.StartsWith("```"))
 			{
 				signals += 2;
-				fence = !fence;
+				fence    = !fence;
 				continue;
 			}
 			if (fence)
@@ -614,7 +661,7 @@ public static class MarkdownAnsi
 			int tick = line.IndexOf('`');
 			while (tick >= 0)
 			{
-				int p = tick + 1;
+				int  p          = tick + 1;
 				bool sawContent = false;
 				while (p < line.Length && line[p] != '`')
 				{
@@ -678,9 +725,9 @@ public static class MarkdownAnsi
 	// Highlights a single line using the dark-gray code-block background (for markdown fenced blocks).
 	internal static string SyntaxHighlight(string line, string lang)
 	{
-		bool isClike = lang is "c" or "c#" or "csharp" or "cs" or "cpp" or "java" or "javascript" or "js" or "ts" or "typescript" or "go" or "rust" or "swift" or "kotlin";
+		bool isClike  = lang is "c" or "c#" or "csharp" or "cs" or "cpp" or "java" or "javascript" or "js" or "ts" or "typescript" or "go" or "rust" or "swift" or "kotlin";
 		bool isPython = lang is "python" or "py";
-		bool isBash = lang is "bash" or "sh" or "shell" or "powershell" or "ps1";
+		bool isBash   = lang is "bash" or "sh" or "shell" or "powershell" or "ps1";
 
 		if (!isClike && !isPython && !isBash)
 			return Codes.CodeText + line;
@@ -700,13 +747,13 @@ public static class MarkdownAnsi
 	private static string TokenizeLine(string line, HashSet<string> keywords, string lang)
 	{
 		StringBuilder sb = new StringBuilder();
-		int i = 0;
+		int           i  = 0;
 
 		// Full-line comment detection.
-		string trimmed = line.TrimStart();
-		bool isBash = lang is "bash" or "sh" or "shell" or "powershell" or "ps1";
-		bool isClike = !isBash && lang != "python" && lang != "py";
-		bool isPython = lang is "python" or "py";
+		string trimmed  = line.TrimStart();
+		bool   isBash   = lang is "bash" or "sh" or "shell" or "powershell" or "ps1";
+		bool   isClike  = !isBash && lang != "python" && lang != "py";
+		bool   isPython = lang is "python" or "py";
 
 		if ((isClike && trimmed.StartsWith("//")) || (isBash && trimmed.StartsWith("#")) || (isPython && trimmed.StartsWith("#")))
 			return Codes.Comment + line + Codes.Reset;
@@ -721,7 +768,7 @@ public static class MarkdownAnsi
 			if (c == '"' || c == '\'' || c == '`')
 			{
 				char quote = c;
-				int start = i;
+				int  start = i;
 				i++;
 				while (i < line.Length)
 				{
@@ -796,38 +843,38 @@ public static class MarkdownAnsi
 
 	private static class Codes
 	{
-		public const string Reset      = "\x1b[0m";
-		public const string Bold       = "\x1b[1m";
-		public const string Italic     = "\x1b[3m";
+		public const string Reset  = "\x1b[0m";
+		public const string Bold   = "\x1b[1m";
+		public const string Italic = "\x1b[3m";
 
 		// Heading colors — desaturated blue tones that read well on the dark slate background without
 		// shouting. H1 also carries an underline rule.
-		public const string H1         = "\x1b[1m\x1b[4m\x1b[38;2;124;170;214m";
-		public const string H2         = "\x1b[1m\x1b[38;2;120;166;190m";
-		public const string H3         = "\x1b[1m\x1b[38;2;138;160;196m";
+		public const string H1 = "\x1b[1m\x1b[4m\x1b[38;2;124;170;214m";
+		public const string H2 = "\x1b[1m\x1b[38;2;120;166;190m";
+		public const string H3 = "\x1b[1m\x1b[38;2;138;160;196m";
 
 		// These "base" colors are re-applied after every inline span (bold, code, link) and at the start of
 		// each word-wrapped continuation line, so each must equal the block's own base foreground — otherwise
 		// a paragraph visibly shifts color the moment it hits its first inline element or wraps to a new line.
-		public const string Output     = "\x1b[38;2;206;206;210m";    // matches Palette.Silver (Output base fg)
-		public const string Thinking   = "\x1b[3m\x1b[38;2;128;128;132m"; // matches Palette.ThinkingFg (no dim — block is already italic)
-		public const string Tool       = "\x1b[38;2;126;192;196m";    // calm teal
-		public const string System     = "\x1b[38;2;204;140;82m";     // soft amber
-		public const string User       = "\x1b[38;2;244;244;246m";    // matches Palette.BrightUser (User base fg)
-		public const string Error      = "\x1b[38;2;214;102;102m";    // softened red
+		public const string Output   = "\x1b[38;2;206;206;210m";        // matches Palette.Silver (Output base fg)
+		public const string Thinking = "\x1b[3m\x1b[38;2;128;128;132m"; // matches Palette.ThinkingFg (no dim — block is already italic)
+		public const string Tool     = "\x1b[38;2;126;192;196m";        // calm teal
+		public const string System   = "\x1b[38;2;204;140;82m";         // soft amber
+		public const string User     = "\x1b[38;2;244;244;246m";        // matches Palette.BrightUser (User base fg)
+		public const string Error    = "\x1b[38;2;214;102;102m";        // softened red
 
-		public const string InlineCode = "\x1b[38;2;212;182;120m";    // soft gold
-		public const string DarkBg     = "\x1b[48;5;236m";            // background for markdown code blocks
+		public const string InlineCode = "\x1b[38;2;212;182;120m"; // soft gold
+		public const string DarkBg     = "\x1b[48;5;236m";         // background for markdown code blocks
 		public const string CodeBg     = "\x1b[38;2;206;206;210m\x1b[48;5;236m";
 		public const string CodeText   = "\x1b[38;2;210;212;216m\x1b[48;5;236m";
-		public const string Keyword    = "\x1b[38;2;124;170;214m\x1b[48;5;236m";   // soft blue
-		public const string StringLit  = "\x1b[38;2;152;186;130m\x1b[48;5;236m";   // soft green
-		public const string Number     = "\x1b[38;2;206;160;110m\x1b[48;5;236m";   // soft amber
+		public const string Keyword    = "\x1b[38;2;124;170;214m\x1b[48;5;236m"; // soft blue
+		public const string StringLit  = "\x1b[38;2;152;186;130m\x1b[48;5;236m"; // soft green
+		public const string Number     = "\x1b[38;2;206;160;110m\x1b[48;5;236m"; // soft amber
 		public const string Comment    = "\x1b[38;2;142;142;146m\x1b[48;5;236m\x1b[3m";
 
-		public const string LinkText   = "\x1b[38;2;124;170;214m";                 // visible link text — blue, not underlined (only the URL is)
-		public const string LinkUrl    = "\x1b[38;2;158;160;166m";                 // the parenthesized URL — medium grey, no dim so its background matches the block
-		public const string DimGrey    = "\x1b[2m\x1b[38;2;142;142;146m";
-		public const string Border     = "\x1b[38;2;108;108;114m";
+		public const string LinkText = "\x1b[38;2;124;170;214m"; // visible link text — blue, not underlined (only the URL is)
+		public const string LinkUrl  = "\x1b[38;2;158;160;166m"; // the parenthesized URL — medium grey, no dim so its background matches the block
+		public const string DimGrey  = "\x1b[2m\x1b[38;2;142;142;146m";
+		public const string Border   = "\x1b[38;2;108;108;114m";
 	}
 }

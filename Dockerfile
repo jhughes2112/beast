@@ -227,9 +227,9 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
     && ln -s /root/.local/bin/claude /usr/local/bin/claude
 
 # The unprivileged user every model-driven process runs as (bash, readonly_bash, ls). The agent stays
-# root: it reads the API keys under /root (0700, so this user cannot), runs commit_and_rebase, and owns
-# the workspace's .beast state, the repository's hooks and config, and the main checkout, which the
-# agent's startup lockdown makes root-only. Its home is where user-level installs land — pip falls
+# root: it reads the API keys under /root (0700, so this user cannot), keeps its own state (conversations,
+# logs, staged attachments) under /root/.beast-state, runs commit_and_rebase, and owns the repository's
+# hooks and config and the main checkout, which the agent's startup lockdown makes root-only. Its home is where user-level installs land — pip falls
 # back to --user when site-packages is not writable (the config allows that on Ubuntu's externally
 # managed Python), npm installs globals under ~/.npm-global, and cargo/go/dotnet tools under ~/.
 # apt is not available to it; the agent's apt_install tool installs packages as root instead.
