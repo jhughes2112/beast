@@ -48,6 +48,26 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
+REM Install to %USERPROFILE%\.local\bin, where Claude Code's installer also puts claude, so it is usually on
+REM the PATH already. A running beast.exe can't be overwritten but can be renamed, so the old one is moved aside.
+set INSTALL_DIR=%USERPROFILE%\.local\bin
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+if exist "%INSTALL_DIR%\beast.exe.old" del /f /q "%INSTALL_DIR%\beast.exe.old" >nul 2>&1
+if exist "%INSTALL_DIR%\beast.exe" move /y "%INSTALL_DIR%\beast.exe" "%INSTALL_DIR%\beast.exe.old" >nul
+copy /y bin\beast.exe "%INSTALL_DIR%\beast.exe" >nul
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Could not install %INSTALL_DIR%\beast.exe
+    popd
+    exit /b 1
+)
+echo Installed %INSTALL_DIR%\beast.exe
+echo ;%PATH%; | find /i ";%INSTALL_DIR%;" >nul
+if %ERRORLEVEL% neq 0 (
+    echo NOTE: %INSTALL_DIR% is not on your PATH. Add it under Settings, System, About, Advanced system
+    echo       settings, Environment Variables, then open a new terminal.
+)
+echo.
+
 REM Build Docker image (contains Agent at /app/Agent as entrypoint). docker build targets the Docker VM's
 REM own CPU, so the image is amd64 or arm64 to match this machine.
 echo ============================================
@@ -68,7 +88,7 @@ echo Build Complete!
 echo ============================================
 echo.
 echo Outputs:
-echo   %CD%\beast.exe  (%BEAST_RID%)
+echo   %INSTALL_DIR%\beast.exe  (%BEAST_RID%, also in %CD%\bin)
 echo   Docker image: beastagent:latest  (entrypoint: /app/Agent)
 echo ============================================
 

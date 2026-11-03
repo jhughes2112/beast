@@ -20,8 +20,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-REM Every platform publishes to the same beast.exe / beast beside this script, each overwriting the last, so
-REM this machine's own runtime identifier goes last and the beast.exe left behind is the one that runs here.
+REM Every platform publishes to the same bin\beast.exe or bin\beast, each overwriting the last, so
+REM this machine's own runtime identifier goes last and the bin\beast.exe left behind is the one that runs here.
 set HOST_ARCH=%PROCESSOR_ARCHITECTURE%
 if defined PROCESSOR_ARCHITEW6432 set HOST_ARCH=%PROCESSOR_ARCHITEW6432%
 if /i "%HOST_ARCH%"=="ARM64" (
@@ -71,8 +71,8 @@ echo Build-All Complete!
 echo ============================================
 echo.
 echo Outputs:
-echo   %CD%\beast.exe  (this machine's Windows build)
-echo   %CD%\beast      (last of the macOS/Linux builds; every platform was published and verified to build)
+echo   %CD%\bin\beast.exe  (this machine's Windows build)
+echo   %CD%\bin\beast      (last of the macOS/Linux builds; every platform was published and verified to build)
 echo   Docker images: beastagent:latest, beastagent:linux-amd64, beastagent:linux-arm64
 echo ============================================
 

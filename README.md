@@ -15,7 +15,7 @@ Each Beast instance run manages a workflow of LLM agents **sandboxed in Docker**
 **Getting Started:** 
 1. Install Docker Desktop.  
 2. Run `build.bat` (Windows) or `./build.sh` (Mac, Linux)
-3. Move the output `beast.exe` or `beast` executable somewhere accessible by your PATH
+3. The build installs `beast` to `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows), the same place Claude Code installs `claude`. If that folder is not on your PATH yet, the build says so; add it
 4. cd /wherever/you/want/to/work
 5. beast
  

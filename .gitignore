@@ -6,10 +6,7 @@ package-lock.json
 # Build results
 *.exe
 *.dll
-# The macOS/Linux beast executable the build scripts publish beside themselves (beast.exe is covered above).
-# Git matches case-insensitively on Windows, so the Beast/ source folder must be re-included explicitly.
-/beast
-!/Beast/
+# The beast / beast.exe executable the build scripts publish to bin/ is covered by [Bb]in/ below.
 *.obj
 [Dd]ebug/
 [Dd]ebugPublic/
