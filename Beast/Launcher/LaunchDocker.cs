@@ -284,8 +284,9 @@ public class LaunchDocker : ILauncher
 			env.Add($"GIT_COMMITTER_NAME={gitName}");
 			env.Add($"GIT_COMMITTER_EMAIL={gitEmail}");
 		}
-		else
+		else if (!_session.IsBare)
 		{
+			// Only a worktree session commits (commit_and_rebase integrates its branch), so only it needs warning.
 			_log.Error("No git user.name/user.email found on the host; commits inside the container will fail until `git config --global user.name` and `user.email` are set.");
 		}
 

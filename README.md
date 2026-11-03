@@ -171,7 +171,7 @@ If the current model takes images, the image goes into the conversation properly
 | `/finish` | If the current worktree is finished, delete it and remove this session |
 | `/reload` `/verbose` `/quit` | |
 
-**Exiting:** The agent Docker container may stop, but until it's removed, all temp files and work in progress is still there.  You can resume it anytime.  If you are using git worktrees, even if you delete the agent container, the worktree is still on your disk.  The Developer's job is to `commit_and_rebase` the worktree onto whatever branch it came from when work is done.  However, **Finish** means to remove the worktree, which Beast will only do if your commits are merged in.
+**Exiting:** A worktree session's agent Docker container stops, but until it's removed, all temp files and work in progress is still there.  You can resume it anytime.  A bare session's container is removed on exit, since its work is already in your folder; its conversations and logs are kept, and the next launch starts a fresh container.  If you are using git worktrees, even if you delete the agent container, the worktree is still on your disk.  The Developer's job is to `commit_and_rebase` the worktree onto whatever branch it came from when work is done.  However, **Finish** means to remove the worktree, which Beast will only do if your commits are merged in.
 
 ---
 

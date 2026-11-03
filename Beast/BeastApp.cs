@@ -833,12 +833,13 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 		// Tell the sandbox to shut down, but don't block the user's exit on the container actually stopping.
 		// The /quit sent during graceful exit already makes the agent exit (so the container is usually
-		// stopping on its own). The container is kept, stopped, for the session to start again; only a
-		// finished session's is removed. Cap the wait so closing stays snappy — the stop request reaches the
-		// Docker daemon well within the cap, and it finishes the job independently of this process. Removing a
-		// finished session's container gets longer, so it is not left behind belonging to no session.
+		// stopping on its own). A worktree session's container is kept, stopped, for the session to start again;
+		// a finished session's and a bare session's are removed (see RemoveContainer). Cap the wait so closing
+		// stays snappy — the stop request reaches the Docker daemon well within the cap, and it finishes the job
+		// independently of this process. Removing a container gets longer, since the remove request only goes
+		// out once the stop has finished, so it is not left behind.
 		Task stop = StopSandboxAsync();
-		await Task.WhenAny(stop, Task.Delay(_sessionFinished ? 20000 : 2000));
+		await Task.WhenAny(stop, Task.Delay(RemoveContainer ? 20000 : 2000));
 
 		// A finished session is gone: its folder under the sessions folder (record, emptied worktree folder,
 		// conversations and logs) goes too, so the session menu no longer lists it.
@@ -852,13 +853,18 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		_cts?.Dispose();
 	}
 
-	// Stops the container (removing it only after /finish), then disposes the launcher. Run detached from the
-	// exit path so a slow or stuck container cannot hold up closing Beast; errors are swallowed since we are
-	// tearing down anyway.
+	// Whether the container goes on exit: after /finish, and always for a bare session. A bare session works on
+	// the folder in place, so its container holds nothing of value (installed packages, /tmp); its conversations
+	// and logs live in the session's own folder on the host and stay, and the next launch makes a fresh container.
+	private bool RemoveContainer => _sessionFinished || (_session != null && _session.IsBare);
+
+	// Stops the container (removing it after /finish or for a bare session), then disposes the launcher. Run
+	// detached from the exit path so a slow or stuck container cannot hold up closing Beast; errors are
+	// swallowed since we are tearing down anyway.
 	private async Task StopSandboxAsync()
 	{
 		try
-		{ await _agentContext.StopAsync(_sessionFinished); }
+		{ await _agentContext.StopAsync(RemoveContainer); }
 		catch { }
 		_agentContext.Dispose();
 	}
