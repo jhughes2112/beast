@@ -213,14 +213,28 @@ public class LaunchDocker : ILauncher
 		_containerId = existing.Id;
 		await _dockerClient.Containers.StartContainerAsync(existing.Id, new ContainerStartParameters(), cancellationToken);
 
-		ContainerInspectResponse info = await _dockerClient.Containers.InspectContainerAsync(existing.Id, cancellationToken);
-		_hostPort                     = 0;
-		if (info.HostConfig?.PortBindings != null && info.HostConfig.PortBindings.TryGetValue("13131/tcp", out IList<PortBinding>? bindings) && bindings.Count > 0)
-			int.TryParse(bindings[0].HostPort, out _hostPort);
-		if (_hostPort == 0)
-			throw new InvalidOperationException("The session's agent container has no published port; delete its agent from the session menu and start again.");
+		_hostPort = await PublishedPortAsync(existing.Id, cancellationToken);
 		_log.Verbose($"[docker] Started container {existing.Id} again on host port {_hostPort}");
 		return _hostPort;
+	}
+
+	// The host port Docker published the agent's 13131 on, read from the running container. Docker picks it
+	// (and picks again on every start), so two sessions launched together can never claim the same port.
+	private async Task<int> PublishedPortAsync(string containerId, CancellationToken cancellationToken)
+	{
+		ContainerInspectResponse info = await _dockerClient.Containers.InspectContainerAsync(containerId, cancellationToken);
+		int                      port = 0;
+		if (info.NetworkSettings?.Ports != null && info.NetworkSettings.Ports.TryGetValue("13131/tcp", out IList<PortBinding>? bindings) && bindings != null)
+		{
+			foreach (PortBinding binding in bindings)
+			{
+				if (port == 0)
+					int.TryParse(binding.HostPort, out port);
+			}
+		}
+		if (port == 0)
+			throw new InvalidOperationException("The session's agent container has no published port; delete its agent from the session menu and start again.");
+		return port;
 	}
 
 	private async Task<int> CreateAsync(string name, CancellationToken cancellationToken)
@@ -254,9 +268,6 @@ public class LaunchDocker : ILauncher
 		}
 		binds.Add($"{beastConfigDir}:/root/.beast");
 		binds.Add($"{_session.StateDir}:/root/.beast-state");
-
-		// Find an available port on the host
-		_hostPort = FindAvailablePort();
 
 		// Git identity: the host's name/email live in the user's global gitconfig, which is never bound into
 		// the container, so git in there has no author and refuses to commit. These are the variables git
@@ -325,7 +336,8 @@ public class LaunchDocker : ILauncher
 				{
 					["13131/tcp"] = new List<PortBinding>
 					{
-						new PortBinding { HostIP = "127.0.0.1", HostPort = _hostPort.ToString() }
+						// No HostPort: Docker assigns a free one when the container starts.
+						new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }
 					}
 				},
 				Binds          = binds,
@@ -338,7 +350,8 @@ public class LaunchDocker : ILauncher
 		_containerId                     = response.ID;
 		_log.Verbose($"[docker] Container created: {_containerId}");
 
-		await _dockerClient.Containers.StartContainerAsync(_containerId, new ContainerStartParameters());
+		await _dockerClient.Containers.StartContainerAsync(_containerId, new ContainerStartParameters(), cancellationToken);
+		_hostPort = await PublishedPortAsync(_containerId, cancellationToken);
 		_log.Verbose($"[docker] Container started: {name} on host port {_hostPort}");
 		return _hostPort;
 	}
@@ -389,39 +402,6 @@ public class LaunchDocker : ILauncher
 			// git is not on the host PATH: leave the identity empty and let the launch log say so.
 		}
 		return value;
-	}
-
-	private static int FindAvailablePort()
-	{
-		const int startPort = 20000;
-		const int endPort   = 21000;
-		HashSet<int> usedPorts = GetUsedPorts();
-
-		for (int port = startPort; port <= endPort; port++)
-		{
-			if (!usedPorts.Contains(port))
-				return port;
-		}
-
-		throw new InvalidOperationException("No available port found in range.");
-	}
-
-	private static HashSet<int> GetUsedPorts()
-	{
-		IPGlobalProperties properties = IPGlobalProperties.GetIPGlobalProperties();
-
-		HashSet<int> used = new HashSet<int>();
-
-		foreach (IPEndPoint ep in properties.GetActiveTcpListeners())
-			used.Add(ep.Port);
-
-		foreach (IPEndPoint ep in properties.GetActiveUdpListeners())
-			used.Add(ep.Port);
-
-		foreach (TcpConnectionInformation conn in properties.GetActiveTcpConnections())
-			used.Add(conn.LocalEndPoint.Port);
-
-		return used;
 	}
 
 	// True while the container is still running. False once it has exited (e.g. the agent crashed on
