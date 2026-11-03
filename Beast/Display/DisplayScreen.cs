@@ -109,8 +109,15 @@ public class DisplayScreen : IDisplay
 	private Action?                     _requestExit;
 	private CancellationTokenSource?    _runCts;
 	private Action?                     _frameDrain;
-	private Action<string>?             _sessionSwitchCallback;
-	private Action<string>?             _sessionDeleteCallback;
+
+	// While the input loop drains inbound frames, Redraw only marks itself pending; the loop paints once
+	// after the drain. Painting per streamed token re-parses the whole growing message each time, and once
+	// that outpaces a fast model the drain never empties and input is starved.
+	private bool _draining;
+	private bool _redrawPending;
+
+	private Action<string>? _sessionSwitchCallback;
+	private Action<string>? _sessionDeleteCallback;
 
 	// Session tree overlay state. Open from launch; F10 toggles it away and back.
 	private bool _sessionTreeOpen = true;
@@ -836,6 +843,13 @@ public class DisplayScreen : IDisplay
 
 	private void Redraw()
 	{
+		if (_draining)
+		{
+			_redrawPending = true;
+			return;
+		}
+		_redrawPending = false;
+
 		int w = Console.WindowWidth;
 		int h = Console.WindowHeight;
 		if (w < 10 || h < 5)
@@ -1654,7 +1668,19 @@ public class DisplayScreen : IDisplay
 					// Update the follow timer before draining frames so the suppression check the
 					// drained frames trigger sees the current idle/at-bottom state.
 					UpdateFollowTimer();
-					_frameDrain?.Invoke();
+
+					_draining = true;
+					try
+					{
+						_frameDrain?.Invoke();
+					}
+					finally
+					{
+						_draining = false;
+					}
+					if (_redrawPending)
+						needRedraw = true;
+
 					int curW = Console.WindowWidth;
 					int curH = Console.WindowHeight;
 					if (curW != _lastWidth || curH != _lastHeight)
