@@ -92,6 +92,7 @@ public class Program
 			HostCommandRunnerTests.Test(ctx);
 			SessionTests.Test(ctx);
 			MarkdownBlockTests.Test(ctx);
+			ConfigOverlayTests.Test(ctx);
 			Console.WriteLine($"=== Beast Tests: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
 		}

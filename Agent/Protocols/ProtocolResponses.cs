@@ -1052,10 +1052,8 @@ public class ProtocolResponses
 
 		// The Responses API reports output clipping via incomplete_details rather than a finish
 		// reason; normalize it to "length" so callers detect cut-off replies uniformly.
-		string  finishReason     = toolCalls.Count > 0 ? "tool_calls" : "stop";
 		string? incompleteReason = responseRoot["incomplete_details"]?["reason"]?.GetValue<string>();
-		if (toolCalls.Count == 0 && incompleteReason == "max_output_tokens")
-			finishReason = "length";
+		string  finishReason     = ProtocolHelpers.TurnFinishReason(incompleteReason == "max_output_tokens" ? "length" : "stop", toolCalls.Count > 0);
 
 		(TokenUsageInfo usage, decimal cost) = ExtractUsage(responseRoot, model);
 

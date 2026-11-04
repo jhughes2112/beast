@@ -620,7 +620,7 @@ public class ProtocolAnthropic
 					 + (cacheReadTokens / 1_000_000m) * model.Config.Cost.CacheRead
 					 + (outputTokens / 1_000_000m) * model.Config.Cost.Output;
 
-		string           finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
+		string           finishReason = ProtocolHelpers.TurnFinishReason(stopReason, toolCalls.Count > 0);
 		List<ToolResult> emptyResults = new List<ToolResult>();
 		return ProtocolResult.Succeeded(new ProtocolCallPayload(textBuilder.ToString(), thinkingBuilder.ToString(), toolCalls, emptyResults, finishReason, usage, cost));
 	}

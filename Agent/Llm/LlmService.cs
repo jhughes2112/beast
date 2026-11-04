@@ -263,13 +263,25 @@ public class LlmService
 					{
 						conversation.RecordCost(result.Payload!.Cost);
 
-						// A response cut off at "length" commits like any other. It used to be discarded and
-						// reclassified as ContextFull whenever the window had shrunk max_out below the model's
-						// own ceiling, on the theory that truncated work confuses the model on replay. What that
-						// actually bought was a conversation that could not advance: the turn never entered the
-						// history, so nothing aged out of the fresh-turn window compaction keeps verbatim, and
-						// the successor re-entered the same state and truncated again. The server emits only
-						// what it was told it could; asking for less is the lever, not refusing what came back.
+						// A response cut off by the output limit is unfinished work: a half-written tool call
+						// cannot run, and retrying it at the same limit cuts it off the same way. If taking the
+						// whole ask would put the conversation at or past the compaction line, the turn is
+						// dropped uncommitted and the session compacts, then answers again with room. The ask
+						// counts in full because that is what the model was allowed, and what it would have used.
+						if (ProtocolHelpers.IsCutOff(result.Payload!.FinishReason))
+						{
+							int prompt = Math.Max(result.Payload.Usage.PromptTokens, conversation.ContextLength + budget.PendingReserve);
+							if (prompt + (maxCompletionTokens ?? 0) >= ContextBudget.CompactionThreshold(_model.Config.ContextWindow, reserveTokens, prompt))
+							{
+								string reason = $"Output limit of {maxCompletionTokens ?? 0} tokens reached on a {prompt}-token prompt, at the compaction line of a {_model.Config.ContextWindow}-token window; dropping the unfinished turn";
+								result        = ProtocolResult.ContextFull(reason);
+								conversation.QueryLog.ModelFailure(_model, _handler, "ContextFull", null, reason, 0, 0, null, false);
+								break;
+							}
+						}
+
+						// Otherwise a cut-off response commits like any other: the limit it hit was not the
+						// window's, so the server emitted what it was told it could and the turn stands.
 
 						// Repair the response's tool calls in place (fuzzy name correction, argument fixups),
 						// writing them back into the payload so the committed turn carries clean calls. A call

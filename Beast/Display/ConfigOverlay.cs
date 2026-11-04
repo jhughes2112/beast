@@ -115,8 +115,9 @@ internal class ConfigOverlay
 		public List<string>? OvrModalities;
 		public string        OvrEffort = string.Empty;
 		// Send the model its own reasoning back on later turns. Nothing discovers this, so unlike
-		// the fields above there is no "auto" state behind the blank — off is off.
-		public bool OvrRetainReasoning;
+		// the fields above there is no "auto" state behind the blank — off is off. On unless turned
+		// off here, or until an endpoint refuses and the agent writes it back as false.
+		public bool OvrRetainReasoning = true;
 		// Ask the provider to summarize this model's thinking. On unless turned off here, or until an
 		// endpoint refuses and the agent writes it back as false.
 		public bool OvrSummaries = true;
@@ -141,6 +142,11 @@ internal class ConfigOverlay
 		public decimal       CostIn     => OvrCostIn >= 0 ? OvrCostIn : DiscCostIn;
 		public decimal       CostOut    => OvrCostOut >= 0 ? OvrCostOut : DiscCostOut;
 		public List<string>? Modalities => OvrModalities ?? DiscModalities;
+
+		// Whether the user has set anything an apply would write for this row.
+		public bool HasOverrides => OvrWindow > 0 || OvrCostIn >= 0 || OvrCostOut >= 0 || OvrModalities != null
+			|| OvrEffort.Length > 0 || !OvrRetainReasoning || !OvrSummaries || OvrMaxImages > 0
+			|| OvrTimeout > 0 || OvrExtras.Length > 0 || OvrHeaders.Length > 0;
 
 		// Unknown means neither discovered nor overridden — the fields that MUST be supplied
 		// before the model can be enabled.
@@ -890,6 +896,9 @@ internal class ConfigOverlay
 		row.OvrRetainReasoning = true;
 		row.OvrSummaries       = true;
 		row.OvrMaxImages       = 0;
+		row.OvrTimeout         = 0;
+		row.OvrExtras          = string.Empty;
+		row.OvrHeaders         = string.Empty;
 		_dirty                 = true;
 
 		if (row.Missing)
@@ -985,12 +994,12 @@ internal class ConfigOverlay
 			if (field == "summaries")
 			{
 				row.OvrSummaries = !row.OvrSummaries;
-				_dirty           = true;
+				NoteEdited(row);
 			}
 			else if (field == "retain")
 			{
 				row.OvrRetainReasoning = !row.OvrRetainReasoning;
-				_dirty                 = true;
+				NoteEdited(row);
 			}
 			else if (key.Key == ConsoleKey.Enter)
 			{
@@ -999,6 +1008,14 @@ internal class ConfigOverlay
 				_status        = string.Empty;
 			}
 		}
+	}
+
+	// Records an edit. A row holding an override has a settings entry to keep, enabled or not; without
+	// this, an apply skips a row that was never enabled and its edits are lost.
+	private void NoteEdited(ModelRow row)
+	{
+		row.Configured = row.Configured || row.HasOverrides;
+		_dirty         = true;
 	}
 
 	// Leaving the menu. A pending enable completes only when nothing required is still unknown;
@@ -1258,7 +1275,7 @@ internal class ConfigOverlay
 		}
 
 		if (ok)
-			_dirty = true;
+			NoteEdited(row);
 		return ok;
 	}
 

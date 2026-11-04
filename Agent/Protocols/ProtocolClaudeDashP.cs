@@ -713,7 +713,7 @@ public sealed class ProtocolClaudeDashP
 			CompletionTokens = output,
 			CachedTokens     = cacheWrite + cacheRead
 		};
-		string finishReason = toolCalls.Count > 0 ? "tool_calls" : stopReason;
+		string finishReason = ProtocolHelpers.TurnFinishReason(stopReason, toolCalls.Count > 0);
 		return ProtocolResult.Succeeded(new ProtocolCallPayload(text.ToString(), thinking.ToString(), toolCalls, new List<ToolResult>(), finishReason, usage, Cost(model, freshInput, cacheWrite, cacheRead, output)));
 	}
 

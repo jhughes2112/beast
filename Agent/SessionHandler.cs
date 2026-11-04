@@ -525,7 +525,14 @@ public class SessionHandler
 		// session. Counting first costs one call and makes every number after it real.
 		bool unmeasured = _activeSession.ContextLength <= 0 && messages.Count > 0;
 
-		if (estimate >= threshold || unmeasured)
+		// No new turn begins past the line. A provider-measured size already there is the whole answer:
+		// counting again costs a full prefill on a local engine, and could only talk this out of compacting.
+		if (_activeSession.ContextLength >= threshold)
+		{
+			transport.Status(_activeSession.Id, $"Context full ({_activeSession.ContextLength}/{_activeSession.ContextWindow}), compacting...");
+			full = true;
+		}
+		else if (estimate >= threshold || unmeasured)
 		{
 			TracerResult tracer = await service.RunTracerAsync(_activeSession, tools, null, token);
 			if (tracer.Succeeded)

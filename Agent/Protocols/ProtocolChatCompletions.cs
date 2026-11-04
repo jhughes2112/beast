@@ -522,9 +522,7 @@ public class ProtocolChatCompletions
 					if (toolCalls.Count == 0)
 						assistantText = ExtractXmlToolCalls(assistantText, tools, toolCalls);
 
-					string finishReason = choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty;
-					if (toolCalls.Count > 0)
-						finishReason = "tool_calls";
+					string finishReason = ProtocolHelpers.TurnFinishReason(choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty, toolCalls.Count > 0);
 
 					(TokenUsageInfo usage, decimal cost) = ExtractUsage(root, model);
 
@@ -1195,7 +1193,6 @@ httpResponse);
 			{
 				semanticToolCalls.Add(new SemanticToolCall { Id = acc.Id, Name = acc.Name, ArgumentsJson = acc.Arguments.ToString() });
 			}
-			finishReason = "tool_calls";
 		}
 
 		// Salvage tool calls a template-mismatched local model emitted as literal <tool_call>
@@ -1205,9 +1202,8 @@ httpResponse);
 		if (semanticToolCalls.Count == 0)
 		{
 			assistantText = ExtractXmlToolCalls(assistantText, tools, semanticToolCalls);
-			if (semanticToolCalls.Count > 0)
-				finishReason = "tool_calls";
 		}
+		finishReason = ProtocolHelpers.TurnFinishReason(finishReason, semanticToolCalls.Count > 0);
 
 
 
@@ -1288,13 +1284,16 @@ httpResponse);
 	}
 
 	// A successful turn that produced no tool call and no assistant text — only thinking, or nothing.
-	// There is nothing for the caller to act on, so the loop discards and re-posts it.
+	// There is nothing for the caller to act on, so the loop discards and re-posts it. A turn the output
+	// limit cut off is not one of these: the same request with the same limit is cut off the same way,
+	// so it goes up to LlmService, which decides whether it means the context is full.
 	private static bool IsEmptyTurn(ProtocolResult result)
 	{
 		return result.Outcome == ProtocolCallOutcome.Success
 			&& result.Payload != null
 			&& result.Payload.ToolCalls.Count == 0
-			&& string.IsNullOrWhiteSpace(result.Payload.AssistantText);
+			&& string.IsNullOrWhiteSpace(result.Payload.AssistantText)
+			&& !ProtocolHelpers.IsCutOff(result.Payload.FinishReason);
 	}
 
 	// A forced turn that returned no tool call means the server did not honor the tool_choice form — some

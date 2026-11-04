@@ -21,6 +21,9 @@ public class FakeReply
 	// Streams "data:{...}" with no space after the colon — legal SSE, and what uzu sends.
 	public bool CompactSse { get; private set; }
 
+	// Ends the chat-completions turn with this finish_reason instead of the one its content implies.
+	public string FinishOverride { get; private set; } = string.Empty;
+
 	private FakeReply(string thinking, string text, List<(string Id, string Name, string Args)> calls, int errorStatus, string errorBody)
 	{
 		Thinking    = thinking;
@@ -53,6 +56,12 @@ public class FakeReply
 	public FakeReply WithCompactSse()
 	{
 		CompactSse = true;
+		return this;
+	}
+
+	public FakeReply WithFinish(string finishReason)
+	{
+		FinishOverride = finishReason;
 		return this;
 	}
 }
@@ -409,7 +418,7 @@ public class FakeProvider
 
 	private static async Task WriteChatSseAsync(HttpListenerResponse response, FakeReply reply, CancellationToken ct)
 	{
-		string finish             = reply.Calls.Count > 0 ? "tool_calls" : "stop";
+		string finish             = reply.FinishOverride.Length > 0 ? reply.FinishOverride : reply.Calls.Count > 0 ? "tool_calls" : "stop";
 		using StreamWriter writer = OpenSse(response, reply.CompactSse);
 		await DataAsync(writer, ChatChunk(new JsonObject { ["role"] = "assistant" }, null), ct);
 		if (reply.Thinking.Length > 0)

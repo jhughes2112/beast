@@ -82,6 +82,8 @@ public static class ProtocolConformanceTests
 				await TestPlainTextAsync(ctx, server, api, cts.Token);
 				await TestToolRoundTripAsync(ctx, server, api, cts.Token);
 				await TestCompactSseAsync(ctx, server, api, cts.Token);
+				if (api.Protocol == DetectedProtocol.ChatCompletions)
+					await TestCutOffTurnAsync(ctx, server, api, cts.Token);
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
 				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
 				await TestPixelsReachServerAsync(ctx, server, api, folder, cts.Token);
@@ -177,6 +179,51 @@ public static class ProtocolConformanceTests
 		string second = server.Requests()[1].Body.ToJsonString();
 		ctx.Assert(second.Contains("echo: ping", StringComparison.Ordinal), $"{api.Name} ToolRoundTrip: the tool output is sent back");
 		ctx.Assert( second.Contains("call_echo", StringComparison.Ordinal), $"{api.Name} ToolRoundTrip: paired with the call id");
+	}
+
+	// The output limit ending a turn near the compaction line means compact, once, with nothing kept:
+	// not three retries of a request that can only be cut off the same way, and not a half-written call
+	// committed. The field session lost 12 minutes to the retries. Well below the line nothing changes:
+	// a model that ran into a small limit keeps its turn.
+	private static async Task TestCutOffTurnAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		const int Window = 200000;
+
+		Rig rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("write the file");
+		rig.Session.RecordCountedContext(Window * 8 / 10, 0);
+		int committed = rig.Session.Data.Messages.Count;
+		server.Enqueue(FakeReply.Turn("thinking only", string.Empty, new List<(string, string, string)>()).WithFinish("length"));
+		ProtocolResult thinking = await StepAsync(rig, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.ContextFull, thinking.Outcome, $"{api.Name} CutOff: reasoning cut off near the line asks for compaction");
+		ctx.AssertEqual(        1,         server.Requests().Count, $"{api.Name} CutOff: and is not retried");
+		ctx.AssertEqual(committed, rig.Session.Data.Messages.Count, $"{api.Name} CutOff: and is not committed");
+
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("write the file");
+		rig.Session.RecordCountedContext(Window * 8 / 10, 0);
+		committed = rig.Session.Data.Messages.Count;
+		server.Enqueue(FakeReply.Turn(string.Empty, string.Empty, new List<(string, string, string)> { ("call_cut", "echo", "{\"text\":\"unfini") }).WithFinish("length"));
+		ProtocolResult call = await StepAsync(rig, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.ContextFull, call.Outcome, $"{api.Name} CutOff: a half-written tool call asks for compaction");
+		ctx.AssertEqual(        1,         server.Requests().Count, $"{api.Name} CutOff: without a repair retry");
+		ctx.AssertEqual(committed, rig.Session.Data.Messages.Count, $"{api.Name} CutOff: and never enters the history");
+
+		// An empty turn that was NOT cut off is still retried.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Turn("only thought", string.Empty, new List<(string, string, string)>()));
+		server.Enqueue(FakeReply.Say("answer"));
+		ProtocolResult retried = await StepAsync(rig, ct);
+		ctx.AssertEqual("answer", retried.Payload?.AssistantText ?? string.Empty, $"{api.Name} CutOff: an empty turn that finished normally is still retried");
+
+		// Unmeasured, the ask is only the model's 4096 allowance: nowhere near the line.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Turn(string.Empty, "partial answer", new List<(string, string, string)>()).WithFinish("length"));
+		ProtocolResult small = await StepAsync(rig, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.Success, small.Outcome, $"{api.Name} CutOff: a cut-off far below the line commits as before");
+		ctx.AssertEqual("length", small.Payload?.FinishReason ?? string.Empty, $"{api.Name} CutOff: reporting why it ended");
 	}
 
 	// "data:{...}" with no space after the colon is legal SSE, and uzu streams exactly that. A reader

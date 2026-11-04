@@ -30,6 +30,10 @@ public class ContextBudget
 	// empty turns invite nudges that grow the context without ever reaching the line.
 	public const int MinUsefulOutput = 500;
 
+	// Window held back from a measured request's ask, so a prompt the provider counts slightly higher
+	// than we did still fits. A larger disagreement is rejected, and the prompt-skew learning handles it.
+	private const int kWindowEdgeMargin = 1024;
+
 	// Config, set at turn start. The model (and therefore the window/limits) can change between turns.
 	private int _windowSize;
 	private int _maxOutputTokens;
@@ -113,21 +117,19 @@ public class ContextBudget
 		return _measured + _pendingReserve >= _windowSize / 2;
 	}
 
-	// Max output tokens to request next. The FLOOR is everything standing between the conversation
-	// and the compaction line: whatever room exists before this session compacts anyway is room the
-	// model may use in one answer, so the ceiling is never smaller than that. A configured ceiling
-	// only ever raises it, never lowers it — a model that declares no output limit was being handed
-	// the 4096-token default with 16k of window free, which truncates a large file write for no
-	// reason at all. Models cannot see their own context size, so a truncated write reads to them as
-	// a failed write: they start the file again from the top, the context grows, and the next attempt
-	// is truncated sooner. That loop is the thing this floor exists to prevent.
+	// Max output tokens to request next. The compaction line decides when a new turn may BEGIN, not how
+	// big one may be: a turn that starts below the line may use all the window that is left. A configured
+	// ceiling does not lower that — a model that declares no output limit was being handed the 4096-token
+	// default with 16k of window free, which truncates a large file write for no reason at all. Models
+	// cannot see their own context size, so a truncated write reads to them as a failed write: they start
+	// the file again from the top, the context grows, and the next attempt is truncated sooner. Stopping
+	// the ask at the line did that near the top of every window: 1650 tokens for an edit_file call with
+	// 13415 tokens of real room, every retry cut off in the same place.
 	//
-	// The ceiling is the same line: the room above it is held for the summary compaction writes and
+	// Compaction needs none of that room: the mechanical pass makes no model call, and the summarizer
+	// sizes its chunks to the summarizing model's own window. All that is held back is kWindowEdgeMargin,
 	// for the providers' count of the prompt disagreeing with ours (they reject a request whose prompt
-	// plus max_tokens overruns the window), so no answer may claim it. With a measurement in hand the
-	// floor and the ceiling meet, and the ask is exactly the room before the line — a response that
-	// uses all of it lands the conversation ON the line, with the summary's room still intact. Never
-	// null: every request carries a limit.
+	// plus max_tokens overruns the window). Never null: every request carries a limit.
 	//
 	// The floor needs a real measurement to stand on, and the FIRST request of a session has none:
 	// _measured is 0 because only a provider response can set it, so "the room left" reads as the
@@ -140,10 +142,10 @@ public class ContextBudget
 	{
 		long room = RoomToCompactionLine();
 		long want;
-		if (room <= 0)
+		if (_measured > 0)
+			want = Math.Max(0, _windowSize - _measured - _pendingReserve - kWindowEdgeMargin);
+		else if (room <= 0)
 			want = 0;
-		else if (_measured > 0)
-			want = room;
 		else
 			want = Math.Min(OutputAllowance, room);
 		return (int)want;

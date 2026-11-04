@@ -43,31 +43,34 @@ public static class ContextBudgetTests
 
 	private static void TestMaxCompletionTokens(TestContext ctx)
 	{
-		// The floor: everything up to the compaction line is the model's to use in one answer. The line
-		// sits below the window by the larger of the compaction reserve and the overflow margin. With a
-		// 32768 window, a 3276 reserve and 1000 measured (margin 1024), that is 28492 — and the model's
-		// own 8192 preference does NOT lower it. A large file write gets the whole room it has coming.
+		// A turn may use all the window that is left, less the 1024-token edge margin. The compaction line
+		// only decides whether a turn may begin. With a 32768 window and 1000 measured that is 30744 — and
+		// the model's own 8192 preference does NOT lower it. A large file write gets the room it has coming.
 		ContextBudget filling = new ContextBudget();
 		filling.Configure(32768, 8192, 3276, 0, 1000);
-		ctx.AssertEqual<int?>(28492, filling.MaxCompletionTokens(), "MaxCompletionTokens: never less than the room before the compaction line");
+		ctx.AssertEqual<int?>(30744, filling.MaxCompletionTokens(), "MaxCompletionTokens: the whole remaining window, less the edge margin");
 		ctx.AssertEqual(8192, filling.OutputAllowance, "OutputAllowance: the model's own preference, unchanged");
 
 		// The default ceiling is the case that actually bit: a model declaring no output limit was
 		// handed 4096 with most of a 32k window free, truncating large writes for no reason.
 		ContextBudget noCeiling = new ContextBudget();
 		noCeiling.Configure(32768, 0, 3276, 0, 13000);
-		ctx.AssertEqual<int?>(16492, noCeiling.MaxCompletionTokens(), "MaxCompletionTokens: an unconfigured model gets the free window, not the 4096 default");
+		ctx.AssertEqual<int?>(18744, noCeiling.MaxCompletionTokens(), "MaxCompletionTokens: an unconfigured model gets the free window, not the 4096 default");
 		ctx.Assert(noCeiling.MaxCompletionTokens() > 4096, "MaxCompletionTokens: the default never caps below the free room");
 
-		// Close to the line the room shrinks with it, below the model's own preference — and once it
-		// is no bigger than a useful answer, the budget says to compact rather than ask for scraps.
+		// Just below the line a turn still gets everything left, past the line itself. Once at the line no
+		// new turn begins, however much window remains: the budget says to compact.
 		ContextBudget nearFull = new ContextBudget();
 		nearFull.Configure(32768, 8192, 3276, 0, 28000);
-		ctx.AssertEqual<int?>(1492, nearFull.MaxCompletionTokens(), "MaxCompletionTokens: the room before the line near the top of the window");
-		ctx.Assert(!nearFull.IsExhausted(), "MaxCompletionTokens: room for a useful answer is still a turn");
+		ctx.AssertEqual<int?>(3744, nearFull.MaxCompletionTokens(), "MaxCompletionTokens: a turn below the line may run past it");
+		ctx.Assert(!nearFull.IsExhausted(), "MaxCompletionTokens: a turn may still begin below the line");
 		nearFull.Configure(32768, 8192, 3276, 0, 29000);
-		ctx.Assert(nearFull.MaxCompletionTokens() <= ContextBudget.MinUsefulOutput, "MaxCompletionTokens: squeezed below a useful answer");
-		ctx.Assert(nearFull.IsExhausted(), "MaxCompletionTokens: and that is the compaction signal");
+		ctx.Assert(nearFull.IsExhausted(), "MaxCompletionTokens: at the line no new turn begins, which is the compaction signal");
+
+		// The field numbers: the ask was 1650, cutting off an edit_file call with 13415 tokens of room.
+		ContextBudget field = new ContextBudget();
+		field.Configure(131072, 32768, 4096, 0, 117657);
+		ctx.AssertEqual<int?>(12391, field.MaxCompletionTokens(), "MaxCompletionTokens: the field case gets its real room, not the 1650 that cut it off");
 
 		// An explicit caller cap only lowers the model's own preference; it cannot lower the floor,
 		// which exists to stop truncation rather than to express anyone's preference.
@@ -87,7 +90,7 @@ public static class ContextBudgetTests
 
 		// The floor switches on as soon as a response says how big the conversation really is.
 		unmeasured.RecordMeasurement(1000);
-		ctx.AssertEqual<int?>(28492, unmeasured.MaxCompletionTokens(), "MaxCompletionTokens: the floor applies once the size is known");
+		ctx.AssertEqual<int?>(30744, unmeasured.MaxCompletionTokens(), "MaxCompletionTokens: the floor applies once the size is known");
 
 		// A request never claims the window's last token, however the numbers arrive. Catalogs report
 		// maxOutputTokens EQUAL to the context window for some models (OpenRouter does it for free
@@ -234,6 +237,6 @@ public static class ContextBudgetTests
 		budget.ChargeToolResults(10000);
 		budget.Configure(100000, 200000, 7500, 0, 2000);
 		ctx.AssertEqual(10000, budget.PendingReserve, "PendingReserve: survives the per-request Configure");
-		ctx.AssertEqual<int?>(100000 - 2000 - 10000 - 7500, budget.MaxCompletionTokens(), "PendingReserve: the next request is sized against the charged round");
+		ctx.AssertEqual<int?>(100000 - 2000 - 10000 - 1024, budget.MaxCompletionTokens(), "PendingReserve: the next request is sized against the charged round");
 	}
 }

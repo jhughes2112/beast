@@ -27,6 +27,21 @@ static class ProtocolHelpers
 		return SharedClient;
 	}
 
+	// Whether a finish reason says the output limit ended the turn: "length" on the OpenAI shapes,
+	// "max_tokens" on Anthropic's.
+	public static bool IsCutOff(string finishReason)
+	{
+		return finishReason == "length" || finishReason == "max_tokens";
+	}
+
+	// The finish reason a turn reports. Calls make it "tool_calls", except that a cut-off stays a
+	// cut-off: a call the limit interrupted is unfinished, and reading it as finished hid the very
+	// signal that says the turn ran out of room.
+	public static string TurnFinishReason(string reported, bool hasToolCalls)
+	{
+		return hasToolCalls && !IsCutOff(reported) ? "tool_calls" : reported;
+	}
+
 	// The payload of one SSE "data" line, or null for any other line. The SSE spec makes the single
 	// space after the colon optional, and some local servers (uzu) send "data:{...}" — matching only
 	// "data: " silently dropped their entire reply, which read as an empty turn and got retried.
