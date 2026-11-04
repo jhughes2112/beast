@@ -11,6 +11,57 @@ using System.Text.Json.Nodes;
 // wire conversion.
 public static class ModelCatalogTests
 {
+	// A catalog revisit reloads only for news about an enabled model: a gateway that has just proven a
+	// model reads images must reach the running session, and a change to an unused model must not.
+	private static void TestEnabledModelsChanged(TestContext ctx)
+	{
+		List<AutoModelConfig> configured = new List<AutoModelConfig>
+		{
+			new AutoModelConfig { Id = "on", Enabled = true },
+			new AutoModelConfig { Id = "off", Enabled = false }
+		};
+		List<DiscoveredModel> prior = new List<DiscoveredModel>
+		{
+			new DiscoveredModel { Id = "on", ContextWindow = 1000, Modalities = new List<string> { "text" } },
+			new DiscoveredModel { Id = "off", ContextWindow = 1000, Modalities = new List<string> { "text" } }
+		};
+
+		ctx.Assert(!ModelCatalog.EnabledModelsChanged(prior, prior, configured), "CatalogChanged: identical catalog is no news");
+		ctx.Assert(ModelCatalog.EnabledModelsChanged(null, prior, configured), "CatalogChanged: first catalog this run is news");
+
+		List<DiscoveredModel> gainedImage = new List<DiscoveredModel>
+		{
+			new DiscoveredModel { Id = "ON", ContextWindow = 1000, Modalities = new List<string> { "text", "image" } },
+			new DiscoveredModel { Id = "off", ContextWindow = 1000, Modalities = new List<string> { "text" } }
+		};
+		ctx.Assert(ModelCatalog.EnabledModelsChanged(prior, gainedImage, configured), "CatalogChanged: an enabled model gaining a modality is news");
+
+		List<DiscoveredModel> reordered = new List<DiscoveredModel>
+		{
+			new DiscoveredModel { Id = "on", ContextWindow = 1000, Modalities = new List<string> { "image", "text" } }
+		};
+		ctx.Assert(!ModelCatalog.EnabledModelsChanged(gainedImage, reordered, configured), "CatalogChanged: modality order and id case are not news");
+
+		List<DiscoveredModel> disabledChanged = new List<DiscoveredModel>
+		{
+			new DiscoveredModel { Id = "on", ContextWindow = 1000, Modalities = new List<string> { "text" } },
+			new DiscoveredModel { Id = "off", ContextWindow = 2000, Modalities = new List<string> { "text", "image" } }
+		};
+		ctx.Assert(!ModelCatalog.EnabledModelsChanged(prior, disabledChanged, configured), "CatalogChanged: a disabled model's change is no news");
+
+		List<DiscoveredModel> gone = new List<DiscoveredModel>
+		{
+			new DiscoveredModel { Id = "off", ContextWindow = 1000, Modalities = new List<string> { "text" } }
+		};
+		ctx.Assert(ModelCatalog.EnabledModelsChanged(prior, gone, configured), "CatalogChanged: an enabled model leaving the catalog is news");
+
+		List<DiscoveredModel> bigger = new List<DiscoveredModel>
+		{
+			new DiscoveredModel { Id = "on", ContextWindow = 2000, Modalities = new List<string> { "text" } }
+		};
+		ctx.Assert(ModelCatalog.EnabledModelsChanged(prior, bigger, configured), "CatalogChanged: a new context window is news");
+	}
+
 	public static void Test(TestContext ctx)
 	{
 		ctx.Log("  ModelCatalogTests");
@@ -19,6 +70,7 @@ public static class ModelCatalogTests
 		TestClaudeCodeEndpoint(ctx);
 		TestChatGptSubscription(ctx);
 		TestParseEntryShapes(ctx);
+		TestEnabledModelsChanged(ctx);
 		TestLmStudioEnrichment(ctx);
 		TestOllamaEnrichment(ctx);
 		TestXaiEnrichment(ctx);

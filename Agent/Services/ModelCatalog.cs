@@ -42,6 +42,70 @@ public static class ModelCatalog
 	// Suffixes a configured request endpoint may carry; stripped to find the API root.
 	private static readonly string[] kEndpointSuffixes = { "/chat/completions", "/completions", "/messages", "/responses", "/systemone" };
 
+	// True when a fresh catalog tells a different story about any enabled model than the previous
+	// one did: what it reads or produces, its limits, its price, or whether it is listed at all.
+	public static bool EnabledModelsChanged(List<DiscoveredModel>? prior, List<DiscoveredModel> fresh, List<AutoModelConfig> configured)
+	{
+		bool changed = false;
+		foreach (AutoModelConfig entry in configured)
+		{
+			if (entry.Enabled && !SameCapabilities(FindById(prior, entry.Id), FindById(fresh, entry.Id)))
+				changed = true;
+		}
+		return changed;
+	}
+
+	private static DiscoveredModel? FindById(List<DiscoveredModel>? models, string id)
+	{
+		DiscoveredModel? found = null;
+		if (models != null)
+		{
+			foreach (DiscoveredModel model in models)
+			{
+				if (found == null && string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+					found = model;
+			}
+		}
+		return found;
+	}
+
+	private static bool SameCapabilities(DiscoveredModel? a, DiscoveredModel? b)
+	{
+		bool same;
+		if (a == null || b == null)
+			same = a == null && b == null;
+		else
+			same = a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens
+				&& a.CostInput == b.CostInput && a.CostOutput == b.CostOutput && a.CostCacheRead == b.CostCacheRead
+				&& SameList(a.Modalities, b.Modalities) && SameList(a.Outputs, b.Outputs);
+		return same;
+	}
+
+	private static bool SameList(List<string>? a, List<string>? b)
+	{
+		bool same;
+		if (a == null || b == null)
+		{
+			same = a == null && b == null;
+		}
+		else
+		{
+			same = a.Count == b.Count;
+			foreach (string item in a)
+			{
+				bool present = false;
+				foreach (string other in b)
+				{
+					if (string.Equals(item, other, StringComparison.OrdinalIgnoreCase))
+						present = true;
+				}
+				if (!present)
+					same = false;
+			}
+		}
+		return same;
+	}
+
 	// Returns the discovered catalog, or an empty list plus an error description on failure.
 	public static async Task<(List<DiscoveredModel> Models, string Error)> FetchAsync(string baseUrl, string apiKey, CancellationToken ct)
 	{

@@ -17,6 +17,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private readonly LlmRegistry             _registry;
 	private readonly RoleService             _roleService;
 	private readonly SettingsService         _settings;
+	private readonly SemaphoreSlim           _reloadGate = new SemaphoreSlim(1, 1);
 	// True when there is nowhere to save sessions (a native debugger run with no /workspace): the root session is
 	// ephemeral and nothing is resumed. A current-folder launch in Docker still saves and resumes.
 	private readonly bool _ephemeral;
@@ -741,6 +742,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private async Task<bool> ReloadConfigurationAsync(string sessionId, CancellationToken ct)
 	{
 		bool reloaded = false;
+
+		// One at a time: the /config catalog visit reloads from a background task, and two overlapping
+		// reloads would snapshot each other's half-finished state.
+		await _reloadGate.WaitAsync(ct);
 		(Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) priorRoles = _roleService.SnapshotRoles();
 		BeastSettings                priorSettings = _settings.SnapshotSettings();
 		Dictionary<string, LlmModel> priorModels   = _registry.SnapshotModels();
@@ -775,6 +780,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			_settings.RestoreSettings(priorSettings);
 			_registry.RestoreModels(priorModels);
 			_transport.Error(sessionId, $"Reload failed: {ex}. Keeping the previous config.");
+		}
+		finally
+		{
+			_reloadGate.Release();
 		}
 		return reloaded;
 	}
@@ -992,7 +1001,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 		}
 
-		ConfigCatalogPayload payload = new ConfigCatalogPayload { BaseUrl = baseUrl };
+		ConfigCatalogPayload payload             = new ConfigCatalogPayload { BaseUrl = baseUrl };
+		bool                 capabilitiesChanged = false;
 		if (string.IsNullOrWhiteSpace(baseUrl))
 		{
 			payload.Error = "No baseUrl supplied.";
@@ -1076,7 +1086,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			// Remembered so an apply from this picker knows each model's outputs before the reload
 			// registers it — that is what places a newly enabled model on the right roles.
 			if (error.Length == 0 && discovered.Count > 0)
+			{
+				capabilitiesChanged = existing != null && ModelCatalog.EnabledModelsChanged(_registry.CachedCatalog(baseUrl), discovered, existing.Models);
 				_registry.RecordCatalog(baseUrl, discovered);
+			}
 
 			foreach (DiscoveredModel d in discovered)
 			{
@@ -1133,6 +1146,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 			? $"[config] Catalog fetch failed: {payload.Error}"
 			: $"[config] {payload.Models.Count} models from {payload.BaseUrl}");
 		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigCatalogPayload));
+
+		// Visiting an endpoint is how the user asks what it can do now. Leaving the picker without a
+		// change applies nothing, so an enabled model's new capabilities go live here. The picker
+		// already has its list: this reload holds nothing up.
+		if (capabilitiesChanged)
+		{
+			_transport.Status(sessionId, $"[config] {payload.BaseUrl} reports changed capabilities; updating running models ...");
+			await ReloadConfigurationAsync(sessionId, ct);
+		}
 	}
 
 	// Opening the subscription endpoint in /config is where its token is proved: the first use in
