@@ -852,6 +852,41 @@ httpResponse);
 		return await ProtocolHelpers.GetClient().SendAsync(req, cancellationToken);
 	}
 
+	// An error reported inside a 200 stream: the status was already sent, as when a gateway kept the call
+	// alive while it waited for a model to load, or a provider failed mid-reply. It's handled as the same
+	// error would be with its own HTTP status. A 4xx returns null to re-send without streaming, whose answer
+	// carries a real status for every refusal the plain path knows, and streaming stays on for the next turn.
+	private static ProtocolResult? StreamFailure(LlmModel model, JsonNode error, HttpResponseMessage response, SessionLogger logger)
+	{
+		string body       = error.ToJsonString();
+		int    statusCode = 0;
+		if (error is JsonObject && int.TryParse(error["code"]?.ToString(), out int parsed))
+			statusCode = parsed;
+
+		ProtocolResult? result = null;
+		if (statusCode == 429)
+		{
+			result = logger.ProtocolFailure(
+				ProtocolResult.RateLimited(ProtocolHelpers.ComputeRetryAfterTime(response, body)),
+				model, DetectedProtocol.ChatCompletions, "RateLimited", statusCode, body, body, null);
+		}
+		else if (ProtocolHelpers.IsPermanentClientError(statusCode))
+		{
+			logger.ProtocolFailure(model, DetectedProtocol.ChatCompletions, "ClientError", statusCode, body, body, null);
+		}
+		else if (ProtocolHelpers.IsContextOverflow(body))
+		{
+			result = ProtocolHelpers.ContextOverflowFailure("ChatCompletions", statusCode, body, logger, model.Config.Name, model.Endpoint, model.ConfigId);
+		}
+		else
+		{
+			result = logger.ProtocolFailure(
+				ProtocolResult.Transient($"Stream failed: {body}", ProtocolHelpers.TryGetRetryAfter(response, body)),
+				model, DetectedProtocol.ChatCompletions, statusCode >= 500 ? "ServerError" : "StreamError", statusCode > 0 ? statusCode : null, body, body, null);
+		}
+		return result;
+	}
+
 	private async Task<ProtocolResult?> ExecuteStreamingAsync(
 		LlmModel                      model,
 		JsonObject                    body,
@@ -1024,6 +1059,10 @@ httpResponse);
 					JsonNode? chunkNode = JsonNode.Parse(data);
 					if (chunkNode == null)
 						continue;
+
+					JsonNode? streamError = chunkNode["error"];
+					if (streamError != null)
+						return StreamFailure(model, streamError, httpResponse, logger);
 
 					JsonNode? usageNode = chunkNode["usage"];
 					if (usageNode != null)

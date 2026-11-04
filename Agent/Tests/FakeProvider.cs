@@ -24,6 +24,12 @@ public class FakeReply
 	// Ends the chat-completions turn with this finish_reason instead of the one its content implies.
 	public string FinishOverride { get; private set; } = string.Empty;
 
+	// Sends SSE keep-alive comments before anything else, as a gateway does while a model loads.
+	public bool KeepAlive { get; private set; }
+
+	// Chat Completions only: a stream that answers 200, then reports this error inside it.
+	public string StreamErrorJson { get; private set; } = string.Empty;
+
 	private FakeReply(string thinking, string text, List<(string Id, string Name, string Args)> calls, int errorStatus, string errorBody)
 	{
 		Thinking    = thinking;
@@ -51,6 +57,20 @@ public class FakeReply
 	public static FakeReply Error(int status, string body)
 	{
 		return new FakeReply(string.Empty, string.Empty, new List<(string, string, string)>(), status, body);
+	}
+
+	public static FakeReply StreamError(string errorJson)
+	{
+		FakeReply reply       = Say(string.Empty);
+		reply.StreamErrorJson = errorJson;
+		reply.KeepAlive       = true;
+		return reply;
+	}
+
+	public FakeReply WithKeepAlive()
+	{
+		KeepAlive = true;
+		return this;
 	}
 
 	public FakeReply WithCompactSse()
@@ -420,6 +440,17 @@ public class FakeProvider
 	{
 		string finish             = reply.FinishOverride.Length > 0 ? reply.FinishOverride : reply.Calls.Count > 0 ? "tool_calls" : "stop";
 		using StreamWriter writer = OpenSse(response, reply.CompactSse);
+		if (reply.KeepAlive)
+		{
+			await writer.WriteAsync(": waiting for this model to load\n\n");
+			await writer.FlushAsync(ct);
+		}
+		if (reply.StreamErrorJson.Length > 0)
+		{
+			await DataAsync(writer, reply.StreamErrorJson, ct);
+			await DataAsync(writer,              "[DONE]", ct);
+			return;
+		}
 		await DataAsync(writer, ChatChunk(new JsonObject { ["role"] = "assistant" }, null), ct);
 		if (reply.Thinking.Length > 0)
 			await DataAsync(writer, ChatChunk(new JsonObject { ["reasoning_content"] = reply.Thinking }, null), ct);

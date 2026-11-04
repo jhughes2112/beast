@@ -83,7 +83,10 @@ public static class ProtocolConformanceTests
 				await TestToolRoundTripAsync(ctx, server, api, cts.Token);
 				await TestCompactSseAsync(ctx, server, api, cts.Token);
 				if (api.Protocol == DetectedProtocol.ChatCompletions)
+				{
 					await TestCutOffTurnAsync(ctx, server, api, cts.Token);
+					await TestStreamErrorsAsync(ctx, server, api, cts.Token);
+				}
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
 				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
 				await TestPixelsReachServerAsync(ctx, server, api, folder, cts.Token);
@@ -228,6 +231,64 @@ public static class ProtocolConformanceTests
 
 	// "data:{...}" with no space after the colon is legal SSE, and uzu streams exactly that. A reader
 	// that matched only "data: " dropped every line, saw an empty turn, and retried it forever.
+	// Once a stream has started, its 200 can't change, so an error has to travel inside it. The peachy gateway
+	// sends one after keep-alives when a queued model won't load or refuses the request. Before this was handled
+	// the error was skipped as a chunk with no choices and the turn looked empty.
+	private static async Task TestStreamErrorsAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		Rig rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer").WithKeepAlive());
+		ProtocolResult kept = await StepAsync(rig, ct);
+		ctx.AssertEqual("answer", kept.Payload?.AssistantText ?? string.Empty, $"{api.Name} StreamError: keep-alive comments are skipped");
+
+		// A server error is retried, and the retry's answer is the turn.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.StreamError("{\"type\":\"error\",\"error\":{\"message\":\"the engine exited during startup\",\"type\":\"server_error\",\"code\":502}}"));
+		server.Enqueue(FakeReply.Say("recovered"));
+		ProtocolResult retried = await StepAsync(rig, ct);
+		ctx.AssertEqual("recovered", retried.Payload?.AssistantText ?? string.Empty, $"{api.Name} StreamError: a 5xx in the stream is retried");
+		ctx.AssertEqual(2, server.Requests().Count, $"{api.Name} StreamError: once");
+
+		// A refusal is asked again without streaming, whose real status the plain path classifies. Streaming stays on.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.StreamError("{\"error\":{\"message\":\"bad request\",\"code\":400}}"));
+		server.Enqueue(FakeReply.Say("plain answer"));
+		ProtocolResult plain = await StepAsync(rig, ct);
+		ctx.AssertEqual("plain answer", plain.Payload?.AssistantText ?? string.Empty, $"{api.Name} StreamError: a 4xx in the stream re-sends");
+		ctx.Assert(!server.Requests()[1].Streaming, $"{api.Name} StreamError: without streaming");
+		rig.Session.Bundle.OnUserMessage("again");
+		server.Enqueue(FakeReply.Say("streamed"));
+		await StepAsync(rig, ct);
+		ctx.Assert(server.Requests()[2].Streaming, $"{api.Name} StreamError: and the next turn streams again");
+
+		// A refusal of the plain request then fails exactly as it would have without the wait.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		string overflow = "{\"error\":{\"message\":\"This model's maximum context length is 131072 tokens.\",\"code\":400}}";
+		server.Enqueue(FakeReply.StreamError(overflow));
+		server.Enqueue(FakeReply.Error(400, overflow));
+		ProtocolResult full = await StepAsync(rig, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.ContextFull, full.Outcome, $"{api.Name} StreamError: a 400 overflow in the stream reaches compaction");
+
+		// With no status to go on, the words still say overflow.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.StreamError("{\"error\":{\"message\":\"This model's maximum context length is 131072 tokens.\"}}"));
+		ProtocolResult bare = await StepAsync(rig, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.ContextFull, bare.Outcome, $"{api.Name} StreamError: an overflow with no status");
+
+		// A bare string is an error too, and must not throw on the way to being read.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.StreamError("{\"error\":\"boom\"}"));
+		server.Enqueue(FakeReply.Say("after a string"));
+		ProtocolResult text = await StepAsync(rig, ct);
+		ctx.AssertEqual("after a string", text.Payload?.AssistantText ?? string.Empty, $"{api.Name} StreamError: an error that's only a string is retried");
+	}
+
 	private static async Task TestCompactSseAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
 	{
 		Rig rig = Build(server, api);
