@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Text.Json.Nodes;
 using System.Threading;
 
 // Shared utilities used by all protocol implementations.
@@ -25,6 +26,15 @@ static class ProtocolHelpers
 	public static HttpClient GetClient()
 	{
 		return SharedClient;
+	}
+
+	// The two sampling controls all three APIs spell the same way. Unset means unsent.
+	public static void ApplyTemperatureAndTopP(JsonObject body, ModelConfig config)
+	{
+		if (config.Temperature.HasValue)
+			body["temperature"] = config.Temperature.Value;
+		if (config.TopP.HasValue)
+			body["top_p"] = config.TopP.Value;
 	}
 
 	// Whether a finish reason says the output limit ended the turn: "length" on the OpenAI shapes,

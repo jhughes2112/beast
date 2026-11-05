@@ -174,11 +174,22 @@ public class FakeProvider
 		return server;
 	}
 
+	// Called with the running request count as each request arrives, before it is answered, so a test can
+	// act while a turn is deterministically in flight.
+	private Action<int>? _onRequest;
+
+	public void OnRequest(Action<int> hook)
+	{
+		lock (_gate)
+			_onRequest = hook;
+	}
+
 	// Clears the script, the log, the threads and every limit, ready for the next scenario.
 	public void Reset()
 	{
 		lock (_gate)
 		{
+			_onRequest = null;
 			_script.Clear();
 			_requests.Clear();
 			_threadMedia.Clear();
@@ -333,6 +344,7 @@ public class FakeProvider
 				}
 			}
 			_requests.Add(new FakeRequest(api, body, streaming, media, visible, reply.ErrorStatus == 0 ? 200 : reply.ErrorStatus));
+			_onRequest?.Invoke(_requests.Count);
 		}
 
 		if (reply.ErrorStatus != 0)

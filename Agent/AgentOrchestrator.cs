@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -642,7 +643,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	public static readonly HashSet<string> GlobalCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 	{
 		"quit", "finish", "reload", "help", "delete-session", "test", "clear",
-		"config-endpoints", "config-catalog", "config-apply", "config-search-apply", "config-endpoint-move", "config-hallmonitor",
+		"config-endpoints", "config-catalog", "config-apply", "config-test", "config-search-apply", "config-endpoint-move", "config-hallmonitor",
 		"config-roles", "config-role-apply"
 	};
 
@@ -1208,6 +1209,26 @@ public class AgentOrchestrator : ISessionOrchestrator
 		return (models, error);
 	}
 
+	// Tries a model's edited settings with one small request and tells the picker how it went. Nothing is
+	// saved; an apply that did not re-enter the key uses the one on disk, as the save itself would.
+	private async Task HandleConfigTestAsync(string sessionId, string args, CancellationToken ct)
+	{
+		ConfigTestPayload payload = JsonSerializer.Deserialize(args, BeastJson.Compact.ConfigTestPayload)!;
+		string            apiKey  = payload.ApiKey.Length > 0 ? payload.ApiKey : FindAutoEndpoint(payload.BaseUrl)?.ApiKey ?? string.Empty;
+
+		(LlmService? service, string error) = _registry.CreateTrialService(payload.BaseUrl, apiKey, payload.Model);
+		if (service != null)
+			error = await ModelTrial.RunAsync(service, sessionId, ct);
+
+		JsonObject result = new JsonObject
+		{
+			["kind"]  = "test-result",
+			["id"]    = payload.Id,
+			["error"] = error
+		};
+		_transport.Config(sessionId, result.ToJsonString());
+	}
+
 	// Applies one endpoint's desired state from the picker: persists it to the project
 	// settings.json, then runs the full reload so the new models are live immediately.
 	private async Task HandleConfigApplyAsync(string sessionId, string args, CancellationToken ct)
@@ -1426,6 +1447,25 @@ public class AgentOrchestrator : ISessionOrchestrator
 			case "config-apply":
 				await HandleConfigApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
+			case "config-test":
+			{
+				// In the background for the same reason as the catalog: a slow model must not leave the
+				// input loop deaf while the user waits on it, or gives up.
+				string testArgs = spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty;
+				_               = Task.Run(async () =>
+				{
+					try
+					{
+						await HandleConfigTestAsync(sessionId, testArgs, ct);
+					}
+					catch (Exception ex)
+					{
+						Console.Error.WriteLine($"[AgentOrchestrator] config-test threw: {ex}");
+						_transport.Error(sessionId, $"Model test failed: {ex.Message}");
+					}
+				}, ct);
+				break;
+			}
 			case "config-search-apply":
 				await HandleConfigSearchApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
@@ -1442,7 +1482,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 				await HandleConfigRoleApplyAsync(sessionId, spaceIdx >= 0 ? trimmed.Substring(spaceIdx + 1).Trim() : string.Empty, ct);
 				break;
 			case "help":
-				_transport.Output(sessionId, "Commands: /compact, /clear, /reload, /model <id>, /finish, /test, /quit");
+				_transport.Output(sessionId, "Commands: /compact, /clear, /reload, /model <id>, /pause, /resume, /finish, /test, /quit");
 				break;
 			case "delete-session":
 			{

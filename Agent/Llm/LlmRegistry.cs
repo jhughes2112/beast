@@ -254,6 +254,37 @@ public class LlmRegistry
 		}
 	}
 
+	// A service for settings that are not saved yet, to try them against the endpoint. Everything it
+	// touches is its own: a failure must not mark the real model down, and what it learns from a refusal
+	// must not be written over settings the user has not accepted. The protocol is left to probe, which
+	// is what applies the localhost fallback. A decisions-only model has no chat call to try, so it gets
+	// no service and no error; a model missing from the catalog gets the error.
+	public (LlmService? Service, string Error) CreateTrialService(string baseUrl, string apiKey, AutoModelConfig candidate)
+	{
+		DiscoveredModel? found = null;
+		foreach (DiscoveredModel d in CachedCatalog(baseUrl) ?? new List<DiscoveredModel>())
+		{
+			if (string.Equals(d.Id, candidate.Id, StringComparison.OrdinalIgnoreCase))
+				found = d;
+		}
+
+		LlmService? service = null;
+		string      error   = found == null ? $"'{candidate.Id}' is not in the catalog of {baseUrl}." : string.Empty;
+		if (found != null)
+		{
+			ModelConfig config = BuildModelConfig(candidate, found);
+			if (!OutputModality.DecisionsOnly(config.Output))
+			{
+				string   endpoint = ModelCatalog.NormalizeRequestEndpoint(baseUrl);
+				LlmModel model    = new LlmModel(candidate.Id, endpoint, apiKey,
+					candidate.Extras ?? new List<System.Text.Json.Nodes.JsonObject>(), candidate.Headers ?? new List<System.Text.Json.Nodes.JsonObject>(), config);
+				service = new LlmService(model, DetectedProtocol.Unknown, new ModelAvailability(), GetOrCreateEndpointFacts(endpoint), new List<string> { candidate.Id },
+					(id, effort, summaries, retainReasoning, maxImages) => { });
+			}
+		}
+		return (service, error);
+	}
+
 	// Merges one enabled model's persisted overrides over its discovered catalog entry. The rule
 	// is absolute: any value present in settings wins; discovery fills the rest; genuinely unknown
 	// fields fall to conservative defaults (window 32768, cost 0, text-only).
@@ -294,6 +325,14 @@ public class LlmRegistry
 			RetainReasoning       = enabled.RetainReasoning,
 			MaxImages             = enabled.MaxImages,
 			RequestTimeoutSeconds = enabled.RequestTimeoutSeconds,
+			Seed                  = enabled.Seed,
+			Temperature           = enabled.Temperature,
+			TopP                  = enabled.TopP,
+			TopK                  = enabled.TopK,
+			MinP                  = enabled.MinP,
+			FrequencyPenalty      = enabled.FrequencyPenalty,
+			PresencePenalty       = enabled.PresencePenalty,
+			RepetitionPenalty     = enabled.RepetitionPenalty,
 			Cost                  = cost,
 			Input                 = input,
 			Output                = output

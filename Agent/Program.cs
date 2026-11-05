@@ -33,6 +33,7 @@ public class Program
 			MediaToolResultTests.Test(ctx);
 			await ProtocolConformanceTests.TestAsync(ctx);
 			await UsageLimitResumeTests.TestAsync(ctx);
+			await PauseAndTrialTests.TestAsync(ctx);
 			await MediaResizeTests.TestAsync(ctx);
 			await SandboxTests.TestAsync(ctx);
 			await ToolSandboxTests.TestAsync(ctx);

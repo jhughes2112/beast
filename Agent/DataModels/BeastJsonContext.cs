@@ -21,6 +21,7 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(ConfigEndpointsPayload))]
 [JsonSerializable(typeof(ConfigCatalogPayload))]
 [JsonSerializable(typeof(ConfigApplyPayload))]
+[JsonSerializable(typeof(ConfigTestPayload))]
 [JsonSerializable(typeof(ConfigSearchApplyPayload))]
 [JsonSerializable(typeof(ConfigRolesPayload))]
 [JsonSerializable(typeof(ConfigRoleApplyPayload))]

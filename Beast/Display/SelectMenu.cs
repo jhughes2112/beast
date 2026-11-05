@@ -235,7 +235,7 @@ public static class SelectMenu
 		List<ChoiceLine> text = new List<ChoiceLine>();
 		foreach (string line in lines)
 			text.Add(new ChoiceLine(line, null, false));
-		ChoicePopup popup  = new ChoicePopup(string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, _ => { });
+		ChoicePopup popup  = new ChoicePopup(string.Empty, string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, _ => { });
 		int         chosen = -1;
 		while (chosen < 0)
 		{

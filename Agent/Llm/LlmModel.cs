@@ -51,11 +51,20 @@ public class LlmModel
 			MaxImages       = Config.MaxImages,
 			// Carried: a slow box needs its patience on every call, quiet or not.
 			RequestTimeoutSeconds = Config.RequestTimeoutSeconds,
-			Cost                  = Config.Cost,
-			Input                 = Config.Input,
-			Output                = Config.Output,
-			Extras                = Config.Extras,
-			Headers               = Config.Headers
+			// Carried: a reproducible run stays reproducible through its mechanical calls.
+			Seed              = Config.Seed,
+			Temperature       = Config.Temperature,
+			TopP              = Config.TopP,
+			TopK              = Config.TopK,
+			MinP              = Config.MinP,
+			FrequencyPenalty  = Config.FrequencyPenalty,
+			PresencePenalty   = Config.PresencePenalty,
+			RepetitionPenalty = Config.RepetitionPenalty,
+			Cost              = Config.Cost,
+			Input             = Config.Input,
+			Output            = Config.Output,
+			Extras            = Config.Extras,
+			Headers           = Config.Headers
 		};
 		return new LlmModel(ConfigId, Endpoint, ApiKey, Extras, Headers, quiet);
 	}

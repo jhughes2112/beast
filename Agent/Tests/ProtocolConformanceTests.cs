@@ -82,6 +82,8 @@ public static class ProtocolConformanceTests
 				await TestPlainTextAsync(ctx, server, api, cts.Token);
 				await TestToolRoundTripAsync(ctx, server, api, cts.Token);
 				await TestCompactSseAsync(ctx, server, api, cts.Token);
+				await TestSeedAsync(ctx, server, api, cts.Token);
+				await TestSamplingAsync(ctx, server, api, cts.Token);
 				if (api.Protocol == DetectedProtocol.ChatCompletions)
 				{
 					await TestCutOffTurnAsync(ctx, server, api, cts.Token);
@@ -116,6 +118,81 @@ public static class ProtocolConformanceTests
 	}
 
 	// ---- Scenarios ----
+
+	// Unset controls never reach the wire, on Messages included, where a current model refuses them with
+	// a 400. Set ones reach each API that has the field and stay off the rest.
+	private static async Task TestSamplingAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		string[] all = { "temperature", "top_p", "top_k", "min_p", "frequency_penalty", "presence_penalty", "repetition_penalty" };
+
+		Rig unset = Build(server, api);
+		unset.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer"));
+		await StepAsync(unset, ct);
+		foreach (string name in all)
+			ctx.Assert(server.Requests()[0].Body[name] == null, $"{api.Name} Sampling: unset {name} is not sent");
+
+		ModelConfig config = new ModelConfig
+		{
+			Temperature       = 0.7m,
+			TopP              = 0.9m,
+			TopK              = 40,
+			MinP              = 0.05m,
+			FrequencyPenalty  = 0.1m,
+			PresencePenalty   = -0.2m,
+			RepetitionPenalty = 1.1m
+		};
+		Rig set = Build(server, api, null, config);
+		set.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer"));
+		await StepAsync(set, ct);
+		JsonNode body = server.Requests()[0].Body;
+
+		ctx.AssertEqual(0.7m, body["temperature"]?.GetValue<decimal>() ?? -9m, $"{api.Name} Sampling: temperature is sent");
+		ctx.AssertEqual(0.9m,       body["top_p"]?.GetValue<decimal>() ?? -9m, $"{api.Name} Sampling: top_p is sent");
+
+		bool chat = api.Protocol == DetectedProtocol.ChatCompletions;
+		ctx.AssertEqual(api.Protocol != DetectedProtocol.Responses ? 40 : -9, body["top_k"]?.GetValue<int>() ?? -9, $"{api.Name} Sampling: top_k only where the API has it");
+		ctx.AssertEqual(chat ? 0.05m : -9m,              body["min_p"]?.GetValue<decimal>() ?? -9m, $"{api.Name} Sampling: min_p only on ChatCompletions");
+		ctx.AssertEqual( chat ? 0.1m : -9m,  body["frequency_penalty"]?.GetValue<decimal>() ?? -9m, $"{api.Name} Sampling: frequency_penalty only on ChatCompletions");
+		ctx.AssertEqual(chat ? -0.2m : -9m,   body["presence_penalty"]?.GetValue<decimal>() ?? -9m, $"{api.Name} Sampling: presence_penalty only on ChatCompletions");
+		ctx.AssertEqual( chat ? 1.1m : -9m, body["repetition_penalty"]?.GetValue<decimal>() ?? -9m, $"{api.Name} Sampling: repetition_penalty only on ChatCompletions");
+	}
+
+	// No configured seed sends none. A configured one, zero included, goes out on ChatCompletions, and an
+	// empty-turn retry steps it because the same seed would reproduce the same empty turn. The other two
+	// APIs have no seed field, so a configured seed must stay off their wire.
+	private static async Task TestSeedAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		Rig unset = Build(server, api, null);
+		unset.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer"));
+		await StepAsync(unset, ct);
+		ctx.Assert(server.Requests()[0].Body["seed"] == null, $"{api.Name} Seed: blank sends no seed");
+
+		Rig zero = Build(server, api, 0);
+		zero.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer"));
+		await StepAsync(zero, ct);
+		JsonNode? zeroSeed = server.Requests()[0].Body["seed"];
+
+		if (api.Protocol == DetectedProtocol.ChatCompletions)
+		{
+			ctx.AssertEqual(0L, zeroSeed?.GetValue<long>() ?? -1L, $"{api.Name} Seed: zero is a real seed");
+
+			Rig retried = Build(server, api, 41);
+			retried.Session.Bundle.OnUserMessage("hello");
+			server.Enqueue(FakeReply.Turn("only thought", string.Empty, new List<(string, string, string)>()));
+			server.Enqueue(FakeReply.Say("answer"));
+			await StepAsync(retried, ct);
+			ctx.AssertEqual(41L, server.Requests()[0].Body["seed"]?.GetValue<long>() ?? -1L, $"{api.Name} Seed: the configured value is sent");
+			ctx.AssertEqual(42L, server.Requests()[1].Body["seed"]?.GetValue<long>() ?? -1L, $"{api.Name} Seed: an empty-turn retry steps it");
+		}
+		else
+		{
+			ctx.Assert(zeroSeed == null, $"{api.Name} Seed: never sent to an API without the field");
+		}
+	}
 
 	// The Responses token-count route is probed once per ENDPOINT, not once per protocol instance —
 	// every session, rehydrate and summarizer stage builds a fresh one. On a Meta-style server the
@@ -708,15 +785,34 @@ public static class ProtocolConformanceTests
 
 	private static Rig Build(FakeProvider server, Api api)
 	{
+		return Build(server, api, null);
+	}
+
+	private static Rig Build(FakeProvider server, Api api, long? seed)
+	{
+		return Build(server, api, seed, new ModelConfig());
+	}
+
+	// Sampling carries the controls under test; only those fields are read from it.
+	private static Rig Build(FakeProvider server, Api api, long? seed, ModelConfig sampling)
+	{
 		server.Reset();
 
 		ModelConfig config = new ModelConfig
 		{
-			Id              = $"fake-{api.Name.ToLowerInvariant()}",
-			Name            = $"Fake {api.Name}",
-			ContextWindow   = 200000,
-			MaxOutputTokens = 4096,
-			Input           = new List<string> { "text", "image" }
+			Id                = $"fake-{api.Name.ToLowerInvariant()}",
+			Name              = $"Fake {api.Name}",
+			ContextWindow     = 200000,
+			MaxOutputTokens   = 4096,
+			Seed              = seed,
+			Temperature       = sampling.Temperature,
+			TopP              = sampling.TopP,
+			TopK              = sampling.TopK,
+			MinP              = sampling.MinP,
+			FrequencyPenalty  = sampling.FrequencyPenalty,
+			PresencePenalty   = sampling.PresencePenalty,
+			RepetitionPenalty = sampling.RepetitionPenalty,
+			Input             = new List<string> { "text", "image" }
 		};
 		LlmModel model = new LlmModel(config.Id, api.Endpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), config);
 

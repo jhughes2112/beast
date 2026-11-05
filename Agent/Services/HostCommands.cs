@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 //
 // Wire protocol (Config frames out, global commands in):
 //   client -> agent  /host-shells <name,name,...>                    the shells this machine has
-//   agent -> client  {"kind":"host-ask","id","shell","command","reason"}  put an Unsure command to the user
+//   agent -> client  {"kind":"host-ask","id","sessionId","shell","command","reason"}  put an Unsure command to the user
 //   agent -> client  {"kind":"host-ask-cancel","id"}                 the tool call went away; drop the question
 //   client -> agent  /host-answer <id> <always|yes|no|never>
 //   agent -> client  {"kind":"host-run","id","shell","command"}      run it
@@ -178,12 +178,13 @@ public class HostCommands
 
 		JsonObject frame = new JsonObject
 		{
-			["kind"]    = "host-ask",
-			["id"]      = id,
-			["shell"]   = shell,
-			["command"] = command,
-			["prompt"]  = HallMonitor.AskText(command),
-			["reason"]  = reason
+			["kind"]      = "host-ask",
+			["id"]        = id,
+			["sessionId"] = sessionId,
+			["shell"]     = shell,
+			["command"]   = command,
+			["prompt"]    = HallMonitor.AskText(command),
+			["reason"]    = reason
 		};
 		_transport.Config(sessionId, frame.ToJsonString());
 

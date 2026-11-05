@@ -43,6 +43,12 @@ public class BeastApp : IAsyncDisposable
 
 		// Termination status reported by the agent via SessionStatus frames. Defaults to Ongoing.
 		public SessionStatus Status = SessionStatus.Ongoing;
+
+		// Paused by the user, as reported by the agent. Drives the F10 row and its Play/Pause button.
+		public bool Paused;
+
+		// Stopped with a turn still to send, as reported by the agent. Whether Play is offered once idle.
+		public bool CanContinue;
 	}
 
 	private readonly ILauncher      _agentContext;
@@ -652,7 +658,7 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				// Status is the agent's to report (SessionStatus frames), not inferred from busyness:
 				// a busy session may be Working (owes its caller a reply) or plain Ongoing chat.
 				// The separator busy animation reflects the viewed session only; the F10 overlay
-				// dots show every session's busy state independently via NotifySessionList.
+				// indicators show every session's state independently via NotifySessionList.
 				if (isActive)
 					_display.SetAgentBusy(true, session.BusyStartTick);
 				NotifySessionList();
@@ -729,10 +735,19 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				break;
 
 			case FrameType.Config:
-				// A host_command to run or stop here; otherwise a /config flow payload for the picker
-				// overlay or a popup. Never rendered in the transcript.
-				if (_hostRunner == null || !_hostRunner.OnConfigFrame(effectiveId, content))
+				// The agent's report of whether a session is paused and whether Play could continue it; otherwise a
+				// host_command to run or stop here, or a /config flow payload for the picker overlay or a popup.
+				// Never rendered in the transcript.
+				if (content.Contains("\"kind\":\"session-state\"", StringComparison.Ordinal))
+				{
+					session.Paused      = content.Contains("\"paused\":true",      StringComparison.Ordinal);
+					session.CanContinue = content.Contains("\"canContinue\":true", StringComparison.Ordinal);
+					NotifySessionList();
+				}
+				else if (_hostRunner == null || !_hostRunner.OnConfigFrame(effectiveId, content))
+				{
 					_display.OnConfigFrame(content);
+				}
 				break;
 
 			case FrameType.SessionAnnounce:

@@ -13,14 +13,20 @@ public class SessionDisplayInfo
 	public int Depth { get; }
 	// Termination status for non-busy sessions; Ongoing while the session is busy.
 	public SessionStatus Status { get; }
+	// Paused by the user. It may still be busy for a moment, finishing the turn in flight.
+	public bool Paused { get; }
+	// Stopped with a turn still to send, so Play would do something. The agent decides; the client cannot tell.
+	public bool CanContinue { get; }
 
-	public SessionDisplayInfo(string id, string name, bool isBusy, int depth, SessionStatus status)
+	public SessionDisplayInfo(string id, string name, bool isBusy, int depth, SessionStatus status, bool paused, bool canContinue)
 	{
-		Id     = id;
-		Name   = name;
-		IsBusy = isBusy;
-		Depth  = depth;
-		Status = status;
+		Id          = id;
+		Name        = name;
+		IsBusy      = isBusy;
+		Depth       = depth;
+		Status      = status;
+		Paused      = paused;
+		CanContinue = canContinue;
 	}
 }
 

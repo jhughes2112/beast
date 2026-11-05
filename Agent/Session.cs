@@ -54,6 +54,24 @@ public class Session
 	// NeedsAttention() returns false while set, so the idle loop waits for real new input.
 	private bool _interruptedAndWaiting = false;
 
+	// Set by /pause: the turn in flight finishes, tool results included, and no further turn starts until
+	// /resume or new text from the user. Unlike the interrupted wait, messages the session sends itself
+	// (nudges, a subagent's reply) do not clear it, or a paused session would restart on its own.
+	// Runtime-only, like the wait: a restored session is parked anyway.
+	private volatile bool _paused = false;
+
+	// Set by an explicit /resume on a conversation ending in tool results, which NeedsLlmAttention reads as
+	// settled: normally the turn loop carries them straight to the next call, and a terminator's result
+	// really is the end. Asking to resume says they are not, so the next cluster sends them.
+	private bool _sendRequested = false;
+
+	// What the client was last told about /resume, so it can offer Play only where Play would do something.
+	private volatile bool _canContinue = false;
+
+	// Set on a compaction predecessor: the conversation carries on in its successor, and an unprompted turn
+	// here would only trigger another compaction. Talking to it still works.
+	private volatile bool _compactedAway = false;
+
 	// True while the session is in a delegation loop: assign_work sets it, stop_work clears it. While set,
 	// the runner re-injects the role's end-of-turn prompt after a no-tool-call turn (so the session is asked
 	// to delegate more or stop) and exposes the stop_work tool. Runtime-only state, not persisted; a resumed
@@ -200,7 +218,10 @@ public class Session
 	public void SendIdle()
 	{
 		if (Interlocked.Decrement(ref _busyCount) == 0)
+		{
+			ReportPlayState();
 			_transport.Idle(_data.Id, _isSubagent);
+		}
 	}
 
 	public void AnnounceToClient()
@@ -434,7 +455,121 @@ public class Session
 
 	// ---- Attention / input ----
 
-	public bool NeedsAttention() => !_pending.IsEmpty || (!_interruptedAndWaiting && NeedsLlmAttention());
+	public bool NeedsAttention() => !_pending.IsEmpty || (!_interruptedAndWaiting && !_paused && (_sendRequested || NeedsLlmAttention()));
+
+	public bool Paused => _paused;
+
+	// Handler thread, draining /resume. True when the conversation has something to send to the model.
+	public bool RequestSend()
+	{
+		bool sendable  = HasSomethingToSend();
+		_sendRequested = sendable && EndsInToolResult();
+		return sendable;
+	}
+
+	// Handler thread. Tells the client when Play starts or stops being able to do anything.
+	public void ReportPlayState()
+	{
+		bool canContinue = HasSomethingToSend();
+		if (canContinue != _canContinue)
+		{
+			_canContinue = canContinue;
+			SendPlayState();
+		}
+	}
+
+	public void MarkCompactedAway()
+	{
+		_compactedAway = true;
+	}
+
+	// A session that delivered its result, or handed its conversation to a successor, is finished: only new
+	// text from the user reopens it. Anything else may still owe the model's next turn.
+	private bool HasSomethingToSend()
+	{
+		bool finished = _compactedAway || _status == SessionStatus.Success || _status == SessionStatus.Failure;
+		return !finished && (EndsInToolResult() || NeedsLlmAttention());
+	}
+
+	private bool EndsInToolResult()
+	{
+		List<CanonicalMessage> messages = _data.Messages;
+		return messages.Count > 0 && messages[messages.Count - 1] is ToolResultMessage;
+	}
+
+	// The cluster that carried the requested send has finished.
+	public void ClearSendRequest()
+	{
+		_sendRequested = false;
+	}
+
+	// Pauses this session and whatever under it is still working, since a parent waiting on a subagent
+	// would otherwise only stop after the subagent had spent its whole run.
+	public void Pause()
+	{
+		SetPaused(true);
+		foreach (Session child in _children.Values)
+			child.PauseIfActive();
+	}
+
+	private void PauseIfActive()
+	{
+		if (Volatile.Read(ref _busyCount) > 0 || !_pending.IsEmpty)
+			SetPaused(true);
+		foreach (Session child in _children.Values)
+			child.PauseIfActive();
+	}
+
+	// Sends the conversation as it stands, including one parked by /cancel, a failed model or a restart.
+	// The queued line is what wakes a parked handler and retries exhausted models. Below this session only
+	// what was paused resumes: parked compaction predecessors and finished children must stay parked.
+	public void Resume()
+	{
+		if (!_compactedAway)
+			_interruptedAndWaiting = false;
+		SetPaused(false);
+		_pending.Enqueue("/resume");
+		Signal();
+		foreach (Session child in _children.Values)
+			child.ResumeIfPaused();
+	}
+
+	private void ResumeIfPaused()
+	{
+		if (_paused)
+		{
+			SetPaused(false);
+			Signal();
+		}
+		foreach (Session child in _children.Values)
+			child.ResumeIfPaused();
+	}
+
+	// Drops the flag without waking anything, for a compaction predecessor handing its pause on.
+	public void ClearPause()
+	{
+		SetPaused(false);
+	}
+
+	private void SetPaused(bool paused)
+	{
+		if (_paused != paused)
+		{
+			_paused = paused;
+			SendPlayState();
+		}
+	}
+
+	private void SendPlayState()
+	{
+		JsonObject state = new JsonObject
+		{
+			["kind"]        = "session-state",
+			["paused"]      = _paused,
+			["canContinue"] = _canContinue
+		};
+		_transport.Config(_data.Id, state.ToJsonString());
+	}
 
 	public string? GetLastAssistantText() => _bundle.GetLastAssistantText();
 
@@ -449,11 +584,20 @@ public class Session
 	// Returns a snapshot of everything currently in the pending queue without consuming any items.
 	public string[] PeekAllPending() => _pending.ToArray();
 
-	public void AddChild(Session child) => _children[child.Id] = child;
+	public void AddChild(Session child)
+	{
+		_children[child.Id] = child;
+
+		// A subagent started by the last tool round of a paused parent waits with it.
+		if (_paused)
+			child.Pause();
+	}
 
 	// Routes incoming text to the correct session by ID.
 	// - If targetId matches this session (targetId == _data.Id):
 	//     /cancel is special: it interrupts the session immediately instead of being queued.
+	//     /pause and /resume act immediately too. Text from the user also ends a pause: they have
+	//     just asked for an answer.
 	//     Everything else (plain text and slash commands alike) goes to the pending queue
 	//     in arrival order, to be drained at the next turn boundary or mid-turn checkpoint.
 	// - If targetId is a descendant (targetId.StartsWith(_data.Id + "_", ...)):
@@ -469,6 +613,14 @@ public class Session
 			{
 				Interrupt();
 			}
+			else if (text.Equals("/pause", StringComparison.OrdinalIgnoreCase))
+			{
+				Pause();
+			}
+			else if (text.Equals("/resume", StringComparison.OrdinalIgnoreCase))
+			{
+				Resume();
+			}
 			else if (text.StartsWith("/"))
 			{
 				_pending.Enqueue(text);
@@ -476,6 +628,7 @@ public class Session
 			}
 			else
 			{
+				SetPaused(false);
 				AddUserMessage(text);
 			}
 			return;

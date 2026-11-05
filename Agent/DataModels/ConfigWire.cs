@@ -206,6 +206,23 @@ public class ConfigModelInfo
 	public AutoModelConfig? Override { get; set; } = null;
 }
 
+// Beast → Agent trial of a model's edited settings (the argument of /config-test), before they are
+// saved. Id comes back on the result, so a client that gave up waiting can ignore a late answer.
+public class ConfigTestPayload
+{
+	[JsonPropertyName("id")]
+	public int Id { get; set; } = 0;
+
+	[JsonPropertyName("baseUrl")]
+	public string BaseUrl { get; set; } = string.Empty;
+
+	[JsonPropertyName("apiKey")]
+	public string ApiKey { get; set; } = string.Empty;
+
+	[JsonPropertyName("model")]
+	public AutoModelConfig Model { get; set; } = new();
+}
+
 // Beast → Agent apply payload (sent as the argument of /config-apply): the full desired state of
 // one auto endpoint. Models is the enabled set; each entry carries only user-supplied overrides.
 public class ConfigApplyPayload

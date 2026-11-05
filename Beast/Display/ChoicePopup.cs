@@ -36,10 +36,12 @@ internal class ChoicePopup
 	private readonly long             _armedAt;
 	private          int              _selected;
 
-	// id names the question so its asker can withdraw it (empty when it never will).
-	public ChoicePopup(string id, string title, Rgb accent, List<ChoiceLine> lines, List<string> labels, int defaultIndex, int escapeIndex, long armMs, Action<int> onChoice)
+	// id names the question so its asker can withdraw it (empty when it never will). sessionId is the session
+	// held up until it is answered (empty when none is).
+	public ChoicePopup(string id, string sessionId, string title, Rgb accent, List<ChoiceLine> lines, List<string> labels, int defaultIndex, int escapeIndex, long armMs, Action<int> onChoice)
 	{
 		Id           = id;
+		SessionId    = sessionId;
 		_title       = title;
 		_accent      = accent;
 		_lines       = lines;
@@ -60,6 +62,20 @@ internal class ChoicePopup
 	}
 
 	public string Id { get; }
+
+	public string SessionId { get; }
+
+	// The sessions held up by these questions, in the order they will be put to the user.
+	public static List<string> WaitingSessions(List<ChoicePopup> choices)
+	{
+		List<string> waiting = new List<string>();
+		foreach (ChoicePopup choice in choices)
+		{
+			if (choice.SessionId.Length > 0 && !waiting.Contains(choice.SessionId))
+				waiting.Add(choice.SessionId);
+		}
+		return waiting;
+	}
 
 	// Whether keys are still being ignored, so the display knows to redraw once they are not.
 	public bool Arming => Environment.TickCount64 < _armedAt;

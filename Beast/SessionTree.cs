@@ -6,6 +6,41 @@ using System.Collections.Generic;
 // session dictionaries passed in — nothing is held here.
 internal static class SessionTree
 {
+	// Whether any session is actually getting somewhere.
+	public static bool AnyEngaged(IReadOnlyList<SessionDisplayInfo> sessions, HashSet<string> waiting)
+	{
+		bool engaged = false;
+		foreach (SessionDisplayInfo session in sessions)
+			engaged = engaged || IsRunning(session, sessions, waiting);
+		return engaged;
+	}
+
+	// A busy session is running unless it is stuck on an approval, or busy only because something under it
+	// has stopped: on an approval, or paused with a turn still to send. Nothing happens there until the user
+	// acts. A descendant still running elsewhere keeps it running, as it is being worked for.
+	public static bool IsRunning(SessionDisplayInfo session, IReadOnlyList<SessionDisplayInfo> sessions, HashSet<string> waiting)
+	{
+		bool running = false;
+		if (session.IsBusy && !waiting.Contains(session.Id))
+		{
+			bool   held   = false;
+			bool   live   = false;
+			string prefix = session.Id + "_";
+			foreach (SessionDisplayInfo other in sessions)
+			{
+				if (other.Id.StartsWith(prefix, StringComparison.Ordinal))
+				{
+					if (waiting.Contains(other.Id) || (other.Paused && !other.IsBusy && other.CanContinue))
+						held = true;
+					else if (IsRunning(other, sessions, waiting))
+						live = true;
+				}
+			}
+			running = !held || live;
+		}
+		return running;
+	}
+
 	// Returns the parent session ID for a given session ID, or null if it is a root.
 	// Parent-child relationship is encoded as "parentId_N" where N is a positive integer.
 	public static string? GetParentId(string id)
@@ -24,9 +59,9 @@ internal static class SessionTree
 	// activity stays at the top of the list instead of scrolling off the bottom.
 	public static void DfsAdd(
 		string id,
-		int depth,
+		int    depth,
 		Dictionary<string, List<string>> childrenMap,
-		List<(string Id, int Depth)> result)
+		List<(string Id, int Depth)>     result)
 	{
 		result.Add((id, depth));
 		if (!childrenMap.TryGetValue(id, out List<string>? children))
@@ -35,8 +70,8 @@ internal static class SessionTree
 		{
 			int lastA = a.LastIndexOf('_');
 			int lastB = b.LastIndexOf('_');
-			int numA = lastA >= 0 && int.TryParse(a.Substring(lastA + 1), out int nA) ? nA : 0;
-			int numB = lastB >= 0 && int.TryParse(b.Substring(lastB + 1), out int nB) ? nB : 0;
+			int numA  = lastA >= 0 && int.TryParse(a.Substring(lastA + 1), out int nA) ? nA : 0;
+			int numB  = lastB >= 0 && int.TryParse(b.Substring(lastB + 1), out int nB) ? nB : 0;
 			return numB.CompareTo(numA);
 		});
 		foreach (string child in children)
@@ -71,12 +106,12 @@ internal static class SessionTree
 
 	// Identifies all session IDs in the subtree and checks whether the active session is among them.
 	public static (bool WasActiveInSubtree, string SubtreePrefix) CollectSubtreeIds(
-		string sessionId,
+		string              sessionId,
 		IEnumerable<string> sessionKeys,
-		string activeSessionId)
+		string              activeSessionId)
 	{
-		string subtreePrefix = sessionId + "_";
-		bool wasActiveInSubtree = false;
+		string subtreePrefix      = sessionId + "_";
+		bool   wasActiveInSubtree = false;
 		foreach (string id in sessionKeys)
 		{
 			if (string.Equals(id, sessionId, StringComparison.Ordinal) || id.StartsWith(subtreePrefix, StringComparison.Ordinal))
@@ -93,7 +128,7 @@ internal static class SessionTree
 		string subtreePrefix,
 		string sessionId,
 		Dictionary<string, BeastApp.SessionState> sessions,
-		HashSet<string> busySessions,
+		HashSet<string>            busySessions,
 		Dictionary<string, string> sessionDisplayNames)
 	{
 		List<string> toRemove = new List<string>();
@@ -113,14 +148,14 @@ internal static class SessionTree
 	// Pushes the current session list and counts to the display.
 	public static void NotifySessionList(
 		Dictionary<string, BeastApp.SessionState> sessions,
-		HashSet<string> busySessions,
+		HashSet<string>            busySessions,
 		Dictionary<string, string> sessionDisplayNames,
-		string activeSessionId,
-		IDisplay display)
+		string                     activeSessionId,
+		IDisplay                   display)
 	{
 		// Build parent→children map from IDs.
 		Dictionary<string, List<string>> childrenMap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-		HashSet<string> hasParent = new HashSet<string>(StringComparer.Ordinal);
+		HashSet<string>                  hasParent   = new HashSet<string>(StringComparer.Ordinal);
 		foreach (string id in sessions.Keys)
 		{
 			if (string.IsNullOrEmpty(id))
@@ -130,7 +165,7 @@ internal static class SessionTree
 			{
 				if (!childrenMap.TryGetValue(parentId, out List<string>? kids))
 				{
-					kids = new List<string>();
+					kids                  = new List<string>();
 					childrenMap[parentId] = kids;
 				}
 				kids.Add(id);
@@ -154,12 +189,12 @@ internal static class SessionTree
 		List<SessionDisplayInfo> list = new List<SessionDisplayInfo>();
 		foreach ((string id, int depth) in ordered)
 		{
-			string name = sessionDisplayNames.TryGetValue(id, out string? announced) ? announced : id;
-			bool isBusy = busySessions.Contains(id);
-			// Status comes straight from the agent's report — busyness colors the dot, not the name,
-			// so a Working session stays visually distinct whether it is running or parked.
+			string name   = sessionDisplayNames.TryGetValue(id, out string? announced) ? announced : id;
+			bool   isBusy = busySessions.Contains(id);
+			// Status comes straight from the agent's report — busyness sets the row's indicator, not its
+			// hue, so a Working session stays visually distinct whether it is running or parked.
 			SessionStatus status = sessions.TryGetValue(id, out BeastApp.SessionState? st) ? st.Status : SessionStatus.Ongoing;
-			list.Add(new SessionDisplayInfo(id, name, isBusy, depth, status));
+			list.Add(new SessionDisplayInfo(id, name, isBusy, depth, status, st != null && st.Paused, st != null && st.CanContinue));
 		}
 
 		display.SetSessionList(list, activeSessionId);

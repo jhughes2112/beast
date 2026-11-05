@@ -449,6 +449,8 @@ public class ProtocolResponses
 		if (maxCompletionTokens.HasValue && !_subscription)
 			body["max_output_tokens"] = maxCompletionTokens.Value;
 
+		ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
+
 		if (_subscription)
 		{
 			body["store"]            = false;

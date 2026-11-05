@@ -411,9 +411,9 @@ public class ProtocolChatCompletions
 			// model emitted only thinking — typically an XML tool call buried in its reasoning that this
 			// protocol never parsed as a real call. Some local/open ChatCompletions models do this; the
 			// hosted Anthropic and Responses protocols effectively never do, which is why this lives here.
-			// Treat it like the other fixable malformations handled in this loop: discard it and re-post (a
-			// fresh seed is generated each build, so the retry is a genuinely new sample) up to the cap,
-			// rather than surfacing an empty turn the caller cannot act on.
+			// Treat it like the other fixable malformations handled in this loop: discard it and re-post (with
+			// no seed the server samples afresh, and a configured seed is stepped below, so the retry is a
+			// genuinely new sample) up to the cap, rather than surfacing an empty turn the caller cannot act on.
 			int emptyRetries = 0;
 			const int kMaxEmptyRetries = 3;
 
@@ -423,8 +423,13 @@ public class ProtocolChatCompletions
 				// in-protocol retry invisible: the model answered with reasoning and nothing else,
 				// this loop quietly asked again, and the log showed one request where the user
 				// watched three separate thinking blocks go by.
-				JsonObject body      = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
-				string?    mediaNote = _media.TakeNote();
+				JsonObject body = BuildRequestBody(model, tools, forcedToolName, maxCompletionTokens);
+
+				// The same seed on the same request would only reproduce the empty turn being retried.
+				if (emptyRetries > 0 && model.Config.Seed.HasValue)
+					body["seed"] = model.Config.Seed.Value + emptyRetries;
+
+				string? mediaNote = _media.TakeNote();
 				if (mediaNote != null)
 					logger.Note(mediaNote);
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -721,7 +726,22 @@ httpResponse);
 			}
 		}
 
-		body["seed"] = Random.Shared.Next();
+		if (model.Config.Seed.HasValue)
+			body["seed"] = model.Config.Seed.Value;
+
+		// Beyond OpenAI's own fields these are the spellings llama.cpp, vLLM and OpenRouter share.
+		ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
+		if (model.Config.TopK.HasValue)
+			body["top_k"] = model.Config.TopK.Value;
+		if (model.Config.MinP.HasValue)
+			body["min_p"] = model.Config.MinP.Value;
+		if (model.Config.FrequencyPenalty.HasValue)
+			body["frequency_penalty"] = model.Config.FrequencyPenalty.Value;
+		if (model.Config.PresencePenalty.HasValue)
+			body["presence_penalty"] = model.Config.PresencePenalty.Value;
+		if (model.Config.RepetitionPenalty.HasValue)
+			body["repetition_penalty"] = model.Config.RepetitionPenalty.Value;
+
 		// The learned affordable cap (from a credit-gating 402) tightens whatever the caller asked
 		// for, and applies even when the caller left the size unbounded.
 		if (maxCompletionTokens.HasValue)

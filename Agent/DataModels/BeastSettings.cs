@@ -158,6 +158,40 @@ public class AutoModelConfig
 	[JsonPropertyName("requestTimeoutSeconds")]
 	public int RequestTimeoutSeconds { get; set; } = 0;
 
+	// Null = no seed is sent. See ModelConfig.Seed.
+	[JsonPropertyName("seed")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public long? Seed { get; set; } = null;
+
+	// Null = not sent. See ModelConfig.Temperature and the fields after it.
+	[JsonPropertyName("temperature")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? Temperature { get; set; } = null;
+
+	[JsonPropertyName("topP")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? TopP { get; set; } = null;
+
+	[JsonPropertyName("topK")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public int? TopK { get; set; } = null;
+
+	[JsonPropertyName("minP")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? MinP { get; set; } = null;
+
+	[JsonPropertyName("frequencyPenalty")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? FrequencyPenalty { get; set; } = null;
+
+	[JsonPropertyName("presencePenalty")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? PresencePenalty { get; set; } = null;
+
+	[JsonPropertyName("repetitionPenalty")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? RepetitionPenalty { get; set; } = null;
+
 	// Extra top-level fields merged into this model's request body, and extra HTTP headers — the
 	// same shapes as ModelConfig.Extras/Headers, here per model so provider-specific controls (an
 	// OpenRouter provider routing block, a beta header) need no hand-written provider entry. Null =
@@ -235,6 +269,46 @@ public class ModelConfig
 	// runs for minutes before the first token appears (a big quantized model on a slow local box).
 	[JsonPropertyName("requestTimeoutSeconds")]
 	public int RequestTimeoutSeconds { get; set; } = 300;
+
+	// The sampling seed sent with every request to this model; null sends none and leaves sampling to
+	// the server. Zero is a seed like any other. ChatCompletions only: the Messages and Responses APIs
+	// have no such field, and the seed only makes a server repeat itself when the whole request matches.
+	[JsonPropertyName("seed")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public long? Seed { get; set; } = null;
+
+	// Sampling controls; null sends nothing, leaving the provider's own default. Nothing is checked
+	// against what a model accepts: a value the provider refuses comes back as its error, which beats
+	// quietly running with different sampling than was asked for. An API without the field never gets it:
+	// temperature and topP go to all three, topK to ChatCompletions and Messages, the rest to
+	// ChatCompletions only.
+	[JsonPropertyName("temperature")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? Temperature { get; set; } = null;
+
+	[JsonPropertyName("topP")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? TopP { get; set; } = null;
+
+	[JsonPropertyName("topK")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public int? TopK { get; set; } = null;
+
+	[JsonPropertyName("minP")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? MinP { get; set; } = null;
+
+	[JsonPropertyName("frequencyPenalty")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? FrequencyPenalty { get; set; } = null;
+
+	[JsonPropertyName("presencePenalty")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? PresencePenalty { get; set; } = null;
+
+	[JsonPropertyName("repetitionPenalty")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public decimal? RepetitionPenalty { get; set; } = null;
 
 	[JsonPropertyName("cost")]
 	public CostConfig Cost { get; set; } = new();

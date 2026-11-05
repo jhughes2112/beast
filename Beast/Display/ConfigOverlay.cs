@@ -11,7 +11,7 @@ using System.Text.Json.Nodes;
 // keys while open, composites Build() over the frame, and feeds Config frames in.
 internal class ConfigOverlay
 {
-	private enum Mode { Closed, Endpoints, AddPreset, AddUrl, AddKey, Loading, Models, Details, Applying, SearchModel }
+	private enum Mode { Closed, Endpoints, AddPreset, AddUrl, AddKey, Loading, Models, Details, Testing, Applying, SearchModel }
 
 	// One web-search provider as reported by the agent.
 	private class SearchRow
@@ -126,9 +126,13 @@ internal class ConfigOverlay
 		public int OvrMaxImages;
 		// Silent-request timeout in seconds (0 = the default), and extra request fields / headers as a
 		// compact JSON array of objects (empty = none) — the same shapes the settings file stores.
-		public int    OvrTimeout;
-		public string OvrExtras  = string.Empty;
-		public string OvrHeaders = string.Empty;
+		public int OvrTimeout;
+		// Sampling seed sent with each request; null sends none. Zero is a real seed, hence not 0 = none.
+		public long? OvrSeed;
+		// Sampling controls by settings key (see kSampling); a key that is absent is not sent.
+		public readonly Dictionary<string, decimal> OvrSampling = new();
+		public          string                      OvrExtras   = string.Empty;
+		public          string                      OvrHeaders  = string.Empty;
 
 		public bool Enabled;
 		// True when a settings entry exists (even disabled) — disabling never forgets overrides.
@@ -146,7 +150,7 @@ internal class ConfigOverlay
 		// Whether the user has set anything an apply would write for this row.
 		public bool HasOverrides => OvrWindow > 0 || OvrCostIn >= 0 || OvrCostOut >= 0 || OvrModalities != null
 			|| OvrEffort.Length > 0 || !OvrRetainReasoning || !OvrSummaries || OvrMaxImages > 0
-			|| OvrTimeout > 0 || OvrExtras.Length > 0 || OvrHeaders.Length > 0;
+			|| OvrTimeout > 0 || OvrSeed.HasValue || OvrSampling.Count > 0 || OvrExtras.Length > 0 || OvrHeaders.Length > 0;
 
 		// Unknown means neither discovered nor overridden — the fields that MUST be supplied
 		// before the model can be enabled.
@@ -183,6 +187,15 @@ internal class ConfigOverlay
 	// True when the editor was opened by an enable (space on a row with unknowns): finishing it
 	// completes the enable. False when opened by Enter as a plain edit.
 	private bool _detailEnableOnFinish;
+	// The settings as the page opened, to tell whether leaving it has anything to test.
+	private string _detailBaseline = string.Empty;
+	// The settings the user has already been told about (their test failed, or they gave up on it). Esc on
+	// these leaves without asking again: a model that is only down for now must not trap them on the page.
+	private string _detailRefused = string.Empty;
+	// Why the last test failed, in the provider's words. Shown on the page until the next edit.
+	private string _detailError = string.Empty;
+	// Identifies the test being waited on; bumped on giving up so a late answer is ignored.
+	private int _testId;
 
 	// Set by any toggle or committed edit; Esc from the model list applies when dirty and just
 	// returns otherwise, so an untouched visit can never rewrite the settings file.
@@ -330,8 +343,15 @@ internal class ConfigOverlay
 							row.OvrSummaries       = over["reasoningSummaries"]?.GetValue<bool>() ?? true;
 							row.OvrMaxImages       = over["maxImages"]?.GetValue<int>() ?? 0;
 							row.OvrTimeout         = over["requestTimeoutSeconds"]?.GetValue<int>() ?? 0;
-							row.OvrExtras          = ReadObjects(over["extras"]);
-							row.OvrHeaders         = ReadObjects(over["headers"]);
+							row.OvrSeed            = over["seed"]?.GetValue<long>();
+							foreach (string key in kSampling.Keys)
+							{
+								decimal? sampling = over[key]?.GetValue<decimal>();
+								if (sampling.HasValue)
+									row.OvrSampling[key] = sampling.Value;
+							}
+							row.OvrExtras  = ReadObjects(over["extras"]);
+							row.OvrHeaders = ReadObjects(over["headers"]);
 						}
 						_models.Add(row);
 					}
@@ -354,6 +374,11 @@ internal class ConfigOverlay
 						: string.Empty;
 					_mode = Mode.Models;
 				}
+			}
+			else if (kind == "test-result")
+			{
+				if (_mode == Mode.Testing && root?["id"]?.GetValue<int>() == _testId && _detailRow != null)
+					OnTestResult(_detailRow, root?["error"]?.GetValue<string>() ?? string.Empty);
 			}
 			else if (kind == "applied")
 			{
@@ -420,6 +445,8 @@ internal class ConfigOverlay
 			_mode = Mode.Endpoints;
 		else if (_mode == Mode.Applying)
 			_mode = Mode.Models;
+		else if (_mode == Mode.Testing)
+			_mode = Mode.Details;
 		return true;
 	}
 
@@ -471,6 +498,15 @@ internal class ConfigOverlay
 			case Mode.Applying:
 				if (key.Key == ConsoleKey.Escape)
 					_mode = Mode.Endpoints;
+				break;
+			case Mode.Testing:
+				if (key.Key == ConsoleKey.Escape && _detailRow != null)
+				{
+					_testId++;
+					_detailRefused = OverridesJson(_detailRow);
+					_status        = "Test cancelled, settings not saved yet. Esc again leaves without testing.";
+					_mode          = Mode.Details;
+				}
 				break;
 			case Mode.Models:
 				HandleModelsKey(key);
@@ -897,9 +933,11 @@ internal class ConfigOverlay
 		row.OvrSummaries       = true;
 		row.OvrMaxImages       = 0;
 		row.OvrTimeout         = 0;
-		row.OvrExtras          = string.Empty;
-		row.OvrHeaders         = string.Empty;
-		_dirty                 = true;
+		row.OvrSeed            = null;
+		row.OvrSampling.Clear();
+		row.OvrExtras  = string.Empty;
+		row.OvrHeaders = string.Empty;
+		_dirty         = true;
 
 		if (row.Missing)
 		{
@@ -913,7 +951,21 @@ internal class ConfigOverlay
 	// The editable fields of one model, in menu order.
 	private static readonly string[] kDetailFields =
 	{
-		"window", "costIn", "costOut", "modalities", "effort", "summaries", "retain", "timeout", "extras", "headers"
+		"window", "costIn", "costOut", "modalities", "effort", "summaries", "retain", "timeout", "seed",
+		"temperature", "topP", "topK", "minP", "frequencyPenalty", "presencePenalty", "repetitionPenalty",
+		"extras", "headers"
+	};
+
+	// The sampling fields all behave alike, so they share one table keyed by their settings name.
+	private static readonly Dictionary<string, (string Label, string Help)> kSampling = new()
+	{
+		["temperature"]       = ("Temperature",        "Sampling randomness, usually 0-2. Blank = the provider's default. Most current Claude models refuse it."),
+		["topP"]              = ("Top P",              "Nucleus sampling, 0-1. Blank = the provider's default. Most current Claude models refuse it."),
+		["topK"]              = ("Top K",              "Sample from the K likeliest tokens. Blank = the provider's default. Chat Completions and Messages only."),
+		["minP"]              = ("Min P",              "Drop tokens below this share of the likeliest, 0-1. Blank = the provider's default. Chat Completions only."),
+		["frequencyPenalty"]  = ("Frequency penalty",  "Discourage repeating frequent tokens, usually -2 to 2. Blank = the provider's default. Chat Completions only."),
+		["presencePenalty"]   = ("Presence penalty",   "Discourage tokens already used, usually -2 to 2. Blank = the provider's default. Chat Completions only."),
+		["repetitionPenalty"] = ("Repetition penalty", "Multiplier on repeated tokens; 1 is off. Blank = the provider's default. Chat Completions only.")
 	};
 
 	// Opens the settings menu for one row. enableOnFinish completes a pending space-toggle: Esc then
@@ -928,6 +980,9 @@ internal class ConfigOverlay
 		_entry                = string.Empty;
 		_status               = enableOnFinish ? "Fill the fields marked * — Esc then enables the model." : string.Empty;
 		_mode                 = Mode.Details;
+		_detailBaseline       = OverridesJson(row);
+		_detailRefused        = string.Empty;
+		_detailError          = string.Empty;
 	}
 
 	private void HandleDetailsKey(ConsoleKeyInfo key)
@@ -971,7 +1026,7 @@ internal class ConfigOverlay
 		}
 		else if (key.Key == ConsoleKey.Escape)
 		{
-			FinishDetails(row);
+			LeaveDetails(row);
 		}
 		else if (key.Key == ConsoleKey.UpArrow)
 		{
@@ -1016,6 +1071,70 @@ internal class ConfigOverlay
 	{
 		row.Configured = row.Configured || row.HasOverrides;
 		_dirty         = true;
+
+		// The failure was about the settings as they were.
+		if (_detailError.Length > 0)
+		{
+			_detailError = string.Empty;
+			_status      = string.Empty;
+		}
+	}
+
+	// Esc on the settings page. Settings that changed get one small real request first, so a mistake shows
+	// up here rather than after the user has written a prompt. Nothing to test: unchanged, already reported
+	// to the user, or an enable that still lacks required fields and is about to say so.
+	private void LeaveDetails(ModelRow row)
+	{
+		string now     = OverridesJson(row);
+		bool   missing = false;
+		foreach (string field in kDetailFields)
+			missing = missing || DetailRequired(field, row);
+
+		if (now == _detailBaseline || now == _detailRefused || (_detailEnableOnFinish && missing))
+		{
+			FinishDetails(row);
+		}
+		else
+		{
+			_testId++;
+			JsonObject request = new JsonObject
+			{
+				["id"]      = _testId,
+				["baseUrl"] = _baseUrl,
+				["apiKey"]  = _apiKey,
+				["model"]   = BuildEntry(row)
+			};
+			_detailError = string.Empty;
+			_status      = $"Testing {row.Id} with a short Hello World…";
+			_mode        = Mode.Testing;
+			_sendCommand("/config-test " + request.ToJsonString());
+		}
+	}
+
+	// The model answered, so leave as usual; it did not, so stay on the page with the reason in view.
+	private void OnTestResult(ModelRow row, string error)
+	{
+		if (error.Length == 0)
+		{
+			FinishDetails(row);
+			if (_status.Length == 0)
+				_status = $"{row.Id} answered the test.";
+		}
+		else
+		{
+			_detailError   = error;
+			_detailRefused = OverridesJson(row);
+			_status        = "Test failed. Change a setting and Esc to test again, or Esc again to leave anyway.";
+			_mode          = Mode.Details;
+		}
+	}
+
+	// What an apply would write for this row, without the enabled flag: enabling is not a change to test.
+	private static string OverridesJson(ModelRow row)
+	{
+		JsonObject entry = BuildEntry(row);
+		entry.Remove("enabled");
+		return entry.ToJsonString();
 	}
 
 	// Leaving the menu. A pending enable completes only when nothing required is still unknown;
@@ -1070,6 +1189,9 @@ internal class ConfigOverlay
 
 	private static string DetailName(string field)
 	{
+		if (kSampling.TryGetValue(field, out (string Label, string Help) sampling))
+			return sampling.Label;
+
 		switch (field)
 		{
 			case "window":
@@ -1088,6 +1210,8 @@ internal class ConfigOverlay
 				return "Send reasoning back";
 			case "timeout":
 				return "Silent-request timeout (s)";
+			case "seed":
+				return "Random seed";
 			case "extras":
 				return "Extra request fields (JSON)";
 			default:
@@ -1098,6 +1222,9 @@ internal class ConfigOverlay
 	// What the row shows when not being edited: the override, or what rules in its absence.
 	private static string DetailValue(string field, ModelRow row)
 	{
+		if (kSampling.ContainsKey(field))
+			return row.OvrSampling.TryGetValue(field, out decimal sampling) ? sampling.ToString(System.Globalization.CultureInfo.InvariantCulture) : "provider default";
+
 		switch (field)
 		{
 			case "window":
@@ -1117,6 +1244,8 @@ internal class ConfigOverlay
 				return row.OvrRetainReasoning ? "on" : "off";
 			case "timeout":
 				return row.OvrTimeout > 0 ? row.OvrTimeout.ToString() : "300 (default)";
+			case "seed":
+				return row.OvrSeed.HasValue ? row.OvrSeed.Value.ToString() : "not sent (random)";
 			case "extras":
 				return row.OvrExtras.Length > 0 ? DetailJsonText(row.OvrExtras) : "none";
 			default:
@@ -1127,6 +1256,9 @@ internal class ConfigOverlay
 	// One line of help for the selected row: what blank means for THIS field and when to touch it.
 	private static string DetailHelp(string field)
 	{
+		if (kSampling.TryGetValue(field, out (string Label, string Help) sampling))
+			return sampling.Help;
+
 		switch (field)
 		{
 			case "window":
@@ -1143,6 +1275,8 @@ internal class ConfigOverlay
 				return "Replay the model's own thinking back to it. Only for models trained on preserved thinking.";
 			case "timeout":
 				return "How long one request may stay silent before it is retried. Raise for slow local models.";
+			case "seed":
+				return "Whole number sent as the sampling seed. Blank = not sent (random). Chat Completions endpoints only.";
 			case "extras":
 				return "A JSON object merged into every request body, e.g. {\"provider\":{\"order\":[\"Anthropic\"]}} on OpenRouter.";
 			default:
@@ -1161,6 +1295,9 @@ internal class ConfigOverlay
 	// starts blank rather than pre-baking the discovered value into one.
 	private static string DetailPrefill(string field, ModelRow row)
 	{
+		if (kSampling.ContainsKey(field))
+			return row.OvrSampling.TryGetValue(field, out decimal sampling) ? sampling.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+
 		switch (field)
 		{
 			case "window":
@@ -1173,6 +1310,8 @@ internal class ConfigOverlay
 				return row.OvrModalities != null ? string.Join(",", row.OvrModalities) : string.Empty;
 			case "timeout":
 				return row.OvrTimeout > 0 ? row.OvrTimeout.ToString() : string.Empty;
+			case "seed":
+				return row.OvrSeed.HasValue ? row.OvrSeed.Value.ToString() : string.Empty;
 			case "extras":
 				return row.OvrExtras.Length > 0 ? DetailJsonText(row.OvrExtras) : string.Empty;
 			case "headers":
@@ -1188,7 +1327,11 @@ internal class ConfigOverlay
 	{
 		bool ok = true;
 		error   = string.Empty;
-		if (value.Length == 0)
+		if (value.Length == 0 && kSampling.ContainsKey(field))
+		{
+			row.OvrSampling.Remove(field);
+		}
+		else if (value.Length == 0)
 		{
 			switch (field)
 			{
@@ -1213,6 +1356,9 @@ internal class ConfigOverlay
 				case "timeout":
 					row.OvrTimeout = 0;
 					break;
+				case "seed":
+					row.OvrSeed = null;
+					break;
 				case "extras":
 					row.OvrExtras = string.Empty;
 					break;
@@ -1233,6 +1379,31 @@ internal class ConfigOverlay
 				row.OvrTimeout = number;
 			else
 				error = "Enter a whole number greater than zero.";
+		}
+		else if (field == "seed")
+		{
+			ok = long.TryParse(value, out long seed);
+			if (ok)
+				row.OvrSeed = seed;
+			else
+				error = "Enter a whole number, or leave it blank to send no seed.";
+		}
+		else if (field == "topK")
+		{
+			ok = int.TryParse(value, out int topK) && topK > 0;
+			if (ok)
+				row.OvrSampling[field] = topK;
+			else
+				error = "Enter a whole number greater than zero, or leave it blank for the provider's default.";
+		}
+		else if (kSampling.ContainsKey(field))
+		{
+			// decimal, not double: it has no NaN or Infinity, which JSON could not carry to the agent.
+			ok = decimal.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal sampling);
+			if (ok)
+				row.OvrSampling[field] = sampling;
+			else
+				error = "Enter a number, or leave it blank for the provider's default.";
 		}
 		else if (field == "costIn" || field == "costOut")
 		{
@@ -1328,6 +1499,52 @@ internal class ConfigOverlay
 		_sendCommand("/config-catalog " + request.ToJsonString());
 	}
 
+	// One model's settings entry: its id, its enabled flag and the user's overrides.
+	private static JsonObject BuildEntry(ModelRow row)
+	{
+		JsonObject entry = new JsonObject { ["id"] = row.Id, ["enabled"] = row.Enabled };
+		if (row.OvrWindow > 0)
+			entry["contextWindow"] = row.OvrWindow;
+		if (row.OvrCostIn >= 0 || row.OvrCostOut >= 0)
+		{
+			// A half-overridden pair is completed from discovery so the persisted cost object
+			// is always whole; a genuinely unknown side was required at enable time anyway.
+			entry["cost"] = new JsonObject
+			{
+				["input"]  = row.OvrCostIn >= 0 ? row.OvrCostIn : row.DiscCostIn >= 0 ? row.DiscCostIn : 0m,
+				["output"] = row.OvrCostOut >= 0 ? row.OvrCostOut : row.DiscCostOut >= 0 ? row.DiscCostOut : 0m
+			};
+		}
+		if (row.OvrModalities != null)
+		{
+			JsonArray modalities = new JsonArray();
+			foreach (string m in row.OvrModalities)
+				modalities.Add(m);
+			entry["modalities"] = modalities;
+		}
+		if (!string.IsNullOrEmpty(row.OvrEffort))
+			entry["reasoningEffort"] = row.OvrEffort;
+		// These two are written only when OFF: on is the default for both, and the agent writes them
+		// off itself when an endpoint refuses them mid-run.
+		if (!row.OvrRetainReasoning)
+			entry["retainReasoning"] = false;
+		if (!row.OvrSummaries)
+			entry["reasoningSummaries"] = false;
+		if (row.OvrMaxImages > 0)
+			entry["maxImages"] = row.OvrMaxImages;
+		if (row.OvrTimeout > 0)
+			entry["requestTimeoutSeconds"] = row.OvrTimeout;
+		if (row.OvrSeed.HasValue)
+			entry["seed"] = row.OvrSeed.Value;
+		foreach ((string key, decimal sampling) in row.OvrSampling)
+			entry[key] = sampling;
+		if (row.OvrExtras.Length > 0)
+			entry["extras"] = JsonNode.Parse(row.OvrExtras);
+		if (row.OvrHeaders.Length > 0)
+			entry["headers"] = JsonNode.Parse(row.OvrHeaders);
+		return entry;
+	}
+
 	// Builds the apply payload: every configured model (enabled OR disabled — disabling never
 	// forgets), each entry carrying only its enabled flag and the user's overrides. Everything
 	// without an override is re-discovered at every load.
@@ -1339,43 +1556,7 @@ internal class ConfigOverlay
 			if (!row.Enabled && !row.Configured)
 				continue;
 
-			JsonObject entry = new JsonObject { ["id"] = row.Id, ["enabled"] = row.Enabled };
-			if (row.OvrWindow > 0)
-				entry["contextWindow"] = row.OvrWindow;
-			if (row.OvrCostIn >= 0 || row.OvrCostOut >= 0)
-			{
-				// A half-overridden pair is completed from discovery so the persisted cost object
-				// is always whole; a genuinely unknown side was required at enable time anyway.
-				entry["cost"] = new JsonObject
-				{
-					["input"]  = row.OvrCostIn >= 0 ? row.OvrCostIn : row.DiscCostIn >= 0 ? row.DiscCostIn : 0m,
-					["output"] = row.OvrCostOut >= 0 ? row.OvrCostOut : row.DiscCostOut >= 0 ? row.DiscCostOut : 0m
-				};
-			}
-			if (row.OvrModalities != null)
-			{
-				JsonArray modalities = new JsonArray();
-				foreach (string m in row.OvrModalities)
-					modalities.Add(m);
-				entry["modalities"] = modalities;
-			}
-			if (!string.IsNullOrEmpty(row.OvrEffort))
-				entry["reasoningEffort"] = row.OvrEffort;
-			// These two are written only when OFF: on is the default for both, and the agent writes them
-			// off itself when an endpoint refuses them mid-run.
-			if (!row.OvrRetainReasoning)
-				entry["retainReasoning"] = false;
-			if (!row.OvrSummaries)
-				entry["reasoningSummaries"] = false;
-			if (row.OvrMaxImages > 0)
-				entry["maxImages"] = row.OvrMaxImages;
-			if (row.OvrTimeout > 0)
-				entry["requestTimeoutSeconds"] = row.OvrTimeout;
-			if (row.OvrExtras.Length > 0)
-				entry["extras"] = JsonNode.Parse(row.OvrExtras);
-			if (row.OvrHeaders.Length > 0)
-				entry["headers"] = JsonNode.Parse(row.OvrHeaders);
-			models.Add(entry);
+			models.Add(BuildEntry(row));
 		}
 
 		JsonObject payload = new JsonObject
@@ -1571,6 +1752,7 @@ internal class ConfigOverlay
 				break;
 			}
 			case Mode.Loading:
+			case Mode.Testing:
 			case Mode.Applying:
 			{
 				AnsiToScreen.WriteLine(s, 2, bh / 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
@@ -1628,7 +1810,12 @@ internal class ConfigOverlay
 				AnsiToScreen.WriteLine(s, 2, 1, PopupFrame.Fit($"{(_detailEnableOnFinish ? "Enable" : "Settings for")} {row?.Id}", innerW), titleFg, bg);
 				if (row != null)
 				{
-					int visRows = Math.Max(1, bh - 6);
+					// A failed test's reason sits above the help line, taking its rows from the list.
+					List<string> errorLines = WrapDetailError(innerW);
+					for (int e = 0; e < errorLines.Count; e++)
+						AnsiToScreen.WriteLine(s, 2, bh - 3 - errorLines.Count + e, errorLines[e], unknownFg, bg);
+
+					int visRows = Math.Max(1, bh - 6 - errorLines.Count);
 					if (_detailIndex < _detailScroll)
 						_detailScroll = _detailIndex;
 					if (_detailIndex >= _detailScroll + visRows)
@@ -1666,10 +1853,26 @@ internal class ConfigOverlay
 			}
 		}
 
-		if (_status.Length > 0 && _mode != Mode.Loading && _mode != Mode.Applying)
+		if (_status.Length > 0 && _mode != Mode.Loading && _mode != Mode.Testing && _mode != Mode.Applying)
 			AnsiToScreen.WriteLine(s, 2, bh - 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
 
 		return s;
+	}
+
+	// The failed test's reason cut to the page width. A provider's error is usually a line or two of JSON
+	// with the useful part in the middle, so it gets a few rows rather than being clipped to one.
+	private List<string> WrapDetailError(int width)
+	{
+		const int MaxLines = 4;
+		List<string> lines = new List<string>();
+		string       rest  = _detailError.Replace("\r", " ").Replace("\n", " ").Trim();
+		while (rest.Length > 0 && lines.Count < MaxLines && width > 0)
+		{
+			int take = Math.Min(width, rest.Length);
+			lines.Add(rest.Substring(0, take));
+			rest = rest.Substring(take);
+		}
+		return lines;
 	}
 
 	private int CountEnabled()

@@ -24,6 +24,11 @@ public static class ModelSettingsTests
 		{
 			Id                    = "anthropic/claude-x",
 			RequestTimeoutSeconds = 900,
+			Seed                  = 0,
+			Temperature           = 0,
+			TopP                  = 0.9m,
+			TopK                  = 40,
+			RepetitionPenalty     = 1.1m,
 			Extras                = new List<JsonObject> { new JsonObject { ["provider"] = new JsonObject { ["order"] = new JsonArray("Anthropic") } } },
 			Headers               = new List<JsonObject> { new JsonObject { ["anthropic-beta"] = "x" } }
 		};
@@ -31,8 +36,13 @@ public static class ModelSettingsTests
 		string          json = JsonSerializer.Serialize(model, BeastJson.Persist.AutoModelConfig);
 		AutoModelConfig back = JsonSerializer.Deserialize(json, BeastJson.Config.AutoModelConfig)!;
 
-		ctx.AssertEqual(900, back.RequestTimeoutSeconds, "AutoModel: timeout round-trips");
-		ctx.AssertEqual(  1,    back.Extras?.Count ?? 0, "AutoModel: extras round-trip");
+		ctx.AssertEqual( 900,    back.RequestTimeoutSeconds, "AutoModel: timeout round-trips");
+		ctx.AssertEqual(  0L,              back.Seed ?? -1L, "AutoModel: a seed of zero round-trips");
+		ctx.AssertEqual(  0m,       back.Temperature ?? -1m, "AutoModel: a temperature of zero round-trips");
+		ctx.AssertEqual(0.9m,              back.TopP ?? -1m, "AutoModel: top_p round-trips");
+		ctx.AssertEqual(  40,               back.TopK ?? -1, "AutoModel: top_k round-trips");
+		ctx.AssertEqual(1.1m, back.RepetitionPenalty ?? -1m, "AutoModel: repetition penalty round-trips");
+		ctx.AssertEqual(   1,       back.Extras?.Count ?? 0, "AutoModel: extras round-trip");
 		ctx.AssertEqual("Anthropic", back.Extras![0]["provider"]!["order"]![0]!.GetValue<string>(), "AutoModel: extras keep their nesting");
 		ctx.AssertEqual("x",                back.Headers![0]["anthropic-beta"]!.GetValue<string>(), "AutoModel: headers round-trip");
 	}
@@ -42,6 +52,9 @@ public static class ModelSettingsTests
 	{
 		string json = JsonSerializer.Serialize(new AutoModelConfig { Id = "m" }, BeastJson.Persist.AutoModelConfig);
 		ctx.Assert(!json.Contains("extras") && !json.Contains("headers"), "AutoModel: unset extras and headers are not written");
+		ctx.Assert(!json.Contains("seed"), "AutoModel: an unset seed is not written");
+		ctx.Assert(!json.Contains("temperature") && !json.Contains("topP") && !json.Contains("topK") && !json.Contains("minP"), "AutoModel: unset sampling is not written");
+		ctx.Assert(!json.Contains("Penalty"), "AutoModel: unset penalties are not written");
 	}
 
 	private static void TestRoleFieldsRoundTrip(TestContext ctx)
@@ -64,11 +77,14 @@ public static class ModelSettingsTests
 
 	private static void TestWithoutReasoningKeepsTimeout(TestContext ctx)
 	{
-		ModelConfig config = new ModelConfig { Id = "m", Name = "m", ReasoningEffort = "high", RequestTimeoutSeconds = 900 };
+		ModelConfig config = new ModelConfig { Id = "m", Name = "m", ReasoningEffort = "high", RequestTimeoutSeconds = 900, Seed = 7, Temperature = 0.2m, RepetitionPenalty = 1.1m };
 		LlmModel    model  = new LlmModel("m", "http://localhost", string.Empty, new List<JsonObject>(), new List<JsonObject>(), config);
 		LlmModel    quiet  = model.WithoutReasoning();
 
-		ctx.AssertEqual("none",       quiet.Config.ReasoningEffort, "WithoutReasoning: thinking is off");
-		ctx.AssertEqual(   900, quiet.Config.RequestTimeoutSeconds, "WithoutReasoning: the model's timeout is kept");
+		ctx.AssertEqual("none",          quiet.Config.ReasoningEffort, "WithoutReasoning: thinking is off");
+		ctx.AssertEqual(   900,    quiet.Config.RequestTimeoutSeconds, "WithoutReasoning: the model's timeout is kept");
+		ctx.AssertEqual(    7L,              quiet.Config.Seed ?? -1L, "WithoutReasoning: the model's seed is kept");
+		ctx.AssertEqual(  0.2m,       quiet.Config.Temperature ?? -1m, "WithoutReasoning: the model's temperature is kept");
+		ctx.AssertEqual(  1.1m, quiet.Config.RepetitionPenalty ?? -1m, "WithoutReasoning: the model's repetition penalty is kept");
 	}
 }

@@ -30,7 +30,7 @@ public class DisplayScreen : IDisplay
 		// Per-session verbs, handled by the session's own command loop rather than the orchestrator.
 		HashSet<string> verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			"compact", "model", "effort", "cancel", "attach"
+			"compact", "model", "effort", "cancel", "attach", "pause", "resume"
 		};
 		foreach (string verb in AgentOrchestrator.GlobalCommands)
 			verbs.Add(verb);
@@ -155,6 +155,13 @@ public class DisplayScreen : IDisplay
 	private          int                      _sessionTotal      = 0;
 	private readonly List<SessionDisplayInfo> _sessionList       = new List<SessionDisplayInfo>();
 	private          string                   _sessionActiveId   = "";
+	// Any session in the list engaged, not just the one on screen. Drives the title bar animation.
+	private          bool            _anySessionEngaged = false;
+	private readonly HashSet<string> _waitingSessions   = new HashSet<string>(StringComparer.Ordinal);
+	// The screen row of the F10 panel's Pause/Play button, for clicks.
+	private int _treeButtonRow = -1;
+	// Where the calibration box was last drawn, so a click on it stays on it. Empty when it is not up.
+	private Rect _calibrationPopupRect = new Rect(0, 0, 0, 0);
 
 	private readonly List<string> _completions = new List<string> { "/verbose" };
 	private readonly object       _consoleLock = new object();
@@ -531,7 +538,7 @@ public class DisplayScreen : IDisplay
 		foreach (string line in lines)
 			text.Add(new ChoiceLine(line, null, false));
 		lock (_consoleLock)
-			_choices.Add(new ChoicePopup(string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, onChoice));
+			_choices.Add(new ChoicePopup(string.Empty, string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, onChoice));
 		Redraw();
 	}
 
@@ -555,6 +562,7 @@ public class DisplayScreen : IDisplay
 				string           shell   = root?["shell"]?.GetValue<string>() ?? string.Empty;
 				string           command = root?["command"]?.GetValue<string>() ?? string.Empty;
 				string           reason  = root?["reason"]?.GetValue<string>() ?? string.Empty;
+				string           asker   = root?["sessionId"]?.GetValue<string>() ?? string.Empty;
 				List<ChoiceLine> lines   = new List<ChoiceLine>
 				{
 					new ChoiceLine($"Run this {shell} command on your computer?", null, false),
@@ -567,11 +575,12 @@ public class DisplayScreen : IDisplay
 					lines.Add(new ChoiceLine("HallMonitor is unsure: " + reason, Palette.MedGrey, false));
 				}
 				List<string> labels = new List<string> { "&Always", "&Yes", "&No", "Ne&ver" };
-				_choices.Add(new ChoicePopup(id, "HOST command", Palette.HostFg, lines, labels, 2, 2, 700, choice =>
+				_choices.Add(new ChoicePopup(id, asker, "HOST command", Palette.HostFg, lines, labels, 2, 2, 700, choice =>
 				{
 					if (_sendAsync != null)
 						_ = _sendAsync($"/host-answer {id} {HostAnswers[choice]}");
 				}));
+				RefreshSessionActivity();
 				claimed = true;
 			}
 			else if (kind == "host-ask-cancel")
@@ -581,6 +590,7 @@ public class DisplayScreen : IDisplay
 					if (_choices[i].Id == id)
 						_choices.RemoveAt(i);
 				}
+				RefreshSessionActivity();
 				claimed = true;
 			}
 		}
@@ -615,7 +625,7 @@ public class DisplayScreen : IDisplay
 		foreach (string line in lines)
 			text.Add(new ChoiceLine(line, null, false));
 		List<string> labels = new List<string> { "&Delete", "&Cancel" };
-		_choices.Add(new ChoicePopup(string.Empty, "Delete sessions", new Rgb(230, 90, 90), text, labels, 1, 1, 0, choice =>
+		_choices.Add(new ChoicePopup(string.Empty, string.Empty, "Delete sessions", new Rgb(230, 90, 90), text, labels, 1, 1, 0, choice =>
 		{
 			lock (_consoleLock)
 			{
@@ -634,6 +644,65 @@ public class DisplayScreen : IDisplay
 			}
 		}));
 		Redraw();
+	}
+
+	// The title bar animates while any session is engaged, and reads !! once nothing is and a host command
+	// is waiting on the user. Called under the console lock.
+	private void UpdateConsoleChrome()
+	{
+		ConsoleChrome.Update(_anySessionEngaged, _waitingSessions.Count > 0);
+	}
+
+	// Recomputes who is held up by a question and whether anything is still running. Costs a walk of the tree
+	// per session, so it runs when those change rather than every tick. Called under the console lock.
+	private void RefreshSessionActivity()
+	{
+		_waitingSessions.Clear();
+		foreach (string id in ChoicePopup.WaitingSessions(_choices))
+			_waitingSessions.Add(id);
+		_anySessionEngaged = SessionTree.AnyEngaged(_sessionList, _waitingSessions);
+	}
+
+	// Keeps the view on the session whose approval comes up first, so the question on screen is read beside
+	// the conversation that asked it. Run from the tick and not as frames arrive: a frame being processed
+	// is routed by the session on view, which must not change under it. Called under the console lock.
+	private void SnapToWaitingSession()
+	{
+		if (_waitingSessions.Count > 0)
+		{
+			string first = ChoicePopup.WaitingSessions(_choices)[0];
+			if (!string.Equals(first, _sessionActiveId, StringComparison.Ordinal))
+				_sessionSwitchCallback?.Invoke(first);
+		}
+	}
+
+	// Pauses or plays the session the F10 panel has selected, or the one on screen with the panel closed.
+	// A session with nothing for F9 to do is left alone. Called under the console lock.
+	private void TogglePause()
+	{
+		string id = _sessionActiveId;
+		if (_sessionTreeOpen && _sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
+			id = _sessionList[_sessionTreeSelected].Id;
+
+		foreach (SessionDisplayInfo session in _sessionList)
+		{
+			if (session.Id == id)
+			{
+				PlayAction action = SessionTreeLayer.ActionFor(session);
+				if (action != PlayAction.None)
+					_ = SendToAsync(id, action == PlayAction.Pause ? "/pause" : "/resume");
+			}
+		}
+	}
+
+	// Whether a window is over this cell, so the mouse must not reach what is behind it. /config, /role and a
+	// question are modal and own the whole screen; the calibration box only covers its own corner.
+	private bool MouseBlockedByWindow(int row, int col)
+	{
+		bool modal   = _choices.Count > 0 || (_configOverlay != null && _configOverlay.IsOpen) || (_roleOverlay != null && _roleOverlay.IsOpen);
+		Rect box     = _calibrationPopupRect;
+		bool overBox = col >= box.X && col < box.X + box.W && row >= box.Y && row < box.Y + box.H;
+		return modal || overBox;
 	}
 
 	public void SetFrameDrain           (Action drain)                 { _frameDrain = drain; }
@@ -675,7 +744,10 @@ public class DisplayScreen : IDisplay
 			// full delay. The viewed session being busy does NOT block following — a session that is
 			// working but producing nothing is exactly when the user wants to drift to live output.
 			// Output in the viewed session, scrolling, clicking, or leaving the bottom resets the timer.
-			// The F10 overlay being open does not suppress following.
+			// The F10 overlay being open does not suppress following. A waiting approval does: the view
+			// belongs to the session that asked until the user has answered.
+			if (_waitingSessions.Count > 0)
+				return true;
 			if (_scrollTarget >= 0.5f)
 				return true;
 			if (_followReadyTick == 0)
@@ -719,6 +791,7 @@ public class DisplayScreen : IDisplay
 			foreach (SessionDisplayInfo s in sessions)
 				_sessionList.Add(s);
 			_sessionActiveId = activeId;
+			RefreshSessionActivity();
 
 			// A marked session that has gone away is no longer marked.
 			List<string> gone = new List<string>();
@@ -751,7 +824,7 @@ public class DisplayScreen : IDisplay
 				_sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
 
 			// Keep the selected row scrolled into view after a reorder.
-			int visRows = Math.Max(1, _lastHeight - 5);
+			int visRows = Math.Max(1, _lastHeight - 6);
 			if (_sessionTreeSelected < _sessionTreeScroll)
 				_sessionTreeScroll = _sessionTreeSelected;
 			else if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
@@ -1050,8 +1123,8 @@ public class DisplayScreen : IDisplay
 		Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex, _currentRole, _sessionActive, _sessionTotal);
 		frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
 
-		// Animate the console tab title/icon off the same busy state and tick as the separator.
-		ConsoleChrome.Update(_agentBusy, _busyStartTick);
+		// The console tab title/icon is kept current by the tick loop (UpdateConsoleChrome): it follows every
+		// session, so it has to move even while nothing on screen needs a redraw.
 
 		// Input layer.
 		string ghostSuffix = ComputeGhostSuffix();
@@ -1091,7 +1164,8 @@ public class DisplayScreen : IDisplay
 		// rather than on top of it.
 		if (_sessionTreeOpen)
 		{
-			Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId, _sessionMarked);
+			Screen treeOverlay = SessionTreeLayer.Build(_sessionList, _sessionTreeSelected, _sessionTreeScroll, panelW, historyH, _sessionActiveId, _sessionMarked, _waitingSessions);
+			_treeButtonRow     = historyH - 1;
 			// Replace (opaque) so underline/italic in the content behind the panel does not bleed through.
 			frame.Blit(treeOverlay, historyW, 0, BlendMode.Replace, null);
 		}
@@ -1112,8 +1186,13 @@ public class DisplayScreen : IDisplay
 		_calibrationPopupDrawn = _calibrationPopup.Visible;
 		if (_calibrationPopupDrawn)
 		{
-			Screen popup = _calibrationPopup.Build(w);
-			frame.Blit(popup, Math.Max(0, w - popup.W - 2), 1, BlendMode.Replace, null);
+			Screen popup          = _calibrationPopup.Build(w);
+			_calibrationPopupRect = new Rect(Math.Max(0, w - popup.W - 2), 1, popup.W, popup.H);
+			frame.Blit(popup, _calibrationPopupRect.X, 1, BlendMode.Replace, null);
+		}
+		else
+		{
+			_calibrationPopupRect = new Rect(0, 0, 0, 0);
 		}
 
 		// A question waiting for the user: centered above everything else.
@@ -1737,11 +1816,13 @@ public class DisplayScreen : IDisplay
 						// A question's answers light up once keys start counting.
 						needRedraw = true;
 					}
+					SnapToWaitingSession();
+					UpdateConsoleChrome();
 					if (_agentBusy)
 					{
-						// The spinner frames, elapsed-time label, and tab-title animation are all
-						// clock-driven, so redraw every tick while busy. Frame diffing keeps the
-						// emit down to the handful of separator cells that actually changed.
+						// The spinner frames and elapsed-time label are clock-driven, so redraw every
+						// tick while busy. Frame diffing keeps the emit down to the handful of separator
+						// cells that actually changed.
 						needRedraw = true;
 					}
 					if (needRedraw)
@@ -1771,7 +1852,7 @@ public class DisplayScreen : IDisplay
 					_mouseRow        = inputEv.Row;
 					_mouseCol        = inputEv.Col;
 					// Over the session-tree panel there is no history block to highlight.
-					bool overPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
+					bool overPanel = MouseBlockedByWindow(inputEv.Row, inputEv.Col) || (_sessionTreeOpen && inputEv.Col >= _historyWidth);
 					int? slot      = overPanel ? null : SlotAtTerminalRow(inputEv.Row);
 					_hoverSlot     = slot ?? -1;
 					// The cursor glow and copy affordance track the mouse cell-by-cell, so every move
@@ -1787,6 +1868,11 @@ public class DisplayScreen : IDisplay
 				{
 					_mouseRow = inputEv.Row;
 					_mouseCol = inputEv.Col;
+
+					// A window is on top: the history behind it does not scroll.
+					if (MouseBlockedByWindow(inputEv.Row, inputEv.Col))
+						continue;
+
 					// Re-resolve the block under the cursor: it's the wheel target, and on a vertical scroll the
 					// content moves under a stationary mouse so the highlight should track it.
 					bool wheelOverPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
@@ -1814,6 +1900,14 @@ public class DisplayScreen : IDisplay
 			// logic so it never toggles a block or moves the selection.
 			if (inputEv.Type == InputEventType.MouseClick && inputEv.Right)
 			{
+				// Under a modal the chat input is hidden, so text pasted into it would be lost from view
+				// and sent with the next message. A password or API key must not end up there.
+				bool blocked;
+				lock (_consoleLock)
+					blocked = MouseBlockedByWindow(inputEv.Row, inputEv.Col);
+				if (blocked)
+					continue;
+
 				string pasted = PasteFromClipboard(inputBuffer, ref cursorPos, pasteBuffers, ref pasteSeq);
 				if (pasted.Length > 0)
 					inCompletion = false;
@@ -1828,10 +1922,18 @@ public class DisplayScreen : IDisplay
 					_mouseCol     = inputEv.Col;
 					int scrollCol = _historyWidth - 2;
 
-					// A click inside the session-tree panel is the panel's, not the history's — never toggle a
-					// block underneath it.
-					if (_sessionTreeOpen && inputEv.Col >= _historyWidth)
+					// A click on a window stays on that window: nothing behind it may toggle or scroll.
+					if (MouseBlockedByWindow(inputEv.Row, inputEv.Col))
 						continue;
+
+					// A click inside the session-tree panel is the panel's, not the history's — never toggle a
+					// block underneath it. Its one clickable thing is the Pause/Play button.
+					if (_sessionTreeOpen && inputEv.Col >= _historyWidth)
+					{
+						if (inputEv.Row == _treeButtonRow)
+							TogglePause();
+						continue;
+					}
 
 					// Copy-block affordance sits three columns left of the scrollbar on the mouse's row. A click
 					// there copies that block to the clipboard; Shift+click appends instead of replacing. The
@@ -1943,7 +2045,10 @@ public class DisplayScreen : IDisplay
 				if (chosen >= 0)
 				{
 					lock (_consoleLock)
+					{
 						_choices.Remove(question);
+						RefreshSessionActivity();
+					}
 					question.Choose(chosen);
 				}
 				Redraw();
@@ -1994,7 +2099,7 @@ public class DisplayScreen : IDisplay
 						if (_sessionTreeSelected < _sessionList.Count - 1)
 						{
 							_sessionTreeSelected++;
-							int visRows = Math.Max(1, _lastHeight - 5);
+							int visRows = Math.Max(1, _lastHeight - 6);
 							if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
 								_sessionTreeScroll = _sessionTreeSelected - visRows + 1;
 							PreviewSelectedSession();
@@ -2385,6 +2490,11 @@ public class DisplayScreen : IDisplay
 					_ = SendAsync("/cancel");
 				}
 			}
+			else if (key.Key == ConsoleKey.F9)
+			{
+				lock (_consoleLock)
+					TogglePause();
+			}
 			else if (key.Key == ConsoleKey.F10)
 			{
 				lock (_consoleLock)
@@ -2408,7 +2518,7 @@ public class DisplayScreen : IDisplay
 							}
 							// Scroll the pre-selected row into view.
 							_sessionTreeScroll = 0;
-							int visRows        = Math.Max(1, _lastHeight - 5);
+							int visRows        = Math.Max(1, _lastHeight - 6);
 							if (_sessionTreeSelected >= visRows)
 								_sessionTreeScroll = _sessionTreeSelected - visRows + 1;
 						}

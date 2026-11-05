@@ -779,10 +779,13 @@ public class ProtocolAnthropic
 		body["model"]   = model.Config.Id;
 		if (maxTokens > 0)
 		{
-			// count_tokens (maxTokens == 0) rejects extra inputs — max_tokens and temperature are
-			// only legal on the real /messages call.
-			body["max_tokens"]  = maxTokens;
-			body["temperature"] = 1.0;
+			// count_tokens (maxTokens == 0) rejects extra inputs — max_tokens and the sampling controls
+			// are only legal on the real /messages call. Those are sent only when configured: current
+			// models refuse them with a 400, so nothing here may send one on its own account.
+			body["max_tokens"] = maxTokens;
+			ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
+			if (model.Config.TopK.HasValue)
+				body["top_k"] = model.Config.TopK.Value;
 
 			// Caching is OPT-IN on this API: without this field nothing is cached and every turn pays
 			// full input price for the entire conversation again. The top-level form is the automatic

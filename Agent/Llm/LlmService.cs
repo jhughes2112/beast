@@ -170,7 +170,8 @@ public class LlmService
 						bool inputArrived = false;
 						while (_availability.AvailableAt > DateTimeOffset.UtcNow)
 						{
-							if (yieldOnInput && conversation.HasPending)
+							// A pause counts: no turn is in flight during a backoff, so there is nothing to finish.
+							if (yieldOnInput && (conversation.HasPending || conversation.Paused))
 							{
 								inputArrived = true;
 								break;

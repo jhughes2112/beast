@@ -132,6 +132,8 @@ public class SessionHandler
 				// 3. Wait if there is nothing to do.
 				if (!_activeSession.NeedsAttention() || _service == null || role == null)
 				{
+					// Input drained without a turn (a paused session, say) can change what Play would do.
+					_activeSession.ReportPlayState();
 					await WaitForInputOrModelAsync(ct, role, registry, transport);
 					continue;
 				}
@@ -166,6 +168,7 @@ public class SessionHandler
 				}
 				finally
 				{
+					_activeSession.ClearSendRequest();
 					_activeSession.SetDispatchScope(null);
 					_activeSession.SendIdle();
 					if (!_activeSession.Ephemeral)
@@ -262,7 +265,8 @@ public class SessionHandler
 
 		// Deleted ends the cluster immediately: MarkDeleted wakes a parked handler through the
 		// input signal, and without this check the wake would read as steering and run more turns.
-		while (!turnComplete && !contextFull && !ct.IsCancellationRequested && !_activeSession.Deleted)
+		// Paused ends it here too, which is the end of a turn: the last round's tool results are committed.
+		while (!turnComplete && !contextFull && !ct.IsCancellationRequested && !_activeSession.Deleted && !_activeSession.Paused)
 		{
 			// A /reload applied by a drain since the last round: pick up the republished role and
 			// rebuild the toolset from live config before the next call. A role that vanished left
@@ -835,6 +839,14 @@ public class SessionHandler
 				// looking; the successor simply appears in the tree.
 				successor.AnnounceToClient();
 				successor.ReplayToTransport();
+
+				// A pause belongs to the conversation, which now continues on the successor.
+				if (predecessor.Paused)
+				{
+					successor.Pause();
+					predecessor.ClearPause();
+				}
+
 				if (parent == null)
 					transport.SessionActivate(successor.Id);
 				else
@@ -854,6 +866,7 @@ public class SessionHandler
 				successor.TryAttachHandler();
 				predecessor.DetachHandler();
 				predecessor.MarkInterrupted();
+				predecessor.MarkCompactedAway();
 				orchestrator.EnsureHandler(predecessor);
 
 				_activeSession   = successor;
@@ -1062,8 +1075,15 @@ public class SessionHandler
 					if (args != null)
 						_activeSession.AddPendingAttachment(args);
 					break;
+				case "resume":
+					// Session.Resume already released the session; this line exists to wake it.
+					if (!_activeSession.RequestSend())
+						transport.Status(_activeSession.Id, "Nothing to resume: the model has already answered.");
+					else if (_activeSession.Status != SessionStatus.Ongoing)
+						_activeSession.ResumeFromComplete();
+					break;
 				case "help":
-					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /effort <none|minimal|low|medium|high|max>, /cancel");
+					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /effort <none|minimal|low|medium|high|max>, /pause, /resume, /cancel");
 					break;
 				default:
 					transport.Error(_activeSession.Id, $"Unknown command: /{verb}");
@@ -1389,7 +1409,7 @@ public class SessionHandler
 
 	private List<string> BuildCompletionCandidates(RoleService roleService, LlmRegistry registry)
 	{
-		List<string> candidates  = new List<string> { "/compact", "/clear", "/config", "/role", "/reload", "/model", "/finish", "/help" };
+		List<string> candidates  = new List<string> { "/compact", "/clear", "/config", "/role", "/reload", "/model", "/pause", "/resume", "/finish", "/help" };
 		Role?        activeRole  = roleService.GetRole(_activeSession.Role);
 		LlmModel?    activeModel = activeRole != null
 			? registry.GetModelForRole(activeRole, _activeSession.Model, _activeSession.ContextLength + GetCompactionReserve())
