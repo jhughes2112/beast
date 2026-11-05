@@ -39,8 +39,9 @@ rid="$os-$arch"
 
 # Publish beast inside the .NET SDK container; Beast/publish.sh does the work. NuGet packages are cached in
 # a named Docker volume rather than ~/.nuget, which the container's root user would otherwise take over on Linux.
+# Pulling first keeps the SDK, and so the compiler and runtime, on the latest .NET 10 patch.
 echo "Building beast for $rid inside Docker (mcr.microsoft.com/dotnet/sdk:10.0)..."
-docker run --rm -v "$PWD:/src" -v beast-nuget:/root/.nuget/packages mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh "$rid"
+docker run --pull always --rm -v "$PWD:/src" -v beast-nuget:/root/.nuget/packages mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh "$rid"
 echo
 
 # Install to ~/.local/bin, where Claude Code's installer also puts claude, so it is usually on the PATH
@@ -64,12 +65,13 @@ esac
 echo
 
 # Build Docker image (contains Agent at /app/Agent as entrypoint). docker build targets the Docker VM's own
-# CPU, so the image is amd64 or arm64 to match this machine.
+# CPU, so the image is amd64 or arm64 to match this machine. Pulling picks up the latest base images, which
+# sets the ILCompiler version the Agent is built with.
 echo "============================================"
 echo "Building Docker image: beastagent..."
 echo "============================================"
 echo
-docker build -t beastagent:latest -f Dockerfile .
+docker build --pull -t beastagent:latest -f Dockerfile .
 echo
 
 echo "============================================"

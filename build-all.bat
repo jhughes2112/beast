@@ -30,8 +30,9 @@ if /i "%HOST_ARCH%"=="ARM64" (
     set BEAST_RIDS=linux-x64 linux-arm64 osx-x64 osx-arm64 win-arm64 win-x64
 )
 
+REM Pulling first keeps the SDK, and so the compiler and runtime, on the latest .NET 10 patch.
 echo Building beast for %BEAST_RIDS% inside Docker (mcr.microsoft.com/dotnet/sdk:10.0)...
-docker run --rm -v "%CD%:/src" -v "%USERPROFILE%/.nuget/packages:/root/.nuget/packages" mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh %BEAST_RIDS%
+docker run --pull always --rm -v "%CD%:/src" -v "%USERPROFILE%/.nuget/packages:/root/.nuget/packages" mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh %BEAST_RIDS%
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Docker build failed
     popd
@@ -39,11 +40,12 @@ if %ERRORLEVEL% neq 0 (
 )
 echo.
 
-REM The native image first, as beastagent:latest, so it is usable even if an emulated build fails.
+REM The native image first, as beastagent:latest, so it is usable even if an emulated build fails. Pulling
+REM picks up the latest base images, which sets the ILCompiler version the Agent is built with.
 echo ============================================
 echo Building Docker image: beastagent:latest (native)...
 echo ============================================
-docker build -t beastagent:latest -f Dockerfile .
+docker build --pull -t beastagent:latest -f Dockerfile .
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Docker build failed
     popd
@@ -57,7 +59,7 @@ for %%P in (amd64 arm64) do (
     echo ============================================
     echo Building Docker image: beastagent:linux-%%P...
     echo ============================================
-    docker buildx build --platform linux/%%P -t beastagent:linux-%%P -f Dockerfile --load .
+    docker buildx build --pull --platform linux/%%P -t beastagent:linux-%%P -f Dockerfile --load .
     if !ERRORLEVEL! neq 0 (
         echo ERROR: Docker build failed for linux/%%P
         popd

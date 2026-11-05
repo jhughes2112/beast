@@ -39,8 +39,9 @@ if "%BEAST_RID%"=="" (
 
 REM Publish beast inside the .NET SDK container; the source tree is bind-mounted at /src and
 REM Beast/publish.sh does the work. The local NuGet package cache is mounted to avoid redundant downloads.
+REM Pulling first keeps the SDK, and so the compiler and runtime, on the latest .NET 10 patch.
 echo Building beast for %BEAST_RID% inside Docker (mcr.microsoft.com/dotnet/sdk:10.0)...
-docker run --rm -v "%CD%:/src" -v "%USERPROFILE%/.nuget/packages:/root/.nuget/packages" mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh %BEAST_RID%
+docker run --pull always --rm -v "%CD%:/src" -v "%USERPROFILE%/.nuget/packages:/root/.nuget/packages" mcr.microsoft.com/dotnet/sdk:10.0 sh /src/Beast/publish.sh %BEAST_RID%
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Docker build failed
     popd
@@ -69,12 +70,13 @@ if %ERRORLEVEL% neq 0 (
 echo.
 
 REM Build Docker image (contains Agent at /app/Agent as entrypoint). docker build targets the Docker VM's
-REM own CPU, so the image is amd64 or arm64 to match this machine.
+REM own CPU, so the image is amd64 or arm64 to match this machine. Pulling picks up the latest base images,
+REM which sets the ILCompiler version the Agent is built with.
 echo ============================================
 echo Building Docker image: beastagent...
 echo ============================================
 echo.
-docker build -t beastagent:latest -f Dockerfile .
+docker build --pull -t beastagent:latest -f Dockerfile .
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Docker build failed
     popd
