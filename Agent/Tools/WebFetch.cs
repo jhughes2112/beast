@@ -191,7 +191,7 @@ public class WebFetch
 	{
 		return $"URL: {url}\nObjective: {objective}\n\n"
 			+ $"This resource is {sizeBytes} bytes (over the {MaxAutoDownloadBytes}-byte auto-download limit) and was not downloaded. "
-			+ $"If the objective needs its contents, download it yourself with bash, e.g. `curl -sL '{url}' -o /tmp/page` (or wget), then inspect it with read_file and bash. "
+			+ $"If the objective needs its contents, download it yourself with bash, e.g. `mkdir -p /tmp/fetch && curl -sL '{url}' -o /tmp/fetch/page` (or wget), then inspect it with read_file and bash. "
 			+ "Otherwise return what you can determine without it.";
 	}
 

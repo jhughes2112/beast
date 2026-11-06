@@ -39,7 +39,41 @@ public static class Sandbox
 	private static uint   _uid;
 	private static uint   _gid;
 
+	// Repeatable time for seeded runs. A listing or a script that shows the real time hands every run
+	// different text, so a seeded run could never repeat. Time is counted instead: a fixed date plus one
+	// minute per tool call. clockfs (Agent/Docker/clockfs.c), mounted over the workspace and the temp
+	// folder at the first seeded round, gives every change there the counted time; libfaketime gives it
+	// to whatever the model's shell asks the clock.
+	//
+	// The date is the first Monday of a four-week cycle at least two weeks away. It stays put for the
+	// whole cycle, so runs on different days match, and sits ahead of anything already on disk, so a new
+	// file is never older than what it was made from. It stays close enough that certificates are valid.
+	private const string kFileClockPath    = "/run/beast-fileclock";
+	private const string kClockFsPath      = "/opt/agent-bins/clockfs";
+	private const string kFakeTimeLibrary  = "/opt/agent-bins/libfaketime.so.1";
+	private const string kUnfakedBinDir    = "/opt/agent-bins/unfaked";
+	private const string kFuseDevice       = "/dev/fuse";
+	private const long   kFirstCycleMonday = 345600; // 5 January 1970
+	private const long   kFileClockCycle   = 28 * 86400;
+	private const long   kFileClockLead    = 14 * 86400;
+
+	private static readonly System.Text.RegularExpressions.Regex kHttpDateLine = new System.Text.RegularExpressions.Regex(
+		@"^(<?[ \t]*date:[ \t]*)[A-Z]{3}, \d{2} [A-Z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT",
+		System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+	private static readonly SemaphoreSlim _fileClockGate = new SemaphoreSlim(1, 1);
+	private static          long          _fileClockBase;
+	private static          long          _fileClockMinutes;
+	private static          bool          _fileClockFailed;
+	private static volatile string?       _fakeTime;
+
 	public static bool ShellUserActive => _shellUserActive;
+
+	// Whether this container can mount clockfs at all; one created by an older Beast has no fuse device.
+	public static bool FileClockAvailable => _shellUserActive && File.Exists(kClockFsPath) && File.Exists(kFuseDevice);
+
+	// The counted time now, in unix seconds; 0 until the first seeded round.
+	public static long FileClockNow => _fileClockBase + _fileClockMinutes * 60;
 
 	private static string Root => _root.Length > 0 ? _root : Environment.CurrentDirectory;
 
@@ -93,6 +127,117 @@ public static class Sandbox
 				note = (note.Length > 0 ? note + "\n" : string.Empty) + $"[sandbox: the symlink {removed} was removed — top-level names starting with '.' belong to the agent.]";
 		}
 		return note;
+	}
+
+	// The date a clock started at this moment counts from. See kFileClockCycle.
+	public static long FileClockBase(long nowEpoch)
+	{
+		long earliest = nowEpoch + kFileClockLead;
+		long cycles   = (earliest - kFirstCycleMonday + kFileClockCycle - 1) / kFileClockCycle;
+		return kFirstCycleMonday + cycles * kFileClockCycle;
+	}
+
+	// Counts a round of tool calls, one minute each; parallel calls share the time the round ends on, so
+	// which of them finishes first cannot matter. The first round starts the clock: it stamps the workspace
+	// folder and its parent, whose times come from when the container started and show up as the . and ..
+	// lines of a listing, and everything in the temp folder, which only this container ever used; then it
+	// mounts clockfs on both. The workspace's own files keep their times. Temp goes first in case the
+	// workspace is ever inside it. Returns a message
+	// the first time the clock cannot start, and empty otherwise: a failure only costs repeatability, so
+	// it must be seen but never fails the tool call. No-op without a shell user.
+	public static async Task<string> AdvanceFileClockAsync(int toolCalls, CancellationToken ct)
+	{
+		string failure = string.Empty;
+		if (_shellUserActive && !_fileClockFailed)
+		{
+			await _fileClockGate.WaitAsync(ct);
+			try
+			{
+				if (_fileClockBase == 0)
+					failure = await StartFileClockAsync(ct);
+				if (failure.Length == 0)
+				{
+					_fileClockMinutes += toolCalls;
+					WriteFileClock(FileClockNow);
+					_fakeTime = DateTimeOffset.FromUnixTimeSeconds(FileClockNow).ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
+				}
+			}
+			finally
+			{
+				_fileClockGate.Release();
+			}
+		}
+		return failure;
+	}
+
+	private static async Task<string> StartFileClockAsync(CancellationToken ct)
+	{
+		string failure = string.Empty;
+		if (!FileClockAvailable)
+		{
+			failure = $"This container cannot repeat file times: it has no {kFuseDevice} or {kClockFsPath}. Start a new session so it is created with them.";
+		}
+		else
+		{
+			long   start  = FileClockBase(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+			string quoted = Root.Replace("'", "'\\''");
+			WriteFileClock(start);
+			ToolResult result = await ShellTools.AgentBashAsync("sandbox_file_clock",
+				$"W='{quoted}'\nT='{TempFolder()}'\n" +
+				$"find \"$T\" -xdev -exec touch -h -d '@{start}' {{}} + 2>/dev/null\n" +
+				$"touch -h -d '@{start}' \"$W\" \"$(dirname \"$W\")\" && {kClockFsPath} \"$T\" {kFileClockPath} && {kClockFsPath} \"$W\" {kFileClockPath}\n", 120, ct);
+			if (result.ExitCode != 0)
+			{
+				failure = $"Could not mount clockfs, so this run's file times are real and it will not repeat: {result.StdOut} {result.StdErr}".TrimEnd();
+			}
+			else
+			{
+				// This process's working folder is still the real one underneath. A path is resolved
+				// afresh, so this is what puts its own relative paths on the mount too.
+				_fileClockBase = start;
+				Directory.SetCurrentDirectory(Root);
+			}
+		}
+		_fileClockFailed = failure.Length > 0;
+		return failure;
+	}
+
+	// A server reports its own clock in the HTTP Date header, which no local clock can reach. While time is
+	// being counted, a header line a command printed (curl -i, -I, or -v's "< date:") reads the counted time
+	// instead: removing it would hand the model a response missing a header it may be looking for.
+	public static string CountHttpDates(string text)
+	{
+		string result = text;
+		if (_fakeTime != null && text.Length > 0)
+		{
+			string counted = DateTimeOffset.FromUnixTimeSeconds(FileClockNow).ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", System.Globalization.CultureInfo.InvariantCulture);
+			result         = kHttpDateLine.Replace(text, match => match.Groups[1].Value + counted);
+		}
+		return result;
+	}
+
+	private static string TempFolder()
+	{
+		return System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetTempPath()).Replace("'", "'\\''");
+	}
+
+	// In place and never truncated: clockfs reads this on every change, and an empty read means real time.
+	private static void WriteFileClock(long epoch)
+	{
+		byte[] text             = Encoding.ASCII.GetBytes(epoch.ToString(System.Globalization.CultureInfo.InvariantCulture));
+		using FileStream stream = new FileStream(kFileClockPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite);
+		stream.Write(text, 0, text.Length);
+	}
+
+	// Takes clockfs back off the workspace. The caller must have left the workspace first. For tests:
+	// a running agent keeps the mount until its container stops.
+	public static async Task StopFileClockAsync(CancellationToken ct)
+	{
+		await ShellTools.AgentBashAsync("sandbox_file_clock", $"umount '{Root.Replace("'", "'\\''")}'; umount -l '{TempFolder()}'", 60, ct);
+		_fileClockBase    = 0;
+		_fileClockMinutes = 0;
+		_fileClockFailed  = false;
+		_fakeTime         = null;
 	}
 
 	// The names on lines of a script's output that start with marker, comma-separated.
@@ -169,19 +314,42 @@ public static class Sandbox
 	{
 		if (_shellUserActive)
 		{
-			string bash  = psi.FileName;
-			psi.FileName = "setpriv";
-			psi.ArgumentList.Insert(0,                   bash);
-			psi.ArgumentList.Insert(0,        "--init-groups");
+			string bash     = psi.FileName;
+			string fakeTime = _fakeTime ?? string.Empty;
+			psi.FileName    = "setpriv";
+			psi.ArgumentList.Insert(0, bash);
+			// Loaded after setpriv changes user, through env: libfaketime makes a semaphore named after
+			// the process, and one made while still root could not be opened again as the shell user.
+			if (fakeTime.Length > 0)
+			{
+				psi.ArgumentList.Insert(0, $"LD_PRELOAD={kFakeTimeLibrary}");
+				psi.ArgumentList.Insert(0, "/usr/bin/env");
+			}
+			psi.ArgumentList.Insert(0, "--init-groups");
+			// The container holds SYS_ADMIN only so the agent can mount clockfs. Dropped from the bounding
+			// set, nothing the model runs can get it back, not even through a setuid program.
+			psi.ArgumentList.Insert(0, "--bounding-set=-sys_admin");
 			psi.ArgumentList.Insert(0, $"--regid={ShellUser}");
 			psi.ArgumentList.Insert(0, $"--reuid={ShellUser}");
 			psi.Environment["HOME"]    = ShellHome;
 			psi.Environment["USER"]    = ShellUser;
 			psi.Environment["LOGNAME"] = ShellUser;
+
+			string? unfaked = fakeTime.Length > 0 ? kUnfakedBinDir + ":" : null;
+			if (fakeTime.Length > 0)
+			{
+				// NO_FAKE_STAT leaves file times to clockfs: faked, every file reads as now and make never
+				// rebuilds. FAKE_UTIME stops a plain `touch` turning "now" into the real time on its way there.
+				psi.Environment["FAKETIME"]                     = fakeTime;
+				psi.Environment["FAKETIME_DONT_FAKE_MONOTONIC"] = "1";
+				psi.Environment["NO_FAKE_STAT"]                 = "1";
+				psi.Environment["FAKE_UTIME"]                   = "1";
+				psi.Environment["TZ"] = "UTC";
+			}
 			if (!restricted)
 			{
 				string current          = psi.Environment.TryGetValue("PATH", out string? p) && p != null ? p : "/usr/local/bin:/usr/bin:/bin";
-				psi.Environment["PATH"] = $"{ShellHome}/.local/bin:{ShellHome}/.npm-global/bin:{ShellHome}/.dotnet/tools:{current}";
+				psi.Environment["PATH"] = $"{unfaked}{ShellHome}/.local/bin:{ShellHome}/.npm-global/bin:{ShellHome}/.dotnet/tools:{current}";
 			}
 		}
 	}
@@ -362,6 +530,8 @@ public static class Sandbox
 			"  done\n" +
 			"fi\n" +
 			"chown root:root \"$W\"; chmod 1777 \"$W\"\n" +
+			// Docker hands the fuse device over world-writable; only the agent ever mounts anything.
+			"[ -e /dev/fuse ] && chmod 600 /dev/fuse\n" +
 			"exit 0\n";
 	}
 

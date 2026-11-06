@@ -62,8 +62,9 @@ public static class ToolDispatch
 
 	// Dispatches every tool call in the payload, filling payload.ToolResults in call order. Returns
 	// true when at least one tool ran (the assistant turn continues), false when the turn carried no
-	// tool calls (the turn is complete).
-	public static async Task<bool> DispatchAsync(ProtocolCallPayload payload, Tool[] tools, Session session, ITransportServer transport, CancellationToken ct)
+	// tool calls (the turn is complete). countTime is for a seeded model: the sandbox's file times and the
+	// clock its shell sees follow the tool call count instead of the real clock, so a run can repeat.
+	public static async Task<bool> DispatchAsync(ProtocolCallPayload payload, Tool[] tools, Session session, ITransportServer transport, CancellationToken ct, bool countTime = false)
 	{
 		if (payload.ToolCalls.Count == 0)
 			return false;
@@ -75,6 +76,16 @@ public static class ToolDispatch
 			toolLookup[t.Definition.Function.Name] = t;
 
 		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
+
+		if (countTime)
+		{
+			string clockFailure = await Sandbox.AdvanceFileClockAsync(toolCalls.Count, ct);
+			if (clockFailure.Length > 0)
+			{
+				transport.Status(session.Id, clockFailure);
+				session.QueryLog.Note(clockFailure);
+			}
+		}
 
 		// Every call gets the same fixed ceiling — a property of what any single raw output is worth,
 		// not of how much room the caller happens to have left. Sizing outputs from the remaining

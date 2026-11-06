@@ -37,6 +37,14 @@ public static class HostCommandTests
 			ctx.Assert(         !noHost.GetRole("Default")!.SystemPrompt.Contains("two machines"), "host_command: no note when no host was given");
 			ctx.Assert(               !withHost.Roles["Default"].SystemPrompt.Contains("Test OS"), "host_command: the note never reaches the stored role");
 
+			// Every default role's own prompt keeps timestamps and bare /tmp out of its output.
+			foreach (string name in new[] { "Default", "Developer", "Reviewer", "Explorer", "WebFetch", "WebSearch", "MediaReader", ReasoningSummarizer.RoleName })
+			{
+				string prompt = noHost.GetRole(name)!.SystemPrompt;
+				ctx.Assert(prompt.Contains("\n\nDO NOT DISPLAY timestamps") && prompt.Contains("subfolder of /tmp"), $"Stable output: {name}'s prompt says so, in its own paragraph");
+			}
+
+
 			// Only the shells the client announced are accepted, and cmd only takes one line.
 			ctx.Assert(host.Shells.Count == 0, "host_command: no shells until the client says which it has");
 			ctx.Assert(host.HandleInbound("/host-shells bash,cmd,bash"), "host_command: the client's shell list is claimed");

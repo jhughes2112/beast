@@ -244,6 +244,19 @@ RUN useradd --create-home --uid 1500 --shell /bin/bash beast \
     && chown -R beast:beast /home/beast \
     && su beast -c 'dotnet nuget locals all --list >/dev/null'
 
+# Repeatable time for seeded runs (Sandbox.cs). clockfs gives workspace changes a counted time; libfaketime
+# gives the same time to whatever the shell asks the clock. dotnet's build servers crash under libfaketime,
+# so it gets a wrapper that clears it. Only libfuse's library and headers: no fuse3 package, so no setuid
+# fusermount3 a non-root user could mount with.
+COPY ["Agent/Docker/clockfs.c", "/tmp/clockfs.c"]
+RUN apt-get update && apt-get install -y --no-install-recommends libfuse3-dev libfaketime \
+    && mkdir -p /opt/agent-bins/unfaked \
+    && gcc -O2 -Wall -o /opt/agent-bins/clockfs /tmp/clockfs.c $(pkg-config --cflags --libs fuse3) \
+    && rm /tmp/clockfs.c \
+    && ln -s "$(find /usr/lib -name libfaketime.so.1 | head -n1)" /opt/agent-bins/libfaketime.so.1 \
+    && printf '#!/bin/bash\nunset LD_PRELOAD FAKETIME FAKETIME_DONT_FAKE_MONOTONIC NO_FAKE_STAT FAKE_UTIME\nexec "%s" "$@"\n' "$(readlink -f "$(command -v dotnet)")" > /opt/agent-bins/unfaked/dotnet \
+    && chmod +x /opt/agent-bins/unfaked/dotnet
+
 # Package lists stay in the image so the model's shell can check what exists and what is installed
 # (apt-cache policy/search, apt list) before asking apt_install for something; apt_install refreshes
 # them before its first install.
@@ -287,8 +300,9 @@ COPY --chmod=755 ["Agent/Docker/exiftool-readonly.sh", "/opt/agent-bins/readonly
 # Copy the single-file published executable from the build stage
 COPY --from=build /app/publish/Agent .
 
-# Make executable
-RUN chmod +x /app/Agent
+# Make executable. The image's build steps leave scratch folders with random names in /tmp, and a model
+# that lists /tmp should not see them change whenever the image is rebuilt.
+RUN chmod +x /app/Agent && rm -rf /tmp/* /tmp/.[!.]*
 
 EXPOSE 13131
 

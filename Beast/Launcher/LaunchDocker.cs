@@ -296,6 +296,11 @@ public class LaunchDocker : ILauncher
 		// let the browser's WebGL run on the real GPU instead of software rendering.
 		SystemInfoResponse  info    = await _dockerClient.System.GetSystemInfoAsync(cancellationToken);
 		List<DeviceMapping> devices = new List<DeviceMapping>();
+
+		// clockfs, which makes file times repeatable for a seeded model. Whether one is seeded is only known
+		// at its first request, so every container has to be able to mount it. Only the root agent keeps
+		// the capability: the model's shell drops it, and the agent takes the device away from it (Sandbox).
+		devices.Add(new DeviceMapping { PathOnHost = "/dev/fuse", PathInContainer = "/dev/fuse", CgroupPermissions = "rwm" });
 		if (IsWslBackend(info))
 		{
 			devices.Add(new DeviceMapping { PathOnHost = "/dev/dxg", PathInContainer = "/dev/dxg", CgroupPermissions = "rwm" });
@@ -345,7 +350,8 @@ public class LaunchDocker : ILauncher
 				},
 				Binds          = binds,
 				Devices        = devices,
-				DeviceRequests = deviceRequests
+				DeviceRequests = deviceRequests,
+				CapAdd         = new List<string> { "SYS_ADMIN" }
 			}
 		};
 

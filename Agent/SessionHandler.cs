@@ -368,7 +368,7 @@ public class SessionHandler
 				bool hasToolCalls;
 				try
 				{
-					hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, _activeSession, transport, _scope.Token);
+					hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, _activeSession, transport, _scope.Token, service.Model.Config.Seed.HasValue);
 				}
 				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
 				{

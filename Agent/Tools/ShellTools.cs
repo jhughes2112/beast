@@ -84,12 +84,11 @@ public static class ShellTools
 	{
 		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, cancellationToken);
 		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
+		string     stdOut     = Sandbox.CountHttpDates(result.StdOut);
+		string     stdErr     = Sandbox.CountHttpDates(result.StdErr);
 		if (sealedNote.Length > 0)
-		{
-			string stdErr = string.IsNullOrEmpty(result.StdErr) ? sealedNote : result.StdErr + "\n" + sealedNote;
-			result        = new ToolResult(toolcallid, result.StdOut, stdErr, result.ExitCode, result.MeasuredOutputTokens);
-		}
-		return result;
+			stdErr = string.IsNullOrEmpty(stdErr) ? sealedNote : stdErr + "\n" + sealedNote;
+		return new ToolResult(toolcallid, stdOut, stdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
 
 	// A shell for the agent's own work — creating and removing the worktree, commit_and_rebase, the

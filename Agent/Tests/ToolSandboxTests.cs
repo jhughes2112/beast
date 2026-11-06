@@ -70,6 +70,68 @@ public static class ToolSandboxTests
 		}
 	}
 
+	private static string FileTime(string path, CancellationToken ct)
+	{
+		return ShellTools.AgentBashAsync("clock_stat", $"stat -c %Y '{path}'", null, ct).GetAwaiter().GetResult().StdOut.Trim();
+	}
+
+	// A seeded run: what changes takes the counted time, what was already there keeps its own.
+	private static async Task FileClockAsync(TestContext ctx, string root, CancellationToken ct)
+	{
+		string parent = Path.GetDirectoryName(root)!;
+		await ShellTools.AgentBashAsync("clock", $"cd '{root}' && echo old > clock_old.txt && touch -d @1000000000 clock_old.txt", null, ct);
+
+		ctx.AssertEqual(string.Empty, await Sandbox.AdvanceFileClockAsync(1, ct), "File clock: it starts");
+		long first = Sandbox.FileClockNow;
+		ctx.AssertEqual((first - 60).ToString(), FileTime(parent, ct), "File clock: the first round stamps the workspace's parent with the date itself");
+
+		// Read within the same call, which stamping after the fact could never cover.
+		ToolResult same  = await ShellTools.BashAsync("clock1", "echo a > clock_bash.txt; stat -c %Y clock_bash.txt; date +%s; touch clock_touch.txt; stat -c %Y clock_touch.txt; ls", null, ct);
+		string[]   lines = same.StdOut.Split('\n');
+		ctx.Assert(same.ExitCode == 0, $"File clock: bash runs under it — exit {same.ExitCode}: {same.StdErr}");
+		ctx.AssertEqual(first.ToString(), lines.Length > 0 ? lines[0].Trim() : string.Empty, "File clock: a file reads as counted in the call that made it");
+		ctx.AssertEqual(first.ToString(), lines.Length > 1 ? lines[1].Trim() : string.Empty, "File clock: date in the shell reads the counted time");
+		ctx.AssertEqual(first.ToString(), lines.Length > 2 ? lines[2].Trim() : string.Empty, "File clock: a plain touch takes the counted time");
+
+		ctx.AssertEqual(string.Empty, await Sandbox.AdvanceFileClockAsync(2, ct), "File clock: it keeps counting");
+		long second = Sandbox.FileClockNow;
+		ctx.AssertEqual(120L, second - first, "File clock: each tool call counts one minute");
+		await FileTools.WriteFileAsync("clock2", "clock_write.txt", "b\n", ct);
+		await FileTools.EditFileAsync("clock3", "clock_bash.txt", "a", "edited", ct);
+		ctx.AssertEqual(second.ToString(), FileTime(Path.Combine(root, "clock_write.txt"), ct), "File clock: write_file takes the round's time");
+		ctx.AssertEqual(second.ToString(),  FileTime(Path.Combine(root, "clock_bash.txt"), ct), "File clock: edit_file takes the round's time");
+		ctx.AssertEqual(second.ToString(), FileTime(root, ct), "File clock: the workspace folder follows its latest change");
+		ctx.AssertEqual("1000000000", FileTime(Path.Combine(root, "clock_old.txt"), ct), "File clock: a file from before the clock started keeps its time");
+
+		// The temp folder too, including a socket, and including what was there before the clock started.
+		string tempFile = Path.Combine(Path.GetTempPath(), $"clock-{Guid.NewGuid():N}");
+		await FileTools.WriteFileAsync("clock5", tempFile, "c\n", ct);
+		ctx.AssertEqual(second.ToString(), FileTime(tempFile, ct), "File clock: write_file in the temp folder takes the round's time");
+		ToolResult temp = await ShellTools.BashAsync("clock6",
+			$"echo d > '{tempFile}.sh'; stat -c %Y '{tempFile}.sh' /tmp/..; python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); s.bind('{tempFile}.sock'); s.listen(1); c=socket.socket(socket.AF_UNIX); c.connect('{tempFile}.sock'); print('socket ok')\"; rm -f '{tempFile}' '{tempFile}.sh' '{tempFile}.sock'", null, ct);
+		ctx.Assert(temp.StdOut.StartsWith(second.ToString(), StringComparison.Ordinal) && temp.StdOut.Contains("socket ok", StringComparison.Ordinal), $"File clock: the shell's temp files are counted and sockets work there — {temp.StdOut} {temp.StdErr}");
+
+		ToolResult caps = await ShellTools.BashAsync("clock4", "grep CapBnd /proc/self/status", null, ct);
+		bool       read = long.TryParse(caps.StdOut.Replace("CapBnd:", string.Empty).Trim(), System.Globalization.NumberStyles.HexNumber, null, out long bnd);
+		ctx.Assert(read && (bnd & (1L << 21)) == 0, $"File clock: the shell cannot hold SYS_ADMIN — {caps.StdOut} {caps.StdErr}");
+
+		// A server's Date header reads the counted time; nothing else that looks like one changes.
+		const string realDate = "Fri, 06 Nov 2026 16:39:45 GMT";
+		string     countedDate = DateTimeOffset.FromUnixTimeSeconds(second).ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", System.Globalization.CultureInfo.InvariantCulture);
+		ToolResult headers     = await ShellTools.BashAsync("clock7",
+			$"printf 'HTTP/2 200 \\r\\ndate: {realDate}\\r\\nDate: {realDate}\\r\\nlast-modified: {realDate}\\r\\nupdate: {realDate}\\r\\n'; printf '< date: {realDate}\\n' >&2", null, ct);
+		ctx.Assert(headers.StdOut.Contains($"\ndate: {countedDate}\r\nDate: {countedDate}\r\n", StringComparison.Ordinal), $"File clock: a Date header reads the counted time, in either case — {headers.StdOut}");
+		ctx.Assert(headers.StdOut.Contains($"last-modified: {realDate}", StringComparison.Ordinal) && headers.StdOut.Contains($"update: {realDate}", StringComparison.Ordinal), $"File clock: other lines with a date are left alone — {headers.StdOut}");
+		ctx.Assert(headers.StdErr.Contains($"< date: {countedDate}", StringComparison.Ordinal), $"File clock: curl -v's form on stderr too — {headers.StdErr}");
+
+		// Off the mount, so the real files can be checked and the test folder removed.
+		Directory.SetCurrentDirectory(parent);
+		await Sandbox.StopFileClockAsync(ct);
+		Directory.SetCurrentDirectory(root);
+		ctx.AssertEqual($"date: {realDate}",         Sandbox.CountHttpDates($"date: {realDate}"), "File clock: without a counted clock a Date header stays as it is");
+		ctx.AssertEqual(  second.ToString(), FileTime(Path.Combine(root, "clock_write.txt"), ct), "File clock: the times are on the real files");
+	}
+
 	private static async Task RunScriptAsync(TestContext ctx, FakeProvider server, string root, CancellationToken ct)
 	{
 		bool sandboxed = Sandbox.ShellUserActive;
@@ -151,7 +213,21 @@ public static class ToolSandboxTests
 			string after14 = Get(results, "c14");
 			ctx.Assert(after14.Contains("Permission denied", StringComparison.Ordinal) && !after14.Contains(".linkdot", StringComparison.Ordinal),
 				$"Tools: the taken folder is read-only for the shell and the link is gone — {after14}");
+
+			if (Sandbox.FileClockAvailable)
+				await FileClockAsync(ctx, root, ct);
+			else
+				ctx.Log("    SKIP: no clockfs or fuse device, so the counted clock is untested");
 		}
+
+		// The date is a Monday, at least two weeks off, and holds still for the whole cycle.
+		long onSixth  = DateTimeOffset.Parse("2026-11-06T15:00:00Z").ToUnixTimeSeconds();
+		long onEighth = DateTimeOffset.Parse("2026-11-08T23:00:00Z").ToUnixTimeSeconds();
+		long onNinth  = DateTimeOffset.Parse("2026-11-09T01:00:00Z").ToUnixTimeSeconds();
+		ctx.AssertEqual(DateTimeOffset.Parse("2026-11-23T00:00:00Z").ToUnixTimeSeconds(), Sandbox.FileClockBase(onSixth), "File clock: the first cycle Monday two weeks away");
+		ctx.AssertEqual(Sandbox.FileClockBase(onSixth), Sandbox.FileClockBase(onEighth), "File clock: the date holds within a cycle");
+		ctx.AssertEqual(DateTimeOffset.Parse("2026-12-21T00:00:00Z").ToUnixTimeSeconds(), Sandbox.FileClockBase(onNinth), "File clock: the next cycle is four weeks on");
+		ctx.AssertEqual(DayOfWeek.Monday, DateTimeOffset.FromUnixTimeSeconds(Sandbox.FileClockBase(onNinth)).DayOfWeek, "File clock: always a Monday");
 
 		string madePath = Path.Combine(root, "shell_made.txt");
 		string made     = File.Exists(madePath) ? File.ReadAllText(madePath) : "(missing)";
