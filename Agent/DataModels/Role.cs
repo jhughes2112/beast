@@ -139,6 +139,20 @@ public class Role
 		return new Role(Name, Description, Kind, models, Tools, SystemPrompt, SummaryPrompt, EndOfTurnPrompt, MaxTurns, TurnBudgets, NoReasoning, OutputModality);
 	}
 
+	// This role with a different system prompt; everything else is carried over.
+	public Role WithSystemPrompt(string systemPrompt)
+	{
+		return new Role(Name, Description, Kind, Models, Tools, systemPrompt, SummaryPrompt, EndOfTurnPrompt, MaxTurns, TurnBudgets, NoReasoning, OutputModality);
+	}
+
+	// One call to this role: its models and its own prompt, with the caller's job on top. Named for the job,
+	// so the session reads as what it was doing rather than as the role doing it.
+	public Role ForCall(string name, string systemPrompt, List<string> tools, int maxTurns)
+	{
+		string combined = systemPrompt.Length > 0 ? $"{SystemPrompt}\n\n{systemPrompt}" : SystemPrompt;
+		return new Role(name, Description, Kind, Models, tools, combined, SummaryPrompt, EndOfTurnPrompt, maxTurns, new Dictionary<string, int>(), NoReasoning, OutputModality);
+	}
+
 	// This role as the given kind, which roles.json carries by block rather than per role.
 	public Role WithKind(RoleKind kind)
 	{

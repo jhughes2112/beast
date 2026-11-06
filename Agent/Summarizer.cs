@@ -70,13 +70,17 @@ public static class Summarizer
 			// few sentences, so folding the elided history costs a fraction of the stages and the
 			// provider spend, and leaves more of the running summary's allowance for content that
 			// actually says something. The protected recent turns pass through verbatim either way.
-			List<CanonicalMessage> elided  = MechanicalCompaction.Elide(history, role != null ? role.EndOfTurnPrompt : string.Empty);
-			List<string>           blocks  = RenderTranscript(elided);
-			string                 running = string.Empty;
-			int                    index   = 0;
-			int                    offset  = 0;
-			int                    stage   = 0;
-			bool                   failed  = false;
+			// The log is written now, whichever retreat this is: the transcript quotes its line ranges, so
+			// the summary may too, and the last attempt's file is the one that matches the summary kept.
+			CompactionLog          log    = new CompactionLog(CompactionLog.PathFor(session.Id));
+			List<CanonicalMessage> elided = MechanicalCompaction.Elide(history, role != null ? role.EndOfTurnPrompt : string.Empty, log, new Dictionary<string, string>());
+			log.Save();
+			List<string> blocks  = RenderTranscript(elided);
+			string       running = string.Empty;
+			int          index   = 0;
+			int          offset  = 0;
+			int          stage   = 0;
+			bool         failed  = false;
 
 			// A ceiling that only ever ratchets DOWN, carried across stages. Once a chunk size has
 			// failed against this model there is no sense offering the next stage the same size again:

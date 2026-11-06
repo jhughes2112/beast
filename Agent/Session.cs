@@ -324,6 +324,12 @@ public class Session
 
 	public void SetMaxWorkTurns(int maxWorkTurns) => _data.MaxWorkTurns = maxWorkTurns;
 
+	// The role a Summarizer job was made with, which no lookup by name could produce: its caller chose the
+	// prompt and tools. Runtime-only: a restored job comes back as the entry in roles.json with its name.
+	public Role? CallRole { get; private set; }
+
+	public void SetCallRole(Role? role) => CallRole = role;
+
 	// True while this session may still respond to its caller as a tool.
 	public bool OwesReply => !string.IsNullOrEmpty(_data.TerminatorName);
 

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -108,7 +109,7 @@ public class SessionHandler
 
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
 				await DrainInput(roleService, registry, transport, ct);
-				role = roleService.GetRole(_activeSession.Role);
+				role = ResolveRole(roleService);
 
 				// Apply a queued /model right away — even when the session then parks idle — so the
 				// choice takes visible effect immediately instead of waiting for the next turn.
@@ -274,7 +275,7 @@ public class SessionHandler
 			if (_toolsStale)
 			{
 				_toolsStale    = false;
-				Role? reloaded = roleService.GetRole(_activeSession.Role);
+				Role? reloaded = ResolveRole(roleService);
 				if (reloaded != null)
 				{
 					role            = reloaded;
@@ -731,10 +732,33 @@ public class SessionHandler
 			if (pending.Count > 0)
 				transport.Status(_activeSession.Id, $"[Compaction] Holding {pending.Count} in-flight message(s) aside.");
 
-			List<CanonicalMessage>? seed = MechanicalCompaction.TryBuild(settled, role.EndOfTurnPrompt,
-				_activeSession.ContextLength, _activeSession.ContextWindow);
+			string                  logPath = CompactionLog.PathFor(_activeSession.Id);
+			bool                    resends = _service != null && _service.ResendsThinking;
+			CompactionLog           log     = new CompactionLog(logPath);
+			List<CanonicalMessage>? seed    = MechanicalCompaction.TryBuild(settled, role.EndOfTurnPrompt,
+				_activeSession.ContextLength, _activeSession.ContextWindow, resends, _lastToolChars, log, new Dictionary<string, string>());
 			if (seed != null)
 			{
+				// Only now is it worth paying for summaries of the traces this pass takes out: a full summary
+				// would only have folded them away. They add a little back, so if that undoes the pass's
+				// savings its references stand alone.
+				if (resends)
+				{
+					Dictionary<string, string> summaries = await ReasoningSummarizer.SummarizeStaleAsync(_activeSession, settled, roleService, registry, transport, ct);
+					if (summaries.Count > 0)
+					{
+						CompactionLog           summarizedLog = new CompactionLog(logPath);
+						List<CanonicalMessage>? summarized    = MechanicalCompaction.TryBuild(settled, role.EndOfTurnPrompt,
+							_activeSession.ContextLength, _activeSession.ContextWindow, resends, _lastToolChars, summarizedLog, summaries);
+						if (summarized != null)
+						{
+							seed = summarized;
+							log  = summarizedLog;
+						}
+					}
+				}
+
+				log.Save();
 				transport.Status(_activeSession.Id, "[Compaction] Stale tool traffic elided mechanically; no summarization needed.");
 			}
 			else if (!string.IsNullOrEmpty(role.SummaryPrompt))
@@ -751,6 +775,8 @@ public class SessionHandler
 			if (seed != null)
 			{
 				string ledger = MechanicalCompaction.BuildLedger(_activeSession.Data.Messages);
+				if (File.Exists(logPath) || MechanicalCompaction.HasMemoryCalls(seed))
+					ledger = MechanicalCompaction.WithMemoryNote(ledger);
 				if (ledger.Length > 0)
 					seed.Insert(0, new UserMessage(ledger));
 
@@ -822,6 +848,8 @@ public class SessionHandler
 				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
 				successor.MarkCompactionSuccessor();
 				successor.SetMaxWorkTurns(maxWorkTurns);
+				successor.SetCallRole(predecessor.CallRole);
+
 				successor.UpdateModel(service.Model);
 				if (predecessor.WorkInProgress)
 					successor.BeginWork();
@@ -899,7 +927,7 @@ public class SessionHandler
 		{
 			_activeSession.ClearRefresh();
 			// Re-fetch role — it may have been modified or removed.
-			Role? refreshedRole = roleService.GetRole(_activeSession.Role);
+			Role? refreshedRole = ResolveRole(roleService);
 			if (refreshedRole == null)
 			{
 				// The session's role no longer exists in roles.json.
@@ -972,7 +1000,7 @@ public class SessionHandler
 		// Substituting a description would not give the model what native input gives it — the
 		// image tokens the attention heads actually reason over — so say plainly that the wrong
 		// model is loaded, and name the ones that would work.
-		Role? activeRole = roleService.GetRole(_activeSession.Role);
+		Role? activeRole = ResolveRole(roleService);
 		foreach ((string display, MediaKind kind, string staged) in unsupported)
 		{
 			transport.Alert(_activeSession.Id, BuildCapabilityAlert(display, kind, registry, activeRole));
@@ -1146,7 +1174,7 @@ public class SessionHandler
 	{
 		int       spaceIdx    = args.IndexOf(' ');
 		string    modelArg    = spaceIdx >= 0 ? args.Substring(0, spaceIdx) : args;
-		Role?     role        = roleService.GetRole(_activeSession.Role);
+		Role?     role        = ResolveRole(roleService);
 		LlmModel? target      = registry.GetModel(modelArg);
 		int       minRequired = _activeSession.ContextLength + GetCompactionReserve();
 
@@ -1224,6 +1252,15 @@ public class SessionHandler
 	// One toolset builder for every session. Which tools exist is configured by the role's tool
 	// list (ToolFactory checks it); the terminator callback is supplied only while the session
 	// owes a reply, and ToolFactory picks the matching terminator tool from the role.
+	// Size of the tool definitions last sent to the model, which compaction's projection needs to know.
+	private int _lastToolChars;
+
+	// A Summarizer job runs on the role its caller made for it; every other session on the role it names.
+	private Role? ResolveRole(RoleService roleService)
+	{
+		return _activeSession.CallRole ?? roleService.GetRole(_activeSession.Role);
+	}
+
 	private Tool[] BuildTools(Role role, bool windDown, SettingsService settings, LlmRegistry registry, RoleService roleService, ISessionOrchestrator orchestrator)
 	{
 		Tool[] full = ToolFactory.BuildForRole(
@@ -1235,10 +1272,13 @@ public class SessionHandler
 			_activeSession.WorkInProgress,
 			(roleName, displayName, prompt, maxWorkTurns, spawnCt) =>
 				orchestrator.SpawnChildAsync(_activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
+			(name, displayName, systemPrompt, userPrompt, jobTools, maxTurns, spawnCt) =>
+				orchestrator.RunSummarizerAsync(_activeSession, name, displayName, systemPrompt, userPrompt, jobTools, maxTurns, spawnCt),
 			() => _activeSession.BeginWork(),
 			() => _activeSession.EndWork(),
 			_activeSession.OwesReply ? Terminate : null,
 			orchestrator.HostCommands);
+		_lastToolChars = MechanicalCompaction.ToolDefinitionChars(full);
 
 		if (!windDown)
 			return full;
@@ -1376,7 +1416,7 @@ public class SessionHandler
 	// model is down counts as exhausted too — otherwise new input would wait on it forever.
 	private void RetryExhaustedModels(RoleService roleService, LlmRegistry registry)
 	{
-		Role? role = roleService.GetRole(_activeSession.Role);
+		Role? role = ResolveRole(roleService);
 		if (role != null && (_modelsExhausted || registry.GetMillisecondsUntilAvailable(role) == long.MaxValue))
 		{
 			_modelsExhausted = false;
@@ -1410,7 +1450,7 @@ public class SessionHandler
 	private List<string> BuildCompletionCandidates(RoleService roleService, LlmRegistry registry)
 	{
 		List<string> candidates  = new List<string> { "/compact", "/clear", "/config", "/role", "/reload", "/model", "/pause", "/resume", "/finish", "/help" };
-		Role?        activeRole  = roleService.GetRole(_activeSession.Role);
+		Role?        activeRole  = ResolveRole(roleService);
 		LlmModel?    activeModel = activeRole != null
 			? registry.GetModelForRole(activeRole, _activeSession.Model, _activeSession.ContextLength + GetCompactionReserve())
 			: null;

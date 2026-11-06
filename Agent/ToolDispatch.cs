@@ -156,7 +156,9 @@ public static class ToolDispatch
 
 			if (matchedTool == null)
 			{
-				result = Error(toolCall.Id, $"Error: Tool '{toolCall.Name}' not found in available tools.");
+				result = string.Equals(toolCall.Name, MechanicalCompaction.MemoryToolName, StringComparison.Ordinal)
+					? Error(toolCall.Id, $"Error: {toolCall.Name} is a record of an earlier tool call, not a tool. Call the real tool instead.")
+					: Error(toolCall.Id, $"Error: Tool '{toolCall.Name}' not found in available tools.");
 			}
 			else
 			{

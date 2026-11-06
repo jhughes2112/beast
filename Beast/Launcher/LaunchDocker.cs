@@ -8,6 +8,7 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -253,7 +254,7 @@ public class LaunchDocker : ILauncher
 		Directory.CreateDirectory(beastConfigDir);
 		Directory.CreateDirectory(_session.StateDir);
 
-		List<string> cmd   = new List<string> { "--state-dir", "/root/.beast-state" };
+		List<string> cmd   = new List<string> { "--state-dir", "/root/.beast-state", "--host-machine", HostMachine() };
 		List<string> binds = new List<string>();
 		if (_session.IsBare)
 		{
@@ -356,6 +357,13 @@ public class LaunchDocker : ILauncher
 		_hostPort = await PublishedPortAsync(_containerId, cancellationToken);
 		_log.Verbose($"[docker] Container started: {name} on host port {_hostPort}");
 		return _hostPort;
+	}
+
+	// What the agent is told about this computer. OSDescription on macOS names only the Darwin kernel.
+	private static string HostMachine()
+	{
+		string os = OperatingSystem.IsMacOS() ? $"macOS {Environment.OSVersion.Version}" : RuntimeInformation.OSDescription;
+		return $"{os}, {RuntimeInformation.OSArchitecture}";
 	}
 
 	// True when the Docker VM is WSL2, the only backend that exposes /dev/dxg.

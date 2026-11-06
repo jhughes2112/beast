@@ -18,6 +18,9 @@ public static class AgentState
 
 	public static string LogsDir => Path.Combine(Root, "logs");
 
+	// What compaction took out of each conversation. The one part of the state folder the model may read.
+	public static string CompactionLogsDir => Path.Combine(Root, "compaction");
+
 	public static void Initialize(string root)
 	{
 		_root = root;

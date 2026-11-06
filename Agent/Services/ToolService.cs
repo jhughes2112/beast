@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 // file is loaded over the defaults, so hand edits to a description or parameter take effect.
 public class ToolService
 {
-	private const int Version = 7;
+	private const int Version = 11;
 
 	private readonly string _toolsPath;
 
@@ -120,17 +120,22 @@ public class ToolService
 		return config;
 	}
 
+	private const string kWhyText     = "What this command does and why you are running it, in at most 128 characters. This note is what you will have left of the command once it is old, so make it say what you were after.";
+	private const string kWhyFileText = "What this change does and why, in at most 128 characters. This note is what you will have left of the change once it is old, so make it say what you were after.";
+
 	public static Dictionary<string, ToolConfig> Defaults()
 	{
 		Dictionary<string, ToolConfig> tools = new Dictionary<string, ToolConfig>();
 
 		tools["bash"] = Cfg(
 			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase, when available, records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
-			("command", "Shell command to execute"),
+			(MechanicalCompaction.WhyArgument,                   kWhyText),
+			(                       "command", "Shell command to execute"),
 			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
 
 		tools["host_command"] = Cfg(
-			"Runs a shell command on the user's own computer, outside your container, for what only the host can do: its GPU, devices, installed apps and SDKs, or a build or launch the user wants run natively. Use bash for everything else. Each command is checked for safety first and may be refused or put to the user for approval; a refused command must not be retried or reworded. The user watches the output live. CWD is the host folder that is mounted at /workspace, so use relative paths, never /workspace/.",
+			"Runs a shell command on the user's own computer, outside your container. WARNING: this is their real machine. Do not use this tool unless the user has asked you to make changes to their machine, or their intent clearly implies it. Use bash for everything else, including finding out what is installed for your own work. When it does apply, it is for what only the host can do: its GPU, devices, installed apps and SDKs, or a build or launch the user wants run natively. Each command is checked for safety first and may be refused or put to the user for approval; a refused command must not be retried or reworded. The user watches the output live. CWD is the host folder that is mounted at /workspace, so use relative paths, never /workspace/.",
+			(MechanicalCompaction.WhyArgument, kWhyText),
 			("shell",   "The shell that runs the command, which must be written in that shell's syntax. cmd takes a single line."),
 			("command", "Command to run on the host, exactly as you would type it at that shell's prompt"),
 			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
@@ -141,19 +146,22 @@ public class ToolService
 
 		tools["readonly_bash"] = Cfg(
 			"Read-only bash for inspecting the repo without changing it (grep, git diff/log/show, build output via the commands it allows). Runs in a restricted bash shell. Installed packages can be checked with dpkg-query and apt-cache. CWD is the repo root at /workspace/.",
+			(MechanicalCompaction.WhyArgument, kWhyText),
 			("command", "Safe shell command to execute. Do not use stream redirection, do not use find or cd, no running programs by explicit path, and no modifying the PATH env var. A small set of safe commands are available; in the event of an error, they will be listed for you"),
 			("timeout_seconds", "Timeout in seconds (default 120)."));
 
 		tools["write_file"] = Cfg(
 			"Create a new file or overwrite an existing one (read_file it first if it exists). Prefer edit_file for changes to an existing file. Relative paths are in the repo root at /workspace/, where your work belongs; nothing outside /workspace/ and /tmp/ can be written, nor anything inside a top-level folder whose name starts with '.' (.git, .github, .vscode, ...).",
-			("file_path", "File path"),
-			("content",   "Complete file contents"));
+			(MechanicalCompaction.WhyArgument,             kWhyFileText),
+			(                     "file_path",              "File path"),
+			(                       "content", "Complete file contents"));
 
 		tools["edit_file"] = Cfg(
 			"Replace old_text with new_text in a file. Tries exact match first; if not found, retries ignoring all whitespace. old_text must identify exactly one place, so include enough surrounding lines. Works inside /workspace/ and /tmp/ only, and not inside a top-level folder whose name starts with '.' (.git, .github, .vscode, ...). CWD is the repo root at /workspace/.",
-			("file_path", "File path"),
-			("old_text",  "Text to find and replace"),
-			("new_text",  "Replacement text"));
+			(MechanicalCompaction.WhyArgument,               kWhyFileText),
+			(                     "file_path",                "File path"),
+			(                      "old_text", "Text to find and replace"),
+			(                      "new_text",         "Replacement text"));
 
 		tools["ls"] = Cfg(
 			"List a folder's contents. CWD is the repo root at /workspace/.",

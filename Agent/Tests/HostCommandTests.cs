@@ -28,6 +28,15 @@ public static class HostCommandTests
 			ctx.Assert(HostCommands.ParsePolicy("beSafe") == UnsurePolicy.BeSafe && HostCommands.ParsePolicy("BEUNSAFE") == UnsurePolicy.BeUnsafe && HostCommands.ParsePolicy("whatever") == UnsurePolicy.Ask,
 				"host_command: the Unsure setting parses, and anything unrecognised asks");
 
+			// Roles with host_command are told what the host is; others, and runs with no host given, are not.
+			RoleService withHost = new RoleService(Environment.CurrentDirectory, "Test OS 1.0, X64");
+			RoleService noHost   = new RoleService(Environment.CurrentDirectory);
+			ctx.Assert(  withHost.GetRole("Default")!.SystemPrompt.Contains("(Test OS 1.0, X64)"), "host_command: Default is told what the host is");
+			ctx.Assert(withHost.GetRole("Developer")!.SystemPrompt.Contains("(Test OS 1.0, X64)"), "host_command: Developer is told what the host is");
+			ctx.Assert(           !withHost.GetRole("Reviewer")!.SystemPrompt.Contains("Test OS"), "host_command: a role without the tool is not");
+			ctx.Assert(         !noHost.GetRole("Default")!.SystemPrompt.Contains("two machines"), "host_command: no note when no host was given");
+			ctx.Assert(               !withHost.Roles["Default"].SystemPrompt.Contains("Test OS"), "host_command: the note never reaches the stored role");
+
 			// Only the shells the client announced are accepted, and cmd only takes one line.
 			ctx.Assert(host.Shells.Count == 0, "host_command: no shells until the client says which it has");
 			ctx.Assert(host.HandleInbound("/host-shells bash,cmd,bash"), "host_command: the client's shell list is claimed");

@@ -63,13 +63,13 @@ public static class SummarizerTests
 		}
 
 		int raw    = TranscriptChars(Summarizer.RenderTranscript(messages));
-		int elided = TranscriptChars(Summarizer.RenderTranscript(MechanicalCompaction.Elide(messages, string.Empty)));
+		int elided = TranscriptChars(Summarizer.RenderTranscript(MechanicalCompaction.Elide(messages, string.Empty, new CompactionLog(CompactionLog.PathFor("unsaved")), new Dictionary<string, string>())));
 
 		// Twelve 40k results collapse to their notes; what is left is essentially the protected tail.
 		ctx.Assert(elided * 3 < raw, $"Elide-before-summarize: the transcript sent to the model shrinks dramatically ({raw} -> {elided} chars)");
 
 		// What the elision keeps, it keeps intact: the user's own words and the newest turns.
-		List<string> blocks = Summarizer.RenderTranscript(MechanicalCompaction.Elide(messages, string.Empty));
+		List<string> blocks = Summarizer.RenderTranscript(MechanicalCompaction.Elide(messages, string.Empty, new CompactionLog(CompactionLog.PathFor("unsaved")), new Dictionary<string, string>()));
 		ctx.AssertContains(               blocks[0], "Find where the retry logic lives.", "Elide-before-summarize: user text survives verbatim");
 		ctx.AssertContains(blocks[blocks.Count - 1],              new string('x', 40000), "Elide-before-summarize: the most recent tool result is not elided");
 	}

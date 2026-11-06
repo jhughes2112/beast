@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -8,6 +9,11 @@ using System.Threading.Tasks;
 // max_turns budget; 0 uses the role's.
 public delegate Task<(bool ok, string text, int responseTokens)> SpawnSubagent(string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
 
+// Signature for handing a small job to the Summarizer and awaiting its reply. The caller says what the job
+// is: name labels the session, systemPrompt is added to the Summarizer's own, userPrompt is the first message,
+// tools lists what it may use besides replying, and maxTurns bounds it. It runs on the Summarizer's models.
+public delegate Task<(bool ok, string text, int responseTokens)> SpawnSummarizer(string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct);
+
 // Interface that AgentOrchestrator implements and SessionHandlers depend on.
 // Decouples session handlers from the concrete orchestrator so they can spawn
 // child sessions and route messages without knowing the full orchestrator type.
@@ -17,6 +23,9 @@ public interface ISessionOrchestrator
 	// it answers via its terminator, and returns the result. The child session stays alive after
 	// answering so the user can keep interacting with it.
 	Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
+
+	// Runs one job on the Summarizer as a child session under parent. See the SpawnSummarizer delegate.
+	Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(Session parent, string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct);
 
 	// Routes a message to the session identified by sessionId. Non-blocking; the message
 	// is queued in the target session and processed at the next turn boundary.

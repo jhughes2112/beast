@@ -29,6 +29,7 @@ public static class ToolFactory
 		Session?              session,
 		bool                  workInProgress,
 		SpawnSubagent?        spawnSubagent,
+		SpawnSummarizer?      spawnSummarizer,
 		Action?               onWorkAssigned,
 		Action?               onStopWork,
 		Action<bool, string>? onTerminate,
@@ -42,8 +43,8 @@ public static class ToolFactory
 		Dictionary<string, ToolConfig> toolConfigs = settingsService.Tools;
 
 		// Check helper-role availability upfront. A tool is omitted when its role is unconfigured or no
-		// model is available. GetModelForRole is a lightweight availability check — the role itself is
-		// resolved again by name, and its LlmService created, when the tool spawns its child session.
+		// model is available. GetModelForRole is a lightweight availability check — the job itself is
+		// resolved again by name when the tool hands it to the Summarizer, which creates its LlmService.
 		Role? explorerRole  = roleService?.GetRole("Explorer");
 		bool  explorerReady = explorerRole != null && registry?.GetModelForRole(explorerRole, string.Empty, 0) != null;
 		Role? webFetchRole  = roleService?.GetRole("WebFetch");
@@ -52,7 +53,7 @@ public static class ToolFactory
 		if (role.Tools.Contains("bash"))
 		{
 			ToolConfig tc = toolConfigs["bash"];
-			Register(tools, "bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+			Register(tools, "bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string command        = Str(args, "command");
@@ -73,7 +74,7 @@ public static class ToolFactory
 			foreach (string shell in hostShells)
 				shellEnum.Add((JsonNode?)JsonValue.Create(shell));
 			shellProp["enum"] = shellEnum;
-			Register(tools, "host_command", tc.Description, Params(shellProp, Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+			Register(tools, "host_command", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), shellProp, Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string shell          = Str(args, "shell");
@@ -97,7 +98,7 @@ public static class ToolFactory
 		if (role.Tools.Contains("readonly_bash"))
 		{
 			ToolConfig tc = toolConfigs["readonly_bash"];
-			Register(tools, "readonly_bash", tc.Description, Params(Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+			Register(tools, "readonly_bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string command        = Str(args, "command");
@@ -109,7 +110,7 @@ public static class ToolFactory
 		if (role.Tools.Contains("write_file"))
 		{
 			ToolConfig tc = toolConfigs["write_file"];
-			Register(tools, "write_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("content", "string", tc.Parameters["content"])),
+			Register(tools, "write_file", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("file_path", "string", tc.Parameters["file_path"]), Req("content", "string", tc.Parameters["content"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
@@ -121,7 +122,7 @@ public static class ToolFactory
 		if (role.Tools.Contains("edit_file"))
 		{
 			ToolConfig tc = toolConfigs["edit_file"];
-			Register(tools, "edit_file", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("old_text", "string", tc.Parameters["old_text"]), Req("new_text", "string", tc.Parameters["new_text"])),
+			Register(tools, "edit_file", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("file_path", "string", tc.Parameters["file_path"]), Req("old_text", "string", tc.Parameters["old_text"]), Req("new_text", "string", tc.Parameters["new_text"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
@@ -170,7 +171,7 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && spawnSubagent != null)
+		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && spawnSummarizer != null)
 		{
 			ToolConfig     tc         = toolConfigs["find_relevant_file_sections"];
 			FileSummarizer summarizer = new FileSummarizer();
@@ -194,12 +195,12 @@ public static class ToolFactory
 					string filePath = Str(args, "file_path");
 					string goal     = Str(args, "goal");
 					string offset   = Str(args, "offset");
-					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, spawnSubagent, maxOutputTokens, ct);
+					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, roleService!.GetRole("Explorer") ?? explorerRole!, spawnSummarizer, maxOutputTokens, ct);
 				}
 			});
 		}
 
-		if (role.Tools.Contains("fetch_url") && webFetchReady && spawnSubagent != null)
+		if (role.Tools.Contains("fetch_url") && webFetchReady && spawnSummarizer != null)
 		{
 			ToolConfig tc       = toolConfigs["fetch_url"];
 			WebFetch   webFetch = new WebFetch();
@@ -221,7 +222,7 @@ public static class ToolFactory
 				{
 					string url  = Str(args, "url");
 					string goal = Str(args, "goal");
-					return await webFetch.FetchRawAsync(toolCallId, url, goal, spawnSubagent, ct);
+					return await webFetch.FetchRawAsync(toolCallId, url, goal, roleService!.GetRole("WebFetch") ?? webFetchRole!, spawnSummarizer, ct);
 				}
 			});
 		}
@@ -295,8 +296,7 @@ public static class ToolFactory
 
 						// Providers and the WebSearch role's prompt are resolved per call, from live config.
 						List<(WebSearchProvider Provider, string ApiKey, string Model)> liveProviders = WebSearchRegistry.ResolveUsable(settingsService.Settings);
-						Role?  webSearchRole = roleService?.GetRole("WebSearch");
-						string systemPrompt  = webSearchRole != null ? webSearchRole.SystemPrompt : string.Empty;
+						string systemPrompt = roleService != null ? roleService.SummarizerPrompt("WebSearch") : string.Empty;
 						return await webSearch.SearchAsync(toolCallId, liveProviders, systemPrompt, query, goal, session, transport, sessionId, maxOutputTokens, ct);
 					}
 				});

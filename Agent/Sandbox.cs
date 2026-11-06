@@ -111,21 +111,27 @@ public static class Sandbox
 	// it against the confinement rules. On success Path is what the caller must use for the I/O — never
 	// the original argument, which a symlink swapped in afterwards could redirect. The agent's state
 	// folder is off limits, and so is a .beast folder in the workspace (a project's own roles.json);
-	// allowAttachments opens the one reading hole: the staged attachments the model is told it can
-	// inspect again, which live in the state folder (outside the workspace, in the container).
+	// allowAttachments opens one reading hole: the staged attachments the model is told it can
+	// inspect again, which live in the state folder (outside the workspace, in the container). The other
+	// is always open: the compaction logs, where a compacted conversation is told its old tool calls are.
 	public static (string? Path, string Error) Confine(string path, bool write, bool allowAttachments)
 	{
 		string? resolved = null;
 		string  error    = string.Empty;
 
-		string real   = ResolveLinks(System.IO.Path.IsPathRooted(path) ? path : System.IO.Path.Combine(Environment.CurrentDirectory, path));
-		string root   = Root;
-		string state  = ResolveLinks(System.IO.Path.GetFullPath(AgentState.Root));
-		string staged = ResolveLinks(System.IO.Path.GetFullPath(MediaIntake.StagingFolder()));
-		string beast  = System.IO.Path.Combine(root, ".beast");
-		string temp   = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetTempPath());
+		string real       = ResolveLinks(System.IO.Path.IsPathRooted(path) ? path : System.IO.Path.Combine(Environment.CurrentDirectory, path));
+		string root       = Root;
+		string state      = ResolveLinks(System.IO.Path.GetFullPath(AgentState.Root));
+		string staged     = ResolveLinks(System.IO.Path.GetFullPath(MediaIntake.StagingFolder()));
+		string compaction = ResolveLinks(System.IO.Path.GetFullPath(AgentState.CompactionLogsDir));
+		string beast      = System.IO.Path.Combine(root, ".beast");
+		string temp       = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetTempPath());
 
 		if (allowAttachments && !write && IsUnder(real, staged))
+		{
+			resolved = real;
+		}
+		else if (!write && IsUnder(real, compaction))
 		{
 			resolved = real;
 		}

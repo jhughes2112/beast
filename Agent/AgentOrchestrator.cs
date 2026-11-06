@@ -156,14 +156,46 @@ public class AgentOrchestrator : ISessionOrchestrator
 		int               maxWorkTurns,
 		CancellationToken ct)
 	{
+		Role? role = _roleService.GetRole(roleName);
+		if (role == null)
+			return (false, $"Unknown role '{roleName}'.", 0);
+
+		return await StartChildAsync(parent, role, displayName, prompt, maxWorkTurns, false, ct);
+	}
+
+	public async Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(
+		Session           parent,
+		string            name,
+		string?           displayName,
+		string            systemPrompt,
+		string            userPrompt,
+		List<string>      tools,
+		int               maxTurns,
+		CancellationToken ct)
+	{
+		Role? summarizer = _roleService.GetRole(ReasoningSummarizer.RoleName);
+		if (summarizer == null)
+			return (false, $"No {ReasoningSummarizer.RoleName} role is configured.", 0);
+
+		return await StartChildAsync(parent, summarizer.ForCall(name, systemPrompt, tools, maxTurns), displayName, userPrompt, maxTurns, true, ct);
+	}
+
+	// callRole says this role was made for this one call, so no later lookup by name can stand in for it.
+	private async Task<(bool ok, string text, int responseTokens)> StartChildAsync(
+		Session           parent,
+		Role              role,
+		string?           displayName,
+		string            prompt,
+		int               maxWorkTurns,
+		bool              callRole,
+		CancellationToken ct)
+	{
+		string roleName = role.Name;
+
 		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
 		// user deleted this tree — either way new work would race the teardown.
 		if (parent.Deleted || _quiescing)
 			return (false, "The calling session is shutting down; no new subagents may start.", 0);
-
-		Role? role = _roleService.GetRole(roleName);
-		if (role == null)
-			return (false, $"Unknown role '{roleName}'.", 0);
 
 		if (role.Kind != RoleKind.Subagent)
 			return (false, $"Role '{roleName}' is not a subagent role.", 0);
@@ -208,6 +240,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
 			role.TerminatorName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
 		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
+		if (callRole)
+			subSession.SetCallRole(role);
 		// Claim the session before registering it so no Deliver can slip in and start a second,
 		// generic handler ahead of the configured one below.
 		subSession.TryAttachHandler();
@@ -907,6 +941,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		foreach ((string name, Role role) in _roleService.Roles)
 		{
+			// The Summarizer's jobs have no models to arrange, so there is nothing to show for them.
+			if (!RoleService.IsListed(role))
+				continue;
+
 			ConfigRoleInfo info = new ConfigRoleInfo { Name = role.Name, Kind = role.Kind.ToString(), Output = role.Produces };
 			foreach (string modelId in role.Models)
 			{

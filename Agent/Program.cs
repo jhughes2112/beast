@@ -106,7 +106,7 @@ public class Program
 		Console.Error.WriteLine($"[Git] {GitTools.CommitDetail}");
 
 		SettingsService settingsService = new SettingsService();
-		RoleService     roleService     = new RoleService(Environment.CurrentDirectory);
+		RoleService     roleService     = new RoleService(Environment.CurrentDirectory, ArgValue(args, "--host-machine"));
 
 		// The ChatGPT subscription's tokens live in settings.json beside every other key.
 		ChatGptSubscription.Initialize(settingsService);

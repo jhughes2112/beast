@@ -196,7 +196,7 @@ public static class ToolSandboxTests
 		foreach (string name in ToolNames)
 			settings.Tools[name] = defaults[name];
 		Role   role  = new Role("ToolTester", "drives the tools", RoleKind.Subagent, new List<string> { config.Id }, new List<string>(ToolNames), "test", string.Empty, string.Empty);
-		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, false, null, null, null, null, null);
+		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, false, null, null, null, null, null, null);
 		return new Rig(session, service, tools, transport);
 	}
 

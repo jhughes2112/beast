@@ -30,12 +30,12 @@ public static class FixJson
 	// accumulate across runs in the same process.
 	public static void ResetCounters()
 	{
-		_markdownStrips = 0;
-		_structuralRepairs = 0;
+		_markdownStrips      = 0;
+		_structuralRepairs   = 0;
 		_toolNameCorrections = 0;
-		_argNameCorrections = 0;
-		_typeCoercions = 0;
-		_extraArgsStripped = 0;
+		_argNameCorrections  = 0;
+		_typeCoercions       = 0;
+		_extraArgsStripped   = 0;
 	}
 
 	// Returns a slash-separated snapshot of all counters: mark/struct/name/arg/type/extra
@@ -50,12 +50,12 @@ public static class FixJson
 		if (!string.IsNullOrWhiteSpace(json))
 		{
 			string cleaned = StripMarkdown(json, null);
-			result = ParseObject(cleaned);
+			result         = ParseObject(cleaned);
 
 			if (result == null)
 			{
 				string normalized = FixNonStandardSyntax(cleaned);
-				result = ParseObject(normalized);
+				result            = ParseObject(normalized);
 
 				if (result == null)
 				{
@@ -84,7 +84,7 @@ public static class FixJson
 		if (obj == null)
 		{
 			string normalized = FixNonStandardSyntax(cleaned);
-			obj = ParseObject(normalized);
+			obj               = ParseObject(normalized);
 
 			if (obj == null && IsLikelyTruncated(normalized))
 			{
@@ -120,9 +120,9 @@ public static class FixJson
 	// Returns the corrected name (≤ threshold edits away) or null. Increments counter and logs on match.
 	public static string? FuzzyMatchToolName(string input, string[] knownNames, int threshold, Action<string>? log)
 	{
-		string inputLower = input.ToLowerInvariant();
-		string? bestMatch = null;
-		int bestDistance = int.MaxValue;
+		string  inputLower   = input.ToLowerInvariant();
+		string? bestMatch    = null;
+		int     bestDistance = int.MaxValue;
 
 		foreach (string known in knownNames)
 		{
@@ -130,7 +130,7 @@ public static class FixJson
 			if (dist < bestDistance)
 			{
 				bestDistance = dist;
-				bestMatch = known;
+				bestMatch    = known;
 			}
 		}
 
@@ -176,7 +176,7 @@ public static class FixJson
 			int newline = t.IndexOf('\n');
 			if (newline >= 0)
 			{
-				t = t.Substring(newline + 1).Trim();
+				t              = t.Substring(newline + 1).Trim();
 				int closeFence = t.LastIndexOf("```", StringComparison.Ordinal);
 				if (closeFence >= 0)
 					t = t.Substring(0, closeFence).Trim();
@@ -186,7 +186,7 @@ public static class FixJson
 		// Strip any leading prose before the first { or [
 		int objStart = t.IndexOf('{');
 		int arrStart = t.IndexOf('[');
-		int start = -1;
+		int start    = -1;
 
 		if (objStart >= 0 && (arrStart < 0 || objStart < arrStart))
 			start = objStart;
@@ -208,11 +208,11 @@ public static class FixJson
 	// Converts single-quoted strings and unquoted object keys to standard double-quoted JSON.
 	private static string FixNonStandardSyntax(string json)
 	{
-		StringBuilder sb = new StringBuilder(json.Length + 16);
-		bool inDoubleStr = false;
-		bool inSingleStr = false;
-		bool escaped = false;
-		bool expectingKey = false;
+		StringBuilder sb           = new StringBuilder(json.Length + 16);
+		bool          inDoubleStr  = false;
+		bool          inSingleStr  = false;
+		bool          escaped      = false;
+		bool          expectingKey = false;
 
 		for (int i = 0; i < json.Length; i++)
 		{
@@ -297,7 +297,7 @@ public static class FixJson
 					sb.Append(json, keyStart, keyEnd - keyStart);
 				}
 
-				i--;  // compensate for the for-loop i++
+				i--; // compensate for the for-loop i++
 				expectingKey = false;
 				continue;
 			}
@@ -312,9 +312,9 @@ public static class FixJson
 	// a strong signal that the output was cut off mid-stream.
 	private static bool IsLikelyTruncated(string json)
 	{
-		int depth = 0;
+		int  depth = 0;
 		bool inStr = false;
-		bool esc = false;
+		bool esc   = false;
 
 		foreach (char c in json)
 		{
@@ -339,9 +339,9 @@ public static class FixJson
 	// Returns null when nothing needs closing (structurally complete, some other error).
 	internal static string? Repair(string json, Action<string>? log)
 	{
-		Stack<char> openers = new Stack<char>();
-		bool inString = false;
-		bool escaped = false;
+		Stack<char> openers  = new Stack<char>();
+		bool        inString = false;
+		bool        escaped  = false;
 
 		for (int i = 0; i < json.Length; i++)
 		{
@@ -395,7 +395,7 @@ public static class FixJson
 		bool changed = true;
 		while (changed && work.Length > 0)
 		{
-			changed = false;
+			changed  = false;
 			string t = work.TrimEnd();
 			if (t.Length == 0)
 				break;
@@ -403,14 +403,14 @@ public static class FixJson
 			char last = t[t.Length - 1];
 			if (last == ',')
 			{
-				work = t.Substring(0, t.Length - 1);
+				work    = t.Substring(0, t.Length - 1);
 				changed = true;
 			}
 			else if (last == ':')
 			{
 				string afterColon = t.Substring(0, t.Length - 1).TrimEnd();
-				work = StripTrailingString(afterColon);
-				changed = true;
+				work              = StripTrailingString(afterColon);
+				changed           = true;
 			}
 		}
 		return work;
@@ -418,13 +418,13 @@ public static class FixJson
 
 	private static string StripTrailingString(string work)
 	{
-		string t = work.TrimEnd();
+		string t      = work.TrimEnd();
 		string result = work;
 
 		if (t.Length > 0 && t[t.Length - 1] == '"')
 		{
 			int closeIdx = t.Length - 1;
-			int openIdx = -1;
+			int openIdx  = -1;
 
 			for (int i = closeIdx - 1; i >= 0; i--)
 			{
@@ -478,7 +478,7 @@ public static class FixJson
 						int.TryParse(intStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int intVal))
 					{
 						obj[key] = JsonValue.Create(intVal);
-						coerced = true;
+						coerced  = true;
 					}
 					break;
 
@@ -487,7 +487,7 @@ public static class FixJson
 						double.TryParse(numStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double dblVal))
 					{
 						obj[key] = JsonValue.Create(dblVal);
-						coerced = true;
+						coerced  = true;
 					}
 					break;
 
@@ -498,7 +498,7 @@ public static class FixJson
 						if (looseBool != null)
 						{
 							obj[key] = JsonValue.Create(looseBool.Value);
-							coerced = true;
+							coerced  = true;
 						}
 					}
 					break;
@@ -507,7 +507,7 @@ public static class FixJson
 					if (value is JsonValue strJv && !strJv.TryGetValue(out string? _))
 					{
 						obj[key] = JsonValue.Create(value.ToString());
-						coerced = true;
+						coerced  = true;
 					}
 					break;
 			}
@@ -589,7 +589,7 @@ public static class FixJson
 	private static string? BestArgNameMatch(string key, List<string> schemaNames, HashSet<string> taken)
 	{
 		string? caseMatch = null;
-		int caseCount = 0;
+		int     caseCount = 0;
 		foreach (string name in schemaNames)
 		{
 			if (taken.Contains(name))
@@ -603,23 +603,23 @@ public static class FixJson
 		if (caseCount == 1)
 			return caseMatch;
 
-		string lowerKey = key.ToLowerInvariant();
-		string? best = null;
-		int bestDist = int.MaxValue;
-		int ties = 0;
+		string  lowerKey = key.ToLowerInvariant();
+		string? best     = null;
+		int     bestDist = int.MaxValue;
+		int     ties     = 0;
 		foreach (string name in schemaNames)
 		{
 			if (taken.Contains(name))
 				continue;
 			int threshold = Math.Max(1, Math.Min(3, name.Length / 3));
-			int dist = LevenshteinDistance(lowerKey, name.ToLowerInvariant());
+			int dist      = LevenshteinDistance(lowerKey, name.ToLowerInvariant());
 			if (dist > threshold)
 				continue;
 			if (dist < bestDist)
 			{
 				bestDist = dist;
-				best = name;
-				ties = 1;
+				best     = name;
+				ties     = 1;
 			}
 			else if (dist == bestDist)
 			{
@@ -665,6 +665,12 @@ public static class FixJson
 			if (req == null)
 				continue;
 			string fieldName = req.GetValue<string>();
+
+			// Required so models write it, but a command is worth more than its note: refusing one over a
+			// missing note costs a whole turn, and compaction has a fallback.
+			if (string.Equals(fieldName, MechanicalCompaction.WhyArgument, StringComparison.Ordinal))
+				continue;
+
 			if (!string.IsNullOrEmpty(fieldName) && !obj.ContainsKey(fieldName))
 			{
 				error = $"Error: Tool '{toolName}' missing required argument '{fieldName}'";
@@ -679,8 +685,8 @@ public static class FixJson
 
 	private static int LevenshteinDistance(string a, string b)
 	{
-		int m = a.Length;
-		int n = b.Length;
+		int   m    = a.Length;
+		int   n    = b.Length;
 		int[] prev = new int[n + 1];
 		int[] curr = new int[n + 1];
 
@@ -693,11 +699,11 @@ public static class FixJson
 			for (int j = 1; j <= n; j++)
 			{
 				int cost = a[i - 1] == b[j - 1] ? 0 : 1;
-				curr[j] = Math.Min(Math.Min(prev[j] + 1, curr[j - 1] + 1), prev[j - 1] + cost);
+				curr[j]  = Math.Min(Math.Min(prev[j] + 1, curr[j - 1] + 1), prev[j - 1] + cost);
 			}
 			int[] tmp = prev;
-			prev = curr;
-			curr = tmp;
+			prev      = curr;
+			curr      = tmp;
 		}
 
 		return prev[n];

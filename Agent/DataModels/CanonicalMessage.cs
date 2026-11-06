@@ -110,23 +110,34 @@ public sealed class ToolResultMessage : CanonicalMessage
 	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
 	public string? MediaMimeType { get; }
 
+	// How the tool finished, which compaction keeps when it takes the output away. Null when unknown: a
+	// result written before this was recorded, or one compaction has already reduced to its own text.
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public int? ExitCode { get; }
+
 	[JsonConstructor]
-	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media, string? mediaPath, string? mediaMimeType)
+	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media, string? mediaPath, string? mediaMimeType, int? exitCode)
 	{
 		ToolCallId = toolCallId;
 		Content    = content;
 		Media      = media;
+		ExitCode   = exitCode;
 		if (media == null && mediaPath != null && mediaMimeType != null)
 			Media = new List<MediaFile> { new MediaFile(mediaPath, mediaMimeType) };
 	}
 
+	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media, int? exitCode)
+		: this(toolCallId, content, media, null, null, exitCode)
+	{
+	}
+
 	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media)
-		: this(toolCallId, content, media, null, null)
+		: this(toolCallId, content, media, null, null, null)
 	{
 	}
 
 	public ToolResultMessage(string toolCallId, string content)
-		: this(toolCallId, content, null, null, null)
+		: this(toolCallId, content, null, null, null, null)
 	{
 	}
 }

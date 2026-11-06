@@ -1,5 +1,6 @@
 using NAudio.Wave;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using TextCopy;
 
 
@@ -67,16 +68,24 @@ internal sealed class PlatformWindows : IPlatform
 			return;
 		try
 		{
-			AudioFileReader reader = new AudioFileReader(soundFile);
-			WaveOutEvent    output = new WaveOutEvent();
-			output.Init(reader);
-			output.PlaybackStopped += (s, e) =>
-			{
-				output.Dispose();
-				reader.Dispose();
-			};
-			output.Play();
+			PlayFile(soundFile);
 		}
 		catch { }
+	}
+
+	// Separate and never inlined so that NAudio failing to load happens inside PlaySound's try: it loads when
+	// this method is compiled, and a beast.exe replaced by a rebuild while running can no longer supply it.
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	private static void PlayFile(string soundFile)
+	{
+		AudioFileReader reader = new AudioFileReader(soundFile);
+		WaveOutEvent    output = new WaveOutEvent();
+		output.Init(reader);
+		output.PlaybackStopped += (s, e) =>
+		{
+			output.Dispose();
+			reader.Dispose();
+		};
+		output.Play();
 	}
 }

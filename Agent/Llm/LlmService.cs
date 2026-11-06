@@ -66,8 +66,13 @@ public class LlmService
 	// A rate limit lifting further out than this ends the turn on this model instead of being waited out.
 	private static readonly TimeSpan kLongRateLimit = TimeSpan.FromMinutes(5);
 
-	public LlmModel Model  => _model;
-	public bool     IsDown => _availability.IsDown;
+	public LlmModel Model => _model;
+
+	// Whether this model's reasoning goes back to it as plain text, so it fills the window like any other
+	// message. Only Chat Completions does that: Messages replays signed blocks only within the live chain
+	// and drops them on rehydrate, and the others hold or encrypt theirs out of canonical's sight.
+	public bool ResendsThinking => _model.Config.RetainReasoning && _handler.GetDetectedProtocol() == DetectedProtocol.ChatCompletions;
+	public bool IsDown          => _availability.IsDown;
 
 	// When this model's backoff ends; in the past when it can serve now.
 	public DateTimeOffset AvailableAt => _availability.AvailableAt;

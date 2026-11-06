@@ -204,7 +204,7 @@ public static class FakeLlmTests
 					// mechanical first, full staged summarization (real Summarizer, real registry)
 					// when nothing is reclaimable, then re-attach the tail.
 					(List<CanonicalMessage> settled, List<CanonicalMessage> pending) = MechanicalCompaction.SplitPending(session.Data.Messages);
-					List<CanonicalMessage>? seed = MechanicalCompaction.TryBuild(settled, string.Empty, session.ContextLength, FakeLlm.ContextWindow);
+					List<CanonicalMessage>? seed = MechanicalCompaction.TryBuild(settled, string.Empty, session.ContextLength, FakeLlm.ContextWindow, false, 0, new CompactionLog(CompactionLog.PathFor(session.Id)), new Dictionary<string, string>());
 					if (seed != null)
 					{
 						mechCompactions++;
@@ -747,6 +747,9 @@ public static class FakeLlmTests
 	{
 		public readonly Dictionary<string, Session> Parents = new Dictionary<string, Session>(StringComparer.Ordinal);
 
+		public Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(Session parent, string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct)
+			=> Task.FromResult((false, "no subagents in this test", 0));
+
 		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
 			=> Task.FromResult((false, "no subagents in this test", 0));
 
@@ -764,6 +767,9 @@ public static class FakeLlmTests
 	// no other handlers, so the test observes only the session under test.
 	internal sealed class StubOrchestrator : ISessionOrchestrator
 	{
+		public Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(Session parent, string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct)
+			=> Task.FromResult((false, "no subagents in this test", 0));
+
 		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
 			=> Task.FromResult((false, "no subagents in this test", 0));
 
