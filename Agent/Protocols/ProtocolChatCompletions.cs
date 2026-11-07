@@ -1437,6 +1437,9 @@ httpResponse);
 	//   Hermes/JSON:  {"name": "x", "arguments": {...}}
 	//   Qwen-Coder:   <function=x> <parameter=key>\nvalue\n</parameter> ... </function>
 	// Returns null when neither shape matches.
+	private const  string kXmlCallPrefix = "xmltc_";
+	private static long   _xmlCallCount  = 0;
+
 	private static SemanticToolCall? ParseXmlToolCall(string inner)
 	{
 		SemanticToolCall? call = null;
@@ -1519,14 +1522,40 @@ httpResponse);
 		return call;
 	}
 
+	// A call found in a model's text has no ID of its own, so it is given the next number. The ID goes back to the
+	// model with the call's result, so a seeded run must make the same ones every time.
 	private static SemanticToolCall MakeXmlCall(string name, string argsJson)
 	{
 		return new SemanticToolCall
 		{
-			Id            = $"xmltc_{Guid.NewGuid():N}".Substring(0, 24),
+			Id            = $"{kXmlCallPrefix}{Interlocked.Increment(ref _xmlCallCount)}",
 			Name          = name,
 			ArgumentsJson = argsJson
 		};
+	}
+
+	// Moves the count past the IDs in a loaded conversation, because a restarted agent counts from 1 again and a
+	// conversation must not hold the same ID twice.
+	public static void SkipXmlCallIdsIn(IEnumerable<CanonicalMessage> messages)
+	{
+		foreach (CanonicalMessage message in messages)
+		{
+			if (message is AssistantMessage assistant)
+			{
+				foreach (SemanticToolCall call in assistant.ToolCalls)
+				{
+					if (call.Id.StartsWith(kXmlCallPrefix, StringComparison.Ordinal) && long.TryParse(call.Id.AsSpan(kXmlCallPrefix.Length), out long used))
+					{
+						long current = Interlocked.Read(ref _xmlCallCount);
+						while (used > current)
+						{
+							long seen = Interlocked.CompareExchange(ref _xmlCallCount, used, current);
+							current   = seen == current ? used : seen;
+						}
+					}
+				}
+			}
+		}
 	}
 
 	private static (string assistantText, List<SemanticToolCall> toolCalls) ExtractSemantic(JsonObject messageObj)

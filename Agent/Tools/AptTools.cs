@@ -51,7 +51,9 @@ public static class AptTools
 				ToolResult run     = await ShellTools.AgentBashAsync(toolCallId, update + install, TimeoutSeconds, ct);
 				if (run.ExitCode == 0)
 					_listsRefreshed = true;
-				result = new ToolResult(toolCallId, Tail(run.StdOut), Tail(run.StdErr), run.ExitCode, 0);
+				result = run.ExitCode == 0
+					? new ToolResult(toolCallId,             "OK",     string.Empty,            0, 0)
+					: new ToolResult(toolCallId, Tail(run.StdOut), Tail(run.StdErr), run.ExitCode, 0);
 			}
 			finally
 			{

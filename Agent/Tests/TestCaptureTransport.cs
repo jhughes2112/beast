@@ -42,7 +42,7 @@ public class TestCaptureTransport : ITransportServer
 
 	public IReadOnlyList<(int Input, int Output, int MaxContext, int Context, int Cached)> StatFrames => _stats;
 
-	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
+	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens, long workedMs)
 	{
 		_stats.Add((promptTokens, completionTokens, maxContext, contextTokens, cachedTokens));
 		Send(FrameType.Stats, sessionId, $"model={model},role={role},{promptTokens},{completionTokens},{totalCost},{maxContext},{contextTokens},{cachedTokens}");

@@ -362,9 +362,9 @@ public class DisplayScreen : IDisplay
 		}
 	}
 
-	// Working time the viewed session has banked across its finished turns. Pushed on every busy/idle
-	// transition and whenever the viewed session changes, so the bar always shows that session's own
-	// total rather than the client's uptime.
+	// The viewed session's working time, as the agent counts it: time sending to and receiving from its
+	// model, plus what its tools and child sessions report, and not time waiting at the gateway. Pushed with
+	// its stats and whenever the viewed session changes, so a reloaded session shows what it has done.
 	public void SetActiveTime(long activeMs)
 	{
 		lock (_consoleLock)
@@ -385,8 +385,7 @@ public class DisplayScreen : IDisplay
 		string metrics = "";
 		if (_statsHaveTokens)
 		{
-			long   liveMs   = _statsActiveMs + (_agentBusy && _busyStartTick > 0 ? Environment.TickCount64 - _busyStartTick : 0);
-			string duration = FormatActive(liveMs);
+			string duration = FormatActive(_statsActiveMs);
 			int    used     = _statsCached + _statsInput + _statsOutput;
 			string context  = _statsMaxContext > 0 && used > 0
 				? $"  {(int)((double)used / _statsMaxContext * 100)}%/{_statsMaxContext}"

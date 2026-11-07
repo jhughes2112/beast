@@ -14,6 +14,7 @@ public static class SessionTests
 		ctx.Log("  SessionTests");
 		ctx.Assert(SessionStore.SanitizeWorktreeName(" fix login/bug ") == "fix-login-bug", "SanitizeWorktreeName: spaces and slashes collapse to '-'");
 		ctx.Assert(                SessionStore.SanitizeWorktreeName("::bare::") == "bare", "SanitizeWorktreeName: menu values cannot survive it");
+		BareSessions(ctx);
 
 		string temp = Path.Combine(Path.GetTempPath(), $"beast-sessions-{Guid.NewGuid():N}");
 		string repo = Path.Combine(temp, "repo");
@@ -70,6 +71,43 @@ public static class SessionTests
 			HostGit.WorktreeStatus none = HostGit.Status(never);
 			ctx.Assert(none.Readable && !none.Checkout && none.Finishable, "Status: a worktree never checked out is finishable");
 			ctx.Assert(HostGit.RemoveWorktree(never).Error.Length == 0 && !Directory.Exists(never.WorktreePath), "RemoveWorktree: a never-checked-out worktree's folder goes");
+		}
+		finally
+		{
+			SessionStore.DeleteTree(temp);
+		}
+	}
+
+	// A folder can have several bare sessions, told apart by name, and a record from before names still reads.
+	private static void BareSessions(TestContext ctx)
+	{
+		string temp   = Path.Combine(Path.GetTempPath(), $"beast-bare-{Guid.NewGuid():N}");
+		string folder = Path.Combine(              temp, "project");
+		try
+		{
+			DateTime            now      = DateTime.UtcNow;
+			SessionRecord       unnamed  = new SessionRecord("old",  Path.Combine(temp, "old"),  folder, string.Empty, now, now);
+			SessionRecord       named    = new SessionRecord("two", Path.Combine(temp, "two"),                      folder, string.Empty, now, now, "session-1");
+			SessionRecord       other    = new SessionRecord("far", Path.Combine(temp, "far"), Path.Combine(temp, "other"), string.Empty, now, now, "session-2");
+			SessionRecord       worktree = new SessionRecord("tree", Path.Combine(temp, "tree"), folder, "session-2", now, now);
+			List<SessionRecord> sessions = new List<SessionRecord> { named, unnamed, other, worktree };
+
+			ctx.Assert(SessionStore.FindBare(sessions, folder) == named, "Bare sessions: without a name, the first listed, which is the most recently used");
+			ctx.Assert(SessionStore.FindBareNamed(sessions, folder, "session-1") == named, "Bare sessions: found by name");
+			ctx.Assert(SessionStore.FindBareNamed(sessions, folder, "session-2") == null, "Bare sessions: another folder's, or a worktree of that name, is not this folder's");
+			ctx.AssertEqual("session-2", SessionStore.FreeBareName(sessions, folder), "Bare sessions: the suggested name is one this folder has not used");
+			ctx.AssertEqual("session-1", SessionStore.FreeBareName(new List<SessionRecord> { unnamed }, folder), "Bare sessions: an unnamed session takes no name");
+			ctx.AssertEqual("bare session session-1",   named.Describe(), "Bare sessions: a named one reads with its name");
+			ctx.AssertEqual("bare session",           unnamed.Describe(), "Bare sessions: an unnamed one reads as before");
+
+			SessionStore.Save(named);
+			SessionRecord? read = SessionStore.Read(named.Dir);
+			ctx.Assert(read != null && read.Name == "session-1" && read.Id == "two" && read.Dir == named.Dir && read.IsBare, "Bare sessions: the name is saved and read back");
+
+			Directory.CreateDirectory(unnamed.Dir);
+			File.WriteAllText(Path.Combine(unnamed.Dir, "session.json"), $"{{\"folder\":{System.Text.Json.JsonSerializer.Serialize(folder)},\"worktree\":\"\"}}");
+			SessionRecord? before = SessionStore.Read(unnamed.Dir);
+			ctx.Assert(before != null && before.Name.Length == 0 && before.IsBare, "Bare sessions: a record with no name still reads");
 		}
 		finally
 		{

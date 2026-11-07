@@ -214,6 +214,21 @@ public static class ConfigOverlayTests
 		entry = SavedEntry(sent, "plain");
 		ctx.AssertNotNull(entry, "ConfigOverlay: a configured model stays in the apply");
 		ctx.Assert(entry?["seed"] == null, "ConfigOverlay: clearing the seed stops sending it");
+
+		// An endpoint whose protocol has no seed refuses one, and the old value can still be cleared.
+		sent    = new List<string>();
+		overlay = OpenCatalog(sent);
+		overlay.OnConfigFrame(Catalog.Replace("\"baseUrl\":\"http://x/v1\",", "\"baseUrl\":\"http://x/v1\",\"seedSupported\":false,", StringComparison.Ordinal));
+		Press(overlay, ConsoleKey.Enter);
+		for (int i = 0; i < 8; i++)
+			Press(overlay, ConsoleKey.DownArrow);
+		Press(overlay, ConsoleKey.Enter);
+		Type(overlay, "5");
+		Press(overlay,  ConsoleKey.Enter);
+		Press(overlay, ConsoleKey.Escape);
+		LeavePassing(overlay, sent);
+		Press(overlay, ConsoleKey.Escape);
+		ctx.Assert(SavedEntry(sent, "plain")?["seed"] == null, "ConfigOverlay: an endpoint with no seed parameter refuses one");
 	}
 
 	// Editing a model that was never enabled, then leaving, keeps the edit without enabling the model.

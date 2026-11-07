@@ -34,7 +34,7 @@ internal static class ReasoningSummarizer
 		{
 			try
 			{
-				LlmService? service = registry.CreateService(roleService.GetRole(RoleName), string.Empty, 0, true);
+				LlmService? service = registry.CreateService(roleService.GetRole(RoleName), string.Empty, 0, true, registry.SeedOf(session));
 				if (service != null)
 				{
 					string? summary = await SummarizeAsync(session, service, thinking, roleService, registry, ct);
@@ -64,6 +64,7 @@ internal static class ReasoningSummarizer
 
 		ProtocolResult result = await service.RunToCompletionAsync(stage, Array.Empty<Tool>(), null, 0, kMaxOutputTokens, false, quiet, ct);
 		session.RecordCost(stage.TotalCost);
+		ToolClock.Report(session, stage.WorkedMs);
 
 		string? summary = null;
 		if (result.Outcome == ProtocolCallOutcome.Success)

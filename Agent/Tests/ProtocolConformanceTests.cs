@@ -88,6 +88,7 @@ public static class ProtocolConformanceTests
 				{
 					await TestCutOffTurnAsync(ctx, server, api, cts.Token);
 					await TestStreamErrorsAsync(ctx, server, api, cts.Token);
+					await TestWorkingTimeAsync(ctx, server, api, cts.Token);
 				}
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
 				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
@@ -311,6 +312,39 @@ public static class ProtocolConformanceTests
 	// Once a stream has started, its 200 can't change, so an error has to travel inside it. The peachy gateway
 	// sends one after keep-alives when a queued model won't load or refuses the request. Before this was handled
 	// the error was skipped as a chunk with no choices and the turn looked empty.
+	private static async Task TestWorkingTimeAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
+	{
+		// A tool calling a model is waiting on it: its clock stops, and the model's time stays on the conversation.
+		ToolClock.Current = new ToolClock();
+		await Task.Delay(100, ct);
+		Rig inTool = Build(server, api);
+		inTool.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer").WithQueue(1000));
+		await StepAsync(inTool, ct);
+		long toolWorked   = ToolClock.Current.WorkedMs;
+		ToolClock.Current = null;
+		ctx.Assert(toolWorked >= 50 && toolWorked < 700, $"{api.Name} WorkingTime: a tool's clock stops while it waits on a model (got {toolWorked} ms)");
+
+		// The queue is not work, with or without keep-alive comments holding the connection open.
+		foreach (bool keepAlive in new[] { false, true })
+		{
+			Rig queued = Build(server, api);
+			queued.Session.Bundle.OnUserMessage("hello");
+			FakeReply reply = FakeReply.Say("answer").WithQueue(1500);
+			server.Enqueue(keepAlive ? reply.WithKeepAlive() : reply);
+			ProtocolResult waited = await StepAsync(queued, ct);
+			ctx.AssertEqual("answer", waited.Payload?.AssistantText ?? string.Empty, $"{api.Name} WorkingTime: the queued call answers");
+			ctx.Assert(queued.Session.WorkedMs < 750, $"{api.Name} WorkingTime: 1500 ms in the gateway's queue is not counted (keep-alive {keepAlive}, got {queued.Session.WorkedMs} ms)");
+		}
+
+		// Receiving the response is.
+		Rig generating = Build(server, api);
+		generating.Session.Bundle.OnUserMessage("hello");
+		server.Enqueue(FakeReply.Say("answer").WithQueue(500).WithGenerate(800));
+		await StepAsync(generating, ct);
+		ctx.Assert(generating.Session.WorkedMs >= 700 && generating.Session.WorkedMs < 1250, $"{api.Name} WorkingTime: the 800 ms of receiving is counted and the 500 ms before it is not (got {generating.Session.WorkedMs} ms)");
+	}
+
 	private static async Task TestStreamErrorsAsync(TestContext ctx, FakeProvider server, Api api, CancellationToken ct)
 	{
 		Rig rig = Build(server, api);

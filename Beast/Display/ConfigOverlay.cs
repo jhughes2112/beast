@@ -300,7 +300,8 @@ internal class ConfigOverlay
 				if (effective.Length > 0)
 					_baseUrl = effective;
 
-				string error = root?["error"]?.GetValue<string>() ?? string.Empty;
+				string error   = root?["error"]?.GetValue<string>() ?? string.Empty;
+				_seedSupported = root?["seedSupported"]?.GetValue<bool>() ?? true;
 
 				// A failed fetch still carries the endpoint's CONFIGURED models, so an unreachable
 				// endpoint's list opens anyway — disabling a model must never require the provider
@@ -948,6 +949,9 @@ internal class ConfigOverlay
 		}
 	}
 
+	// Whether the open catalog's endpoint takes a seed; see ConfigCatalogPayload.SeedSupported.
+	private bool _seedSupported = true;
+
 	// The editable fields of one model, in menu order.
 	private static readonly string[] kDetailFields =
 	{
@@ -1382,11 +1386,12 @@ internal class ConfigOverlay
 		}
 		else if (field == "seed")
 		{
-			ok = long.TryParse(value, out long seed);
+			long seed = 0;
+			ok        = _seedSupported && long.TryParse(value, out seed);
 			if (ok)
 				row.OvrSeed = seed;
 			else
-				error = "Enter a whole number, or leave it blank to send no seed.";
+				error = _seedSupported ? "Enter a whole number, or leave it blank to send no seed." : "This endpoint's protocol has no seed. Only Chat Completions endpoints take one.";
 		}
 		else if (field == "topK")
 		{

@@ -37,12 +37,22 @@ public static class HostCommandTests
 			ctx.Assert(         !noHost.GetRole("Default")!.SystemPrompt.Contains("two machines"), "host_command: no note when no host was given");
 			ctx.Assert(               !withHost.Roles["Default"].SystemPrompt.Contains("Test OS"), "host_command: the note never reaches the stored role");
 
-			// Every default role's own prompt keeps timestamps and bare /tmp out of its output.
+			// No role's own prompt says anything about seeded runs: that is added only while one is under way.
 			foreach (string name in new[] { "Default", "Developer", "Reviewer", "Explorer", "WebFetch", "WebSearch", "MediaReader", ReasoningSummarizer.RoleName })
-			{
-				string prompt = noHost.GetRole(name)!.SystemPrompt;
-				ctx.Assert(prompt.Contains("\n\nDO NOT DISPLAY timestamps") && prompt.Contains("subfolder of /tmp"), $"Stable output: {name}'s prompt says so, in its own paragraph");
-			}
+				ctx.Assert(!noHost.GetRole(name)!.SystemPrompt.Contains("seeded", StringComparison.OrdinalIgnoreCase), $"Seeded run: {name}'s own prompt leaves it out");
+			foreach (string name in new[] { "Default", "Developer", "Reviewer" })
+				ctx.Assert(noHost.GetRole(name)!.Tools.Contains("browser_screenshot"), $"Screenshot: {name} has the tool");
+
+			Session seededSession = new Session(new BeastSession("s", "s", "m", "r", string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true), "Be helpful.", transport, false);
+			string  SystemText() => seededSession.Bundle.Canonical.Messages[0] is SystemMessage message ? message.Text : string.Empty;
+			seededSession.SetSeededRun(false);
+			ctx.AssertEqual("Be helpful.", SystemText(), "Seeded run: without a seed the prompt is untouched");
+			seededSession.SetSeededRun(true);
+			seededSession.SetSeededRun(true);
+			ctx.AssertEqual("Be helpful." + RoleService.SeededRunNote, SystemText(), "Seeded run: with a seed the note ends the prompt, once");
+			ctx.Assert(SystemText().Contains("Other methods will be refused", StringComparison.Ordinal), "Seeded run: the note warns that screenshots are refused");
+			seededSession.SetSeededRun(false);
+			ctx.AssertEqual("Be helpful.", SystemText(), "Seeded run: moving to a model with no seed takes the note away");
 
 
 			// Only the shells the client announced are accepted, and cmd only takes one line.

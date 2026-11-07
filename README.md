@@ -42,6 +42,7 @@ First launch will open the config picker automatically. Use /config to get back 
 - **Vulkan 1.4 container** — uses lavapipe CPU driver so you can do headless dev on graphical apps inside the sandbox
 - **Lingering media** — images stay in context until new images are requested, keeping the prefix cache warm.
 - **Multi-image tool calls** — `inspect_media` takes several images at once with a `max_dimension` the model controls, with drag and drop support
+- **Repeatable page screenshots** — `browser_screenshot` runs any page for an exact number of timesteps, with its clocks, CSS animations, timers and random numbers controlled, and gives the same bytes every time
 - **Usage-limit auto-resume** — when a subscription window runs out, or an API is rate limited, Beast waits for the reset and continues the turn by itself.
 - **OpenRouter batch model** — `:batch` aren't supported, so they're filtered out now
 
@@ -94,7 +95,7 @@ Default → Assigns work to Developer → Reviewer Approve/Reject → Developer 
 
 ## Sessions
 
-When you start `beast`, it pulls up a list of "unfinished" sessions.  You can connect and continue any existing session, or start a new one.  Be aware that where you run beast from matters.  A **bare session** sandboxes the agent right in the folder you ran it from.  Inside a git repo you can also start a **worktree session**, which sandboxes the agent **at the root of the git repo, in its own worktree**.  That way it has access to everything without needing to reach through to the host machine as often.
+When you start `beast`, it always pulls up a list of "unfinished" sessions.  You can connect and continue any existing session, or start a new one.  Be aware that where you run beast from matters.  A **bare session** sandboxes the agent right in the folder you ran it from.  A folder can have several, each with its own name and conversations, all working on the same files.  Inside a git repo you can also start a **worktree session**, which sandboxes the agent **at the root of the git repo, in its own worktree**.  That way it has access to everything without needing to reach through to the host machine as often.
 
 **Worktrees and session logs all live under `~/.beast/` by default, not in your project.** This keeps your project folder clean and makes resuming any project on your machine simpler.  When you Finish a session you are asking Beast to **delete this worktree** because all the work has been merged (by the Developer), then delete the session.  You can control the `sessionsDir` in `$HOME/.beast/settings.json` if your main disk is low on space:
 
@@ -184,7 +185,7 @@ beast --worktree featureName -p "Add a health check endpoint"
 beast --worktree none /p "Summarize the architecture"
 ```
 
-`--worktree` skips the session menu and opens or creates the specific worktree session. `none` means use a bare session. Dash and slash are interchangeable on the command line.  For passing in prompts, `-p` must come last because anything after it is passed in as the prompt for convenience.
+`--worktree` skips the session menu and opens or creates the specific worktree session. `none` means use this folder's most recently used bare session, which is also what a non-interactive run without `--worktree` does. Dash and slash are interchangeable on the command line.  For passing in prompts, `-p` must come last because anything after it is passed in as the prompt for convenience.
 
 ---
 

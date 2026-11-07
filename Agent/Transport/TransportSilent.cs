@@ -16,7 +16,7 @@ public class TransportSilent : ITransportServer
 	public void System            (string sessionId, string text) { }
 	public void User              (string sessionId, string text) { }
 	public void Debug             (string sessionId, string text) { }
-	public void Stats             (string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens) { }
+	public void Stats             (string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens, long workedMs) { }
 	public void Completions       (string sessionId,   string json)              { }
 	public void Config            (string sessionId,   string json)              { }
 	public void Idle              (string sessionId, bool subagent)              { }

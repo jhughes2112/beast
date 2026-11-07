@@ -60,11 +60,29 @@ public static class ToolDispatch
 		return new ToolResult(raw.Id, raw.StdOut, raw.StdErr, raw.ExitCode, estimated);
 	}
 
+	// Runs a call on its own clock and adds what it worked to the session. Calls in a round each add their own,
+	// however much they overlapped.
+	private static async Task<ToolResult> ExecuteTimedAsync(SemanticToolCall toolCall, Dictionary<string, Tool> toolLookup, Session session, int maxOutputTokens, ITransportServer transport, CancellationToken ct)
+	{
+		ToolClock clock   = new ToolClock();
+		ToolClock.Current = clock;
+		try
+		{
+			return await ExecuteToolAsync(toolCall, toolLookup, session.Id, maxOutputTokens, transport, ct);
+		}
+		finally
+		{
+			session.RecordWork(clock.WorkedMs);
+		}
+	}
+
 	// Dispatches every tool call in the payload, filling payload.ToolResults in call order. Returns
 	// true when at least one tool ran (the assistant turn continues), false when the turn carried no
-	// tool calls (the turn is complete). countTime is for a seeded model: the sandbox's file times and the
-	// clock its shell sees follow the tool call count instead of the real clock, so a run can repeat.
-	public static async Task<bool> DispatchAsync(ProtocolCallPayload payload, Tool[] tools, Session session, ITransportServer transport, CancellationToken ct, bool countTime = false)
+	// tool calls (the turn is complete). seeded is for a seeded model, so a run can repeat: the sandbox's file times
+	// and the clock its shell sees follow the tool call count instead of the real clock, and calls run one at a time
+	// in call order, because calls that overlap reach shared files and the model's endpoint in whatever order they
+	// happen to get there.
+	public static async Task<bool> DispatchAsync(ProtocolCallPayload payload, Tool[] tools, Session session, ITransportServer transport, CancellationToken ct, bool seeded = false)
 	{
 		if (payload.ToolCalls.Count == 0)
 			return false;
@@ -77,7 +95,7 @@ public static class ToolDispatch
 
 		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
 
-		if (countTime)
+		if (seeded)
 		{
 			string clockFailure = await Sandbox.AdvanceFileClockAsync(toolCalls.Count, ct);
 			if (clockFailure.Length > 0)
@@ -94,7 +112,10 @@ public static class ToolDispatch
 		Task<ToolResult>[] tasks = new Task<ToolResult>[toolCalls.Count];
 		for (int i = 0; i < toolCalls.Count; i++)
 		{
-			tasks[i] = ExecuteToolAsync(toolCalls[i], toolLookup, session.Id, MaxRawOutputTokens, transport, ct);
+			tasks[i] = ExecuteTimedAsync(toolCalls[i], toolLookup, session, MaxRawOutputTokens, transport, ct);
+			// WhenAny only waits. A failure stays in the task, for the loop below to handle like any other.
+			if (seeded)
+				await Task.WhenAny(tasks[i]);
 		}
 
 		// Drain each call independently rather than letting Task.WhenAll make the whole round hostage to
@@ -140,6 +161,7 @@ public static class ToolDispatch
 		foreach (ToolResult settled in payload.ToolResults)
 			roundTokens += settled.MeasuredOutputTokens;
 		session.Budget.ChargeToolResults(roundTokens);
+		session.SendStats();
 
 		// Every task is drained now, so no tool is still touching the session. Only a genuine cancel
 		// propagates — after all siblings are settled — so the caller's cancellation guard parks/unwinds

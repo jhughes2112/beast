@@ -88,6 +88,18 @@ public class ProtocolProxy
 		_endpointFacts       = endpointFacts;
 	}
 
+	// Chat Completions is the only protocol with a seed: neither the Messages API nor the Responses API has one.
+	// A protocol not known yet is taken as able to, and is checked again once it is.
+	public static bool TakesSeed(DetectedProtocol protocol)
+	{
+		return protocol == DetectedProtocol.ChatCompletions || protocol == DetectedProtocol.Unknown;
+	}
+
+	public static bool EndpointTakesSeed(string endpoint)
+	{
+		return TakesSeed(DetectProtocolFromUrl(endpoint));
+	}
+
 	// Infers the protocol from the URL route suffix.
 	private static DetectedProtocol DetectProtocolFromUrl(string endpoint)
 	{

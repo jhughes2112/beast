@@ -180,29 +180,29 @@ public class Program
 	}
 
 	// Menu values for the rows that are not an existing session. The colons can never survive
-	// SanitizeWorktreeName, so they cannot collide with a typed worktree name.
+	// SanitizeWorktreeName, so they cannot collide with a typed session name.
 	private const string BareChoice    = "::bare::";
 	private const string SessionPrefix = "::session::";
 
 	// Resolves which session this launch runs. Sessions live in SessionStore.Root and can be resumed from
-	// anywhere; new ones are made for the folder Beast runs in: its one bare session (the agent works on the
+	// anywhere; new ones are made for the folder Beast runs in: a named bare session (the agent works on the
 	// folder in place), or, inside a git repository, a worktree session (the agent works on its own checkout
 	// of the repository's root, on a branch of the worktree's name). Returns the session, null when the user
 	// left the menu, or an error to print.
-	//   - --worktree none, and a non-interactive run without --worktree: this folder's bare session.
+	//   - --worktree none, and a non-interactive run without --worktree: this folder's most recently used
+	//     bare session, made if it has none.
 	//   - --worktree <name>: that worktree session of this folder's repository, made if it does not exist.
-	//   - Otherwise the session menu, unless all it could offer is this folder's bare session.
+	//   - Otherwise the session menu, always.
 	private static (SessionRecord? Session, string Error) ResolveSession(string cwd, string? nameArg, bool nonInteractive, List<LaunchDocker.AgentContainer> agents)
 	{
 		List<SessionRecord> sessions = SessionStore.List();
 		string              repo     = HostGit.RepoRoot(cwd);
-		SessionRecord?      bare     = SessionStore.FindBare(sessions, cwd);
 		SessionRecord?      session  = null;
 		string              error    = string.Empty;
 
-		if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase) || (nonInteractive && string.IsNullOrWhiteSpace(nameArg)) || (repo.Length == 0 && string.IsNullOrWhiteSpace(nameArg) && OnlyBareHere(sessions, bare, agents)))
+		if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase) || (nonInteractive && string.IsNullOrWhiteSpace(nameArg)))
 		{
-			(session, error) = BareSession(cwd, bare, agents);
+			(session, error) = BareSession(cwd, SessionStore.FindBare(sessions, cwd), string.Empty, agents);
 		}
 		else if (!string.IsNullOrWhiteSpace(nameArg))
 		{
@@ -217,13 +217,14 @@ public class Program
 			if (!result.Cancelled)
 			{
 				sessions = SessionStore.List();
-				if (result.IsNew)
+				if (result.IsNew && result.CreateRow == BareChoice)
+				{
+					string name      = SessionStore.SanitizeWorktreeName(result.Value);
+					(session, error) = BareSession(cwd, SessionStore.FindBareNamed(sessions, cwd, name), name, agents);
+				}
+				else if (result.IsNew)
 				{
 					(session, error) = WorktreeSession(repo, result.Value, sessions, agents);
-				}
-				else if (result.Value == BareChoice)
-				{
-					(session, error) = BareSession(cwd, SessionStore.FindBare(sessions, cwd), agents);
 				}
 				else
 				{
@@ -241,22 +242,16 @@ public class Program
 		return (session, error);
 	}
 
-	// Whether this folder's bare session is all a menu could offer: no other session and no stray container.
-	private static bool OnlyBareHere(List<SessionRecord> sessions, SessionRecord? bare, List<LaunchDocker.AgentContainer> agents)
+	// The bare session found, or a new one of that name when none was (refused for a folder that must not be handed over).
+	private static (SessionRecord? Session, string Error) BareSession(string folder, SessionRecord? found, string name, List<LaunchDocker.AgentContainer> agents)
 	{
-		return sessions.Count == (bare != null ? 1 : 0) && agents.Count == (bare != null && ContainerOf(bare, agents) != null ? 1 : 0);
-	}
-
-	// The folder's bare session, made when it has none (refused for a folder that must not be handed over).
-	private static (SessionRecord? Session, string Error) BareSession(string folder, SessionRecord? bare, List<LaunchDocker.AgentContainer> agents)
-	{
-		SessionRecord? session = bare;
+		SessionRecord? session = found;
 		string         error   = string.Empty;
 		if (session == null)
 		{
 			error = UnsafeWorkspaceReason(folder);
 			if (error.Length == 0)
-				session = SessionStore.Create(folder, string.Empty, ContainerNames(agents));
+				session = SessionStore.Create(folder, string.Empty, ContainerNames(agents), name);
 		}
 		return (session, error);
 	}
@@ -305,7 +300,7 @@ public class Program
 	}
 
 	// The session menu. This folder's sessions come first (the repository's worktree sessions and the folder's
-	// bare session) with rows to make new ones, then every other session, which can be resumed from here
+	// bare sessions) with rows to make new ones, then every other session, which can be resumed from here
 	// too, then any agent container that belongs to no session. Enter starts a stopped session; S stops a
 	// busy one's agent (the Beast window using it loses its connection); Del deletes, asking first, and for
 	// a worktree says what unfinished work it holds.
@@ -314,7 +309,6 @@ public class Program
 		List<SessionRecord>               sessions = SessionStore.List();
 		List<LaunchDocker.AgentContainer> agents   = LaunchDocker.ListAgentsAsync(image).GetAwaiter().GetResult();
 		List<SelectMenu.Item>             items    = new List<SelectMenu.Item>();
-		SessionRecord?                    bare     = SessionStore.FindBare(sessions, cwd);
 		int initial = -1;
 
 		items.Add(new SelectMenu.Item(repo.Length > 0 ? $"Here: {cwd}  (repository {repo})" : $"Here: {cwd}", string.Empty, string.Empty, true) { IsHeader = true });
@@ -326,7 +320,8 @@ public class Program
 			{
 				if (initial < 0)
 					initial = items.Count;
-				items.Add(SessionItem(session, session.IsBare ? "Bare session (this folder, no worktree)" : $"Worktree session: {session.Worktree}", agents));
+				string label = !session.IsBare ? $"Worktree session: {session.Worktree}" : session.Name.Length > 0 ? $"Bare session: {session.Name}" : "Bare session (this folder, no worktree)";
+				items.Add(SessionItem(session, label, agents));
 			}
 			else
 			{
@@ -335,18 +330,18 @@ public class Program
 		}
 
 		string repoRefusal = repo.Length > 0 ? UnsafeWhat(repo) : string.Empty;
-		string cwdRefusal  = bare == null ? UnsafeWhat(cwd) : string.Empty;
+		string cwdRefusal  = UnsafeWhat(cwd);
 		if (repo.Length > 0 && repoRefusal.Length == 0)
 		{
 			if (initial < 0)
 				initial = items.Count;
-			items.Add(new SelectMenu.Item("New worktree session", string.Empty, string.Empty, false) { IsCreate = true });
+			items.Add(new SelectMenu.Item("New worktree session", string.Empty, string.Empty, false) { IsCreate = true, Suggestion = "work" });
 		}
-		if (bare == null && cwdRefusal.Length == 0)
+		if (cwdRefusal.Length == 0)
 		{
 			if (initial < 0)
 				initial = items.Count;
-			items.Add(new SelectMenu.Item("＋ Bare session in this folder", BareChoice, string.Empty, false));
+			items.Add(new SelectMenu.Item("New bare session in this folder", BareChoice, string.Empty, false) { IsCreate = true, Suggestion = SessionStore.FreeBareName(sessions, cwd) });
 		}
 		if (repoRefusal.Length > 0 || cwdRefusal.Length > 0)
 			items.Add(new SelectMenu.Item("  No new session here: " + (repoRefusal.Length > 0 ? $"the repository is {repoRefusal}" : $"this folder is {cwdRefusal}"), string.Empty, string.Empty, true) { IsHeader = true });
@@ -380,7 +375,7 @@ public class Program
 		}
 
 		return SelectMenu.Choose("Beast — sessions", "↑/↓ select · Enter start · S stop a busy agent · Del delete · Esc quit",
-			items, "work", Math.Max(0, initial), LaunchNotes.Pick(), (item, key) => OnMenuKey(item, key, image));
+			items, Math.Max(0, initial), LaunchNotes.Pick(), (item, key) => OnMenuKey(item, key, image));
 	}
 
 	private static SelectMenu.Item SessionItem(SessionRecord session, string label, List<LaunchDocker.AgentContainer> agents)
@@ -526,7 +521,7 @@ public class Program
 		Console.WriteLine("Options:");
 		Console.WriteLine("  <switch>          Any command switch forwarded to the agent container");
 		Console.WriteLine("  -p <text>         Prompt text; everything after -p is treated as the prompt");
-		Console.WriteLine("  --worktree <name> Start (or make) that worktree session of this repository, without the menu; none for the bare session");
+		Console.WriteLine("  --worktree <name> Start (or make) that worktree session of this repository, without the menu; none for this folder's latest bare session");
 		Console.WriteLine("  --test            Run Beast transport tests locally");
 		Console.WriteLine("  --debug           Connect to an agent already running on port 13131 (for VS debugging).");
 		Console.WriteLine("  --verbose         Show diagnostic debug output from the Agent");

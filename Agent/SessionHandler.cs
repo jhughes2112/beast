@@ -308,13 +308,15 @@ public class SessionHandler
 			if (service == null)
 				break;
 
-			contextFull = await CheckContextFullAsync(service, tools, transport, _scope.Token);
+			Tool[] offered = service.Seeded ? WithoutHostCommand(tools) : tools;
+
+			contextFull = await CheckContextFullAsync(service, offered, transport, _scope.Token);
 			if (contextFull)
 				break;
 
 			// No caller-imposed output cap: a session answers at the size its work warrants, and the
 			// model's own ceiling (or the window remainder) is the only bound.
-			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, tools, forcedTool, GetCompactionReserve(), 0, true, transport, _scope.Token);
+			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, offered, forcedTool, GetCompactionReserve(), 0, true, transport, _scope.Token);
 
 			if (result.Outcome == ProtocolCallOutcome.ContextFull)
 			{
@@ -368,7 +370,7 @@ public class SessionHandler
 				bool hasToolCalls;
 				try
 				{
-					hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, _activeSession, transport, _scope.Token, service.Model.Config.Seed.HasValue);
+					hasToolCalls = await ToolDispatch.DispatchAsync(result.Payload!, offered, _activeSession, transport, _scope.Token, service.Seeded);
 				}
 				catch (OperationCanceledException) when (_scope.IsCancellationRequested && !ct.IsCancellationRequested)
 				{
@@ -556,7 +558,7 @@ public class SessionHandler
 				int tracerFresh = tracer.InputTokens > tracer.CachedTokens ? tracer.InputTokens - tracer.CachedTokens : 0;
 				transport.Stats(_activeSession.Id, _activeSession.Model + ReasoningEffort.DisplaySuffix(service.Model.Config.ReasoningEffort), _activeSession.Role,
 					tracerFresh, 0,
-					_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens);
+					_activeSession.TotalCost, _activeSession.ContextWindow, tracer.InputTokens, tracer.CachedTokens, _activeSession.WorkedMs);
 				if (_lastInputTokens >= ContextBudget.CompactionThreshold(_activeSession.ContextWindow, GetCompactionReserve(), tracer.InputTokens))
 				{
 					transport.Status(_activeSession.Id, $"Context full ({_lastInputTokens}/{_activeSession.ContextWindow}), compacting...");
@@ -600,7 +602,7 @@ public class SessionHandler
 		// A limit with a stated reset (a subscription's usage window) lifts on its own. The registry
 		// already holds every model's backoff, so selection returns whichever role model serves
 		// soonest — possibly one above this in the list, past its own limit by now.
-		LlmService? waitOn = fallback == null && rateLimited && result.RetryAfter.HasValue ? registry.CreateService(role, string.Empty, minContext, false) : null;
+		LlmService? waitOn = fallback == null && rateLimited && result.RetryAfter.HasValue ? registry.CreateService(role, string.Empty, minContext, false, registry.SeedOf(_activeSession)) : null;
 		if (fallback != null)
 		{
 			_activeSession.QueryLog.FallbackTransition(service, fallback,
@@ -799,7 +801,7 @@ public class SessionHandler
 					seed.Add(new UserMessage(Nudges.ResumeAfterCompaction()));
 			}
 
-			LlmService? service = seed == null ? null : registry.CreateService(role, _activeSession.Model, 0, false);
+			LlmService? service = seed == null ? null : registry.CreateService(role, _activeSession.Model, 0, false, registry.SeedOf(_activeSession));
 			if (seed == null || service == null)
 			{
 				transport.Status(_activeSession.Id, "[Compaction] Failed.");
@@ -823,8 +825,8 @@ public class SessionHandler
 					SaveSession(predecessor);
 				SaveRolledUpCost(orchestrator);
 
-				// A child successor gets the next ID under the same parent; a root successor gets a
-				// fresh GUID. Everything else about the two is identical.
+				// A child successor gets the next ID under the same parent; a root successor gets the
+				// next root ID. Everything else about the two is identical.
 				string successorId;
 				if (parent != null)
 				{
@@ -834,7 +836,7 @@ public class SessionHandler
 				}
 				else
 				{
-					successorId = Guid.NewGuid().ToString();
+					successorId = SessionService.AllocateRootId();
 				}
 
 				// The successor's history is seeded directly as its message list — the mechanical
@@ -845,7 +847,8 @@ public class SessionHandler
 				BeastSession successorData = new BeastSession(successorId, Session.IncrementDisplayName(predecessor.DisplayName),
 					service.Model.ConfigId, role.Name, terminatorName,
 					seed, null, 0m, 0, 0, 0, predecessor.Ephemeral);
-				Session successor = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
+				successorData.ConferredSeed = predecessor.Data.ConferredSeed;
+				Session successor           = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
 				successor.MarkCompactionSuccessor();
 				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.SetCallRole(predecessor.CallRole);
@@ -1296,6 +1299,19 @@ public class SessionHandler
 		return terminator != null ? new Tool[] { terminator } : full;
 	}
 
+	// A seeded run keeps to its sandbox: a command on the user's own machine sees another clock and another
+	// machine's state, and can stop to ask a human.
+	private static Tool[] WithoutHostCommand(Tool[] tools)
+	{
+		List<Tool> kept = new List<Tool>(tools.Length);
+		foreach (Tool tool in tools)
+		{
+			if (tool.Definition.Function.Name != "host_command")
+				kept.Add(tool);
+		}
+		return kept.ToArray();
+	}
+
 	// Terminator tool callback: records the reply so the loop can deliver it to the caller. Every
 	// terminator tool shares this shape — a success flag and an output string.
 	private void Terminate(bool success, string output)
@@ -1402,7 +1418,7 @@ public class SessionHandler
 		if (_service == null || _service.IsDown || _service.Model.ConfigId != _activeSession.Model)
 		{
 			int         minCtx     = _activeSession.ContextLength + GetCompactionReserve();
-			LlmService? newService = registry.CreateService(role, _activeSession.Model, minCtx, false);
+			LlmService? newService = registry.CreateService(role, _activeSession.Model, minCtx, false, _activeSession.Data.ConferredSeed);
 			if (newService != null)
 			{
 				_activeSession.UpdateModel(newService.Model);
@@ -1421,7 +1437,7 @@ public class SessionHandler
 		{
 			_modelsExhausted = false;
 			registry.ResetRoleAvailability(role);
-			LlmService? retry = registry.CreateService(role, "", _activeSession.ContextLength + GetCompactionReserve(), false);
+			LlmService? retry = registry.CreateService(role, "", _activeSession.ContextLength + GetCompactionReserve(), false, _activeSession.Data.ConferredSeed);
 			if (retry != null)
 			{
 				_activeSession.UpdateModel(retry.Model);
@@ -1560,8 +1576,9 @@ public class SessionHandler
 			// Bill the parent before the caller resumes so its cost display is current at the
 			// moment the tool result lands.
 			RollUpCost(orchestrator);
-			orchestrator.CompleteSession(_activeSession.Id, ok, output, tokens);
 			_activeSession.ClearReplyObligation();
+			RollUpCost(orchestrator);
+			orchestrator.CompleteSession(_activeSession.Id, ok, output, tokens);
 			if (!_activeSession.Ephemeral)
 				SaveSession(_activeSession);
 			SaveRolledUpCost(orchestrator);
@@ -1572,17 +1589,26 @@ public class SessionHandler
 	// again at reply, compaction hand-off and handler exit. It does not stop at the parent: an idle
 	// parent (a human re-prompting a finished subagent) runs no turn of its own to pass the spend
 	// on, so each ancestor forwards its own unreported remainder and refreshes its display. Moves
-	// money in memory only; SaveRolledUpCost persists it at the session's own save points.
+	// money in memory only; SaveRolledUpCost persists it at the session's own save points. Working time
+	// travels with it, and moves even when the money does not, since a local model costs nothing. A session
+	// still working for its caller holds its time until it replies: that is when a call returns what it worked.
 	private void RollUpCost(ISessionOrchestrator orchestrator)
 	{
 		Session  child  = _activeSession;
 		Session? parent = orchestrator.FindParent(child);
-		while (parent != null && child.ReportCostTo(parent) != 0m)
+		bool     moved  = true;
+		while (parent != null && moved)
 		{
-			_rolledUpUnsaved = true;
-			parent.SendStats();
-			child  = parent;
-			parent = orchestrator.FindParent(child);
+			decimal cost = child.ReportCostTo(parent);
+			long    work = child.OwesReply ? 0 : child.ReportWorkTo(parent);
+			moved        = cost != 0m || work != 0;
+			if (moved)
+			{
+				_rolledUpUnsaved = true;
+				parent.SendStats();
+				child  = parent;
+				parent = orchestrator.FindParent(child);
+			}
 		}
 	}
 

@@ -25,7 +25,7 @@ public class ListenerBundle
 	}
 
 	public CanonicalConversation Canonical => _canonical;
-	public ListenerTransport? Transport => _transport;
+	public ListenerTransport?    Transport => _transport;
 
 	// Called by ProtocolProxy at the start of ExecuteAsync so the bundle routes fan-out
 	// events to the correct protocol instance for the duration of the session.
@@ -39,6 +39,13 @@ public class ListenerBundle
 		_canonical.OnSystemMessage(text);
 		_activeProxy?.OnSystemMessage(text);
 		_transport?.OnSystemMessage(text);
+	}
+
+	// The system prompt changing for the model's sake, which is not news to show the user.
+	public void OnSystemPromptChanged(string text)
+	{
+		_canonical.OnSystemMessage(text);
+		_activeProxy?.OnSystemMessage(text);
 	}
 
 	public void OnUserMessage(string text)

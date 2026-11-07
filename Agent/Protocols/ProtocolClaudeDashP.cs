@@ -534,6 +534,8 @@ public sealed class ProtocolClaudeDashP
 		int             streamedChars = 0;
 		string          stopReason    = "end_turn";
 		ProtocolResult? result        = null;
+		WorkMeter?      meter         = WorkMeter.Current;
+		long            meterMark     = 0;
 
 		using CancellationTokenSource idle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		try
@@ -565,6 +567,8 @@ public sealed class ProtocolClaudeDashP
 						model, DetectedProtocol.ClaudeDashP, "ProcessExited", null, tail, null, null);
 					break;
 				}
+
+				meter?.Received(ref meterMark);
 
 				string type = evt["type"]?.ToString() ?? string.Empty;
 				if (type == "stream_event" && evt["event"] is JsonObject inner)

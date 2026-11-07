@@ -138,7 +138,7 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 	public void Debug   (string sessionId, string text) => Send(   FrameType.Debug, sessionId, text);
 	// Hand-built node instead of an anonymous type: anonymous types have no source-generated
 	// metadata and would need the reflection serializer, which Native AOT does not have.
-	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens)
+	public void Stats(string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens, long workedMs)
 		=> Send(FrameType.Stats, sessionId, new JsonObject
 		{
 			["model"]            = model,
@@ -148,7 +148,8 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 			["totalCost"]        = totalCost,
 			["maxContext"]       = maxContext,
 			["contextTokens"]    = contextTokens,
-			["cachedTokens"]     = cachedTokens
+			["cachedTokens"]     = cachedTokens,
+			["workedMs"]         = workedMs
 		}.ToJsonString());
 	public void Completions       (string sessionId,   string json) => Send(FrameType.Completions, sessionId, json);
 	public void Config            (string sessionId,   string json) => Send(     FrameType.Config, sessionId, json);

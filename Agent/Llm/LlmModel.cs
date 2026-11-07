@@ -36,16 +36,32 @@ public class LlmModel
 		if (ReasoningEffort.Parse(Config.ReasoningEffort) == ReasoningLevel.None)
 			return this;
 
-		ModelConfig quiet = new ModelConfig
+		ModelConfig quiet     = CopyConfig();
+		quiet.ReasoningEffort = "none";
+		// Nobody reads the thinking on a mechanical call, so do not pay to have it summarized.
+		quiet.ReasoningSummaries = false;
+		return new LlmModel(ConfigId, Endpoint, ApiKey, Extras, Headers, quiet);
+	}
+
+	// The same model with a seed its own settings do not give it, conferred by the seeded session that called it.
+	public LlmModel WithSeed(long seed)
+	{
+		ModelConfig seeded = CopyConfig();
+		seeded.Seed        = seed;
+		return new LlmModel(ConfigId, Endpoint, ApiKey, Extras, Headers, seeded);
+	}
+
+	private ModelConfig CopyConfig()
+	{
+		return new ModelConfig
 		{
-			Id              = Config.Id,
-			Name            = Config.Name,
-			Enabled         = Config.Enabled,
-			ContextWindow   = Config.ContextWindow,
-			MaxOutputTokens = Config.MaxOutputTokens,
-			ReasoningEffort = "none",
-			// Nobody reads the thinking on a mechanical call, so do not pay to have it summarized.
-			ReasoningSummaries = false,
+			Id                 = Config.Id,
+			Name               = Config.Name,
+			Enabled            = Config.Enabled,
+			ContextWindow      = Config.ContextWindow,
+			MaxOutputTokens    = Config.MaxOutputTokens,
+			ReasoningEffort    = Config.ReasoningEffort,
+			ReasoningSummaries = Config.ReasoningSummaries,
 			// Carried: a model that needs its own reasoning replayed needs it on every call.
 			RetainReasoning = Config.RetainReasoning,
 			MaxImages       = Config.MaxImages,
@@ -66,6 +82,5 @@ public class LlmModel
 			Extras            = Config.Extras,
 			Headers           = Config.Headers
 		};
-		return new LlmModel(ConfigId, Endpoint, ApiKey, Extras, Headers, quiet);
 	}
 }

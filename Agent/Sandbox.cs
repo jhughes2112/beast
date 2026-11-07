@@ -61,6 +61,18 @@ public static class Sandbox
 		@"^(<?[ \t]*date:[ \t]*)[A-Z]{3}, \d{2} [A-Z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT",
 		System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+	// The start of an `ls -l` line, up to and including its date: mode, links, owner and maybe group, size
+	// (bytes, -h's 1.2K, or a device's "10, 229"), then the date in --full-time, long-iso or default style.
+	private static readonly System.Text.RegularExpressions.Regex kLsDate = new System.Text.RegularExpressions.Regex(
+		@"^([-bcdlpsD][-rwxsStT]{9}[.+@]?[ \t]+\d+[ \t]+(?:\S+[ \t]+){1,2}(?:\d+,[ \t]*)?\d[\d.,]*[KMGTPE]?[ \t]+)" +
+		@"(?:(?<full>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ [+-]\d{4})|(?<iso>\d{4}-\d{2}-\d{2} \d{2}:\d{2})|(?<plain>[A-Z][a-z]{2} [ \d]\d (?: \d{4}|\d{2}:\d{2})))(?= )",
+		System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+	// The tag Chromium puts on each message from a graphics context: the context's address in memory.
+	private static readonly System.Text.RegularExpressions.Regex kGraphicsContextTag = new System.Text.RegularExpressions.Regex(
+		@"\[\.(WebGL|WebGPU)-0x[0-9a-fA-F]+\]",
+		System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
 	private static readonly SemaphoreSlim _fileClockGate = new SemaphoreSlim(1, 1);
 	private static          long          _fileClockBase;
 	private static          long          _fileClockMinutes;
@@ -74,6 +86,9 @@ public static class Sandbox
 
 	// The counted time now, in unix seconds; 0 until the first seeded round.
 	public static long FileClockNow => _fileClockBase + _fileClockMinutes * 60;
+
+	// Whether a seeded run has started counting time in this container.
+	public static bool CountingTime => _fakeTime != null;
 
 	private static string Root => _root.Length > 0 ? _root : Environment.CurrentDirectory;
 
@@ -202,16 +217,29 @@ public static class Sandbox
 		return failure;
 	}
 
-	// A server reports its own clock in the HTTP Date header, which no local clock can reach. While time is
-	// being counted, a header line a command printed (curl -i, -I, or -v's "< date:") reads the counted time
-	// instead: removing it would hand the model a response missing a header it may be looking for.
-	public static string CountHttpDates(string text)
+	// While time is being counted, what a shell command most often prints that differs from run to run is
+	// given a fixed form, rather than being removed from output the model may be parsing:
+	//   - An HTTP Date header (curl -i, -I, or -v's "< date:"): a server reports its own clock, which no
+	//     local clock can reach. It reads the counted time.
+	//   - The date column of `ls -l`: files outside clockfs's mounts, and any the workspace already held,
+	//     carry real times. Every line reads the counted time, and the files keep the times they have.
+	//   - Chromium's graphics context tag: an address that memory layout randomization changes every run.
+	public static string SteadyShellOutput(string text)
 	{
 		string result = text;
 		if (_fakeTime != null && text.Length > 0)
 		{
-			string counted = DateTimeOffset.FromUnixTimeSeconds(FileClockNow).ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", System.Globalization.CultureInfo.InvariantCulture);
-			result         = kHttpDateLine.Replace(text, match => match.Groups[1].Value + counted);
+			System.Globalization.CultureInfo invariant = System.Globalization.CultureInfo.InvariantCulture;
+			DateTimeOffset                   now       = DateTimeOffset.FromUnixTimeSeconds(FileClockNow);
+
+			string http = now.ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'",       invariant);
+			string full = now.ToString("yyyy-MM-dd HH:mm:ss'.000000000 +0000'", invariant);
+			string iso  = now.ToString("yyyy-MM-dd HH:mm",                      invariant);
+			string ls   = $"{now.ToString("MMM", invariant)} {now.Day,2} {now.ToString("HH:mm", invariant)}";
+
+			result = kHttpDateLine.Replace(text, match => match.Groups[1].Value + http);
+			result = kLsDate.Replace(result, match => match.Groups[1].Value + (match.Groups["full"].Success ? full : match.Groups["iso"].Success ? iso : ls));
+			result = kGraphicsContextTag.Replace(result, match => $"[.{match.Groups[1].Value}-0x0]");
 		}
 		return result;
 	}

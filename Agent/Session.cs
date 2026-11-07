@@ -90,19 +90,27 @@ public class Session
 	// the typed properties and methods below.
 	public BeastSession Data => _data;
 
-	public string          Id                     => _data.Id;
-	public string          DisplayName            => _data.DisplayName;
-	public string          Model                  => _data.Model;
-	public int             ContextWindow          => _data.ContextWindow;
-	public string          Role                   => _data.Role;
-	public bool            Ephemeral              => _data.Ephemeral;
-	public bool            IsSubagent             => _isSubagent;
-	public bool            IsEmpty                => string.IsNullOrEmpty(_data.DisplayName);
-	public int             ContextLength          => _data.CurrentContextSize;
-	public TokenUsageInfo? LastTokenUsage         => _data.LastTokenUsage;
-	public decimal         TotalCost              => _data.TotalCost;
-	public int             CumulativeInputTokens  => _data.CumulativeInputTokens;
-	public int             CumulativeOutputTokens => _data.CumulativeOutputTokens;
+	public string          Id             => _data.Id;
+	public string          DisplayName    => _data.DisplayName;
+	public string          Model          => _data.Model;
+	public int             ContextWindow  => _data.ContextWindow;
+	public string          Role           => _data.Role;
+	public bool            Ephemeral      => _data.Ephemeral;
+	public bool            IsSubagent     => _isSubagent;
+	public bool            IsEmpty        => string.IsNullOrEmpty(_data.DisplayName);
+	public int             ContextLength  => _data.CurrentContextSize;
+	public TokenUsageInfo? LastTokenUsage => _data.LastTokenUsage;
+	public decimal         TotalCost      => _data.TotalCost;
+	public long            WorkedMs
+	{
+		get
+		{
+			lock (_costLock)
+				return _data.WorkedMs;
+		}
+	}
+	public int CumulativeInputTokens  => _data.CumulativeInputTokens;
+	public int CumulativeOutputTokens => _data.CumulativeOutputTokens;
 
 	// Central token accounting for the context window. LlmService configures it at turn start and
 	// queries it for completion sizing and tool-response reservations.
@@ -117,7 +125,8 @@ public class Session
 	// The token counts describe THIS conversation's current context, not the session's lifetime
 	// totals: cached + fresh input + output is exactly what the provider processed last turn, which
 	// is the context the next turn starts from — so the three numbers add up to the fullness figure
-	// shown beside them. Cost is the one lifetime number, and it alone rolls up child sessions.
+	// shown beside them. Cost and working time are the lifetime numbers, and they alone roll up child
+	// sessions.
 	public void SendStats()
 	{
 		int cachedTokens = _data.LastTokenUsage?.CachedTokens ?? 0;
@@ -125,7 +134,7 @@ public class Session
 		int outputTokens = _data.LastTokenUsage?.CompletionTokens ?? 0;
 		_transport.Stats(_data.Id, _data.Model + _modelDisplaySuffix, _data.Role,
 			inputTokens, outputTokens,
-			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens);
+			_data.TotalCost, _data.ContextWindow, _data.CurrentContextSize, cachedTokens, WorkedMs);
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
@@ -156,6 +165,7 @@ public class Session
 			_bundle.Canonical.OnSystemMessage(systemPrompt);
 		if (Enum.TryParse(data.TerminalStatus, out SessionStatus persisted))
 			_status = persisted;
+		ProtocolChatCompletions.SkipXmlCallIdsIn(data.Messages);
 	}
 
 	// Monotonically increasing counter for child session IDs, rooted at this session's ID.
@@ -426,6 +436,37 @@ public class Session
 			_data.CostReportedToParent = _data.TotalCost;
 		}
 		parent.RecordCost(unreported);
+		return unreported;
+	}
+
+	// Adds or removes the seeded-run note at the end of the system prompt. Dynamic because only the model about
+	// to answer decides it; a conversation already carrying the right text is left byte-identical.
+	public void SetSeededRun(bool seeded)
+	{
+		string current = _bundle.Canonical.Messages.Count > 0 && _bundle.Canonical.Messages[0] is SystemMessage system ? system.Text : string.Empty;
+		bool   hasNote = current.EndsWith(RoleService.SeededRunNote, StringComparison.Ordinal);
+		if (seeded != hasNote)
+			_bundle.OnSystemPromptChanged(seeded ? current + RoleService.SeededRunNote : current.Substring(0, current.Length - RoleService.SeededRunNote.Length));
+	}
+
+	// Adds working time to the session total: what LlmService measures of a model call, what a tool call's
+	// clock comes to, and a child session's total when it rolls up.
+	public void RecordWork(long ms)
+	{
+		lock (_costLock)
+			_data.WorkedMs += ms;
+	}
+
+	// As ReportCostTo, for working time.
+	public long ReportWorkTo(Session parent)
+	{
+		long unreported;
+		lock (_costLock)
+		{
+			unreported                 = _data.WorkedMs - _data.WorkReportedToParent;
+			_data.WorkReportedToParent = _data.WorkedMs;
+		}
+		parent.RecordWork(unreported);
 		return unreported;
 	}
 

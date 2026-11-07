@@ -5,8 +5,9 @@ using System.Text;
 using System.Text.Json;
 
 
-// One Beast session: an agent working on a folder, either in place (a bare session, at most one per folder)
-// or on its own git worktree of a repository. Everything a session owns lives in its own directory under
+// One Beast session: an agent working on a folder, either in place (a bare session, of which a folder can
+// have several, told apart by name) or on its own git worktree of a repository (one session per worktree).
+// Everything a session owns lives in its own directory under
 // the sessions folder (SessionStore.Root, normally ~/.beast/sessions): <id>/ holds the record (session.json), the worktree checkout, and the agent's saved
 // conversations, logs and staged attachments. Nothing is written into the user's project, and finishing or deleting a session
 // is removing that one directory (plus the worktree's registration and branch in the repository).
@@ -16,14 +17,17 @@ public sealed class SessionRecord
 	// The folder the agent works on: the repository root for a worktree session, the folder itself for a bare one.
 	public readonly string Folder;
 	// The worktree's name, which is also its git branch; empty for a bare session.
-	public readonly string   Worktree;
+	public readonly string Worktree;
+	// A bare session's name in its folder; empty for a worktree session, and for an unnamed bare session.
+	public readonly string   Name;
 	public readonly DateTime CreatedUtc;
 	public          DateTime LastUsedUtc;
 	// The session's own directory, <SessionStore.Root>/<id> (normally ~/.beast/sessions/<id>).
 	public readonly string Dir;
 
-	public SessionRecord(string id, string dir, string folder, string worktree, DateTime createdUtc, DateTime lastUsedUtc)
+	public SessionRecord(string id, string dir, string folder, string worktree, DateTime createdUtc, DateTime lastUsedUtc, string name = "")
 	{
+		Name        = name;
 		Id          = id;
 		Dir         = dir;
 		Folder      = folder;
@@ -45,10 +49,10 @@ public sealed class SessionRecord
 
 	public string ContainerName => "beast_" + Id;
 
-	// How the session reads in a list: "worktree fix-login" or "bare session".
+	// How the session reads in a list: "worktree fix-login", "bare session tests" or "bare session".
 	public string Describe()
 	{
-		return IsBare ? "bare session" : $"worktree {Worktree}";
+		return !IsBare ? $"worktree {Worktree}" : Name.Length > 0 ? $"bare session {Name}" : "bare session";
 	}
 }
 
@@ -92,7 +96,7 @@ public static class SessionStore
 		{
 			foreach (string dir in Directory.GetDirectories(Root))
 			{
-				SessionRecord? session = Read(Path.GetFileName(dir));
+				SessionRecord? session = Read(dir);
 				if (session != null)
 					sessions.Add(session);
 			}
@@ -101,12 +105,13 @@ public static class SessionStore
 		return sessions;
 	}
 
-	private static SessionRecord? Read(string id)
+	// The record in a session's directory, or null when it has no readable one.
+	public static SessionRecord? Read(string dir)
 	{
 		SessionRecord? session = null;
 		try
 		{
-			string path = Path.Combine(Root, id, RecordFile);
+			string path = Path.Combine(dir, RecordFile);
 			if (File.Exists(path))
 			{
 				using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(path));
@@ -115,8 +120,9 @@ public static class SessionStore
 				string      worktree   = root.TryGetProperty("worktree", out JsonElement w) ? w.GetString() ?? string.Empty : string.Empty;
 				DateTime    created    = root.TryGetProperty("created",  out JsonElement c) && c.TryGetDateTime(out DateTime cv) ? cv.ToUniversalTime() : DateTime.MinValue;
 				DateTime    lastUsed   = root.TryGetProperty("lastUsed", out JsonElement l) && l.TryGetDateTime(out DateTime lv) ? lv.ToUniversalTime() : created;
+				string      name       = root.TryGetProperty("name",     out JsonElement n) ? n.GetString() ?? string.Empty : string.Empty;
 				if (folder.Length > 0)
-					session = new SessionRecord(id, Path.Combine(Root, id), folder, worktree, created, lastUsed);
+					session = new SessionRecord(Path.GetFileName(dir), dir, folder, worktree, created, lastUsed, name);
 			}
 		}
 		catch (Exception)
@@ -135,6 +141,7 @@ public static class SessionStore
 			writer.WriteStartObject();
 			writer.WriteString("folder",        session.Folder);
 			writer.WriteString("worktree",    session.Worktree);
+			writer.WriteString("name",            session.Name);
 			writer.WriteString("created",   session.CreatedUtc);
 			writer.WriteString("lastUsed", session.LastUsedUtc);
 			writer.WriteEndObject();
@@ -146,8 +153,9 @@ public static class SessionStore
 
 	// Creates a new session for folder (worktree empty for a bare one). Its id names its directory and its
 	// container (beast_<id>): the worktree's name, or the folder's name plus a random tag for a bare session,
-	// with a random tag added whenever the plain name is already taken by a session or a container.
-	public static SessionRecord Create(string folder, string worktree, HashSet<string> takenContainerNames)
+	// with a random tag added whenever the plain name is already taken by a session or a container. name is
+	// a bare session's name in its folder.
+	public static SessionRecord Create(string folder, string worktree, HashSet<string> takenContainerNames, string name = "")
 	{
 		string leaf     = Path.GetFileName(Path.TrimEndingDirectorySeparator(folder));
 		string baseName = NameSafe(worktree.Length > 0 ? worktree : leaf);
@@ -156,7 +164,7 @@ public static class SessionStore
 			id = $"{baseName}_{RandomTag()}";
 
 		DateTime      now     = DateTime.UtcNow;
-		SessionRecord session = new SessionRecord(id, Path.Combine(Root, id), NormalizeFolder(folder), worktree, now, now);
+		SessionRecord session = new SessionRecord(id, Path.Combine(Root, id), NormalizeFolder(folder), worktree, now, now, name);
 		Save(session);
 		Directory.CreateDirectory(session.StateDir);
 		if (!session.IsBare)
@@ -206,7 +214,7 @@ public static class SessionStore
 		return error;
 	}
 
-	// The folder's one bare session, or null.
+	// The folder's first bare session in the list, which List sorts most recently used first; or null.
 	public static SessionRecord? FindBare(List<SessionRecord> sessions, string folder)
 	{
 		SessionRecord? found = null;
@@ -216,6 +224,27 @@ public static class SessionStore
 				found = session;
 		}
 		return found;
+	}
+
+	// The folder's bare session of that name, or null.
+	public static SessionRecord? FindBareNamed(List<SessionRecord> sessions, string folder, string name)
+	{
+		SessionRecord? found = null;
+		foreach (SessionRecord session in sessions)
+		{
+			if (found == null && session.IsBare && SameFolder(session.Folder, folder) && string.Equals(session.Name, name, StringComparison.Ordinal))
+				found = session;
+		}
+		return found;
+	}
+
+	// A name no bare session of the folder has yet: session-1, session-2, and so on.
+	public static string FreeBareName(List<SessionRecord> sessions, string folder)
+	{
+		int number = 1;
+		while (FindBareNamed(sessions, folder, $"session-{number}") != null)
+			number++;
+		return $"session-{number}";
 	}
 
 	// The repository's worktree session of that name, or null.
@@ -240,8 +269,8 @@ public static class SessionStore
 		return Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
 	}
 
-	// Restricts a user-entered worktree name to a folder- and branch-safe charset (letters, digits, '.', '_',
-	// '-'), collapsing other runs to '-'. The same string names the git branch, so '/' is not allowed.
+	// Restricts a user-entered session name to a folder- and branch-safe charset (letters, digits, '.', '_',
+	// '-'), collapsing other runs to '-'. A worktree's name also names its git branch, so '/' is not allowed.
 	// Empty input becomes "work".
 	public static string SanitizeWorktreeName(string name)
 	{

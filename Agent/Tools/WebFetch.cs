@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 // Fetches a web resource and lets the WebFetch role interpret it. Rather than stripping the page and feeding the
 // result back (which mangles non-HTML content and floods the context on large pages), the resource is treated
-// like a file: it is downloaded to /tmp/, classified, and offered to the WebFetch role as a set of files — the raw
+// like a file: it is downloaded to /tmp/work, classified, and offered to the WebFetch role as a set of files — the raw
 // bytes plus, for HTML, a stripped-text view and a tag-skeleton view. The WebFetch role is given read_file and bash
 // so it can inspect, parse, or grep those files and returns only what the objective asks for. Resources over
 // the auto-download limit are not fetched here; the WebFetch role is told the size and can download them itself.
@@ -20,6 +20,12 @@ public class WebFetch
 	// Resources larger than this are not auto-downloaded: the WebFetch role is told the size and can fetch them
 	// itself with curl/wget via bash if the objective actually needs them.
 	private const long MaxAutoDownloadBytes = 1_048_576;
+
+	// Where fetched files go: the scratch folder a seeded run's prompt sends the model to.
+	private const string kScratchFolder = "/tmp/work";
+
+	private static readonly object kFolderGate = new();
+	private static          int    _fetchCount = 0;
 
 	// Fetches the resource and interprets it with the WebFetch role: a child session is seeded with the URL,
 	// the objective, and the paths of the saved files, then returns only what the objective asked for via
@@ -43,6 +49,7 @@ public class WebFetch
 		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
 			return new ToolResult(toolCallId, string.Empty, "Error: Invalid URL format: " + url, 1, 0);
 
+		string directory = ReserveFolder();
 		try
 		{
 			using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -74,7 +81,7 @@ public class WebFetch
 					// for the resource — prefer it over the URL segment so the raw file keeps its real name.
 					string? suggestedName = response.Content.Headers.ContentDisposition?.FileNameStar
 						?? response.Content.Headers.ContentDisposition?.FileName;
-					seed = BuildFilesSeed(url, objective, contentType, bytes!, suggestedName);
+					seed = BuildFilesSeed(directory, url, objective, contentType, bytes!, suggestedName);
 				}
 			}
 
@@ -137,14 +144,57 @@ public class WebFetch
 		return (buffer.ToArray(), false);
 	}
 
-	// Saves the downloaded resource to a fresh /tmp/ directory and builds the seed the WebFetch role reads: the
-	// raw bytes always, plus a stripped-text view and a tag-skeleton view when the content is HTML. The seed
-	// lists each saved file with its size and what it is good for, so the role can read the right one.
-	private static string BuildFilesSeed(string url, string objective, string? contentType, byte[] bytes, string? suggestedName)
+	// Picks the next numbered folder for a fetch. The path goes into the WebFetch role's request, and a seeded run
+	// must send the same request, so calls take their numbers in the order they start, before any download. Numbers
+	// already on disk are skipped, because a restarted agent counts from 1 again and earlier files may be in use.
+	private static string ReserveFolder()
+	{
+		lock (kFolderGate)
+		{
+			string directory;
+			do
+			{
+				_fetchCount++;
+				directory = Path.Combine(kScratchFolder, $"fetch_{_fetchCount}");
+			}
+			while (Directory.Exists(directory) || IsFileOrLink(directory));
+			return directory;
+		}
+	}
+
+	private static bool IsFileOrLink(string path)
+	{
+		return new FileInfo(path).LinkTarget != null || File.Exists(path);
+	}
+
+	// Makes the reserved folder empty and ready. The shell can write under the scratch folder and the agent is root,
+	// so whatever the model's shell put at these paths is cleared first: a link there would send root's writes
+	// wherever it points.
+	private static void PrepareFolder(string directory)
+	{
+		if (IsFileOrLink(kScratchFolder))
+			File.Delete(kScratchFolder);
+		if (!Directory.Exists(kScratchFolder))
+		{
+			Directory.CreateDirectory(kScratchFolder);
+			Sandbox.GiveToShellUser(kScratchFolder);
+		}
+
+		if (IsFileOrLink(directory))
+			File.Delete(directory);
+		else if (Directory.Exists(directory))
+			Directory.Delete(directory, true);
+		Directory.CreateDirectory(directory);
+	}
+
+	// Saves the downloaded resource to its reserved folder and builds the seed the WebFetch role reads: the raw bytes
+	// always, plus a stripped-text view and a tag-skeleton view when the content is HTML. The seed lists each saved
+	// file with its size and what it is good for, so the role can read the right one. The finished folder goes to
+	// the shell user, because the role's shell writes extracted text beside the raw file.
+	private static string BuildFilesSeed(string directory, string url, string objective, string? contentType, byte[] bytes, string? suggestedName)
 	{
 		string classification = ClassifyContent(contentType, url, bytes);
-		string directory      = Path.Combine("/tmp", "fetch_" + Guid.NewGuid().ToString("N").Substring(0, 12));
-		Directory.CreateDirectory(directory);
+		PrepareFolder(directory);
 
 		StringBuilder manifest = new StringBuilder();
 
@@ -181,6 +231,10 @@ public class WebFetch
 			manifest.Append($"- The raw file is binary. Run `file \"{rawPath}\"` to identify it, then extract with the matching tool before reading: unzip/7z for archives, tar for tarballs, pandoc for documents (docx/odt/rtf/epub), pdftotext for PDFs. Reading the raw bytes directly will not work.\n");
 		}
 
+		foreach (string file in Directory.GetFiles(directory))
+			Sandbox.GiveToShellUser(file);
+		Sandbox.GiveToShellUser(directory);
+
 		return $"URL: {url}\nObjective: {objective}\nContent type: {classification}{(contentType != null ? $" ({contentType})" : string.Empty)}\n\n"
 			+ "The resource was downloaded and saved. Use read_file and bash to inspect these files, then return only what the objective asks for:\n"
 			+ manifest.ToString();
@@ -191,7 +245,7 @@ public class WebFetch
 	{
 		return $"URL: {url}\nObjective: {objective}\n\n"
 			+ $"This resource is {sizeBytes} bytes (over the {MaxAutoDownloadBytes}-byte auto-download limit) and was not downloaded. "
-			+ $"If the objective needs its contents, download it yourself with bash, e.g. `mkdir -p /tmp/fetch && curl -sL '{url}' -o /tmp/fetch/page` (or wget), then inspect it with read_file and bash. "
+			+ $"If the objective needs its contents, download it yourself with bash, e.g. `mkdir -p {kScratchFolder}/fetch && curl -sL '{url}' -o {kScratchFolder}/fetch/page` (or wget), then inspect it with read_file and bash. "
 			+ "Otherwise return what you can determine without it.";
 	}
 

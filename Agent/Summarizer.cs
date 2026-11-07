@@ -61,7 +61,7 @@ public static class Summarizer
 		// Any model in the role can compact: no minimum context is required because the
 		// transcript is chunked to whatever window the chosen model actually has.
 		Role?       role    = roleService.GetRole(session.Role);
-		LlmService? service = registry.CreateService(role, session.Model, 0, true);
+		LlmService? service = registry.CreateService(role, session.Model, 0, true, registry.SeedOf(session));
 		if (service != null)
 		{
 			// Elide mechanically FIRST, always. The caller only reaches the summarizer when the
@@ -136,6 +136,7 @@ public static class Summarizer
 					Session        stageSession = BuildStageSession(session, service, stagePrompt, transport);
 					ProtocolResult result       = await service.RunToCompletionAsync(stageSession, System.Array.Empty<Tool>(), null, 0, SummaryOutputTokens(service), false, transport, appToken);
 					session.RecordCost(stageSession.TotalCost);
+					ToolClock.Report(session, stageSession.WorkedMs);
 
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{
@@ -223,6 +224,7 @@ public static class Summarizer
 		Session        stageSession = BuildStageSession(session, service, compressPrompt, transport);
 		ProtocolResult result       = await service.RunToCompletionAsync(stageSession, System.Array.Empty<Tool>(), null, 0, SummaryOutputTokens(service), false, transport, appToken);
 		session.RecordCost(stageSession.TotalCost);
+		ToolClock.Report(session, stageSession.WorkedMs);
 
 		string compressed = running;
 		if (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.AssistantText.Length > 0)

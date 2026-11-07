@@ -204,9 +204,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (!string.Equals(role.Produces, OutputModality.Text, StringComparison.OrdinalIgnoreCase))
 			return (false, $"Role '{roleName}' produces {role.Produces}, not text, so it cannot run as a subagent.", 0);
 
-		LlmService? service = _registry.CreateService(role, string.Empty, 0, false);
+		long?       seed    = _registry.SeedOf(parent);
+		LlmService? service = _registry.CreateService(role, string.Empty, 0, false, seed);
 		if (service == null)
 			return (false, $"No model available for role '{roleName}'.", 0);
+
+		// Its protocol has no seed to pass on, so this part of the run can differ.
+		if (seed.HasValue && !service.Seeded)
+		{
+			string unseeded = $"This run is seeded, but {roleName} is using {service.Model.Config.Name}, whose protocol has no seed. Runs can differ from here.";
+			_transport.Status(parent.Id, unseeded);
+			parent.QueryLog.Note(unseeded);
+		}
 
 		// No caller-supplied name: build one from the first line of the prompt.
 		if (displayName == null)
@@ -223,9 +232,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (!parent.Ephemeral)
 			SessionService.Save(parent.Data);
 
-		// Inject worktree context so the subagent knows which branch and path it operates on.
-		string banner       = await WorktreeBannerAsync(ct);
-		string seededPrompt = string.IsNullOrEmpty(banner) ? prompt : $"{banner}\n\n{prompt}";
+		string seededPrompt = prompt;
 
 		// The caller may pick the budget (assign_work effort); otherwise the role's own max_turns applies.
 		// A budgeted child is told its limit up front so it can pace itself before the warnings arrive.
@@ -239,7 +246,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// compacts if that no longer fits.
 		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
 			role.TerminatorName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
-		Session subSession = new Session(subData, role.SystemPrompt, _transport, true);
+		subData.ConferredSeed = seed;
+		Session subSession    = new Session(subData, role.SystemPrompt, _transport, true);
 		if (callRole)
 			subSession.SetCallRole(role);
 		// Claim the session before registering it so no Deliver can slip in and start a second,
@@ -288,8 +296,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// Fire-and-forget: the handler keeps servicing the session after the terminator fires so the
 		// user can continue interacting with it. The TCS resolves at the first OnComplete callback;
 		// the fallback result is a no-op if OnComplete already resolved it.
-		_ = RunChildAndCleanUpAsync();
-		return await tcs.Task;
+		// The child keeps its own time and hands its total to the parent when it replies. While it runs, the
+		// call that started it is waiting, and the child must not inherit that call's clock.
+		ToolClock? callerClock = ToolClock.Current;
+		ToolClock.Current      = null;
+		_                      = RunChildAndCleanUpAsync();
+		ToolClock.Current      = callerClock;
+		using (ToolClock.Wait())
+			return await tcs.Task;
 
 		async Task RunChildAndCleanUpAsync()
 		{
@@ -515,7 +529,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string       systemPrompt = role?.SystemPrompt ?? string.Empty;
 		LlmModel?    model        = role != null ? _registry.GetModelForRole(role, string.Empty, 0) : null;
 		string       modelId      = model?.ConfigId ?? string.Empty;
-		BeastSession fresh        = new BeastSession(Guid.NewGuid().ToString(), string.Empty, modelId, roleName,
+		BeastSession fresh        = new BeastSession(SessionService.AllocateRootId(), string.Empty, modelId, roleName,
 			string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, ephemeral);
 		return new Session(fresh, systemPrompt, _transport, false);
 	}
@@ -1181,6 +1195,8 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 		}
 
+		payload.SeedSupported = !ChatGptSubscription.IsEndpoint(payload.BaseUrl) && ProtocolProxy.EndpointTakesSeed(ModelCatalog.NormalizeRequestEndpoint(payload.BaseUrl));
+
 		_transport.Status(sessionId, payload.Error.Length > 0
 			? $"[config] Catalog fetch failed: {payload.Error}"
 			: $"[config] {payload.Models.Count} models from {payload.BaseUrl}");
@@ -1743,31 +1759,5 @@ public class AgentOrchestrator : ISessionOrchestrator
 		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, ct);
 		ProtocolSwitchTests.Test(ctx);
 		_transport.Output(sessionId, $"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
-	}
-
-	// Builds the worktree context
-	// Returns empty when the CWD is not a git checkout.
-	private static async Task<string> WorktreeBannerAsync(CancellationToken ct)
-	{
-		string script =
-			"branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\n" +
-			"[ -z \"$branch\" ] && exit 0\n" +
-			"echo \"$branch\"\n" +
-			"pwd\n";
-
-		ToolResult result = await ShellTools.BashAsync("subagent_worktree", script, null, ct);
-		if (result.ExitCode != 0)
-			return string.Empty;
-
-		string[] lines = result.StdOut.Trim().Split('\n');
-		if (lines.Length < 2)
-			return string.Empty;
-
-		string branch = lines[0].Trim();
-		string path   = lines[1].Trim();
-		if (string.IsNullOrEmpty(branch) || string.IsNullOrEmpty(path))
-			return string.Empty;
-
-		return $"[Worktree] Your working directory is the git worktree '{path}', on branch '{branch}'. All file reads, edits, and commands operate here.";
 	}
 }

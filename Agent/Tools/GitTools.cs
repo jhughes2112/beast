@@ -140,7 +140,8 @@ public static class GitTools
 			sb.Append($"[commit_and_rebase failed: git exited {result.ExitCode}]");
 		}
 
-		string transcript = sb.Length > 0 ? sb.ToString() : "[commit_and_rebase produced no output]";
+		// Success says only that. A failure keeps everything git said, because the model has to act on it.
+		string transcript = ok ? "Success." : sb.ToString();
 		return (ok, transcript);
 	}
 

@@ -17,7 +17,7 @@ static class ProtocolHelpers
 	// permanent client error and mark a perfectly healthy model down. So the client's own timeout is
 	// disabled and every request carries its own deadline instead (CreateRequestTimeout below), which
 	// the streaming readers re-arm on each chunk. That makes the deadline a measure of SILENCE.
-	private static readonly HttpClient SharedClient = new HttpClient
+	private static readonly HttpClient SharedClient = new HttpClient(new WorkTimingHandler(new HttpClientHandler()))
 	{
 		Timeout                      = Timeout.InfiniteTimeSpan,
 		MaxResponseContentBufferSize = 2 * 1024 * 1024 // 2 MB

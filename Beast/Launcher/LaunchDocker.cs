@@ -326,8 +326,10 @@ public class LaunchDocker : ILauncher
 
 		CreateContainerParameters createParams = new CreateContainerParameters
 		{
-			Image      = _image,
-			Name       = name,
+			Image = _image,
+			Name  = name,
+			// Docker's default is the container's random ID, which anything printing the hostname would show.
+			Hostname   = "beast",
 			WorkingDir = "/workspace",
 			Env        = env,
 			// Which session this is, read back by every launch (ListAgentsAsync) to pair it with its record.

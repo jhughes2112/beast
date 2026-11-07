@@ -684,8 +684,9 @@ public static class FakeLlmTests
 		}
 
 		// Nothing was rejected on the way: the loop this replaces announced itself by compacting.
+		// A snapshot: the session is still running, and it adds to the transport's list as it goes.
 		bool sizingFailure = false;
-		foreach ((FrameType type, string text) in transport.Sent)
+		foreach ((FrameType type, string text) in transport.Snapshot())
 		{
 			if ((type == FrameType.Alert || type == FrameType.Status) && text.Contains("compact", StringComparison.OrdinalIgnoreCase))
 				sizingFailure = true;

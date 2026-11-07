@@ -15,7 +15,7 @@ public static class SelectMenu
 	// One row. Value is what Choose returns; Label is shown; Note is a dim right-side tag (e.g. "stopped").
 	// Disabled rows render dim and cannot be picked, but the cursor still reaches them so the key handler
 	// can act on them. A header is a dim section title the cursor passes over. IsCreate makes the row the
-	// "create new" text field. Tag is the caller's own.
+	// "create new" text field, pre-filled with Suggestion. Tag is the caller's own.
 	public sealed class Item
 	{
 		public string  Label;
@@ -24,6 +24,7 @@ public static class SelectMenu
 		public bool    Disabled;
 		public bool    IsCreate;
 		public bool    IsHeader;
+		public string  Suggestion = string.Empty;
 		public object? Tag;
 
 		public Item(string label, string value, string note, bool disabled)
@@ -40,12 +41,15 @@ public static class SelectMenu
 		public readonly bool   Cancelled;
 		public readonly bool   IsNew;
 		public readonly string Value;
+		// For a new entry: the Value of the create row it was typed into, since a menu can have several.
+		public readonly string CreateRow;
 
-		public Result(bool cancelled, bool isNew, string value)
+		public Result(bool cancelled, bool isNew, string value, string createRow = "")
 		{
 			Cancelled = cancelled;
 			IsNew     = isNew;
 			Value     = value;
+			CreateRow = createRow;
 		}
 	}
 
@@ -84,13 +88,12 @@ public static class SelectMenu
 	// The menu as last drawn, so Ask and ShowStatus can draw over it from inside the key handler.
 	private static Screen? _drawn;
 
-	// Runs the menu. initialIndex pre-selects a row (moved off a header). createSuggestion pre-fills the
-	// create row's text field. onKey, when given, sees Enter and every key the menu does not use itself, on
+	// Runs the menu. initialIndex pre-selects a row (moved off a header). onKey, when given, sees Enter and every key the menu does not use itself, on
 	// the selected row; it returns null for a key it leaves alone (Enter then picks the row as usual). Returns
 	// a Cancelled result on Esc. When launchingNote is non-empty, a confirmed selection draws that note bold at
 	// the bottom row and leaves the alt screen up (rather than tearing it down) so the caller can launch
 	// behind it and hand off to the live display without the screen flashing back to the normal terminal.
-	public static Result Choose(string title, string hint, List<Item> items, string createSuggestion, int initialIndex, string launchingNote, Func<Item, ConsoleKeyInfo, KeyResult?>? onKey)
+	public static Result Choose(string title, string hint, List<Item> items, int initialIndex, string launchingNote, Func<Item, ConsoleKeyInfo, KeyResult?>? onKey)
 	{
 		Platform.Current.EnterTerminalModes();
 		Console.Write("\x1b[?1049h"); // alt screen
@@ -106,7 +109,7 @@ public static class SelectMenu
 			bool          done     = false;
 			string        status   = string.Empty;
 			bool          isError  = false;
-			StringBuilder text     = new StringBuilder(createSuggestion ?? string.Empty);
+			StringBuilder text     = new StringBuilder();
 			int           lastW    = -1;
 			int           lastH    = -1;
 
@@ -149,7 +152,7 @@ public static class SelectMenu
 						if (typed.Length > 0)
 						{
 							keepAlive = EnterLaunching(launchingNote, w, h);
-							result    = new Result(false, true, typed);
+							result    = new Result(false, true, typed, items[selected].Value);
 							done      = true;
 						}
 					}
@@ -183,6 +186,7 @@ public static class SelectMenu
 				else if (hasRow && key.Key == ConsoleKey.Enter && items[selected].IsCreate)
 				{
 					editing = true;
+					text.Clear().Append(items[selected].Suggestion);
 				}
 				else if (hasRow)
 				{
@@ -339,7 +343,7 @@ public static class SelectMenu
 			{
 				s.WriteText(2, row, item.Label, HeaderFg, Bg, CellStyle.Bold);
 			}
-			else if (item.IsCreate && editing)
+			else if (item.IsCreate && editing && i == selected)
 			{
 				s.Fill(new Rect(0, row, w, 1), new Cell(' ', NewFg, FieldBg, CellStyle.None));
 				int x = s.WriteText(2, row, item.Label + ": ", NewFg, FieldBg, CellStyle.None);

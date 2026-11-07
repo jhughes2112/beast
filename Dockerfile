@@ -157,7 +157,8 @@ RUN BIN=$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-she
          > "$BIN" \
     && chmod +x "$BIN"
 
-# Plain `chromium` for script-free checks: --dump-dom, --screenshot=out.png, --print-to-pdf.
+# Plain `chromium` for script-free checks: --dump-dom, --screenshot=out.png, --print-to-pdf. In a seeded
+# run, bash and readonly_bash refuse --screenshot in favour of the browser_screenshot tool (ShellTools).
 # --no-sandbox (won't start as root) and --disable-dev-shm-usage (64MB /dev/shm crashes it).
 # The grep drops ~6 lines of dbus/GPU/bluetooth noise this binary emits unconditionally and that
 # --log-level/--disable-logging don't suppress; they say "ERROR:" and read as a failed check.
@@ -189,8 +190,15 @@ RUN pip3 install --break-system-packages --no-cache-dir \
         pytest ruff \
         playwright==1.62.0
 
+# In a seeded run, their screenshot calls fail, naming the browser_screenshot tool. See the script.
+COPY ["Agent/Docker/refuse_library_screenshots.js", "/tmp/refuse_library_screenshots.js"]
+RUN node /tmp/refuse_library_screenshots.js && rm /tmp/refuse_library_screenshots.js
+
 # Headless matplotlib; otherwise plotting scripts die on "no display" before savefig().
 ENV MPLBACKEND=Agg
+
+# Python randomizes string hashes per process, which reorders any set of strings it prints.
+ENV PYTHONHASHSEED=0
 
 # Rust (stable toolchain) — installs rustup + cargo into /usr/local/cargo so all users
 # can invoke rustc/cargo without sourcing a per-user profile.
@@ -256,6 +264,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libfuse3-dev li
     && ln -s "$(find /usr/lib -name libfaketime.so.1 | head -n1)" /opt/agent-bins/libfaketime.so.1 \
     && printf '#!/bin/bash\nunset LD_PRELOAD FAKETIME FAKETIME_DONT_FAKE_MONOTONIC NO_FAKE_STAT FAKE_UTIME\nexec "%s" "$@"\n' "$(readlink -f "$(command -v dotnet)")" > /opt/agent-bins/unfaked/dotnet \
     && chmod +x /opt/agent-bins/unfaked/dotnet
+
+# The browser_screenshot tool's browser side (Agent/Tools/BrowserScreenshotTool.cs).
+COPY --chmod=644 ["Agent/Docker/browser_screenshot.js", "/opt/agent-bins/browser_screenshot.js"]
 
 # Package lists stay in the image so the model's shell can check what exists and what is installed
 # (apt-cache policy/search, apt list) before asking apt_install for something; apt_install refreshes

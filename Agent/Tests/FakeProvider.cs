@@ -67,6 +67,25 @@ public class FakeReply
 		return reply;
 	}
 
+	// Chat Completions streaming only: holds the answer back this long, as a gateway does with a queued
+	// request. After the keep-alive comment, when there is one.
+	public int QueueMs { get; private set; }
+
+	public FakeReply WithQueue(int ms)
+	{
+		QueueMs = ms;
+		return this;
+	}
+
+	// Chat Completions streaming only: pauses this long after the response has started, as a model generating.
+	public int GenerateMs { get; private set; }
+
+	public FakeReply WithGenerate(int ms)
+	{
+		GenerateMs = ms;
+		return this;
+	}
+
 	public FakeReply WithKeepAlive()
 	{
 		KeepAlive = true;
@@ -450,12 +469,16 @@ public class FakeProvider
 
 	private static async Task WriteChatSseAsync(HttpListenerResponse response, FakeReply reply, CancellationToken ct)
 	{
-		string finish             = reply.FinishOverride.Length > 0 ? reply.FinishOverride : reply.Calls.Count > 0 ? "tool_calls" : "stop";
+		string finish = reply.FinishOverride.Length > 0 ? reply.FinishOverride : reply.Calls.Count > 0 ? "tool_calls" : "stop";
+		if (reply.QueueMs > 0 && !reply.KeepAlive)
+			await Task.Delay(reply.QueueMs, ct);
 		using StreamWriter writer = OpenSse(response, reply.CompactSse);
 		if (reply.KeepAlive)
 		{
 			await writer.WriteAsync(": waiting for this model to load\n\n");
 			await writer.FlushAsync(ct);
+			if (reply.QueueMs > 0)
+				await Task.Delay(reply.QueueMs, ct);
 		}
 		if (reply.StreamErrorJson.Length > 0)
 		{
@@ -464,6 +487,8 @@ public class FakeProvider
 			return;
 		}
 		await DataAsync(writer, ChatChunk(new JsonObject { ["role"] = "assistant" }, null), ct);
+		if (reply.GenerateMs > 0)
+			await Task.Delay(reply.GenerateMs, ct);
 		if (reply.Thinking.Length > 0)
 			await DataAsync(writer, ChatChunk(new JsonObject { ["reasoning_content"] = reply.Thinking }, null), ct);
 		if (reply.Text.Length > 0)

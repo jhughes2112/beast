@@ -255,6 +255,7 @@ public static class SandboxTests
 
 			(bool ok, string transcript) = await GitTools.CommitAndRebaseAsync("more work", CancellationToken.None);
 			ctx.Assert(ok, $"Integrate: the agent commits, rebases and fast-forwards main as root — {transcript}");
+			ctx.AssertEqual("Success.", transcript, "Integrate: success says only that");
 
 			ToolResult landed = await ShellTools.AgentBashAsync("g6", $"cat '{main}/feature.txt'", null, CancellationToken.None);
 			ctx.AssertEqual("change", landed.StdOut.Trim(), "Integrate: the work reached the main checkout");

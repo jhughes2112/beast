@@ -411,8 +411,127 @@ public static class PauseAndTrialTests
 		ctx.Assert(okTools, "Call: with tools comes back");
 		List<string> names = ToolNames(server.Requests()[server.Requests().Count - 1].Body);
 		ctx.Assert(names.Contains("read_file") && names.Contains("bash") && names.Contains("return_to_caller") && names.Count == 3, $"Call: exactly the tools asked for ({string.Join(",", names)})");
+		ctx.Assert(!server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString().Contains("This run is deterministically seeded", StringComparison.Ordinal), "Seeded run: a model with no seed is told nothing");
+
+		// A call that starts a child waits while it runs, and the child's total reaches the parent when it replies.
+		server.Reset();
+		long      before  = parent.WorkedMs;
+		ToolClock clock   = new ToolClock();
+		ToolClock.Current = clock;
+		server.Enqueue(FakeReply.Say("counted"));
+		server.Enqueue(FakeReply.Call("r3", "return_to_caller", "{\"output\":\"done\",\"success\":true}").WithGenerate(800));
+		(bool okTimed, string _, int _) = await orchestrator.RunSummarizerAsync(parent, "Explorer", "timed", "Cite the lines.", "the goal", new List<string>(), 3, ct);
+		long callWorked                 = clock.WorkedMs;
+		ToolClock.Current               = null;
+		long childWorked                = parent.WorkedMs - before;
+		ctx.Assert(okTimed && childWorked >= 700 && childWorked < 2500, $"WorkTime: a child's time reaches its parent by the time it has replied (got {childWorked} ms)");
+		ctx.Assert(callWorked < 400, $"WorkTime: the call that started it counts only its own time, not the child's run (got {callWorked} ms)");
+
+		// With a seed, a conversation with tools is told.
+		ModelConfig seededConfig = new ModelConfig { Id = kModelId, Name = "Fake Seeded", ContextWindow = 200000, MaxOutputTokens = 4096, Seed = 7 };
+		models[kModelId]         = new LlmModel(kModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), seededConfig);
+		registry.RestoreModels(models);
+		server.Reset();
+		server.Enqueue(FakeReply.Say("counted"));
+		server.Enqueue(FakeReply.Call("r4", "return_to_caller", "{\"output\":\"done\",\"success\":true}"));
+		await orchestrator.RunSummarizerAsync(parent, "Explorer", "seeded", "Cite the lines.", "the goal", new List<string>(), 3, ct);
+		ctx.AssertContains(server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString(), "This run is deterministically seeded", "Seeded run: a seeded model is warned in its system prompt");
+		ctx.Assert(!server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString().Contains("[Worktree]", StringComparison.Ordinal), "Seeded run: a subagent is not told a branch or worktree name");
+
+		// A role's model with no seed takes its caller's, and keeps it as its session goes on.
+		ModelConfig plainConfig = new ModelConfig { Id = "plain", Name = "Fake Plain", ContextWindow = 200000, MaxOutputTokens = 4096 };
+		LlmModel    plainModel  = new LlmModel("plain", server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), plainConfig);
+		models["plain"]         = plainModel;
+		registry.RestoreModels(models);
+		roles.Roles[ReasoningSummarizer.RoleName] = roles.Roles[ReasoningSummarizer.RoleName].WithModels(new List<string> { "plain" });
+		server.Reset();
+		server.Enqueue(FakeReply.Say("counted"));
+		server.Enqueue(FakeReply.Call("r5", "return_to_caller", "{\"output\":\"done\",\"success\":true}"));
+		await orchestrator.RunSummarizerAsync(parent, "Explorer", "conferred", "Cite the lines.", "the goal", new List<string>(), 3, ct);
+		JsonNode conferred = server.Requests()[server.Requests().Count - 1].Body;
+		ctx.AssertEqual(7L, conferred["seed"]?.GetValue<long>() ?? -1L, "Seeded run: a model with no seed takes its caller's");
+		ctx.AssertContains(conferred["messages"]!.ToJsonString(), "This run is deterministically seeded", "Seeded run: and is told about the run");
+
+		BeastSession child     = new BeastSession("p_9", "p_9", "plain", "r", string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+		child.ConferredSeed    = 7;
+		BeastSession? reloaded = System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonSerializer.Serialize(child, BeastJson.Persist.BeastSession), BeastJson.Persist.BeastSession);
+		ctx.AssertEqual(7L, reloaded?.ConferredSeed ?? -1L, "Seeded run: a conferred seed is kept in the session's file");
+		ctx.AssertEqual(7L, registry.SeedOf(new Session(child, string.Empty, transport, true)) ?? -1L, "Seeded run: and passes on to what that session calls");
+
+		// A seeded model does not fall back. The same list falls back without a seed.
+		roles.Roles[ReasoningSummarizer.RoleName] = roles.Roles[ReasoningSummarizer.RoleName].WithModels(new List<string> { kModelId, "plain" });
+		Role        twoModels                     = roles.Roles[ReasoningSummarizer.RoleName];
+		LlmService? seededTop                     = registry.CreateService(twoModels, kModelId, 0, false);
+		ctx.Assert(seededTop != null && seededTop.Seeded && registry.CreateFallbackService(seededTop, 0, false) == null, "Seeded run: a seeded model has no fallback");
+		models[kModelId] = new LlmModel(kModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), new ModelConfig { Id = kModelId, Name = "Fake", ContextWindow = 200000, MaxOutputTokens = 4096 });
+		registry.RestoreModels(models);
+		LlmService? plainTop = registry.CreateService(twoModels, kModelId, 0, false);
+		ctx.Assert(plainTop != null && registry.CreateFallbackService(plainTop, 0, false) != null, "Unseeded run: the same list falls back");
+
+		// A seed only counts on a protocol that has one.
+		LlmModel Seeded(string endpoint) => new LlmModel("m", endpoint, "k", new List<JsonObject>(), new List<JsonObject>(), new ModelConfig { Id = "m", Name = "m", ContextWindow = 1000, MaxOutputTokens = 100, Seed = 3 });
+		foreach ((DetectedProtocol protocol, bool takes) in new[] { (DetectedProtocol.ChatCompletions, true), (DetectedProtocol.Anthropic, false), (DetectedProtocol.Responses, false), (DetectedProtocol.ClaudeDashP, false) })
+			ctx.AssertEqual(takes, Service(Seeded("http://x/v1/y"), protocol, new ModelAvailability()).Seeded, $"Seeded run: a seed on {protocol} {(takes ? "counts" : "does not count")}");
+		ctx.Assert(ProtocolProxy.EndpointTakesSeed(ModelCatalog.NormalizeRequestEndpoint("http://x/v1")) && !ProtocolProxy.EndpointTakesSeed("https://x/v1/messages") && !ProtocolProxy.EndpointTakesSeed("https://x/v1/responses"), "Seeded run: the config page can tell which endpoints take a seed");
+
+		// Hiding host_command leaves everything else in order.
+		Tool   Named(string name) => new Tool { Definition = new ToolDefinition { Type = "function", Function = new FunctionDefinition { Name = name, Description = name, Parameters = new JsonObject() } } };
+		Tool[] kept                = (Tool[])Reflect.Static(typeof(SessionHandler), "WithoutHostCommand", new Type[] { typeof(Tool[]) }, new object[] { new Tool[] { Named("bash"), Named("host_command"), Named("ls") } })!;
+		ctx.AssertEqual("bash,ls", string.Join(",", Array.ConvertAll(kept, t => t.Definition.Function.Name)), "Seeded run: host_command is not offered");
+
+		// Root IDs count up, and hold nothing that reads as a child.
+		long first = long.Parse(SessionService.AllocateRootId());
+		ctx.AssertEqual(first + 1, long.Parse(SessionService.AllocateRootId()), "Session IDs: each root takes the next number");
+
+		await WaitsOutFailuresAsync(ctx, server, ct);
 
 		lifetime.Cancel();
+	}
+
+	private static LlmService Service(LlmModel model, DetectedProtocol protocol, ModelAvailability availability)
+	{
+		return new LlmService(model, protocol, availability, new EndpointFacts(), new List<string> { model.ConfigId }, (id, effort, summaries, retain, maxImages) => { });
+	}
+
+	// More failures than the retry limits allow. A seeded model waits through them, and an unseeded one gives up so
+	// it can fall back. The backoffs are skipped, or this would take minutes.
+	private static async Task WaitsOutFailuresAsync(TestContext ctx, FakeProvider server, CancellationToken ct)
+	{
+		async Task<ProtocolCallOutcome> RunAsync(long? seed)
+		{
+			ModelAvailability    availability = new ModelAvailability();
+			LlmModel             model        = new LlmModel("m", server.ChatEndpoint, "k", new List<JsonObject>(), new List<JsonObject>(), new ModelConfig { Id = "m", Name = "m", ContextWindow = 200000, MaxOutputTokens = 4096, Seed = seed });
+			TestCaptureTransport transport    = new TestCaptureTransport();
+			Session              session      = NewSession(Guid.NewGuid().ToString("N"), transport);
+			session.AddUserMessage("hello");
+
+			using CancellationTokenSource done = CancellationTokenSource.CreateLinkedTokenSource(ct);
+			Task skipBackoffs                  = Task.Run(async () =>
+			{
+				while (!done.IsCancellationRequested)
+				{
+					availability.AvailableAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+					await Task.Delay(10);
+				}
+			});
+			ProtocolResult result = await Service(model, DetectedProtocol.ChatCompletions, availability).RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
+			done.Cancel();
+			await skipBackoffs;
+			return result.Outcome;
+		}
+
+		server.Reset();
+		for (int i = 0; i < 12; i++)
+			server.Enqueue(FakeReply.Error(429, "{\"error\":{\"message\":\"slow down\"}}"));
+		for (int i = 0; i < 7; i++)
+			server.Enqueue(FakeReply.Error(500, "{\"error\":{\"message\":\"boom\"}}"));
+		server.Enqueue(FakeReply.Say("still here"));
+		ctx.AssertEqual(ProtocolCallOutcome.Success, await RunAsync(7), "Seeded run: a seeded model waits through rate limits and server errors");
+
+		server.Reset();
+		for (int i = 0; i < 7; i++)
+			server.Enqueue(FakeReply.Error(500, "{\"error\":{\"message\":\"boom\"}}"));
+		ctx.Assert(await RunAsync(null) != ProtocolCallOutcome.Success, "Unseeded run: the same errors end the call");
 	}
 
 	private static List<string> ToolNames(JsonNode body)

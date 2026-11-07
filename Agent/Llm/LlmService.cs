@@ -74,6 +74,9 @@ public class LlmService
 	public bool ResendsThinking => _model.Config.RetainReasoning && _handler.GetDetectedProtocol() == DetectedProtocol.ChatCompletions;
 	public bool IsDown          => _availability.IsDown;
 
+	// Whether a seed really reaches this model. A seed set on a protocol with no such parameter means nothing.
+	public bool Seeded => _model.Config.Seed.HasValue && ProtocolProxy.TakesSeed(_handler.GetDetectedProtocol());
+
 	// When this model's backoff ends; in the past when it can serve now.
 	public DateTimeOffset AvailableAt => _availability.AvailableAt;
 
@@ -103,6 +106,10 @@ public class LlmService
 		if (_availability.IsDown)
 			return TracerResult.Failed($"LLM {_model.Config.Name} is permanently down");
 
+		// The prompt is measured as the model will see it.
+		if (tools.Length > 0)
+			conversation.SetSeededRun(Seeded);
+
 		List<ToolDefinition> toolDefs = new List<ToolDefinition>();
 		for (int i = 0; i < tools.Length; i++)
 		{
@@ -128,6 +135,13 @@ public class LlmService
 	public async Task<ProtocolResult> RunToCompletionAsync(Session conversation, Tool[] tools, string? forcedToolName, int reserveTokens, int maxOutputCap, bool yieldOnInput, ITransportServer transport, CancellationToken cancellationToken)
 	{
 		ProtocolResult result = ProtocolResult.Failed($"LLM {_model.Config.Name} is permanently down");
+
+		// A tool calling a model is waiting on it. The model's own time is measured on the conversation below.
+		using ToolClock.Waiting modelWait = ToolClock.Wait();
+
+		// A conversation that can use tools is told when its run is seeded, whichever model turns out to serve it.
+		if (tools.Length > 0)
+			conversation.SetSeededRun(Seeded);
 
 		if (_availability.IsDown == false)
 		{
@@ -155,7 +169,12 @@ public class LlmService
 				// launch, and cutting a real Developer session to one retry made it abandon a turn on
 				// the first dropped connection.
 				const int kMaxStagePromptTransientRetries = 1;
-				int maxTransientRetries = conversation.IsStagePrompt ? kMaxStagePromptTransientRetries : kMaxTransientRetries;
+				// A seeded conversation keeps waiting on its model: retrying changes nothing in the conversation,
+				// and giving up would move it to another model. Input can still interrupt the wait. A stage prompt
+				// keeps its short limit, because its caller has to be able to reshape a prompt the server chokes on.
+				bool waitOutFailures     = Seeded && !conversation.IsStagePrompt;
+				int  maxRateLimit        = waitOutFailures ? int.MaxValue : kMaxRateLimitRetries;
+				int  maxTransientRetries = conversation.IsStagePrompt ? kMaxStagePromptTransientRetries : waitOutFailures ? int.MaxValue : kMaxTransientRetries;
 
 				// Central context accounting for this turn. Seeded with the model's window and limits, the
 				// compaction reserve, and the sub-session output cap. It owns all "how much room is left"
@@ -226,6 +245,10 @@ public class LlmService
 					// captured: children roll their spend up after every round, so it can grow mid-stream.
 					int contextBaseline = conversation.ContextLength; // captured by closure for provisional stats
 
+					// Time spent sending and receiving this call, read live for the display and committed
+					// below whatever the call's outcome: a failed attempt was work too.
+					WorkMeter meter = new WorkMeter();
+
 					// What the NEXT submission finds cached is everything the last turn read AND wrote:
 					// the prompt it sent plus the completion it produced are one contiguous prefix of
 					// the request now going out, which is exactly what a prefix cache matches on. So the
@@ -257,10 +280,19 @@ public class LlmService
 							// The three reported counts are a partition of the live context, so they always
 							// add back up to the occupancy shown beside them.
 							int liveContext = livePrompt + outputTokens;
-							transport.Stats(conversation.Id, modelId, role, livePrompt - liveCached, outputTokens, conversation.TotalCost + turnCost, contextWindow, liveContext, liveCached);
+							transport.Stats(conversation.Id, modelId, role, livePrompt - liveCached, outputTokens, conversation.TotalCost + turnCost, contextWindow, liveContext, liveCached, conversation.WorkedMs + meter.Ms);
 						};
 
-					result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
+					WorkMeter.Current = meter;
+					try
+					{
+						result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
+					}
+					finally
+					{
+						WorkMeter.Current = null;
+						conversation.RecordWork(meter.Ms);
+					}
 
 					// Record how it came back, next to the request that produced it.
 					conversation.QueryLog.WriteOutcome(result.Outcome.ToString(), result.HttpStatus, result.ErrorMessage);
@@ -325,7 +357,7 @@ public class LlmService
 						// A limit that lifts hours from now (a subscription's 5-hour or weekly usage window)
 						// is not worth waiting out mid-turn: the backoff is recorded so nothing picks this
 						// model until it lifts, and the caller falls back to the next model right away.
-						if (result.RetryAfter.HasValue && result.RetryAfter.Value > DateTimeOffset.UtcNow + kLongRateLimit)
+						if (!waitOutFailures && result.RetryAfter.HasValue && result.RetryAfter.Value > DateTimeOffset.UtcNow + kLongRateLimit)
 						{
 							_availability.ExtendBackoff(result.RetryAfter.Value);
 							string until = $"Rate limited until {result.RetryAfter.Value:u}";
@@ -334,7 +366,7 @@ public class LlmService
 							break;
 						}
 
-						if (rateLimitRetries > kMaxRateLimitRetries)
+						if (rateLimitRetries > maxRateLimit)
 						{
 							// Sustained rate limiting is a caller-side budget issue, not a model failure. The
 							// caller falls back to the next model in the role's list (RoleModelIds) on this outcome.
@@ -344,7 +376,7 @@ public class LlmService
 						}
 						_availability.ExtendBackoff(result.RetryAfter ?? DateTimeOffset.UtcNow.AddSeconds(5));
 						int waitSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
-						transport.Status(conversation.Id, $"Rate limited {waitSeconds}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
+						transport.Status(conversation.Id, waitOutFailures ? $"Rate limited {waitSeconds}s, waiting on the seeded model (try {rateLimitRetries})" : $"Rate limited {waitSeconds}s, retry ({rateLimitRetries}/{kMaxRateLimitRetries})");
 						conversation.QueryLog.ModelFailure(_model, _handler, "RateLimited", 429, result.ErrorMessage ?? "Rate limited by provider", rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}
@@ -373,9 +405,9 @@ public class LlmService
 						if (result.RetryAfter.HasValue)
 							_availability.ExtendBackoff(result.RetryAfter.Value);
 						else
-							_availability.ExtendBackoff(DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << (transientRetries - 1))));
+							_availability.ExtendBackoff(DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << Math.Min(transientRetries - 1, 6))));
 						int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
-						transport.Status(conversation.Id, $"Transient error, retry ({transientRetries}/{maxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
+						transport.Status(conversation.Id, waitOutFailures ? $"Transient error, waiting on the seeded model (try {transientRetries}), next in {backoffSeconds}s: {result.ErrorMessage}" : $"Transient error, retry ({transientRetries}/{maxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
 						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, maxTransientRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}

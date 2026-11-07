@@ -343,7 +343,7 @@ public class MediaInspector
 		string failures = string.Empty;
 		foreach (LlmModel model in candidates)
 		{
-			LlmService? service = registry.CreateServiceById(model.ConfigId, 0);
+			LlmService? service = registry.CreateServiceById(model.ConfigId, 0, registry.SeedOf(session));
 			if (service == null)
 				continue;
 
@@ -361,6 +361,7 @@ public class MediaInspector
 
 			ProtocolResult result = await service.RunToCompletionAsync(stage, Array.Empty<Tool>(), null, 0, maxOutputTokens, false, quiet, ct);
 			session.RecordCost(stage.TotalCost);
+			ToolClock.Report(session, stage.WorkedMs);
 
 			if (result.Outcome == ProtocolCallOutcome.Success)
 			{

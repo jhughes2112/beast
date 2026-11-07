@@ -120,15 +120,20 @@ public class HostCommands
 		else
 		{
 			SemaphoreSlim gate = GateFor(sessionId);
-			await gate.WaitAsync(ct);
+			using (ToolClock.Wait())
+				await gate.WaitAsync(ct);
 			try
 			{
-				HallMonitorVerdict verdict = await _monitor.CheckAsync(command, ct);
-				HallMonitorAction  action  = verdict.ActionFor(ParsePolicy(_settings.Settings.HallMonitorUnsure));
-				string             refusal = string.Empty;
+				HallMonitorVerdict verdict;
+				using (ToolClock.Wait())
+					verdict = await _monitor.CheckAsync(command, ct);
+				HallMonitorAction action  = verdict.ActionFor(ParsePolicy(_settings.Settings.HallMonitorUnsure));
+				string            refusal = string.Empty;
 				if (action == HallMonitorAction.AskHuman)
 				{
-					HumanAnswer answer = await AskAsync(sessionId, shell, command, verdict.Reason, ct);
+					HumanAnswer answer;
+					using (ToolClock.Wait())
+						answer = await AskAsync(sessionId, shell, command, verdict.Reason, ct);
 					if (!_monitor.RecordHumanAnswer(command, answer))
 						refusal = answer == HumanAnswer.Never
 							? "The user refused this command and will refuse it every time. Do not run it or a variant of it again."

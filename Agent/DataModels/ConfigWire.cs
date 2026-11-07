@@ -146,6 +146,10 @@ public class ConfigCatalogPayload
 	[JsonPropertyName("error")]
 	public string Error { get; set; } = string.Empty;
 
+	// False when this endpoint's protocol has no seed parameter, so the picker does not accept one.
+	[JsonPropertyName("seedSupported")]
+	public bool SeedSupported { get; set; } = true;
+
 	[JsonPropertyName("models")]
 	public List<ConfigModelInfo> Models { get; set; } = new();
 }

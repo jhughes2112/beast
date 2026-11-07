@@ -107,6 +107,18 @@ public static class ToolFactory
 				});
 		}
 
+		if (role.Tools.Contains("browser_screenshot"))
+		{
+			ToolConfig tc = toolConfigs["browser_screenshot"];
+			Register(tools, "browser_screenshot", tc.Description,
+				Params(Req("page", "string", tc.Parameters["page"]), Req("output_path", "string", tc.Parameters["output_path"]), Req("steps", "integer", tc.Parameters["steps"]), Req("step_ms", "number", tc.Parameters["step_ms"]),
+					Opt("width", "integer", tc.Parameters["width"]), Opt("height", "integer", tc.Parameters["height"])),
+				async (args, toolCallId, ct, transport, sessionId) =>
+				{
+					return await BrowserScreenshotTool.TakeAsync(toolCallId, Str(args, "page"), Str(args, "output_path"), Str(args, "steps"), Str(args, "step_ms"), IntOpt(args, "width"), IntOpt(args, "height"), ct);
+				});
+		}
+
 		if (role.Tools.Contains("write_file"))
 		{
 			ToolConfig tc = toolConfigs["write_file"];

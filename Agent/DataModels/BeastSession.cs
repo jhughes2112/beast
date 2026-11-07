@@ -69,6 +69,25 @@ public class BeastSession
 	[JsonPropertyName("costReportedToParent")]
 	public decimal CostReportedToParent { get; internal set; }
 
+	// Working time, counted like money: the time this session spent sending to and receiving from its
+	// model, what its tools report they spent running, and what its child sessions worked. Time a request
+	// spent waiting at the gateway is not in it, and parallel work adds up, so it can exceed the time that
+	// passed. Files written before it existed read as 0.
+	[JsonInclude]
+	[JsonPropertyName("workedMs")]
+	public long WorkedMs { get; internal set; }
+
+	// How much of WorkedMs has already been rolled up into the parent; see CostReportedToParent.
+	[JsonInclude]
+	[JsonPropertyName("workReportedToParent")]
+	public long WorkReportedToParent { get; internal set; }
+
+	// The seed of the seeded session that started this one, for any model of its own that has none.
+	[JsonInclude]
+	[JsonPropertyName("conferredSeed")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public long? ConferredSeed { get; internal set; }
+
 	// Absolute session totals. These only ever increase over the life of a session and are never
 	// reset, not on model switch and not on compaction. CumulativeInputTokens and
 	// CumulativeOutputTokens are what the client displays as the running in/out counters, while

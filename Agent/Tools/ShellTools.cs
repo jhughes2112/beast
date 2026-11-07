@@ -20,6 +20,16 @@ public static class ShellTools
 	// truncation ever sees the result.
 	private const int MaxCapturedChars = 4 * 1024 * 1024;
 
+	private static readonly System.Text.RegularExpressions.Regex kScreenshotFlag = new System.Text.RegularExpressions.Regex(@"(?<![\w-])--screenshot(?![\w-])", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+	private const string kScreenshotRefusal = "This command was not run because it uses --screenshot, and this seeded run has to repeat exactly. Use the browser_screenshot tool for page screenshots: give it the page, an output_path under /tmp/, a number of steps and step_ms. For example, 60 steps of 16.7 ms is one second of page time.";
+
+	// A browser's own --screenshot captures whenever it is ready, so in a seeded run its picture would differ.
+	private static bool RefusedInSeededRun(string command)
+	{
+		return Sandbox.CountingTime && kScreenshotFlag.IsMatch(command);
+	}
+
 	// PATH for readonly_bash: a directory of symlinks to a curated read-only command set, created in the
 	// Dockerfile. Restricted bash resolves only bare command names through PATH, so this directory is the
 	// entire universe of programs a locked-down role can run — everything else is simply unreachable.
@@ -82,10 +92,13 @@ public static class ShellTools
 	// told so — otherwise it would only find out when its next write there failed.
 	public static async Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
+		if (RefusedInSeededRun(command))
+			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
+
 		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, cancellationToken);
 		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
-		string     stdOut     = Sandbox.CountHttpDates(result.StdOut);
-		string     stdErr     = Sandbox.CountHttpDates(result.StdErr);
+		string     stdOut     = Sandbox.SteadyShellOutput(result.StdOut);
+		string     stdErr     = Sandbox.SteadyShellOutput(result.StdErr);
 		if (sealedNote.Length > 0)
 			stdErr = string.IsNullOrEmpty(stdErr) ? sealedNote : stdErr + "\n" + sealedNote;
 		return new ToolResult(toolcallid, stdOut, stdErr, result.ExitCode, result.MeasuredOutputTokens);
@@ -104,9 +117,13 @@ public static class ShellTools
 	// outside that directory is unreachable, so the command universe is exactly the allowlist. This is a
 	// guardrail for a cooperative (or worst case, prompt-poisoned) agent, not a hardened sandbox against a
 	// determined human attacker.
-	public static Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
+	public static async Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
-		return RunBashAsync(toolcallid, command, timeoutSeconds, true, true, cancellationToken);
+		if (RefusedInSeededRun(command))
+			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
+
+		ToolResult result = await RunBashAsync(toolcallid, command, timeoutSeconds, true, true, cancellationToken);
+		return new ToolResult(toolcallid, Sandbox.SteadyShellOutput(result.StdOut), Sandbox.SteadyShellOutput(result.StdErr), result.ExitCode, result.MeasuredOutputTokens);
 	}
 
 	// Drains a redirected stream into a capped builder in fixed-size chunks; returns true when the

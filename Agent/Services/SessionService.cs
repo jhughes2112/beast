@@ -53,6 +53,24 @@ public static class SessionService
 
 		[System.Text.Json.Serialization.JsonPropertyName("nextCreationOrder")]
 		public long NextCreationOrder { get; set; } = 1;
+
+		[System.Text.Json.Serialization.JsonPropertyName("nextRootId")]
+		public long NextRootId { get; set; } = 1;
+	}
+
+	// The next root session's ID. The ID reaches the model inside compaction's references to its log, so a repeated
+	// run must get the same ones. It is kept in the manifest because a deleted session's log can outlive it, and an
+	// ID used again would mix two conversations. A root ID never holds '_', which marks a child (see parentId_N).
+	public static string AllocateRootId()
+	{
+		lock (_ioLock)
+		{
+			SessionManifest manifest = LoadManifest();
+			long            id       = manifest.NextRootId;
+			manifest.NextRootId      = id + 1;
+			SaveManifest(manifest);
+			return id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+		}
 	}
 
 	// Load the manifest from disk, or return empty if not present

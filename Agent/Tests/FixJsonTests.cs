@@ -86,6 +86,23 @@ public static class FixJsonTests
 			ctx.AssertContains(calls[0].ArgumentsJson, "a.cs", "XmlToolCall: arguments recovered");
 		ctx.AssertEqual("I will read the file now.", cleaned, "XmlToolCall: block stripped, prose preserved");
 
+		// IDs are counted, and a loaded conversation's IDs are never issued again.
+		long NextId()
+		{
+			List<SemanticToolCall> found = new List<SemanticToolCall>();
+			Reflect.Static(typeof(ProtocolChatCompletions), "ExtractXmlToolCalls", signature, new object[] { text, offered, found });
+			return long.Parse(found[0].Id.Substring("xmltc_".Length));
+		}
+		long firstId = NextId();
+		ctx.AssertEqual(firstId + 1, NextId(), "XmlToolCall: each call takes the next number");
+		long                   loadedId = firstId + 1000;
+		List<CanonicalMessage> history  = new List<CanonicalMessage>
+		{
+			new AssistantMessage(string.Empty, string.Empty, new List<SemanticToolCall> { new SemanticToolCall { Id = $"xmltc_{loadedId}", Name = "ls", ArgumentsJson = "{}" } })
+		};
+		_ = new Session(new BeastSession("p", "p", "m", "r", string.Empty, history, null, 0m, 0, 0, 0, true), string.Empty, new TestCaptureTransport(), false);
+		ctx.AssertEqual(loadedId + 1, NextId(), "XmlToolCall: numbering continues past a loaded conversation's IDs");
+
 		// The Qwen-Coder function dialect: <function=name> with <parameter=key> blocks whose raw
 		// multi-line values must survive verbatim (minus the template's framing newlines).
 		List<SemanticToolCall> qwen        = new List<SemanticToolCall>();

@@ -437,7 +437,9 @@ public class LlmRegistry
 	// Returns null if no suitable model is available (all down, context too small, or no role).
 	// withoutReasoning strips the model's thinking budget for this service only, for callers whose
 	// work is a transformation rather than a decision.
-	public LlmService? CreateService(Role? role, string preferredModelId, int minContextRequired, bool withoutReasoning)
+	// conferredSeed is the seed of the session this call works for (see SeedOf). A model with no seed of its own
+	// takes it, so a seeded run stays seeded through the roles it calls.
+	public LlmService? CreateService(Role? role, string preferredModelId, int minContextRequired, bool withoutReasoning, long? conferredSeed = null)
 	{
 		if (role == null)
 			return null;
@@ -448,11 +450,32 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
+		model = WithConferredSeed(model, protocol, conferredSeed);
 		if (withoutReasoning || role.NoReasoning)
 			model = model.WithoutReasoning();
 		// The fallback list is the role's list narrowed to models that serve it, so falling back can
 		// never land on a model of the wrong kind.
 		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), GetOrCreateEndpointFacts(model.Endpoint), ModelIdsServing(role), ApplyLearnedCapability);
+	}
+
+	// The seed a session runs under: its own model's when that protocol takes one, or the one conferred on it.
+	public long? SeedOf(Session session)
+	{
+		long? seed = null;
+		if (_models.TryGetValue(session.Model, out LlmModel? model) && model.Config.Seed.HasValue)
+		{
+			DetectedProtocol protocol = DetectedProtocol.Unknown;
+			_probeCache.TryGetValue(model.Endpoint, out protocol);
+			if (ProtocolProxy.TakesSeed(protocol))
+				seed = model.Config.Seed;
+		}
+		return seed ?? session.Data.ConferredSeed;
+	}
+
+	private static LlmModel WithConferredSeed(LlmModel model, DetectedProtocol protocol, long? conferredSeed)
+	{
+		bool confer = conferredSeed.HasValue && !model.Config.Seed.HasValue && ProtocolProxy.TakesSeed(protocol);
+		return confer ? model.WithSeed(conferredSeed!.Value) : model;
 	}
 
 	// Builds a service for the next model below the current one in its role list — the automatic equivalent
@@ -463,8 +486,12 @@ public class LlmRegistry
 	// withoutReasoning carries the caller's intent across the switch, exactly as CreateService takes it.
 	// Compaction asks for a quiet model and then falls back when one is rate-limited or too small; without
 	// this the replacement thought again, spending the summary's output budget on deliberation nobody reads.
+	// A seeded model has no fallback: a different model could only produce a different run.
 	public LlmService? CreateFallbackService(LlmService current, int minContextRequired, bool withoutReasoning)
 	{
+		if (current.Seeded)
+			return null;
+
 		IReadOnlyList<string> modelIds = current.RoleModelIds;
 		DateTimeOffset        now      = DateTimeOffset.UtcNow;
 
@@ -501,7 +528,7 @@ public class LlmRegistry
 	// Creates a fresh LlmService for a specific model ID regardless of role ordering.
 	// Used by tests that need to exercise a particular model directly. Its model list is just that one
 	// model, so the service never falls back — the test exercises exactly that model.
-	public LlmService? CreateServiceById(string modelId, int minContextRequired)
+	public LlmService? CreateServiceById(string modelId, int minContextRequired, long? conferredSeed = null)
 	{
 		if (!_models.TryGetValue(modelId, out LlmModel? model))
 			return null;
@@ -514,6 +541,7 @@ public class LlmRegistry
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
+		model = WithConferredSeed(model, protocol, conferredSeed);
 		return new LlmService(model, protocol, avail, GetOrCreateEndpointFacts(model.Endpoint), new List<string> { modelId }, ApplyLearnedCapability);
 	}
 
