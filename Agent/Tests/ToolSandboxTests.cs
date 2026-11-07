@@ -38,8 +38,12 @@ public static class ToolSandboxTests
 		string previous                   = Environment.CurrentDirectory;
 		string root                       = Path.Combine(previous, $"beast-tooltest-{Guid.NewGuid():N}");
 
+		// As in a real run, the session's counters stay put in a state folder while the working folder moves.
+		string state                      = Path.Combine(previous, $"beast-toolstate-{Guid.NewGuid():N}");
+
 		try
 		{
+			AgentState.Initialize(state);
 			Directory.CreateDirectory(Path.Combine(root, ".github"));
 			Directory.CreateDirectory(Path.Combine(root, ".beast"));
 			File.WriteAllText(Path.Combine(root, ".github", "ci.yml"), "on: push\n");
@@ -58,8 +62,9 @@ public static class ToolSandboxTests
 		{
 			Directory.SetCurrentDirectory(previous);
 			Sandbox.Initialize(previous);
+			AgentState.Initialize(string.Empty);
 			// As root: the lockdown left parts of the tree root-owned and read-only.
-			await ShellTools.AgentBashAsync("cleanup", $"rm -rf '{root}'", null, CancellationToken.None);
+			await ShellTools.AgentBashAsync("cleanup", $"rm -rf '{root}' '{state}'", null, CancellationToken.None);
 			cts.Cancel();
 			try
 			{
@@ -222,6 +227,12 @@ public static class ToolSandboxTests
 		ctx.Assert(headers.StdOut.Contains($"last-modified: {realDate}", StringComparison.Ordinal) && headers.StdOut.Contains($"update: {realDate}", StringComparison.Ordinal), $"File clock: other lines with a date are left alone — {headers.StdOut}");
 		ctx.Assert(headers.StdErr.Contains($"< date: {countedDate}", StringComparison.Ordinal), $"File clock: curl -v's form on stderr too — {headers.StdErr}");
 
+		// A CDN's per-request headers go, in any curl form; the same words outside a header block stay.
+		const string cdnHeaders = "HTTP/2 200 \r\ncontent-type: text/javascript\r\nage: 1487966\r\ncf-cache-status: HIT\r\nserver: cloudflare\r\ncf-ray: a56d95b4ae6f6b73-DFW\r\n\r\nage: 30\n";
+		ctx.AssertEqual("HTTP/2 200 \r\ncontent-type: text/javascript\r\nserver: cloudflare\r\n\r\nage: 30\n", Sandbox.SteadyShellOutput(cdnHeaders), "File clock: per-request headers are removed from a response");
+		ctx.AssertEqual("< HTTP/2 200\n< server: cloudflare\n", Sandbox.SteadyShellOutput("< HTTP/2 200\n< AGE: 5\n< server: cloudflare\n< cf-ray: abc\n"), "File clock: curl -v's headers too, in either case");
+		ctx.AssertEqual("name: walrus\nage: 30\ncf-ray: mine\n", Sandbox.SteadyShellOutput("name: walrus\nage: 30\ncf-ray: mine\n"), "File clock: output without a response keeps those words");
+
 		// Real `ls -l` output, in every date style, on a file whose real time is years old. Only the date changes.
 		System.Globalization.CultureInfo invariant = System.Globalization.CultureInfo.InvariantCulture;
 		DateTimeOffset counted = DateTimeOffset.FromUnixTimeSeconds(second);
@@ -245,6 +256,26 @@ public static class ToolSandboxTests
 		string shotFolder = await ScreenshotAsync(ctx, ct);
 		await SeededRoundsAsync(ctx, ct);
 
+		// A clock starting fresh saves where it is. An earlier test may have left one running, so this one starts its own.
+		Directory.SetCurrentDirectory(parent);
+		await Sandbox.StopFileClockAsync(ct);
+		Directory.SetCurrentDirectory(root);
+		await Sandbox.AdvanceFileClockAsync(3, ct);
+		long countedNow   = Sandbox.FileClockNow;
+		long savedBase    = SessionService.GetCounter(Sandbox.kClockBaseCounter);
+		long savedMinutes = SessionService.GetCounter(Sandbox.kClockMinutesCounter);
+		ctx.AssertEqual(3L, savedMinutes, "File clock: its tool call count is saved");
+		ctx.AssertEqual(countedNow, savedBase + savedMinutes * 60, "File clock: and its date");
+
+		// A restart loses the mount and the clock in memory; a resumed session carries on from the saved time.
+		Directory.SetCurrentDirectory(parent);
+		await Sandbox.StopFileClockAsync(ct);
+		Directory.SetCurrentDirectory(root);
+		SessionService.SetCounter(Sandbox.kClockBaseCounter, savedBase);
+		SessionService.SetCounter(Sandbox.kClockMinutesCounter, savedMinutes);
+		await Sandbox.AdvanceFileClockAsync(1, ct);
+		ctx.AssertEqual(countedNow + 60, Sandbox.FileClockNow, "File clock: a resumed session's time carries on");
+
 		// Off the mount, so the real files can be checked and the test folder removed.
 		Directory.SetCurrentDirectory(parent);
 		await Sandbox.StopFileClockAsync(ct);
@@ -253,6 +284,7 @@ public static class ToolSandboxTests
 		ctx.AssertEqual($"date: {realDate}", Sandbox.SteadyShellOutput($"date: {realDate}"), "File clock: without a counted clock a Date header stays as it is");
 		ctx.AssertEqual("-rw-r--r-- 1 a b 2 Sep  9  2001 f", Sandbox.SteadyShellOutput("-rw-r--r-- 1 a b 2 Sep  9  2001 f"), "File clock: without a counted clock a listing stays as it is");
 		ctx.AssertEqual(glMessage, Sandbox.SteadyShellOutput(glMessage), "File clock: without a counted clock a context's address stays as it is");
+		ctx.AssertEqual(cdnHeaders, Sandbox.SteadyShellOutput(cdnHeaders), "File clock: without a counted clock a response's headers stay as they are");
 		ctx.AssertEqual(second.ToString(), FileTime(Path.Combine(root, "clock_write.txt"), ct), "File clock: the times are on the real files");
 	}
 

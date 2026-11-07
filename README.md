@@ -45,6 +45,11 @@ First launch will open the config picker automatically. Use /config to get back 
 - **Repeatable page screenshots** — `browser_screenshot` runs any page for an exact number of timesteps, with its clocks, CSS animations, timers and random numbers controlled, and gives the same bytes every time
 - **Usage-limit auto-resume** — when a subscription window runs out, or an API is rate limited, Beast waits for the reset and continues the turn by itself.
 - **OpenRouter batch model** — `:batch` aren't supported, so they're filtered out now
+- **Repeatable runs** — give a model a seed and Beast removes the differences it can control, so a change you make is the only thing that changes the run. See [Repeatable runs](#repeatable-runs)
+- **Two-step `fetch_url`** — getting a page can take a different path each time, so that work no longer shapes the answer. The fetching agent can only return file paths, or name one file for a fresh agent to summarize from the goal and that file alone
+- **Steadier `curl` output** — per-request headers like `age` and `cf-ray` are removed from HTTP responses in seeded runs, because they differ on every request and pushed runs apart
+- **Output ask retries** — a server that refuses a request only because Beast asked for too much output now gets a smaller ask, even if it refuses mid-stream. These used to look like a full context, which stalled small conversations
+- **`tools/probe_determinism.py`** — tests whether a chat completions endpoint gives repeatable output, and which situations break it
 
 ---
 
@@ -186,6 +191,47 @@ beast --worktree none /p "Summarize the architecture"
 ```
 
 `--worktree` skips the session menu and opens or creates the specific worktree session. `none` means use this folder's most recently used bare session, which is also what a non-interactive run without `--worktree` does. Dash and slash are interchangeable on the command line.  For passing in prompts, `-p` must come last because anything after it is passed in as the prompt for convenience.
+
+---
+
+## Repeatable runs
+
+If a run repeats exactly, you can change one thing, a prompt, a tool, a model setting, and know that any difference came from that change. That takes more than a seed, because one differing byte in any tool result sends the rest of the run somewhere else. So in a seeded run, Beast also:
+
+- counts time instead of reading the clock, so file times and anything a script asks the clock for come out the same
+- makes `browser_screenshot` run a page for an exact number of timesteps and give the same bytes every time
+- gives shell output that varies from run to run a fixed form, or removes it: HTTP dates and per-request headers, `ls -l` dates, and graphics context addresses
+- tells the model what has to stay the same on every run
+- keeps `fetch_url`'s answer apart from the work of fetching
+
+None of this helps if the inference engine itself doesn't repeat, and a seed alone doesn't prove it does. Some engines repeat a request sent alone, then give different output when another request overlaps it.
+
+### Checking an endpoint
+
+`tools/probe_determinism.py` tests any chat completions endpoint. It's a single file that needs only Python 3, and it doesn't use Beast. Give it the URL, the API key (or `none`) and the model:
+
+```bash
+python3 tools/probe_determinism.py http://localhost:8080/v1 none my-model --quick
+python3 tools/probe_determinism.py https://api.example.com/v1 "$API_KEY" my-model
+```
+
+Each detector tests one cause: run-to-run repeats, seeds, cache state, batch size, requests joining or leaving partway through, arrival order, logprobs and vision. Greedy requests rule out sampling, each detector first checks that its plain request repeats, and overlap is confirmed from stream timing. It's based on [Defeating Nondeterminism in LLM Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/).
+
+| Verdict | Meaning |
+|---|---|
+| `HOLDS` | The situation happened and the output didn't change. That means no evidence of this cause, not proof it's absent |
+| `BREAKS` | The plain request repeated, and this situation changed the output |
+| `DRIFT` | The text matched, but the logprobs moved |
+| `NOISY` | The plain request didn't repeat, so this cause can't be isolated |
+| `NOT_REACHED` | The situation never happened, for example because requests queued instead of overlapping |
+| `ERROR`, `SKIP` | A request failed, or the endpoint lacks what the detector needs |
+
+A summary prints as it runs, and the full results go in a `determinism` folder in the current directory (`--out` changes it). `--list` shows every detector.
+
+- **Keep the endpoint idle.** Other clients change the batches, and the probe can't see them.
+- **It sends a lot of requests.** On a paid API, that costs real money.
+- **`--quick` shows where to look, it isn't a verdict.** Rare differences need more tries, so raise `--rounds` when the answer matters.
+- **The first request after a load isn't tested.** The chat completions API has no way to unload a model.
 
 ---
 

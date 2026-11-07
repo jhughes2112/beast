@@ -428,7 +428,8 @@ public static class MechanicalCompaction
 
 	private static (string Text, bool Cut, string Heading, string Body) BuildMemoryResult(SemanticToolCall call, ToolResultMessage result, CompactionLog log)
 	{
-		string heading    = $"{call.Name} {call.Id}";
+		// The name alone: the model can read this log, and a call id differs on every run.
+		string heading    = call.Name;
 		string body       = IsFileCall(call) ? FileCallBody(call, result) : $"{WhyArgument}: {WhyOf(call)}\ncommand:\n{CommandOf(call.ArgumentsJson)}\n{ExitLine(result)}output:\n{result.Content}";
 		string pointer    = $"tool call is in file {log.ReferenceTo(heading, body)}";
 		bool   keepOutput = result.Content.Length <= pointer.Length;

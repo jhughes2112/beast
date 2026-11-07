@@ -518,6 +518,30 @@ public static class ToolFactory
 				}
 			});
 		}
+		else if (role.Tools.Contains("return_fetched") && onTerminate != null)
+		{
+			ToolConfig tc = toolConfigs["return_fetched"];
+			tools.Add(new Tool
+			{
+				Definition = new ToolDefinition
+				{
+					Type     = "function",
+					Function = new FunctionDefinition
+					{
+						Name        = "return_fetched",
+						Description = tc.Description,
+						Parameters  = Params(
+							OptArray("file_paths", "string", tc.Parameters["file_paths"]),
+							Opt("summarize_file", "string", tc.Parameters["summarize_file"]))
+					}
+				},
+				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+				{
+					string firstMessage = session?.FirstUserText() ?? string.Empty;
+					return await WebFetch.ReturnFetchedAsync(toolCallId, StrArray(args, "file_paths"), Str(args, "summarize_file"), firstMessage, roleService!.GetRole("WebFetchSummary")!, spawnSummarizer!, onTerminate, ct);
+				}
+			});
+		}
 		else if (onTerminate != null)
 		{
 			ToolConfig tc = toolConfigs["return_to_caller"];
@@ -632,6 +656,11 @@ public static class ToolFactory
 	private static JsonObject Opt(string name, string type, string description)
 	{
 		return new JsonObject { ["_name"] = name, ["_required"] = false, ["type"] = type, ["description"] = description };
+	}
+
+	private static JsonObject OptArray(string name, string itemType, string description)
+	{
+		return new JsonObject { ["_name"] = name, ["_required"] = false, ["type"] = "array", ["items"] = new JsonObject { ["type"] = itemType }, ["description"] = description };
 	}
 
 	private static JsonObject ReqArray(string name, string itemType, string description)

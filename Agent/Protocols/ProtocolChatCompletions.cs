@@ -194,7 +194,8 @@ public class ProtocolChatCompletions
 			MediaAttachment? att   = MediaKinds.LoadAttachment(file.Path, file.MimeType);
 			if (att != null)
 			{
-				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = $"[Media from tool call {toolCallId}: {file.Path}]" });
+				// No call id here: engines generate them at random, even in a seeded run, and this text goes in the prompt.
+				parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = $"[Media from tool call: {file.Path}]" });
 				parts.Add((JsonNode)MediaPart(att));
 			}
 			else
@@ -808,21 +809,30 @@ httpResponse);
 	// prompt fits and only the ask is too big. Reporting it as ContextFull sent conversations at 9-44%
 	// of their window into compaction, which a small conversation cannot do, so they died. Learn the
 	// overrun as skew and retry; an overrun the ask cannot absorb is a real overflow and returns false.
+	// TensorFold states the two parts instead of the total ("the rendered prompt has 10427 tokens and
+	// requests 122381 reply tokens"). statusCode 0 is a refusal that arrived inside a 200 stream.
 	private bool TryLearnPromptSkew(JsonObject body, int statusCode, string responseBody, LlmModel model, ListenerBundle bundle, SessionLogger logger)
 	{
 		bool learned = false;
-		if (statusCode == 400 && ProtocolHelpers.IsContextOverflow(responseBody))
+		if ((statusCode == 400 || statusCode == 0) && ProtocolHelpers.IsContextOverflow(responseBody))
 		{
 			int limit     = ParseIntAfter(responseBody, "maximum context length is ");
 			int requested = ParseIntAfter(responseBody, "you requested about ");
 			if (requested == 0)
 				requested = ParseIntAfter(responseBody, "you requested ");
+			if (requested == 0)
+			{
+				int rendered = ParseIntAfter(responseBody, "rendered prompt has ");
+				int reply    = ParseIntAfter(responseBody, "tokens and requests ");
+				if (rendered > 0 && reply > 0)
+					requested = rendered + reply;
+			}
 			int sent    = body["max_completion_tokens"]?.GetValue<int>() ?? 0;
 			int overrun = requested - limit;
 			if (limit > 0 && overrun > 0 && sent - overrun - kPromptSkewSlack >= ContextBudget.MinUsefulOutput)
 			{
 				_promptCountSkew += overrun + kPromptSkewSlack;
-				string note       = $"{model.Config.Name} counted the prompt {overrun} tokens past its {limit}-token window with {sent} output asked; it counts prompts higher than its usage reports, so output asks are now {_promptCountSkew} tokens smaller. Retrying.";
+				string note       = $"{model.Config.Name} counted the prompt {overrun} tokens past its {limit}-token window with {sent} output asked, higher than our estimate of it, so output asks are now {_promptCountSkew} tokens smaller. Retrying.";
 				logger.Note(note);
 				bundle.Transport?.Status(note);
 				learned = true;
@@ -1082,7 +1092,16 @@ httpResponse);
 
 					JsonNode? streamError = chunkNode["error"];
 					if (streamError != null)
+					{
+						// A server that already sent its 200 refuses an over-window ask here. Before any output
+						// this is the same sizing miss as a 400, and the same smaller request will go.
+						if (streamedCharCount == 0 && streamedToolChars == 0 && TryLearnPromptSkew(body, 0, streamError.ToJsonString(), model, bundle, logger))
+						{
+							_retryRebuilt = true;
+							return null;
+						}
 						return StreamFailure(model, streamError, httpResponse, logger);
+					}
 
 					JsonNode? usageNode = chunkNode["usage"];
 					if (usageNode != null)
@@ -1437,8 +1456,7 @@ httpResponse);
 	//   Hermes/JSON:  {"name": "x", "arguments": {...}}
 	//   Qwen-Coder:   <function=x> <parameter=key>\nvalue\n</parameter> ... </function>
 	// Returns null when neither shape matches.
-	private const  string kXmlCallPrefix = "xmltc_";
-	private static long   _xmlCallCount  = 0;
+	private const string kXmlCallPrefix = "xmltc_";
 
 	private static SemanticToolCall? ParseXmlToolCall(string inner)
 	{
@@ -1528,14 +1546,14 @@ httpResponse);
 	{
 		return new SemanticToolCall
 		{
-			Id            = $"{kXmlCallPrefix}{Interlocked.Increment(ref _xmlCallCount)}",
+			Id            = $"{kXmlCallPrefix}{SessionService.NextCounter("xml_call")}",
 			Name          = name,
 			ArgumentsJson = argsJson
 		};
 	}
 
-	// Moves the count past the IDs in a loaded conversation, because a restarted agent counts from 1 again and a
-	// conversation must not hold the same ID twice.
+	// Moves the count past the IDs in a loaded conversation, because a session from before the count was saved
+	// starts at 1 again and a conversation must not hold the same ID twice.
 	public static void SkipXmlCallIdsIn(IEnumerable<CanonicalMessage> messages)
 	{
 		foreach (CanonicalMessage message in messages)
@@ -1545,14 +1563,7 @@ httpResponse);
 				foreach (SemanticToolCall call in assistant.ToolCalls)
 				{
 					if (call.Id.StartsWith(kXmlCallPrefix, StringComparison.Ordinal) && long.TryParse(call.Id.AsSpan(kXmlCallPrefix.Length), out long used))
-					{
-						long current = Interlocked.Read(ref _xmlCallCount);
-						while (used > current)
-						{
-							long seen = Interlocked.CompareExchange(ref _xmlCallCount, used, current);
-							current   = seen == current ? used : seen;
-						}
-					}
+						SessionService.RaiseCounter("xml_call", used);
 				}
 			}
 		}

@@ -138,6 +138,7 @@ public static class MediaToolResultTests
 		ctx.AssertEqual(5, liveNative.Count, "ChatCompletions live: same message count");
 		ctx.AssertEqual("tool", Role(liveNative[3]), "ChatCompletions live: later tool reply inserted ahead of the carrier");
 		ctx.AssertEqual("user", Role(liveNative[4]), "ChatCompletions live: carrier still trails");
+		ctx.Assert(!liveNative[4]!["content"]![0]!["text"]!.GetValue<string>().Contains("call_a", StringComparison.Ordinal), "ChatCompletions live: the media note carries no call id, which differs on every run");
 
 		// User text arriving mid-turn (the drain after a tool round) must not fold into the carrier:
 		// Rehydrate emits it as its own message, and the live shape has to match.

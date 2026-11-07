@@ -57,8 +57,24 @@ public static class Sandbox
 	private const long   kFileClockCycle   = 28 * 86400;
 	private const long   kFileClockLead    = 14 * 86400;
 
+	// The clock's date and its tool call count, saved so a resumed session's time carries on.
+	public const string kClockBaseCounter    = "clock_base";
+	public const string kClockMinutesCounter = "clock_minutes";
+
 	private static readonly System.Text.RegularExpressions.Regex kHttpDateLine = new System.Text.RegularExpressions.Regex(
 		@"^(<?[ \t]*date:[ \t]*)[A-Z]{3}, \d{2} [A-Z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT",
+		System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+	// One HTTP response's status line and headers, as curl -i, -I, -D or -v prints them. Headers are only touched
+	// inside one of these, so a line such as "age: 30" in a script's own output stays.
+	private static readonly System.Text.RegularExpressions.Regex kHttpHeaderBlock = new System.Text.RegularExpressions.Regex(
+		@"^<?[ \t]*HTTP/\d(?:\.\d)?[ \t]+\d{3}[^\n]*\n(?:<?[ \t]*[A-Za-z0-9-]+:[^\n]*(?:\n|\z))*",
+		System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+	// Headers that report the request rather than the resource: how long a cache has held it, which server or
+	// trace answered, and when the cached copy runs out.
+	private static readonly System.Text.RegularExpressions.Regex kVolatileHeader = new System.Text.RegularExpressions.Regex(
+		@"^<?[ \t]*(?:age|expires|cf-ray|cf-cache-status|request-id|traceparent|server-timing|report-to|nel|set-cookie|x-cache|x-cache-hits|x-served-by|x-timer|x-request-id|x-amz-request-id|x-amz-id-2|x-amz-cf-id|x-amz-cf-pop|x-fastly-request-id|x-github-request-id|x-vercel-id|x-vercel-cache|x-nf-request-id|x-ms-request-id):[^\n]*(?:\n|\z)",
 		System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
 	// The start of an `ls -l` line, up to and including its date: mode, links, owner and maybe group, size
@@ -173,6 +189,7 @@ public static class Sandbox
 				if (failure.Length == 0)
 				{
 					_fileClockMinutes += toolCalls;
+					SessionService.SetCounter(kClockMinutesCounter, _fileClockMinutes);
 					WriteFileClock(FileClockNow);
 					_fakeTime = DateTimeOffset.FromUnixTimeSeconds(FileClockNow).ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
 				}
@@ -194,13 +211,17 @@ public static class Sandbox
 		}
 		else
 		{
-			long   start  = FileClockBase(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-			string quoted = Root.Replace("'", "'\\''");
-			WriteFileClock(start);
+			// A resumed session carries on from its saved time, rather than starting over and running backwards.
+			long   saved   = SessionService.GetCounter(kClockBaseCounter);
+			long   start   = saved > 0 ? saved : FileClockBase(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+			long   minutes = saved > 0 ? SessionService.GetCounter(kClockMinutesCounter) : 0;
+			long   stamp   = start + minutes * 60;
+			string quoted  = Root.Replace("'", "'\\''");
+			WriteFileClock(stamp);
 			ToolResult result = await ShellTools.AgentBashAsync("sandbox_file_clock",
 				$"W='{quoted}'\nT='{TempFolder()}'\n" +
-				$"find \"$T\" -xdev -exec touch -h -d '@{start}' {{}} + 2>/dev/null\n" +
-				$"touch -h -d '@{start}' \"$W\" \"$(dirname \"$W\")\" && {kClockFsPath} \"$T\" {kFileClockPath} && {kClockFsPath} \"$W\" {kFileClockPath}\n", 120, ct);
+				$"find \"$T\" -xdev -exec touch -h -d '@{stamp}' {{}} + 2>/dev/null\n" +
+				$"touch -h -d '@{stamp}' \"$W\" \"$(dirname \"$W\")\" && {kClockFsPath} \"$T\" {kFileClockPath} && {kClockFsPath} \"$W\" {kFileClockPath}\n", 120, ct);
 			if (result.ExitCode != 0)
 			{
 				failure = $"Could not mount clockfs, so this run's file times are real and it will not repeat: {result.StdOut} {result.StdErr}".TrimEnd();
@@ -209,7 +230,9 @@ public static class Sandbox
 			{
 				// This process's working folder is still the real one underneath. A path is resolved
 				// afresh, so this is what puts its own relative paths on the mount too.
-				_fileClockBase = start;
+				_fileClockBase    = start;
+				_fileClockMinutes = minutes;
+				SessionService.SetCounter(kClockBaseCounter, start);
 				Directory.SetCurrentDirectory(Root);
 			}
 		}
@@ -221,6 +244,8 @@ public static class Sandbox
 	// given a fixed form, rather than being removed from output the model may be parsing:
 	//   - An HTTP Date header (curl -i, -I, or -v's "< date:"): a server reports its own clock, which no
 	//     local clock can reach. It reads the counted time.
+	//   - A CDN's or cache's per-request HTTP headers (age, cf-ray and the like) have no fixed form that means
+	//     anything, so these alone are removed.
 	//   - The date column of `ls -l`: files outside clockfs's mounts, and any the workspace already held,
 	//     carry real times. Every line reads the counted time, and the files keep the times they have.
 	//   - Chromium's graphics context tag: an address that memory layout randomization changes every run.
@@ -238,6 +263,7 @@ public static class Sandbox
 			string ls   = $"{now.ToString("MMM", invariant)} {now.Day,2} {now.ToString("HH:mm", invariant)}";
 
 			result = kHttpDateLine.Replace(text, match => match.Groups[1].Value + http);
+			result = kHttpHeaderBlock.Replace(result, match => kVolatileHeader.Replace(match.Value, string.Empty));
 			result = kLsDate.Replace(result, match => match.Groups[1].Value + (match.Groups["full"].Success ? full : match.Groups["iso"].Success ? iso : ls));
 			result = kGraphicsContextTag.Replace(result, match => $"[.{match.Groups[1].Value}-0x0]");
 		}
@@ -264,8 +290,10 @@ public static class Sandbox
 		await ShellTools.AgentBashAsync("sandbox_file_clock", $"umount '{Root.Replace("'", "'\\''")}'; umount -l '{TempFolder()}'", 60, ct);
 		_fileClockBase    = 0;
 		_fileClockMinutes = 0;
-		_fileClockFailed  = false;
-		_fakeTime         = null;
+		SessionService.SetCounter(   kClockBaseCounter, 0);
+		SessionService.SetCounter(kClockMinutesCounter, 0);
+		_fileClockFailed = false;
+		_fakeTime        = null;
 	}
 
 	// The names on lines of a script's output that start with marker, comma-separated.

@@ -87,6 +87,8 @@ public class Role
 				name = "task_complete";
 			else if (Tools.Contains("finish_review"))
 				name = "finish_review";
+			else if (Tools.Contains("return_fetched"))
+				name = "return_fetched";
 			return name;
 		}
 	}

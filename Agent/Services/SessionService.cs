@@ -56,6 +56,70 @@ public static class SessionService
 
 		[System.Text.Json.Serialization.JsonPropertyName("nextRootId")]
 		public long NextRootId { get; set; } = 1;
+
+		[System.Text.Json.Serialization.JsonPropertyName("counters")]
+		public Dictionary<string, long> Counters { get; set; } = new Dictionary<string, long>();
+	}
+
+	// Counters shared by every conversation in a session that end up in what the model sees: tool calls on the
+	// counted clock, fetch folders, generated call IDs. A resumed session has to carry on from where they were, or
+	// time runs backwards and numbers repeat. Saved on every change, since a restart gives no warning.
+	public static long GetCounter(string name)
+	{
+		lock (_ioLock)
+		{
+			return LoadManifest().Counters.TryGetValue(name, out long value) ? value : 0;
+		}
+	}
+
+	// Adds one and returns the new value, so the first is 1.
+	public static long NextCounter(string name)
+	{
+		lock (_ioLock)
+		{
+			SessionManifest manifest = LoadManifest();
+			long            next     = (manifest.Counters.TryGetValue(name, out long value) ? value : 0) + 1;
+			manifest.Counters[name]  = next;
+			SaveCounters(manifest);
+			return next;
+		}
+	}
+
+	public static void SetCounter(string name, long value)
+	{
+		lock (_ioLock)
+		{
+			SessionManifest manifest = LoadManifest();
+			manifest.Counters[name]  = value;
+			SaveCounters(manifest);
+		}
+	}
+
+	// Moves a counter up to value, and never down.
+	public static void RaiseCounter(string name, long value)
+	{
+		lock (_ioLock)
+		{
+			SessionManifest manifest = LoadManifest();
+			if (!manifest.Counters.TryGetValue(name, out long current) || value > current)
+			{
+				manifest.Counters[name] = value;
+				SaveCounters(manifest);
+			}
+		}
+	}
+
+	// A failed save costs repeatability after a resume, not the tool call that advanced the counter.
+	private static void SaveCounters(SessionManifest manifest)
+	{
+		try
+		{
+			SaveManifest(manifest);
+		}
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+		{
+			Console.Error.WriteLine($"WARNING: could not save the session's counters: {ex.Message}");
+		}
 	}
 
 	// The next root session's ID. The ID reaches the model inside compaction's references to its log, so a repeated

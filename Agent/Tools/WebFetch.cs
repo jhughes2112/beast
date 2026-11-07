@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -24,12 +25,18 @@ public class WebFetch
 	// Where fetched files go: the scratch folder a seeded run's prompt sends the model to.
 	private const string kScratchFolder = "/tmp/work";
 
+	// Closes the objective in a seed, so return_fetched can hand the summarizer the caller's goal word for word.
+	private const string kObjectiveLabel = "Objective: ";
+	private const string kObjectiveEnd   = "\n---\n";
+
+	// The window of a file the summarizer reads, as much as the Explorer gets.
+	private const int SummaryMaxLines = 2000;
+
 	private static readonly object kFolderGate = new();
-	private static          int    _fetchCount = 0;
 
 	// Fetches the resource and interprets it with the WebFetch role: a child session is seeded with the URL,
-	// the objective, and the paths of the saved files, then returns only what the objective asked for via
-	// return_to_caller. Cost rolls up into the calling session.
+	// the objective, and the paths of the saved files, then answers through return_fetched with file paths or
+	// the summary of one file. Cost rolls up into the calling session.
 	// The caller resolves the WebFetch job from live config at each call, so a reload
 	// mid-cluster is honored at the handoff.
 	public async Task<ToolResult> FetchRawAsync(
@@ -108,6 +115,112 @@ public class WebFetch
 		}
 	}
 
+	// The WebFetch role's only way to answer. The role's context varies with how the fetch went, so none of it
+	// is passed on: the caller gets sorted file paths, or a summary a fresh session writes from the seed's goal
+	// and the one file. A bad argument comes back as an error and the role keeps working.
+	public static async Task<ToolResult> ReturnFetchedAsync(
+		string               toolCallId,
+		List<string>         filePaths,
+		string               summarizeFile,
+		string               seed,
+		Role                 summaryJob,
+		SpawnSummarizer      spawn,
+		Action<bool, string> onTerminate,
+		CancellationToken    cancellationToken)
+	{
+		bool   summarize = !string.IsNullOrWhiteSpace(summarizeFile);
+		string answer    = string.Empty;
+		bool   success   = true;
+		string error     = string.Empty;
+
+		if (summarize && filePaths.Count > 0)
+		{
+			error = "Error: give file_paths or summarize_file, not both.";
+		}
+		else if (summarize)
+		{
+			(success, answer, error) = await SummarizeFileAsync(toolCallId, summarizeFile, seed, summaryJob, spawn, cancellationToken);
+		}
+		else
+		{
+			(answer, error) = ListFiles(filePaths);
+			success         = filePaths.Count > 0;
+		}
+
+		ToolResult result;
+		if (error.Length > 0)
+		{
+			result = new ToolResult(toolCallId, string.Empty, error, 1, 0);
+		}
+		else
+		{
+			onTerminate(success, answer);
+			const string ack = "Returned to caller.";
+			result           = new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack));
+		}
+		return result;
+	}
+
+	// The paths the caller receives, resolved and sorted so the order the role found them in does not show.
+	private static (string answer, string error) ListFiles(List<string> filePaths)
+	{
+		string answer = "No files could be fetched.";
+		string error  = string.Empty;
+		if (filePaths.Count > 0)
+		{
+			List<string> resolved = new List<string>();
+			foreach (string path in filePaths)
+			{
+				(string? confined, string denied) = Sandbox.Confine(path, false, false);
+				if (confined == null)
+					error = denied;
+				else if (!File.Exists(confined))
+					error = $"Error: there is no file at {path}.";
+				else if (!resolved.Contains(confined))
+					resolved.Add(confined);
+			}
+			resolved.Sort(StringComparer.Ordinal);
+			answer = $"Fetched files:\n{string.Join("\n", resolved)}";
+		}
+		return (answer, error);
+	}
+
+	// The seed holds nothing but the caller's goal and the content: not the URL, the file's name or anything
+	// the role chose, since any of those could differ between runs that fetched the same thing.
+	private static async Task<(bool success, string answer, string error)> SummarizeFileAsync(
+		string            toolCallId,
+		string            path,
+		string            seed,
+		Role              job,
+		SpawnSummarizer   spawn,
+		CancellationToken cancellationToken)
+	{
+		ToolResult read = await FileTools.ReadFileAsync(toolCallId, path, string.Empty, string.Empty, SummaryMaxLines, false, cancellationToken);
+		if (read.ExitCode != 0)
+			return (false, string.Empty, read.StdErr);
+		if (read.StdOut.Contains('\0'))
+			return (false, string.Empty, $"Error: {path} is binary. Extract its text to a file first, and name that file.");
+
+		string goal                     = GoalFromSeed(seed);
+		(bool ok, string answer, int _) = await spawn(job.Name, $"summarize {Path.GetFileName(path)}", job.SystemPrompt, $"Goal: {goal}\n\nFile content:\n{read.StdOut}", job.Tools, job.MaxTurns, cancellationToken);
+		if (!ok)
+			return (false, string.Empty, $"Error: the summary failed: {(string.IsNullOrEmpty(answer) ? "no reason reported" : answer)}");
+
+		return (true, answer, string.Empty);
+	}
+
+	// The objective between its label and the end marker. The last marker, since an objective can hold the
+	// same text and nothing after it comes from the caller. Compaction can drop the seed; the file still answers.
+	private static string GoalFromSeed(string seed)
+	{
+		int    start = seed.IndexOf(kObjectiveLabel, StringComparison.Ordinal);
+		int    end   = seed.LastIndexOf(kObjectiveEnd, StringComparison.Ordinal);
+		string goal  = "Report what this file contains.";
+		if (start >= 0 && end >= start + kObjectiveLabel.Length)
+			goal = seed.Substring(start + kObjectiveLabel.Length, end - start - kObjectiveLabel.Length);
+		return goal;
+	}
+
 	// A one-line reason for a failed fetch. The full exception carries a dozen frames of HttpClient
 	// plumbing that say nothing about why the URL failed — a DNS miss or a refused connection reads
 	// identically in the stack — so the innermost message is reported instead. It costs the model a
@@ -145,8 +258,9 @@ public class WebFetch
 	}
 
 	// Picks the next numbered folder for a fetch. The path goes into the WebFetch role's request, and a seeded run
-	// must send the same request, so calls take their numbers in the order they start, before any download. Numbers
-	// already on disk are skipped, because a restarted agent counts from 1 again and earlier files may be in use.
+	// must send the same request, so calls take their numbers in the order they start, before any download. The count
+	// is saved, so a resumed session carries on. Numbers already on disk are skipped: a session from before it was
+	// saved starts at 1 again, and earlier files may be in use.
 	private static string ReserveFolder()
 	{
 		lock (kFolderGate)
@@ -154,8 +268,7 @@ public class WebFetch
 			string directory;
 			do
 			{
-				_fetchCount++;
-				directory = Path.Combine(kScratchFolder, $"fetch_{_fetchCount}");
+				directory = Path.Combine(kScratchFolder, $"fetch_{SessionService.NextCounter("fetch")}");
 			}
 			while (Directory.Exists(directory) || IsFileOrLink(directory));
 			return directory;
@@ -235,18 +348,18 @@ public class WebFetch
 			Sandbox.GiveToShellUser(file);
 		Sandbox.GiveToShellUser(directory);
 
-		return $"URL: {url}\nObjective: {objective}\nContent type: {classification}{(contentType != null ? $" ({contentType})" : string.Empty)}\n\n"
-			+ "The resource was downloaded and saved. Use read_file and bash to inspect these files, then return only what the objective asks for:\n"
+		return $"URL: {url}\n{kObjectiveLabel}{objective}{kObjectiveEnd}Content type: {classification}{(contentType != null ? $" ({contentType})" : string.Empty)}\n\n"
+			+ "The resource was downloaded and saved. Use read_file and bash to inspect these files, then call return_fetched:\n"
 			+ manifest.ToString();
 	}
 
 	// Seed for a resource over the auto-download limit: the role is told the size and how to fetch it itself.
 	private static string BuildTooBigSeed(string url, string objective, long sizeBytes)
 	{
-		return $"URL: {url}\nObjective: {objective}\n\n"
+		return $"URL: {url}\n{kObjectiveLabel}{objective}{kObjectiveEnd}"
 			+ $"This resource is {sizeBytes} bytes (over the {MaxAutoDownloadBytes}-byte auto-download limit) and was not downloaded. "
 			+ $"If the objective needs its contents, download it yourself with bash, e.g. `mkdir -p {kScratchFolder}/fetch && curl -sL '{url}' -o {kScratchFolder}/fetch/page` (or wget), then inspect it with read_file and bash. "
-			+ "Otherwise return what you can determine without it.";
+			+ "Then call return_fetched.";
 	}
 
 	// Classifies the content so the right views are built and the role knows what it is looking at. The

@@ -59,6 +59,10 @@ public class FakeLlm
 	public const string SkewedCountModelId = "fake-chaos-skewed-count";
 	public const int    PromptCountSkew    = 4000;
 
+	// The same miscount from a server that has already sent its 200: TensorFold's refusal, verbatim apart from
+	// the numbers, arrives as an error chunk inside the stream and states the prompt and the reply separately.
+	public const string StreamRefusalModelId = "fake-chaos-stream-refusal";
+
 	// Requests actually served since start. A caller that is supposed to have stopped can be checked
 	// against it — "no further requests arrived" is the only honest way to assert a loop ended.
 	private int _requestsServed;
@@ -286,6 +290,12 @@ public class FakeLlm
 			return;
 		}
 
+		if (string.Equals(requestedModel, StreamRefusalModelId, StringComparison.Ordinal) && promptTokens + PromptCountSkew + maxTokens > ContextWindow)
+		{
+			await WriteStreamRefusalAsync(context.Response, promptTokens + PromptCountSkew, maxTokens, ct);
+			return;
+		}
+
 		if (promptTokens >= ContextWindow || string.Equals(requestedModel, AlwaysFullModelId, StringComparison.Ordinal))
 		{
 			// The standard OpenAI overflow phrasing — ProtocolHelpers.IsContextOverflow matches
@@ -467,6 +477,29 @@ public class FakeLlm
 	}
 
 	// ---- Response writers ----
+
+	private static async Task WriteStreamRefusalAsync(HttpListenerResponse response, int rendered, int reply, CancellationToken ct)
+	{
+		response.StatusCode       = 200;
+		response.ContentType      = "text/event-stream";
+		response.SendChunked      = true;
+		using StreamWriter writer = new StreamWriter(response.OutputStream, new UTF8Encoding(false));
+
+		await WriteChunkAsync(writer, Chunk(new JsonObject { ["role"] = "assistant" }, null), ct);
+
+		JsonObject refusal = new JsonObject
+		{
+			["error"] = new JsonObject
+			{
+				["message"] = $"This server's maximum context length is {ContextWindow} tokens, but the rendered prompt has {rendered} tokens and requests {reply} reply tokens, which exceeds the context window. Reduce the prompt to at most {ContextWindow - reply} prompt tokens or request at most {ContextWindow - rendered} reply tokens, including chat template and thinking tokens.",
+				["type"]    = "invalid_request_error",
+				["param"]   = "messages",
+				["code"]    = "context_length_exceeded",
+			}
+		};
+		await WriteChunkAsync(writer, refusal.ToJsonString(), ct);
+		await writer.WriteAsync("data: [DONE]\n\n");
+	}
 
 	private static async Task WriteSseAsync(HttpListenerResponse response, Turn turn, int promptTokens, bool openingUsage, CancellationToken ct)
 	{

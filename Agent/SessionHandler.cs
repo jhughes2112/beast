@@ -75,6 +75,13 @@ public class SessionHandler
 	{
 		_activeSession = session;
 		_scope         = new CancellationTokenSource();
+
+		// A session still owing its reply carries on with the budget it had. One that has answered runs free.
+		if (session.OwesReply)
+		{
+			_workTurns       = session.Data.WorkTurns;
+			_budgetWarnLevel = session.Data.BudgetWarnLevel;
+		}
 	}
 
 	// Drives the session chain until shutdown. Answering the caller does not end the run — the
@@ -357,8 +364,10 @@ public class SessionHandler
 					_activeSession.QueryLog.Note($"Usage limit lifted; resumed on {service.Model.Config.Name}");
 				}
 
-				_activeSession.CommitAssistantTurn(result.Payload!);
+				// Ahead of the commit, whose save has to include it.
 				_workTurns++;
+				_activeSession.Data.WorkTurns = _workTurns;
+				_activeSession.CommitAssistantTurn(result.Payload!);
 				if (result.Payload!.Usage.PromptTokens > 0)
 					_lastInputTokens = result.Payload.Usage.PromptTokens;
 
@@ -436,7 +445,8 @@ public class SessionHandler
 		int level = used >= 0.8 ? 2 : (used >= 0.5 ? 1 : 0);
 		if (level > _budgetWarnLevel && !TailIsUserMessage())
 		{
-			_budgetWarnLevel = level;
+			_budgetWarnLevel                    = level;
+			_activeSession.Data.BudgetWarnLevel = level;
 			_activeSession.AddUserMessage(Nudges.BudgetCheck(level == 2 ? 80 : 50, _workTurns, _activeSession.MaxWorkTurns, _activeSession.TerminatorName));
 		}
 	}

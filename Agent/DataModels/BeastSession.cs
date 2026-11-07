@@ -108,6 +108,16 @@ public class BeastSession
 	[JsonPropertyName("childCounter")]
 	public int ChildCounter { get; internal set; }
 
+	// How much of its work budget this session has spent, and the last warning it was given, persisted so that
+	// a resumed session is not handed its whole budget and its warnings again.
+	[JsonInclude]
+	[JsonPropertyName("workTurns")]
+	public int WorkTurns { get; internal set; }
+
+	[JsonInclude]
+	[JsonPropertyName("budgetWarnLevel")]
+	public int BudgetWarnLevel { get; internal set; }
+
 	// Persisted termination status: Ongoing, Success, Failure, or Incomplete. Stamped when the
 	// session's reply (or failure report) is actually delivered to its caller — including callers
 	// that struck the session off after a failure — so reloaded sessions remember how they

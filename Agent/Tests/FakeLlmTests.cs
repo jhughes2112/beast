@@ -118,6 +118,16 @@ public static class FakeLlmTests
 		};
 		LlmModel skewedModel = new LlmModel(FakeLlm.SkewedCountModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), skewedConfig);
 
+		// A seventh with the same miscount, refused inside a 200 stream in TensorFold's wording.
+		ModelConfig refusalConfig = new ModelConfig
+		{
+			Id              = FakeLlm.StreamRefusalModelId,
+			Name            = "Fake Stream Refusal",
+			ContextWindow   = FakeLlm.ContextWindow,
+			MaxOutputTokens = 8192,
+		};
+		LlmModel refusalModel = new LlmModel(FakeLlm.StreamRefusalModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), refusalConfig);
+
 		LlmRegistry                  registry    = new LlmRegistry();
 		Dictionary<string, LlmModel> models      = new Dictionary<string, LlmModel>(StringComparer.OrdinalIgnoreCase);
 		models[FakeLlm.ModelId]                  = model;
@@ -140,7 +150,8 @@ public static class FakeLlmTests
 		await TestFirstRequestFitsTheWindowAsync(ctx, reserveModel, cts.Token);
 		await TestFreshSessionIsCountedFirstAsync(ctx, server, reserveModel, registry, roleService, cts.Token);
 		await TestProvisionalStatsTreatPriorTurnAsCachedAsync(ctx, lateModel, cts.Token);
-		await TestSkewedPromptCountShrinksTheAskAsync(ctx, server, skewedModel, cts.Token);
+		await TestSkewedPromptCountShrinksTheAskAsync(ctx, server,  skewedModel, cts.Token);
+		await TestSkewedPromptCountShrinksTheAskAsync(ctx, server, refusalModel, cts.Token);
 		await TestCostReachesIdleAncestorsEachRoundAsync(ctx, model, registry, roleService, cts.Token);
 
 		TestCaptureTransport transport = new TestCaptureTransport();

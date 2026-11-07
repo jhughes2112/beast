@@ -20,9 +20,11 @@ public sealed class CompactionLog
 		FilePath = filePath;
 	}
 
+	// The model reads this path in its prompt. A session ID is the same on every run and its own, whichever order
+	// conversations compact in, and a session keeps its file through retries and resumes.
 	public static string PathFor(string sessionId)
 	{
-		return Path.Combine(AgentState.CompactionLogsDir, $"{sessionId}.log");
+		return Path.Combine(AgentState.CompactionLogsDir, $"compaction_{sessionId}.log");
 	}
 
 	// Where this chunk would land if added now, so a caller can weigh the reference against the text.

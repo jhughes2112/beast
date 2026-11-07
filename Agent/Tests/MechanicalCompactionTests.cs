@@ -117,7 +117,7 @@ public static class MechanicalCompactionTests
 			ctx.Assert(cut.StartsWith("exit 1\ntool call is in file ", StringComparison.Ordinal), $"Shell: the exit code and the pointer ({cut})");
 			ctx.Assert(                     !cut.Contains("last line", StringComparison.Ordinal), "Shell: long output is gone from the conversation");
 			string chunk = ReadReference(log.FilePath, cut);
-			ctx.Assert(chunk.StartsWith("bash s1\n", StringComparison.Ordinal) && chunk.EndsWith("last line", StringComparison.Ordinal), "Shell: the pointer's lines are exactly the chunk");
+			ctx.Assert(chunk.StartsWith("bash\n", StringComparison.Ordinal) && chunk.EndsWith("last line", StringComparison.Ordinal), "Shell: the pointer's lines are exactly the chunk, under the tool's name with no call id");
 			ctx.AssertContains(chunk, longCommand, "Shell: the chunk has the whole command");
 			ctx.AssertContains(chunk,    "exit 1", "Shell: and the exit code");
 
@@ -127,7 +127,7 @@ public static class MechanicalCompactionTests
 			ctx.AssertEqual("exit 0\n/workspace", ((ToolResultMessage)rebuilt[5]).Content, "Shell: a long note alone sends nothing to the log");
 
 			string secondChunk = ReadReference(log.FilePath, kept);
-			ctx.Assert(secondChunk.StartsWith("bash s3\n", StringComparison.Ordinal) && secondChunk.EndsWith("ok", StringComparison.Ordinal), "Shell: later chunks' lines are right too");
+			ctx.Assert(secondChunk.StartsWith("bash\n", StringComparison.Ordinal) && secondChunk.EndsWith("ok", StringComparison.Ordinal), "Shell: later chunks' lines are right too");
 			ctx.AssertContains(File.ReadAllText(log.FilePath), "----------", "Shell: chunks are divided");
 
 			// A later compaction leaves a record alone: its pointer is into a log that still exists.
@@ -233,6 +233,9 @@ public static class MechanicalCompactionTests
 		ctx.Assert(Sandbox.Confine(logPath, false, false).Path != null, "Log: the model may read a compaction log");
 		ctx.Assert( Sandbox.Confine(logPath, true, false).Path == null, "Log: but never write one");
 		ctx.Assert(Sandbox.Confine(Path.Combine(AgentState.LogsDir, "some-session.log"), false, false).Path == null, "Log: the session logs stay off limits");
+
+		// The path goes in the prompt, so it comes from the session's ID alone, which repeats whatever order conversations compact in.
+		ctx.AssertEqual("compaction_1_1.log", Path.GetFileName(CompactionLog.PathFor("1_1")), "Log: named for the session's ID");
 
 		CanonicalConversation canonical = new CanonicalConversation(new List<CanonicalMessage>());
 		canonical.OnToolResult(new ToolResult("t1", "out", string.Empty, 7, 0));
@@ -606,7 +609,7 @@ public static class MechanicalCompactionTests
 			string readResult = ((ToolResultMessage)rebuilt[2]).Content;
 			ctx.Assert(readResult.StartsWith("exit 0\ntool call is in file ", StringComparison.Ordinal), $"FileRecords: a read's contents are replaced by a pointer ({readResult})");
 			string chunk = ReadReference(log.FilePath, readResult);
-			ctx.Assert(chunk.StartsWith("read_file r1\n", StringComparison.Ordinal) && chunk.EndsWith(new string('r', 2000), StringComparison.Ordinal), "FileRecords: the pointer's lines hold what was read");
+			ctx.Assert(chunk.StartsWith("read_file\n", StringComparison.Ordinal) && chunk.EndsWith(new string('r', 2000), StringComparison.Ordinal), "FileRecords: the pointer's lines hold what was read");
 
 			string writeChunk = ReadReference(log.FilePath, ((ToolResultMessage)rebuilt[4]).Content);
 			ctx.AssertContains(writeChunk,                  body, "FileRecords: the log has what was written");

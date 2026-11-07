@@ -855,6 +855,22 @@ public class Session
 	// The conversation bundle — passed to LlmService by SessionRunner so it can read/write history.
 	public ListenerBundle Bundle => _bundle;
 
+	// The message that started this session, for a job whose tool needs what it was seeded with. Empty when
+	// compaction has dropped it.
+	public string FirstUserText()
+	{
+		string text = string.Empty;
+		foreach (CanonicalMessage msg in _data.Messages)
+		{
+			if (msg is UserMessage um)
+			{
+				text = um.Text ?? string.Empty;
+				break;
+			}
+		}
+		return text;
+	}
+
 	// Sets the display name to "{Role} {first user message}", if not already set. Subagent and helper
 	// sessions set their own name at creation, so this only ever names a root agent session.
 	// Returns true if the name was newly assigned (so the caller can announce it to the client).
