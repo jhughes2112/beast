@@ -523,7 +523,8 @@ public static class PauseAndTrialTests
 		server.Enqueue(FakeReply.Call("r5", "return_to_caller", "{\"output\":\"done\",\"success\":true}"));
 		await orchestrator.RunSummarizerAsync(parent, "Explorer", "conferred", "Cite the lines.", "the goal", new List<string>(), 3, ct);
 		JsonNode conferred = server.Requests()[server.Requests().Count - 1].Body;
-		ctx.AssertEqual(7L, conferred["seed"]?.GetValue<long>() ?? -1L, "Seeded run: a model with no seed takes its caller's");
+		// Its first request has no assistant turn yet, so it carries the caller's seed as it is.
+		ctx.AssertEqual(7L, server.Requests()[0].Body["seed"]?.GetValue<long>() ?? -1L, "Seeded run: a model with no seed takes its caller's");
 		ctx.AssertContains(conferred["messages"]!.ToJsonString(), "This run is deterministically seeded", "Seeded run: and is told about the run");
 
 		BeastSession child     = new BeastSession("p_9", "p_9", "plain", "r", string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);

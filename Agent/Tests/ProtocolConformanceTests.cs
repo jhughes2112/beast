@@ -188,6 +188,16 @@ public static class ProtocolConformanceTests
 			await StepAsync(retried, ct);
 			ctx.AssertEqual(41L, server.Requests()[0].Body["seed"]?.GetValue<long>() ?? -1L, $"{api.Name} Seed: the configured value is sent");
 			ctx.AssertEqual(42L, server.Requests()[1].Body["seed"]?.GetValue<long>() ?? -1L, $"{api.Name} Seed: an empty-turn retry steps it");
+
+			// Each assistant turn already in the conversation steps it too, so no two turns share their random draws.
+			retried.Session.Bundle.OnUserMessage("again");
+			server.Enqueue(FakeReply.Say("second answer"));
+			await StepAsync(retried, ct);
+			ctx.AssertEqual(42L, server.Requests()[2].Body["seed"]?.GetValue<long>() ?? -1L, $"{api.Name} Seed: the next turn adds one per assistant turn before it");
+			retried.Session.Bundle.OnUserMessage("and again");
+			server.Enqueue(FakeReply.Say("third answer"));
+			await StepAsync(retried, ct);
+			ctx.AssertEqual(43L, server.Requests()[3].Body["seed"]?.GetValue<long>() ?? -1L, $"{api.Name} Seed: and keeps moving on");
 		}
 		else
 		{

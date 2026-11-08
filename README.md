@@ -47,6 +47,7 @@ First launch will open the config picker automatically. Use /config to get back 
 - **OpenRouter batch model** — `:batch` aren't supported, so they're filtered out now
 - **Repeatable runs** — give a model a seed and Beast removes the differences it can control, so a change you make is the only thing that changes the run. See [Repeatable runs](#repeatable-runs)
 - **Two-step `fetch_url`** — getting a page can take a different path each time, so that work no longer shapes the answer. The fetching agent can only return file paths, or name one file for a fresh agent to summarize from the goal and that file alone
+- **A seed per turn** — a seeded run adds one to the seed for each model reply already in the conversation. With one seed on every request, a run that copied one turn into its context repeated it 27 times
 - **Steadier `curl` output** — per-request headers like `age` and `cf-ray` are removed from HTTP responses in seeded runs, because they differ on every request and pushed runs apart
 - **Output ask retries** — a server that refuses a request only because Beast asked for too much output now gets a smaller ask, even if it refuses mid-stream. These used to look like a full context, which stalled small conversations
 - **`tools/probe_determinism.py`** — tests whether a chat completions endpoint gives repeatable output, and which situations break it
@@ -203,6 +204,7 @@ If a run repeats exactly, you can change one thing, a prompt, a tool, a model se
 - gives shell output that varies from run to run a fixed form, or removes it: HTTP dates and per-request headers, `ls -l` dates, and graphics context addresses
 - tells the model what has to stay the same on every run
 - keeps `fetch_url`'s answer apart from the work of fetching
+- adds one to the seed for each model reply already in the conversation, so no two turns share their random draws. One seed on every request made a copied turn come out the same again and again, and the run looped
 
 None of this helps if the inference engine itself doesn't repeat, and a seed alone doesn't prove it does. Some engines repeat a request sent alone, then give different output when another request overlaps it.
 

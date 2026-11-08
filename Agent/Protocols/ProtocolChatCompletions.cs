@@ -428,7 +428,7 @@ public class ProtocolChatCompletions
 
 				// The same seed on the same request would only reproduce the empty turn being retried.
 				if (emptyRetries > 0 && model.Config.Seed.HasValue)
-					body["seed"] = model.Config.Seed.Value + emptyRetries;
+					body["seed"] = TurnSeed(model.Config.Seed.Value, (JsonArray)body["messages"]!) + emptyRetries;
 
 				string? mediaNote = _media.TakeNote();
 				if (mediaNote != null)
@@ -642,6 +642,21 @@ httpResponse);
 		}
 	}
 
+	// A seeded run's seed moves on by one for every assistant turn already in the conversation. One seed for the whole
+	// run gave every request the same random draws, so once a turn was copied into the context the same draws chose the
+	// same tokens again, and a run repeated one turn 27 times. The count comes from the messages themselves, so two runs
+	// with the same history still send the same seeds, and a resumed session needs nothing saved.
+	internal static long TurnSeed(long seed, JsonArray messages)
+	{
+		long turns = 0;
+		foreach (JsonNode? m in messages)
+		{
+			if (m?["role"]?.GetValue<string>() == "assistant")
+				turns++;
+		}
+		return seed + turns;
+	}
+
 	private JsonObject BuildRequestBody(LlmModel model, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens)
 	{
 		JsonObject body = new JsonObject();
@@ -728,7 +743,7 @@ httpResponse);
 		}
 
 		if (model.Config.Seed.HasValue)
-			body["seed"] = model.Config.Seed.Value;
+			body["seed"] = TurnSeed(model.Config.Seed.Value, messages);
 
 		// Beyond OpenAI's own fields these are the spellings llama.cpp, vLLM and OpenRouter share.
 		ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
