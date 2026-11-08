@@ -503,14 +503,9 @@ public static class ToolSandboxTests
 				ctx.Log("    SKIP: no clockfs or fuse device, so the counted clock is untested");
 		}
 
-		// The date is a Monday, at least two weeks off, and holds still for the whole cycle.
-		long onSixth  = DateTimeOffset.Parse("2026-11-06T15:00:00Z").ToUnixTimeSeconds();
-		long onEighth = DateTimeOffset.Parse("2026-11-08T23:00:00Z").ToUnixTimeSeconds();
-		long onNinth  = DateTimeOffset.Parse("2026-11-09T01:00:00Z").ToUnixTimeSeconds();
-		ctx.AssertEqual(DateTimeOffset.Parse("2026-11-23T00:00:00Z").ToUnixTimeSeconds(), Sandbox.FileClockBase(onSixth), "File clock: the first cycle Monday two weeks away");
-		ctx.AssertEqual(Sandbox.FileClockBase(onSixth), Sandbox.FileClockBase(onEighth), "File clock: the date holds within a cycle");
-		ctx.AssertEqual(DateTimeOffset.Parse("2026-12-21T00:00:00Z").ToUnixTimeSeconds(), Sandbox.FileClockBase(onNinth), "File clock: the next cycle is four weeks on");
-		ctx.AssertEqual(DayOfWeek.Monday, DateTimeOffset.FromUnixTimeSeconds(Sandbox.FileClockBase(onNinth)).DayOfWeek, "File clock: always a Monday");
+		// The date is the constant, not the calendar: a run started on any day counts from the same midnight.
+		ctx.AssertEqual(0L, Sandbox.kFileClockBase % 86400, "File clock: the base is a midnight");
+		ctx.AssertEqual(DateTimeOffset.Parse("2026-11-23T00:00:00Z").ToUnixTimeSeconds(), Sandbox.kFileClockBase, "File clock: the base is the series' date");
 
 		string madePath = Path.Combine(root, "shell_made.txt");
 		string made     = File.Exists(madePath) ? File.ReadAllText(madePath) : "(missing)";

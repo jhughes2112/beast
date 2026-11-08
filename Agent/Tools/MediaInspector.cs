@@ -174,19 +174,30 @@ public class MediaInspector
 
 	// Writes a copy of an image whose longer edge is maxDimension, aspect ratio kept, beside the
 	// dropped attachments: the conversation refers to media by path, so the copy must outlive this
-	// call for a rehydrate to send it again. The name is fixed by the source's identity and the
-	// size asked for, so asking again reuses the copy. A JPEG stays a JPEG; anything else becomes
+	// call for a rehydrate to send it again. The name is fixed by the source's bytes, the scaling and
+	// the size asked for, so asking again reuses the copy, and the same image gets the same name on
+	// every run: never its file time, which is real for files the repo already held, so a seeded run
+	// that inspected one would see a different name each checkout. A JPEG stays a JPEG; anything else becomes
 	// a PNG (the first frame, for an animation). Returns the copy and its mime type, or null and why.
 	private static async Task<(string? Path, string MimeType, string Error)> DownscaleAsync(string source, int maxDimension, CancellationToken ct)
 	{
-		string   extension = Path.GetExtension(source).ToLowerInvariant();
-		bool     jpeg      = extension == ".jpg" || extension == ".jpeg";
-		FileInfo info      = new FileInfo(source);
-		byte[]   identity  = SHA256.HashData(Encoding.UTF8.GetBytes($"{source}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|{ScaleFlags}"));
-		string   name      = $"{Path.GetFileNameWithoutExtension(source)}-{Convert.ToHexString(identity, 0, 4).ToLowerInvariant()}-max{maxDimension}{(jpeg ? ".jpg" : ".png")}";
-		string   target    = Path.Combine(MediaIntake.EnsureStagingFolder(AgentState.Root), name);
-		string   mimeType  = jpeg ? "image/jpeg" : "image/png";
-		string   error     = string.Empty;
+		string extension = Path.GetExtension(source).ToLowerInvariant();
+		bool   jpeg      = extension == ".jpg" || extension == ".jpeg";
+		byte[] identity;
+		using (IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+		using (FileStream stream = File.OpenRead(source))
+		{
+			byte[] buffer = new byte[81920];
+			int    read;
+			while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+				hash.AppendData(buffer, 0, read);
+			hash.AppendData(Encoding.UTF8.GetBytes($"|{ScaleFlags}"));
+			identity = hash.GetHashAndReset();
+		}
+		string name     = $"{Path.GetFileNameWithoutExtension(source)}-{Convert.ToHexString(identity, 0, 4).ToLowerInvariant()}-max{maxDimension}{(jpeg ? ".jpg" : ".png")}";
+		string target   = Path.Combine(MediaIntake.EnsureStagingFolder(AgentState.Root), name);
+		string mimeType = jpeg ? "image/jpeg" : "image/png";
+		string error    = string.Empty;
 
 		if (!File.Exists(target))
 		{

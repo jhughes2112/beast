@@ -16,7 +16,7 @@ public class RoleService
 	// Bump whenever a default role's prompts or tools change. A home roles.json written by an older
 	// build is then regenerated from the new defaults — the file would otherwise shadow them forever —
 	// keeping each role's model order and any custom roles, with the old copy saved as roles.json.bak.
-	private const int RolesVersion = 23;
+	private const int RolesVersion = 24;
 
 	// Ends the system prompt of a conversation with tools while a seeded model is answering it, and only then
 	// (Session.SetSeededRun). A seeded run can only repeat if every tool result repeats, and the sandbox's
@@ -30,8 +30,9 @@ public class RoleService
 		- Time: motion and timing must be driven by a frame counter with a fixed step
 		- Randomness: every random number comes from a generator seeded with a fixed constant
 		- Screenshots: always use the `browser_screenshot` tool, which runs the page for an exact number of timesteps and saves the last frame. Other methods will be refused automatically.  If you want a specific view or state, disable camera or CSS animations and set up the view as desired, or using an explicit camera position or a URL parameter, so the tool captures it exactly
-		- Output: print only what is the same on every run.  Clock timings, file timestamps, memory addresses, durations, web searches, and so on, are going to vary from run to run, so do not use them
+		- Code: must be deterministic! Outputs must be identical if run twice.  Your investigations may not use profiling timings, wall clock time, file timestamps, memory addresses, or similar to make any decision or print any information derived from these.  Do not access them at all, or anything categorically similar.
 		- Scratch files: screenshots, downloads and temporary files go in a subfolder you create at /tmp/work
+		- Networking: never use dig, ping, traceroute or any other networking tools.  Don't even do web searches.  These will all vary their outputs run-to-run.  Do not use them.
 		""";
 
 	private readonly string _workDirRolesPath;

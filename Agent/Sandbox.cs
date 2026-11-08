@@ -45,17 +45,17 @@ public static class Sandbox
 	// folder at the first seeded round, gives every change there the counted time; libfaketime gives it
 	// to whatever the model's shell asks the clock.
 	//
-	// The date is the first Monday of a four-week cycle at least two weeks away. It stays put for the
-	// whole cycle, so runs on different days match, and sits ahead of anything already on disk, so a new
-	// file is never older than what it was made from. It stays close enough that certificates are valid.
-	private const string kFileClockPath    = "/run/beast-fileclock";
-	private const string kClockFsPath      = "/opt/agent-bins/clockfs";
-	private const string kFakeTimeLibrary  = "/opt/agent-bins/libfaketime.so.1";
-	private const string kUnfakedBinDir    = "/opt/agent-bins/unfaked";
-	private const string kFuseDevice       = "/dev/fuse";
-	private const long   kFirstCycleMonday = 345600; // 5 January 1970
-	private const long   kFileClockCycle   = 28 * 86400;
-	private const long   kFileClockLead    = 14 * 86400;
+	// The date is kFileClockBase, a constant: one taken from the calendar moved every few weeks, and a run
+	// started after the move showed the model different dates from the run it was meant to repeat. Changing
+	// it starts a new series; seeded runs only repeat runs made with the same value. Once the real date
+	// passes it, files from outside the sandbox can be newer than those made inside, and a certificate
+	// issued after it reads as not yet valid to the shell; move it forward between series if that bites.
+	public const  long   kFileClockBase   = 1795392000; // Monday 23 November 2026, 00:00 UTC
+	private const string kFileClockPath   = "/run/beast-fileclock";
+	private const string kClockFsPath     = "/opt/agent-bins/clockfs";
+	private const string kFakeTimeLibrary = "/opt/agent-bins/libfaketime.so.1";
+	private const string kUnfakedBinDir   = "/opt/agent-bins/unfaked";
+	private const string kFuseDevice      = "/dev/fuse";
 
 	// The clock's date and its tool call count, saved so a resumed session's time carries on.
 	public const string kClockBaseCounter    = "clock_base";
@@ -160,14 +160,6 @@ public static class Sandbox
 		return note;
 	}
 
-	// The date a clock started at this moment counts from. See kFileClockCycle.
-	public static long FileClockBase(long nowEpoch)
-	{
-		long earliest = nowEpoch + kFileClockLead;
-		long cycles   = (earliest - kFirstCycleMonday + kFileClockCycle - 1) / kFileClockCycle;
-		return kFirstCycleMonday + cycles * kFileClockCycle;
-	}
-
 	// Counts a round of tool calls, one minute each; parallel calls share the time the round ends on, so
 	// which of them finishes first cannot matter. The first round starts the clock: it stamps the workspace
 	// folder and its parent, whose times come from when the container started and show up as the . and ..
@@ -213,7 +205,7 @@ public static class Sandbox
 		{
 			// A resumed session carries on from its saved time, rather than starting over and running backwards.
 			long   saved   = SessionService.GetCounter(kClockBaseCounter);
-			long   start   = saved > 0 ? saved : FileClockBase(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+			long   start   = saved > 0 ? saved : kFileClockBase;
 			long   minutes = saved > 0 ? SessionService.GetCounter(kClockMinutesCounter) : 0;
 			long   stamp   = start + minutes * 60;
 			string quoted  = Root.Replace("'", "'\\''");

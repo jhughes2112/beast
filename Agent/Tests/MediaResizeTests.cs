@@ -70,18 +70,33 @@ public static class MediaResizeTests
 
 			ToolResult again = await inspector.InspectAsync("c2", new List<string> { wide }, 1000, string.Empty, false, null, registry, session, transport, 4096, CancellationToken.None);
 			ctx.Assert(again.Media.Count == 1 && again.Media[0].Path == scaled, "Resize: asking again reuses the same copy");
+
+			// The copy is named by the image's bytes, never its file time, so a seeded rerun sees the same name.
+			File.SetLastWriteTimeUtc(wide, new DateTime(2001, 2, 3, 4, 5, 6, DateTimeKind.Utc));
+			ToolResult retimed = await inspector.InspectAsync("c3", new List<string> { wide }, 1000, string.Empty, false, null, registry, session, transport, 4096, CancellationToken.None);
+			ctx.Assert(retimed.Media.Count == 1 && retimed.Media[0].Path == scaled, "Resize: a new file time alone keeps the copy's name");
+
+			string changed = string.Empty;
+			if (await MakeImageAsync(wide, 3000, 1000, "blue"))
+			{
+				ToolResult redrawn = await inspector.InspectAsync("c4", new List<string> { wide }, 1000, string.Empty, false, null, registry, session, transport, 4096, CancellationToken.None);
+				changed            = redrawn.Media.Count == 1 ? redrawn.Media[0].Path : string.Empty;
+				ctx.Assert(changed.Length > 0 && changed != scaled, "Resize: different pixels get a different copy");
+			}
 			File.Delete(scaled);
+			if (changed.Length > 0 && changed != scaled)
+				File.Delete(changed);
 		}
 	}
 
-	// A solid-color PNG of the given size, made with ffmpeg; false when ffmpeg cannot run.
-	private static async Task<bool> MakeImageAsync(string path, int width, int height)
+	// A solid-color PNG of the given size and color, made with ffmpeg; false when ffmpeg cannot run.
+	private static async Task<bool> MakeImageAsync(string path, int width, int height, string color = "red")
 	{
 		bool made = false;
 		try
 		{
 			ProcessStartInfo psi = new ProcessStartInfo { FileName = "ffmpeg", RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-			foreach (string arg in new string[] { "-v", "error", "-y", "-f", "lavfi", "-i", $"color=c=red:s={width}x{height}", "-frames:v", "1", path })
+			foreach (string arg in new string[] { "-v", "error", "-y", "-f", "lavfi", "-i", $"color=c={color}:s={width}x{height}", "-frames:v", "1", path })
 				psi.ArgumentList.Add(arg);
 			using Process process = new Process { StartInfo = psi };
 			process.Start();
