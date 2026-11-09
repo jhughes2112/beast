@@ -369,50 +369,47 @@ public static class PauseAndTrialTests
 		ctx.AssertEqual(0, (int)Reflect.GetField(free, "_workTurns")!, "Resume: one that has answered runs free");
 	}
 
-	// WebFetch answers only through return_fetched: sorted paths, or a summary a fresh session writes from the
-	// seed's goal and the one file, with none of what the role saw on the way there.
-	private static async Task TestReturnFetchedAsync(TestContext ctx, FakeProvider server, AgentOrchestrator orchestrator, Session parent, CancellationToken ct)
+	// file_subagent: the helper is seeded with the request, the file's path and size and the numbered start of the
+	// file, gets read-only tools and return_to_caller, and its answer is all the caller receives.
+	private static async Task TestFileSubagentAsync(TestContext ctx, FakeProvider server, AgentOrchestrator orchestrator, RoleService roles, Session parent, CancellationToken ct)
 	{
-		string folder = Path.Combine(Path.GetTempPath(), $"beast-fetched-{Guid.NewGuid():N}");
+		string folder = Path.Combine(Path.GetTempPath(), $"beast-filesub-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(folder);
-		string b = Path.Combine(folder, "b.txt");
-		string a = Path.Combine(folder, "a.txt");
-		File.WriteAllText(b, "the file's own words");
-		File.WriteAllText(a, "other");
-		string       seed = "URL: http://example.test/secret-url\nObjective: the original goal\n---\nContent type: text\n\nnoise from the fetch";
-		List<string> job  = new List<string> { "read_file", "bash", "return_fetched" };
-		string       Args(params string[] paths) => new JsonObject { ["file_paths"] = new JsonArray(Array.ConvertAll(paths, p => (JsonNode?)JsonValue.Create(p))) }.ToJsonString();
+		string       file  = Path.Combine(folder, "notes.txt");
+		List<string> lines = new List<string>();
+		for (int i = 1; i <= 400; i++)
+			lines.Add($"line {i} says {i * 7}");
+		File.WriteAllText(file, string.Join("\n", lines) + "\n");
+		Role            job   = roles.GetRole(FileSubagent.RoleName)!;
+		SpawnSummarizer spawn = (name, display, system, user, tools, turns, token) => orchestrator.RunSummarizerAsync(parent, name, display, system, user, tools, turns, token);
 
 		server.Reset();
 		server.Enqueue(FakeReply.Say("counted"));
-		server.Enqueue(FakeReply.Call("f1", "return_fetched", Args(b, a)));
-		(bool okList, string list, int _) = await orchestrator.RunSummarizerAsync(parent, "WebFetch", "fetch", "Extract it.", seed, job, 12, ct);
-		ctx.Assert(okList, $"Fetched: paths come back ({list})");
-		ctx.AssertEqual($"Fetched files:\n{a}\n{b}", list, "Fetched: the caller gets the paths, sorted");
-		List<string> names = ToolNames(server.Requests()[server.Requests().Count - 1].Body);
-		ctx.Assert(names.Contains("return_fetched") && !names.Contains("return_to_caller"), $"Fetched: it is the role's only way out ({string.Join(",", names)})");
+		server.Enqueue(FakeReply.Call("s1", "return_to_caller", "{\"output\":\"line 12 says 84\",\"success\":true}"));
+		ToolResult answer = await FileSubagent.AskAsync("fs1", file, "What does line 12 say?", job, spawn, ct);
+		ctx.Assert(answer.ExitCode == 0, $"FileSubagent: it answers ({answer.StdOut} {answer.StdErr})");
+		ctx.AssertEqual("line 12 says 84", answer.StdOut, "FileSubagent: the caller gets the helper's answer and nothing else");
 
-		server.Reset();
-		server.Enqueue(FakeReply.Say("counted"));
-		server.Enqueue(FakeReply.Call("f2", "return_fetched", Args()));
-		(bool okEmpty, string empty, int _) = await orchestrator.RunSummarizerAsync(parent, "WebFetch", "fetch", "Extract it.", seed, job, 12, ct);
-		ctx.Assert(!okEmpty, "Fetched: nothing downloaded is a failure");
-		ctx.AssertContains(empty, "No files could be fetched.", "Fetched: in one fixed sentence");
+		JsonNode body = server.Requests()[server.Requests().Count - 1].Body;
+		string   sent = body["messages"]!.ToJsonString();
+		ctx.AssertContains(sent, "Request: What does line 12 say?", "FileSubagent: the helper gets the request");
+		ctx.AssertContains(sent, $"File: {file} (",                 "FileSubagent: and the file's path");
+		ctx.AssertContains(sent, "400 lines",                       "FileSubagent: and its size");
+		ctx.AssertContains(sent, "lines 1-300 of 400",              "FileSubagent: and says how much of it is shown");
+		ctx.AssertContains(sent, "    12 | line 12 says 84",        "FileSubagent: numbered as in the file");
+		ctx.Assert(!sent.Contains("line 301 says", StringComparison.Ordinal), "FileSubagent: only the start is in the seed");
+		List<string> names = ToolNames(body);
+		names.Sort(StringComparer.Ordinal);
+		ctx.AssertEqual("ls,read_file,readonly_bash,return_to_caller", string.Join(",", names), "FileSubagent: it can only read, and answer");
+		ctx.AssertEqual(                        FileSubagent.MaxTurns,            job.MaxTurns, "FileSubagent: within its turn limit");
 
-		server.Reset();
-		server.Enqueue(FakeReply.Say("counted"));
-		server.Enqueue(FakeReply.Call("f3", "return_fetched", Args(Path.Combine(folder, "missing.txt"))));
-		server.Enqueue(FakeReply.Call("f4", "return_fetched", new JsonObject { ["summarize_file"] = b, ["file_paths"] = new JsonArray(JsonValue.Create(a)) }.ToJsonString()));
-		server.Enqueue(FakeReply.Call("f5", "return_fetched", new JsonObject { ["summarize_file"] = b }.ToJsonString()));
-		server.Enqueue(FakeReply.Say("counted"));
-		server.Enqueue(FakeReply.Call("f6", "return_to_caller", "{\"output\":\"the summary\",\"success\":true}"));
-		(bool okSummary, string summary, int _) = await orchestrator.RunSummarizerAsync(parent, "WebFetch", "fetch", "Extract it.", seed, job, 12, ct);
-		ctx.Assert(okSummary, $"Fetched: a summary comes back, after a missing file and both arguments are refused ({summary})");
-		ctx.AssertEqual("the summary", summary, "Fetched: the caller gets what the summarizer wrote");
-		string sent = server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString();
-		ctx.AssertContains(sent, "the original goal", "Fetched: the summarizer gets the caller's goal");
-		ctx.AssertContains(sent, "the file\\u0027s own words", "Fetched: and the file");
-		ctx.Assert(!sent.Contains("secret-url", StringComparison.Ordinal) && !sent.Contains("noise from the fetch", StringComparison.Ordinal) && !sent.Contains("b.txt", StringComparison.Ordinal), $"Fetched: and nothing else from the fetch — {sent}");
+		ToolResult empty = await FileSubagent.AskAsync("fs2", file, " ", job, spawn, ct);
+		ctx.Assert(empty.ExitCode != 0 && empty.StdErr.Contains("prompt", StringComparison.Ordinal), $"FileSubagent: an empty prompt is refused before any model runs — {empty.StdErr}");
+
+		string binary = Path.Combine(folder, "blob.bin");
+		File.WriteAllBytes(binary, new byte[] { 1, 0, 2, 0, 3 });
+		ToolResult refused = await FileSubagent.AskAsync("fs3", binary, "What is it?", job, spawn, ct);
+		ctx.Assert(refused.ExitCode != 0 && refused.StdErr.Contains("binary", StringComparison.Ordinal), $"FileSubagent: a binary file is refused — {refused.StdErr}");
 
 		Directory.Delete(folder, true);
 		server.Reset();
@@ -424,17 +421,18 @@ public static class PauseAndTrialTests
 		RoleService roles      = new RoleService(Environment.CurrentDirectory);
 		Role        summarizer = roles.Roles[ReasoningSummarizer.RoleName];
 		ctx.Assert(RoleService.IsListed(summarizer), "Summarizer: has the one model list");
-		foreach (string job in new string[] { "Explorer", "WebFetch", "WebFetchSummary", "WebSearch" })
+		foreach (string job in new string[] { FileSubagent.RoleName, "WebSearch" })
 		{
 			ctx.Assert(!RoleService.IsListed(roles.Roles[job]), $"Summarizer: {job} has no models of its own and is not listed");
 			ctx.AssertEqual(string.Join(",", summarizer.Models), string.Join(",", roles.GetRole(job)!.Models), $"Summarizer: {job} runs on its models");
 		}
 		ctx.Assert(RoleService.IsListed(roles.Roles["MediaReader"]), "Summarizer: MediaReader keeps its own list");
+		foreach (string retired in new string[] { "Explorer", "WebFetch", "WebFetchSummary" })
+			ctx.Assert(roles.GetRole(retired) == null, $"Summarizer: the retired {retired} role is gone");
 
-		ctx.AssertEqual( 3,    roles.GetRole("Explorer")!.MaxTurns, "Summarizer: Explorer gets 3 turns");
-		ctx.AssertEqual( 0, roles.GetRole("Explorer")!.Tools.Count, "Summarizer: and no tools");
-		ctx.AssertEqual(12,    roles.GetRole("WebFetch")!.MaxTurns, "Summarizer: WebFetch gets 12");
-		ctx.Assert(roles.GetRole("WebFetch")!.Tools.Contains("bash") && roles.GetRole("WebFetch")!.Tools.Contains("read_file"), "Summarizer: and bash and read_file");
+		Role fileJob = roles.GetRole(FileSubagent.RoleName)!;
+		ctx.AssertEqual(6, fileJob.MaxTurns, "Summarizer: FileSubagent gets 6 turns");
+		ctx.AssertEqual("read_file,readonly_bash,ls", string.Join(",", fileJob.Tools), "Summarizer: and only tools that read");
 
 		string searchPrompt = roles.SummarizerPrompt("WebSearch");
 		ctx.AssertContains(searchPrompt, "untrusted data",   "Summarizer: web search gets the shared hygiene");
@@ -464,7 +462,7 @@ public static class PauseAndTrialTests
 
 		server.Enqueue(FakeReply.Say("counted"));
 		server.Enqueue(FakeReply.Call("r1", "return_to_caller", "{\"output\":\"lines 1 to 2\",\"success\":true}"));
-		(bool ok, string text, int _) = await orchestrator.RunSummarizerAsync(parent, "Explorer", "explore", "Cite the lines.", "the goal and a window", new List<string>(), 3, ct);
+		(bool ok, string text, int _) = await orchestrator.RunSummarizerAsync(parent, FileSubagent.RoleName, "explore", "Cite the lines.", "the goal and a window", new List<string>(), 3, ct);
 		ctx.Assert(ok, $"Call: comes back ({text})");
 		ctx.AssertEqual("lines 1 to 2", text, "Call: with what the job returned");
 
@@ -478,13 +476,13 @@ public static class PauseAndTrialTests
 		server.Reset();
 		server.Enqueue(FakeReply.Say("counted"));
 		server.Enqueue(FakeReply.Call("r2", "return_to_caller", "{\"output\":\"done\",\"success\":true}"));
-		(bool okTools, string _, int _) = await orchestrator.RunSummarizerAsync(parent, "WebFetch", "fetch", "Extract it.", "the page", new List<string> { "read_file", "bash" }, 12, ct);
+		(bool okTools, string _, int _) = await orchestrator.RunSummarizerAsync(parent, FileSubagent.RoleName, "tools", "Work on it.", "the file", new List<string> { "read_file", "bash" }, 12, ct);
 		ctx.Assert(okTools, "Call: with tools comes back");
 		List<string> names = ToolNames(server.Requests()[server.Requests().Count - 1].Body);
 		ctx.Assert(names.Contains("read_file") && names.Contains("bash") && names.Contains("return_to_caller") && names.Count == 3, $"Call: exactly the tools asked for ({string.Join(",", names)})");
 		ctx.Assert(!server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString().Contains("This run is deterministically seeded", StringComparison.Ordinal), "Seeded run: a model with no seed is told nothing");
 
-		await TestReturnFetchedAsync(ctx, server, orchestrator, parent, ct);
+		await TestFileSubagentAsync(ctx, server, orchestrator, roles, parent, ct);
 		TestBudgetSurvivesResume(ctx, transport);
 
 		// A call that starts a child waits while it runs, and the child's total reaches the parent when it replies.
@@ -494,7 +492,7 @@ public static class PauseAndTrialTests
 		ToolClock.Current = clock;
 		server.Enqueue(FakeReply.Say("counted"));
 		server.Enqueue(FakeReply.Call("r3", "return_to_caller", "{\"output\":\"done\",\"success\":true}").WithGenerate(800));
-		(bool okTimed, string _, int _) = await orchestrator.RunSummarizerAsync(parent, "Explorer", "timed", "Cite the lines.", "the goal", new List<string>(), 3, ct);
+		(bool okTimed, string _, int _) = await orchestrator.RunSummarizerAsync(parent, FileSubagent.RoleName, "timed", "Cite the lines.", "the goal", new List<string>(), 3, ct);
 		long callWorked                 = clock.WorkedMs;
 		ToolClock.Current               = null;
 		long childWorked                = parent.WorkedMs - before;
@@ -508,7 +506,7 @@ public static class PauseAndTrialTests
 		server.Reset();
 		server.Enqueue(FakeReply.Say("counted"));
 		server.Enqueue(FakeReply.Call("r4", "return_to_caller", "{\"output\":\"done\",\"success\":true}"));
-		await orchestrator.RunSummarizerAsync(parent, "Explorer", "seeded", "Cite the lines.", "the goal", new List<string>(), 3, ct);
+		await orchestrator.RunSummarizerAsync(parent, FileSubagent.RoleName, "seeded", "Cite the lines.", "the goal", new List<string>(), 3, ct);
 		ctx.AssertContains(server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString(), "This run is deterministically seeded", "Seeded run: a seeded model is warned in its system prompt");
 		ctx.Assert(!server.Requests()[server.Requests().Count - 1].Body["messages"]!.ToJsonString().Contains("[Worktree]", StringComparison.Ordinal), "Seeded run: a subagent is not told a branch or worktree name");
 
@@ -521,7 +519,7 @@ public static class PauseAndTrialTests
 		server.Reset();
 		server.Enqueue(FakeReply.Say("counted"));
 		server.Enqueue(FakeReply.Call("r5", "return_to_caller", "{\"output\":\"done\",\"success\":true}"));
-		await orchestrator.RunSummarizerAsync(parent, "Explorer", "conferred", "Cite the lines.", "the goal", new List<string>(), 3, ct);
+		await orchestrator.RunSummarizerAsync(parent, FileSubagent.RoleName, "conferred", "Cite the lines.", "the goal", new List<string>(), 3, ct);
 		JsonNode conferred = server.Requests()[server.Requests().Count - 1].Body;
 		// Its first request has no assistant turn yet, so it carries the caller's seed as it is.
 		ctx.AssertEqual(7L, server.Requests()[0].Body["seed"]?.GetValue<long>() ?? -1L, "Seeded run: a model with no seed takes its caller's");

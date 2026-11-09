@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -7,54 +8,30 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-// Fetches a web resource and lets the WebFetch role interpret it. Rather than stripping the page and feeding the
-// result back (which mangles non-HTML content and floods the context on large pages), the resource is treated
-// like a file: it is downloaded to /tmp/work, classified, and offered to the WebFetch role as a set of files — the raw
-// bytes plus, for HTML, a stripped-text view and a tag-skeleton view. The WebFetch role is given read_file and bash
-// so it can inspect, parse, or grep those files and returns only what the objective asks for. Resources over
-// the auto-download limit are not fetched here; the WebFetch role is told the size and can download them itself.
+// Backs the fetch_url tool, and does nothing a curl and a few converters would not: it downloads the resource
+// into a numbered folder under /tmp/work, makes readable views of it in code (an HTML page's text and its tag
+// outline, a PDF's text, a binary file's type), and lists what it saved. No model reads anything here; the
+// caller opens the files itself with read_file or readonly_bash, or asks file_subagent about one.
 public class WebFetch
 {
 	private static readonly HttpClient SharedHttpClient = new();
-	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(30);
+	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(120);
 
-	// Resources larger than this are not auto-downloaded: the WebFetch role is told the size and can fetch them
-	// itself with curl/wget via bash if the objective actually needs them.
-	private const long MaxAutoDownloadBytes = 1_048_576;
+	// Anything bigger is refused rather than held in memory; the caller can still curl it in bash.
+	private const long MaxDownloadBytes = 50L * 1024 * 1024;
 
 	// Where fetched files go: the scratch folder a seeded run's prompt sends the model to.
 	private const string kScratchFolder = "/tmp/work";
 
-	// Closes the objective in a seed, so return_fetched can hand the summarizer the caller's goal word for word.
-	private const string kObjectiveLabel = "Objective: ";
-	private const string kObjectiveEnd   = "\n---\n";
-
-	// The window of a file the summarizer reads, as much as the Explorer gets.
-	private const int SummaryMaxLines = 2000;
-
 	private static readonly object kFolderGate = new();
 
-	// Fetches the resource and interprets it with the WebFetch role: a child session is seeded with the URL,
-	// the objective, and the paths of the saved files, then answers through return_fetched with file paths or
-	// the summary of one file. Cost rolls up into the calling session.
-	// The caller resolves the WebFetch job from live config at each call, so a reload
-	// mid-cluster is honored at the handoff.
-	public async Task<ToolResult> FetchRawAsync(
-		string            toolCallId,
-		string            url,
-		string            objective,
-		Role              job,
-		SpawnSummarizer   spawn,
-		CancellationToken cancellationToken)
+	public static async Task<ToolResult> FetchAsync(string toolCallId, string url, CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(url))
 			return new ToolResult(toolCallId, string.Empty, "Error: URL cannot be empty.", 1, 0);
 
-		if (string.IsNullOrWhiteSpace(objective))
-			return new ToolResult(toolCallId, string.Empty, "Error: objective cannot be empty.", 1, 0);
-
-		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
-			return new ToolResult(toolCallId, string.Empty, "Error: Invalid URL format: " + url, 1, 0);
+		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+			return new ToolResult(toolCallId, string.Empty, "Error: not an http or https URL: " + url, 1, 0);
 
 		string directory = ReserveFolder();
 		try
@@ -63,163 +40,123 @@ public class WebFetch
 			cts.CancelAfter(DefaultTimeout);
 
 			// Read only the headers first so the size can be checked before any body is pulled.
-			HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+			using HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 			if (!response.IsSuccessStatusCode)
-				return new ToolResult(toolCallId, string.Empty, "Error: HTTP " + (int)response.StatusCode + " " + response.ReasonPhrase, 1, 0);
+				return new ToolResult(toolCallId, string.Empty, $"Error: HTTP {(int)response.StatusCode} {response.ReasonPhrase} from {url}", 1, 0);
 
-			string? contentType    = response.Content.Headers.ContentType?.MediaType;
-			long?   declaredLength = response.Content.Headers.ContentLength;
+			long? declared               = response.Content.Headers.ContentLength;
+			(byte[]? bytes, bool tooBig) = declared > MaxDownloadBytes ? (null, true) : await ReadCappedAsync(response, cts.Token);
+			if (tooBig)
+				return new ToolResult(toolCallId, string.Empty, $"Error: {url} is over {MaxDownloadBytes / (1024 * 1024)} MB, so it was not downloaded. If you need it, download it with curl in bash.", 1, 0);
 
-			string seed;
-			if (declaredLength.HasValue && declaredLength.Value > MaxAutoDownloadBytes)
-			{
-				// Known to be too big from the header alone: do not download it here.
-				seed = BuildTooBigSeed(url, objective, declaredLength.Value);
-			}
-			else
-			{
-				// Stream the body but stop if it crosses the cap (the length may be unknown up front).
-				(byte[]? bytes, bool tooBig) = await ReadCappedAsync(response, cts.Token);
-				if (tooBig)
-					seed = BuildTooBigSeed(url, objective, declaredLength ?? (MaxAutoDownloadBytes + 1));
-				else
-				{
-					// The server's Content-Disposition filename, when present, is the authoritative name
-					// for the resource — prefer it over the URL segment so the raw file keeps its real name.
-					string? suggestedName = response.Content.Headers.ContentDisposition?.FileNameStar
-						?? response.Content.Headers.ContentDisposition?.FileName;
-					seed = BuildFilesSeed(directory, url, objective, contentType, bytes!, suggestedName);
-				}
-			}
+			// The server's Content-Disposition filename, when present, is the resource's real name.
+			string? contentType   = response.Content.Headers.ContentType?.MediaType;
+			string? suggestedName = response.Content.Headers.ContentDisposition?.FileNameStar ?? response.Content.Headers.ContentDisposition?.FileName;
+			string  landed        = response.RequestMessage?.RequestUri?.AbsoluteUri ?? url;
+			string  redirect      = landed != uri.AbsoluteUri ? $", redirected to {landed}" : string.Empty;
 
-			(bool ok, string answer, int tokens) = await spawn(job.Name, $"fetch_url {url}", job.SystemPrompt, seed, job.Tools, job.MaxTurns, cancellationToken);
-			if (!ok)
-			{
-				string detail = string.IsNullOrEmpty(answer) ? "no reason reported" : answer;
-				return new ToolResult(toolCallId, string.Empty, $"Error: the WebFetch role failed to interpret {url}: {detail}", 1, 0);
-			}
-
-			return new ToolResult(toolCallId, answer, string.Empty, 0, Math.Max(1, tokens));
+			string listing = await SaveFilesAsync(directory, landed, contentType, bytes!, suggestedName, cts.Token);
+			string summary = $"Downloaded {url}{redirect}: HTTP {(int)response.StatusCode}, {contentType ?? "no content type"}, {Count(bytes!.Length)} bytes. Saved in {directory}:\n{listing}"
+				+ "Open them with read_file, search them with readonly_bash, or ask file_subagent about one.";
+			return new ToolResult(toolCallId, summary, string.Empty, 0, 0);
 		}
-		catch (OperationCanceledException)
+		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Request timed out or cancelled for URL: " + url, 1, 0);
+			return new ToolResult(toolCallId, string.Empty, $"Error: {url} did not finish downloading within {DefaultTimeout.TotalSeconds} seconds.", 1, 0);
 		}
 		catch (HttpRequestException ex)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Network error fetching URL " + url + ": " + Describe(ex), 1, 0);
+			return new ToolResult(toolCallId, string.Empty, $"Error: could not download {url}: {Describe(ex)}", 1, 0);
 		}
-		catch (Exception ex)
+		catch (Exception ex) when (ex is not OperationCanceledException)
 		{
-			return new ToolResult(toolCallId, string.Empty, "Error: Failed to fetch URL " + url + ": " + Describe(ex), 1, 0);
+			return new ToolResult(toolCallId, string.Empty, $"Error: could not save {url}: {Describe(ex)}", 1, 0);
 		}
 	}
 
-	// The WebFetch role's only way to answer. The role's context varies with how the fetch went, so none of it
-	// is passed on: the caller gets sorted file paths, or a summary a fresh session writes from the seed's goal
-	// and the one file. A bad argument comes back as an error and the role keeps working.
-	public static async Task<ToolResult> ReturnFetchedAsync(
-		string               toolCallId,
-		List<string>         filePaths,
-		string               summarizeFile,
-		string               seed,
-		Role                 summaryJob,
-		SpawnSummarizer      spawn,
-		Action<bool, string> onTerminate,
-		CancellationToken    cancellationToken)
+	// Saves the bytes and the views made from them, and lists each saved file with its size and what it is for.
+	// The folder goes to the shell user, so the caller's shell can write its own extractions beside them.
+	private static async Task<string> SaveFilesAsync(string directory, string url, string? contentType, byte[] bytes, string? suggestedName, CancellationToken ct)
 	{
-		bool   summarize = !string.IsNullOrWhiteSpace(summarizeFile);
-		string answer    = string.Empty;
-		bool   success   = true;
-		string error     = string.Empty;
-
-		if (summarize && filePaths.Count > 0)
+		StringBuilder listing = new StringBuilder(SaveFiles(directory, url, contentType, bytes, suggestedName));
+		string        kind    = ClassifyContent(contentType, url, bytes);
+		string        rawPath = Path.Combine(directory, FileNameFor(url, kind, suggestedName));
+		if (kind == "pdf")
 		{
-			error = "Error: give file_paths or summarize_file, not both.";
+			string     textPath  = Path.Combine(directory, "text.txt");
+			ToolResult extracted = await ShellTools.AgentBashAsync("fetch_pdf", $"pdftotext -layout {Quote(rawPath)} {Quote(textPath)}", 60, ct);
+			listing.Append(extracted.ExitCode == 0 && File.Exists(textPath)
+				? Entry(textPath, File.ReadAllBytes(textPath), "the PDF's text, from pdftotext -layout")
+				: $"- pdftotext could not read the PDF: {(extracted.StdErr + extracted.StdOut).Trim()}\n");
 		}
-		else if (summarize)
+		else if (kind == "binary")
 		{
-			(success, answer, error) = await SummarizeFileAsync(toolCallId, summarizeFile, seed, summaryJob, spawn, cancellationToken);
-		}
-		else
-		{
-			(answer, error) = ListFiles(filePaths);
-			success         = filePaths.Count > 0;
+			ToolResult type = await ShellTools.AgentBashAsync("fetch_type", $"file -b {Quote(rawPath)}", 30, ct);
+			listing.Append($"- It is binary ({type.StdOut.Trim()}). Extract it with bash before reading: unzip or 7z for archives, tar for tarballs, pandoc for documents.\n");
 		}
 
-		ToolResult result;
-		if (error.Length > 0)
-		{
-			result = new ToolResult(toolCallId, string.Empty, error, 1, 0);
-		}
-		else
-		{
-			onTerminate(success, answer);
-			const string ack = "Returned to caller.";
-			result           = new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack));
-		}
-		return result;
+		GiveToShellUser(directory);
+		return listing.ToString();
 	}
 
-	// The paths the caller receives, resolved and sorted so the order the role found them in does not show.
-	private static (string answer, string error) ListFiles(List<string> filePaths)
+	private static void GiveToShellUser(string directory)
 	{
-		string answer = "No files could be fetched.";
-		string error  = string.Empty;
-		if (filePaths.Count > 0)
+		foreach (string file in Directory.GetFiles(directory))
+			Sandbox.GiveToShellUser(file);
+		Sandbox.GiveToShellUser(directory);
+	}
+
+	// The part of saving that needs no other program: the exact bytes, and for HTML its text and its tag outline.
+	private static string SaveFiles(string directory, string url, string? contentType, byte[] bytes, string? suggestedName)
+	{
+		string kind = ClassifyContent(contentType, url, bytes);
+		PrepareFolder(directory);
+
+		StringBuilder listing = new StringBuilder();
+		string        rawPath = Path.Combine(directory, FileNameFor(url, kind, suggestedName));
+		File.WriteAllBytes(rawPath, bytes);
+		listing.Append(Entry(rawPath, kind == "binary" || kind == "pdf" ? null : bytes, "the exact bytes as downloaded", bytes.Length));
+
+		if (kind == "html")
 		{
-			List<string> resolved = new List<string>();
-			foreach (string path in filePaths)
-			{
-				(string? confined, string denied) = Sandbox.Confine(path, false, false);
-				if (confined == null)
-					error = denied;
-				else if (!File.Exists(confined))
-					error = $"Error: there is no file at {path}.";
-				else if (!resolved.Contains(confined))
-					resolved.Add(confined);
-			}
-			resolved.Sort(StringComparer.Ordinal);
-			answer = $"Fetched files:\n{string.Join("\n", resolved)}";
+			string html = Encoding.UTF8.GetString(bytes);
+
+			string textPath = Path.Combine(directory, "text.txt");
+			File.WriteAllText(textPath, WrapAtWhitespace(StripHtmlTags(html)));
+			listing.Append(Entry(textPath, File.ReadAllBytes(textPath), $"the page's text: tags, scripts and styles removed, entities decoded, wrapped at {MaxLineLength} characters"));
+
+			string outlinePath = Path.Combine(directory, "outline.html");
+			File.WriteAllText(outlinePath, BuildHtmlStructure(html));
+			listing.Append(Entry(outlinePath, File.ReadAllBytes(outlinePath), "the page's tags with the text removed, one per line, for finding a section"));
 		}
-		return (answer, error);
+		GiveToShellUser(directory);
+		return listing.ToString();
 	}
 
-	// The seed holds nothing but the caller's goal and the content: not the URL, the file's name or anything
-	// the role chose, since any of those could differ between runs that fetched the same thing.
-	private static async Task<(bool success, string answer, string error)> SummarizeFileAsync(
-		string            toolCallId,
-		string            path,
-		string            seed,
-		Role              job,
-		SpawnSummarizer   spawn,
-		CancellationToken cancellationToken)
+	// One line of the listing: the path, its size, its line count when it is text, and what it is.
+	private static string Entry(string path, byte[]? text, string what, long size = -1)
 	{
-		ToolResult read = await FileTools.ReadFileAsync(toolCallId, path, string.Empty, string.Empty, SummaryMaxLines, false, cancellationToken);
-		if (read.ExitCode != 0)
-			return (false, string.Empty, read.StdErr);
-		if (read.StdOut.Contains('\0'))
-			return (false, string.Empty, $"Error: {path} is binary. Extract its text to a file first, and name that file.");
-
-		string goal                     = GoalFromSeed(seed);
-		(bool ok, string answer, int _) = await spawn(job.Name, $"summarize {Path.GetFileName(path)}", job.SystemPrompt, $"Goal: {goal}\n\nFile content:\n{read.StdOut}", job.Tools, job.MaxTurns, cancellationToken);
-		if (!ok)
-			return (false, string.Empty, $"Error: the summary failed: {(string.IsNullOrEmpty(answer) ? "no reason reported" : answer)}");
-
-		return (true, answer, string.Empty);
+		long   bytes = size >= 0 ? size : text?.Length ?? 0;
+		string lines = text != null ? $", {Count(CountLines(text))} lines" : string.Empty;
+		return $"- {path}  ({Count(bytes)} bytes{lines}): {what}\n";
 	}
 
-	// The objective between its label and the end marker. The last marker, since an objective can hold the
-	// same text and nothing after it comes from the caller. Compaction can drop the seed; the file still answers.
-	private static string GoalFromSeed(string seed)
+	private static int CountLines(byte[] text)
 	{
-		int    start = seed.IndexOf(kObjectiveLabel, StringComparison.Ordinal);
-		int    end   = seed.LastIndexOf(kObjectiveEnd, StringComparison.Ordinal);
-		string goal  = "Report what this file contains.";
-		if (start >= 0 && end >= start + kObjectiveLabel.Length)
-			goal = seed.Substring(start + kObjectiveLabel.Length, end - start - kObjectiveLabel.Length);
-		return goal;
+		int count = 0;
+		foreach (byte b in text)
+		{
+			if (b == (byte)'\n')
+				count++;
+		}
+		if (text.Length > 0 && text[^1] != (byte)'\n')
+			count++;
+		return count;
 	}
+
+	private static string Count(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
+
+	private static string Quote(string path) => "'" + path.Replace("'", "'\\''") + "'";
 
 	// A one-line reason for a failed fetch. The full exception carries a dozen frames of HttpClient
 	// plumbing that say nothing about why the URL failed — a DNS miss or a refused connection reads
@@ -236,7 +173,7 @@ public class WebFetch
 		return $"{ex.Message} ({innermost.Message})";
 	}
 
-	// Reads the response body into memory, abandoning it the moment it crosses MaxAutoDownloadBytes so an
+	// Reads the response body into memory, abandoning it the moment it crosses MaxDownloadBytes so an
 	// unbounded resource can never be pulled in full. Returns the bytes when within the cap, or tooBig=true.
 	private static async Task<(byte[]? bytes, bool tooBig)> ReadCappedAsync(HttpResponseMessage response, CancellationToken cancellationToken)
 	{
@@ -249,7 +186,7 @@ public class WebFetch
 		while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
 		{
 			total += read;
-			if (total > MaxAutoDownloadBytes)
+			if (total > MaxDownloadBytes)
 				return (null, true);
 			buffer.Write(chunk, 0, read);
 		}
@@ -257,8 +194,8 @@ public class WebFetch
 		return (buffer.ToArray(), false);
 	}
 
-	// Picks the next numbered folder for a fetch. The path goes into the WebFetch role's request, and a seeded run
-	// must send the same request, so calls take their numbers in the order they start, before any download. The count
+	// Picks the next numbered folder for a fetch. The path is in the tool's result, and a seeded run must see the
+	// same result, so calls take their numbers in the order they start, before any download. The count
 	// is saved, so a resumed session carries on. Numbers already on disk are skipped: a session from before it was
 	// saved starts at 1 again, and earlier files may be in use.
 	private static string ReserveFolder()
@@ -300,69 +237,7 @@ public class WebFetch
 		Directory.CreateDirectory(directory);
 	}
 
-	// Saves the downloaded resource to its reserved folder and builds the seed the WebFetch role reads: the raw bytes
-	// always, plus a stripped-text view and a tag-skeleton view when the content is HTML. The seed lists each saved
-	// file with its size and what it is good for, so the role can read the right one. The finished folder goes to
-	// the shell user, because the role's shell writes extracted text beside the raw file.
-	private static string BuildFilesSeed(string directory, string url, string objective, string? contentType, byte[] bytes, string? suggestedName)
-	{
-		string classification = ClassifyContent(contentType, url, bytes);
-		PrepareFolder(directory);
-
-		StringBuilder manifest = new StringBuilder();
-
-		string rawName = FileNameFor(url, classification, suggestedName);
-		string rawPath = Path.Combine(directory, rawName);
-		File.WriteAllBytes(rawPath, bytes);
-		manifest.Append($"- {rawPath}  ({bytes.Length} bytes) — \"{rawName}\", the exact bytes as fetched\n");
-
-		if (classification == "html")
-		{
-			string html = Encoding.UTF8.GetString(bytes);
-
-			string stripped     = WrapAtWhitespace(StripHtmlTags(html));
-			string strippedPath = Path.Combine(directory, "stripped.txt");
-			File.WriteAllText(strippedPath, stripped);
-			manifest.Append($"- {strippedPath}  ({stripped.Length} chars) — tags removed, entities decoded, whitespace collapsed; best for reading prose\n");
-
-			string structure     = BuildHtmlStructure(html);
-			string structurePath = Path.Combine(directory, "structure.html");
-			File.WriteAllText(structurePath, structure);
-			manifest.Append($"- {structurePath}  ({structure.Length} chars) — tag skeleton with text removed; best for understanding layout or locating a section\n");
-		}
-		else if (classification == "pdf")
-		{
-			// PDFs are binary — read_file on the raw bytes is useless. Extract a readable text view with
-			// pdftotext (poppler-utils, installed in the image). -layout keeps columns/tables roughly intact.
-			string textPath = Path.Combine(directory, "extracted.txt");
-			manifest.Append($"- {textPath} — readable text extracted from the PDF. It does not exist yet; create it first by running `pdftotext -layout \"{rawPath}\" \"{textPath}\"` with bash, then read it.\n");
-		}
-		else if (classification == "binary")
-		{
-			// Binary payload (archive, image, office doc): read_file shows only garbage. Identify it and
-			// extract with the matching tool — all installed in the image — then read the extracted text.
-			manifest.Append($"- The raw file is binary. Run `file \"{rawPath}\"` to identify it, then extract with the matching tool before reading: unzip/7z for archives, tar for tarballs, pandoc for documents (docx/odt/rtf/epub), pdftotext for PDFs. Reading the raw bytes directly will not work.\n");
-		}
-
-		foreach (string file in Directory.GetFiles(directory))
-			Sandbox.GiveToShellUser(file);
-		Sandbox.GiveToShellUser(directory);
-
-		return $"URL: {url}\n{kObjectiveLabel}{objective}{kObjectiveEnd}Content type: {classification}{(contentType != null ? $" ({contentType})" : string.Empty)}\n\n"
-			+ "The resource was downloaded and saved. Use read_file and bash to inspect these files, then call return_fetched:\n"
-			+ manifest.ToString();
-	}
-
-	// Seed for a resource over the auto-download limit: the role is told the size and how to fetch it itself.
-	private static string BuildTooBigSeed(string url, string objective, long sizeBytes)
-	{
-		return $"URL: {url}\n{kObjectiveLabel}{objective}{kObjectiveEnd}"
-			+ $"This resource is {sizeBytes} bytes (over the {MaxAutoDownloadBytes}-byte auto-download limit) and was not downloaded. "
-			+ $"If the objective needs its contents, download it yourself with bash, e.g. `mkdir -p {kScratchFolder}/fetch && curl -sL '{url}' -o {kScratchFolder}/fetch/page` (or wget), then inspect it with read_file and bash. "
-			+ "Then call return_fetched.";
-	}
-
-	// Classifies the content so the right views are built and the role knows what it is looking at. The
+	// Classifies the content so the right views are built and the caller knows what it is looking at. The
 	// declared content type wins; failing that the URL extension; failing that a sniff of the leading bytes.
 	private static string ClassifyContent(string? contentType, string url, byte[] bytes)
 	{
@@ -402,8 +277,8 @@ public class WebFetch
 			return "pdf";
 
 		// A NUL byte in the leading window means the payload is not text (archive, image, office doc):
-		// it must be classified as binary so the role is steered to `file` and an extractor rather than
-		// told to read_file raw bytes. Checked before the text sniff, which would otherwise misread it.
+		// it must be classified as binary so it gets `file`'s description and a note to extract it rather than
+		// being read as text. Checked before the text sniff, which would otherwise misread it.
 		if (LooksBinary(bytes))
 			return "binary";
 
@@ -431,7 +306,7 @@ public class WebFetch
 		return false;
 	}
 
-	// Names the raw file after the resource's own filename so the role sees what the thing is actually
+	// Names the raw file after the resource's own filename so the caller sees what the thing is actually
 	// called, not a generic "raw". Prefers the server's Content-Disposition name, then the URL's last path
 	// segment. A name that already carries an extension is kept verbatim — we retain the original name as
 	// fetched; only when there is no usable name or extension is one synthesized from the classification.
@@ -479,7 +354,7 @@ public class WebFetch
 		return string.Empty;
 	}
 
-	// File extension for the raw view, matching the classification so on-disk tooling (and the role) can tell
+	// File extension for the raw view, matching the classification so on-disk tooling (and the caller) can tell
 	// what it is. Unknown content keeps a neutral extension.
 	private static string ExtensionFor(string classification)
 	{

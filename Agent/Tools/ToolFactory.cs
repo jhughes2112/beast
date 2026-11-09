@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 // Builds all tools for a given role in one call. Every parameter is used by at least one tool;
 // parameters for tools not in role.Tools are never called and may be null.
-// Helper-role availability (Explorer, WebFetch) is checked upfront to decide which tools exist; a
+// Helper-role availability (FileSubagent) is checked upfront to decide which tools exist; a
 // tool is silently omitted if its helper role or service is unavailable. Nothing a handler hands
 // off to is captured here: roles, providers, and models are looked up when the handler runs, since
 // a toolset lives for a whole turn cluster and a /config or /role reload must apply at the next
@@ -45,10 +45,8 @@ public static class ToolFactory
 		// Check helper-role availability upfront. A tool is omitted when its role is unconfigured or no
 		// model is available. GetModelForRole is a lightweight availability check — the job itself is
 		// resolved again by name when the tool hands it to the Summarizer, which creates its LlmService.
-		Role? explorerRole  = roleService?.GetRole("Explorer");
-		bool  explorerReady = explorerRole != null && registry?.GetModelForRole(explorerRole, string.Empty, 0) != null;
-		Role? webFetchRole  = roleService?.GetRole("WebFetch");
-		bool  webFetchReady = webFetchRole != null && registry?.GetModelForRole(webFetchRole, string.Empty, 0) != null;
+		Role? fileSubagentRole  = roleService?.GetRole(FileSubagent.RoleName);
+		bool  fileSubagentReady = fileSubagentRole != null && registry?.GetModelForRole(fileSubagentRole, string.Empty, 0) != null;
 
 		if (role.Tools.Contains("bash"))
 		{
@@ -183,60 +181,27 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("find_relevant_file_sections") && explorerReady && spawnSummarizer != null)
+		if (role.Tools.Contains("file_subagent") && fileSubagentReady && spawnSummarizer != null)
 		{
-			ToolConfig     tc         = toolConfigs["find_relevant_file_sections"];
-			FileSummarizer summarizer = new FileSummarizer();
-			tools.Add(new Tool
-			{
-				Definition = new ToolDefinition
-				{
-					Type     = "function",
-					Function = new FunctionDefinition
-					{
-						Name        = "find_relevant_file_sections",
-						Description = tc.Description,
-						Parameters  = Params(
-							Req("file_path", "string",  tc.Parameters["file_path"]),
-							Req("goal",      "string",       tc.Parameters["goal"]),
-							Opt("offset",    "integer",    tc.Parameters["offset"]))
-					}
-				},
-				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+			ToolConfig tc = toolConfigs["file_subagent"];
+			Register(tools, "file_subagent", tc.Description, Params(Req("file_path", "string", tc.Parameters["file_path"]), Req("prompt", "string", tc.Parameters["prompt"])),
+				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string filePath = Str(args, "file_path");
-					string goal     = Str(args, "goal");
-					string offset   = Str(args, "offset");
-					return await summarizer.SummarizeAsync(toolCallId, filePath, offset, goal, roleService!.GetRole("Explorer") ?? explorerRole!, spawnSummarizer, maxOutputTokens, ct);
-				}
-			});
+					string prompt   = Str(args, "prompt");
+					return await FileSubagent.AskAsync(toolCallId, filePath, prompt, roleService!.GetRole(FileSubagent.RoleName) ?? fileSubagentRole!, spawnSummarizer, ct);
+				});
 		}
 
-		if (role.Tools.Contains("fetch_url") && webFetchReady && spawnSummarizer != null)
+		if (role.Tools.Contains("fetch_url"))
 		{
-			ToolConfig tc       = toolConfigs["fetch_url"];
-			WebFetch   webFetch = new WebFetch();
-			tools.Add(new Tool
-			{
-				Definition = new ToolDefinition
+			ToolConfig tc = toolConfigs["fetch_url"];
+			Register(tools, "fetch_url", tc.Description, Params(Req("url", "string", tc.Parameters["url"])),
+				async (args, toolCallId, ct, transport, sessionId) =>
 				{
-					Type     = "function",
-					Function = new FunctionDefinition
-					{
-						Name        = "fetch_url",
-						Description = tc.Description,
-						Parameters  = Params(
-							Req("url",  "string",  tc.Parameters["url"]),
-							Req("goal", "string", tc.Parameters["goal"]))
-					}
-				},
-				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
-				{
-					string url  = Str(args, "url");
-					string goal = Str(args, "goal");
-					return await webFetch.FetchRawAsync(toolCallId, url, goal, roleService!.GetRole("WebFetch") ?? webFetchRole!, spawnSummarizer, ct);
-				}
-			});
+					string url = Str(args, "url");
+					return await WebFetch.FetchAsync(toolCallId, url, ct);
+				});
 		}
 
 		// The native path needs only the session's own model, so the tool is exposed whenever the
@@ -515,30 +480,6 @@ public static class ToolFactory
 					onTerminate(approved.Value, comments);
 					string ack = approved.Value ? "Review approved." : "Review rejected.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
-				}
-			});
-		}
-		else if (role.Tools.Contains("return_fetched") && onTerminate != null)
-		{
-			ToolConfig tc = toolConfigs["return_fetched"];
-			tools.Add(new Tool
-			{
-				Definition = new ToolDefinition
-				{
-					Type     = "function",
-					Function = new FunctionDefinition
-					{
-						Name        = "return_fetched",
-						Description = tc.Description,
-						Parameters  = Params(
-							OptArray("file_paths", "string", tc.Parameters["file_paths"]),
-							Opt("summarize_file", "string", tc.Parameters["summarize_file"]))
-					}
-				},
-				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
-				{
-					string firstMessage = session?.FirstUserText() ?? string.Empty;
-					return await WebFetch.ReturnFetchedAsync(toolCallId, StrArray(args, "file_paths"), Str(args, "summarize_file"), firstMessage, roleService!.GetRole("WebFetchSummary")!, spawnSummarizer!, onTerminate, ct);
 				}
 			});
 		}

@@ -254,8 +254,10 @@ public class DisplayScreen : IDisplay
 	private int _scrollbarHeight    = 0;
 	private int _scrollbarMaxOffset = 0;
 
-	private int  _hoverSlot          = -1;
-	private long _scrollbarShowUntil = 0;
+	private int _hoverSlot = -1;
+	// An event read while catching up on mouse moves, handled on the next pass of the input loop.
+	private ConsoleInputEvent? _stashedInput;
+	private long               _scrollbarShowUntil = 0;
 
 	// A click-toggle (collapse/expand) requests that the toggled block stay pinned under the cursor through
 	// the height change rather than letting the view jump. -1 means no pending request; _pendingToggleRow is
@@ -1838,13 +1840,31 @@ public class DisplayScreen : IDisplay
 				pollTimeout    = animating ? 16 : 32;
 			}
 
-			ConsoleInputEvent? evOpt = Platform.Current.ReadInput(pollTimeout);
+			ConsoleInputEvent? evOpt = _stashedInput ?? Platform.Current.ReadInput(pollTimeout);
+			_stashedInput            = null;
 			if (evOpt == null)
 				continue;
 			ConsoleInputEvent inputEv = evOpt.Value;
 
 			if (inputEv.Type == InputEventType.MouseMove)
 			{
+				// The terminal reports a move for every cell the pointer crosses, faster than a frame can be
+				// drawn, so drawing each one let a backlog build and the highlight trail the pointer. Only the
+				// newest position matters: take every move already waiting, and keep any other event for the
+				// next pass so clicks and keys still arrive in order.
+				while (true)
+				{
+					ConsoleInputEvent? next = Platform.Current.ReadInput(0);
+					if (next == null)
+						break;
+					if (next.Value.Type != InputEventType.MouseMove)
+					{
+						_stashedInput = next;
+						break;
+					}
+					inputEv = next.Value;
+				}
+
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;

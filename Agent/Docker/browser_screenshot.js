@@ -24,6 +24,8 @@ const kStartEpochMs = 1700000000000;  // what the page's clock reads as the date
 const kTotalMs      = 170000;
 const kBeginOffset  = 3600000;        // frame times must lie after the page's real start, whenever that was
 const kMaxNotes     = 20;
+const kMaxNoteChars = 2000;           // one console message, at most
+const kShaderLines  = 4;              // source lines kept either side of a line a shader error names
 
 // Runs in the page before any of its scripts.
 function prepare(startEpochMs, stepMs)
@@ -349,13 +351,49 @@ async function connect(address, onEvent)
 	};
 }
 
+// One console message or error, cut down to what the model can use. A shader that fails to compile makes
+// three.js log the whole shader with numbered lines, tens of thousands of characters: keep the lines that are
+// not source (the errors themselves) and the few source lines around each line an error names. Anything still
+// over kMaxNoteChars is cut there.
+function trimNote(text)
+{
+	const lines  = text.replace(/\u0000/g, '').split('\n');
+	const marked = [...text.matchAll(/ERROR: \d+:(\d+):/g)].map(match => Number(match[1]));
+	if (marked.length > 0 && lines.length > 2 * kShaderLines + 10)
+	{
+		const kept = [];
+		let   gap  = false;
+		for (const line of lines)
+		{
+			const numbered = line.match(/^(\d+): /);
+			if (!numbered || marked.some(at => Math.abs(at - Number(numbered[1])) <= kShaderLines))
+			{
+				if (gap)
+					kept.push('...');
+				kept.push(line);
+				gap = false;
+			}
+			else
+			{
+				gap = true;
+			}
+		}
+		if (gap)
+			kept.push('...');
+		text = kept.join('\n');
+	}
+	if (text.length > kMaxNoteChars)
+		text = `${text.slice(0, kMaxNoteChars)}... (${text.length - kMaxNoteChars} more characters cut)`;
+	return text;
+}
+
 async function capture(args, address)
 {
 	const notes = [];
 	const note  = text =>
 	{
 		if (notes.length < kMaxNotes && !text.includes('GL Driver Message'))
-			notes.push(text);
+			notes.push(trimNote(text));
 	};
 	const requests = new Map();
 	const contexts = new Set();  // the page's frames, each with its own clock
@@ -385,6 +423,11 @@ async function capture(args, address)
 	const { targetId }  = await client.send('Target.createTarget', { url: 'about:blank', width: args.width, height: args.height, enableBeginFrameControl: true });
 	const { sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true });
 	const page          = (method, params) => client.send(method, params, sessionId);
+
+	// Which device draws the page, asked before it loads so the page itself never sees the question.
+	const probe    = `(() => { const gl = document.createElement('canvas').getContext('webgl'); const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
+		return gl ? gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER) : 'no WebGL'; })()`;
+	const renderer = (await page('Runtime.evaluate', { expression: probe, returnByValue: true })).result?.value ?? 'unknown';
 
 	await page('Page.enable');
 	await page('Runtime.enable');
@@ -417,6 +460,7 @@ async function capture(args, address)
 	const picture = Buffer.from(last.screenshotData, 'base64');
 	fs.writeFileSync(args.output, picture);
 	console.log(`Saved ${args.output} (${args.width}x${args.height}, ${picture.length} bytes): ${args.steps} steps of ${args.stepText} ms, page time ${args.steps * args.stepUs / 1000} ms.`);
+	console.log(`Rendered by ${renderer}.`);
 	if (!loaded)
 		console.log('The page had not finished loading at the last step. Use more steps.');
 	for (const text of notes)
@@ -427,8 +471,13 @@ async function main()
 {
 	const args    = parseArguments(process.argv.slice(2));
 	const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'beast-screenshot-'));
-	const browser = spawn(findBrowser(), [
-		'--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader-webgl', '--hide-scrollbars',
+	// The real GPU when the container has one (the browser's wrapper in the Dockerfile switches it on for /dev/dxg),
+	// software rendering otherwise. Either repeats byte for byte on the same machine, but their pictures differ, so the
+	// result names the renderer: a run and its rerun only match on the same one. Tested Nov 8: 14 of 14 GPU shots
+	// matched across 3 containers, at about 5 s a shot against 25 s rendering on the CPU.
+	const software = fs.existsSync('/dev/dxg') ? [] : ['--disable-gpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader-webgl'];
+	const browser  = spawn(findBrowser(), [
+		'--no-sandbox', '--disable-dev-shm-usage', ...software, '--hide-scrollbars',
 		'--enable-begin-frame-control', '--run-all-compositor-stages-before-draw', '--disable-new-content-rendering-timeout', '--disable-threaded-animation',
 		'--disable-threaded-scrolling', '--disable-checker-imaging', '--disable-image-animation-resync',
 		'--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'

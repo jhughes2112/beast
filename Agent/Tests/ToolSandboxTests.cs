@@ -57,6 +57,7 @@ public static class ToolSandboxTests
 
 			await RunScriptAsync(ctx, server, root, cts.Token);
 			await FetchFoldersAsync(ctx, cts.Token);
+			await FetchLiveAsync(ctx, cts.Token);
 		}
 		finally
 		{
@@ -145,9 +146,9 @@ public static class ToolSandboxTests
 	{
 		string Reserve() => (string)Reflect.Static(typeof(WebFetch), "ReserveFolder", Type.EmptyTypes, Array.Empty<object>())!;
 		int Number(string folder) => int.Parse(Path.GetFileName(folder).Substring("fetch_".Length));
-		string Save(string folder, string page) => (string)Reflect.Static(typeof(WebFetch), "BuildFilesSeed",
-			new Type[] { typeof(string), typeof(string), typeof(string), typeof(string), typeof(byte[]), typeof(string) },
-			new object[] { folder, "http://example.test/page", "read it", "text/html", System.Text.Encoding.UTF8.GetBytes(page), null! })!;
+		string Save(string folder, string page) => (string)Reflect.Static(typeof(WebFetch), "SaveFiles",
+			new Type[] { typeof(string), typeof(string), typeof(string), typeof(byte[]), typeof(string) },
+			new object[] { folder, "http://example.test/page", "text/html", System.Text.Encoding.UTF8.GetBytes(page), null! })!;
 
 		// Numbers already on disk are skipped, so an earlier run's folders would leave gaps.
 		await ShellTools.AgentBashAsync("fetch_clear", "rm -rf /tmp/work/fetch_*", null, ct);
@@ -157,10 +158,12 @@ public static class ToolSandboxTests
 		ctx.Assert(first.StartsWith("/tmp/work/fetch_"), $"Fetch: a page goes under /tmp/work (got {first})");
 		ctx.AssertEqual(Number(first) + 1, Number(second), "Fetch: folders are numbered in the order calls start");
 
-		string seed1 = Save(first, "<p>Visitors: 1</p>");
-		string seed2 = Save(first, "<p>Visitors: 2</p>");
-		ctx.AssertEqual(seed1, seed2, "Fetch: a page that changes between visits but stays the same size lists the same files");
-		ctx.Assert(seed1.Contains(first + "/stripped.txt"), "Fetch: the seed names the file's real path");
+		string list1 = Save(first, "<p>Visitors: 1</p>\n<p>Thanks</p>\n");
+		string list2 = Save(first, "<p>Visitors: 2</p>\n<p>Thanks</p>\n");
+		ctx.AssertEqual(list1, list2, "Fetch: a page that changes between visits but stays the same size lists the same files");
+		ctx.Assert(list1.Contains($"- {first}/page.html  (33 bytes, 2 lines): the exact bytes", StringComparison.Ordinal), $"Fetch: the listing names the saved page by its real path, with its size and lines — {list1}");
+		ctx.Assert(list1.Contains(first + "/text.txt", StringComparison.Ordinal) && list1.Contains(first + "/outline.html", StringComparison.Ordinal), $"Fetch: and the page's text and outline beside it — {list1}");
+		ctx.AssertEqual("Visitors: 2 Thanks", File.ReadAllText(first + "/text.txt"), "Fetch: the text view is the page's words");
 
 		ToolResult wrote = await ShellTools.BashAsync("fetch_write", $"echo text > '{first}/extracted.txt' && id -un", null, ct);
 		ctx.AssertEqual(0, wrote.ExitCode, $"Fetch: the shell can write extracted text beside the page ({wrote.StdErr})");
@@ -174,9 +177,85 @@ public static class ToolSandboxTests
 		Directory.CreateDirectory(target);
 		Directory.CreateSymbolicLink(planted, target);
 		Save(planted, "<p>page</p>");
-		ctx.Assert(!File.Exists(Path.Combine(target, "stripped.txt")), "Fetch: a link left at the reserved path does not redirect root's writes");
-		ctx.Assert(new FileInfo(planted).LinkTarget == null && File.Exists(Path.Combine(planted, "stripped.txt")), "Fetch: the page lands in a real folder instead");
+		ctx.Assert(!File.Exists(Path.Combine(target, "text.txt")), "Fetch: a link left at the reserved path does not redirect root's writes");
+		ctx.Assert(new FileInfo(planted).LinkTarget == null && File.Exists(Path.Combine(planted, "text.txt")), "Fetch: the page lands in a real folder instead");
 		Directory.Delete(target, true);
+	}
+
+	// fetch_url end to end against a local server: each kind of resource is saved with its views made in code and
+	// listed, and nothing else happens. A PDF gets its text, an archive is named for what it is, an error is an error.
+	private static async Task FetchLiveAsync(TestContext ctx, CancellationToken ct)
+	{
+		string pdf = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+			+ "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 100]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+			+ "4 0 obj<</Length 39>>stream\nBT /F1 18 Tf 20 40 Td (Hello PDF) Tj ET\nendstream endobj\n"
+			+ "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+		using MemoryStream zip = new MemoryStream();
+		using (System.IO.Compression.ZipArchive archive = new System.IO.Compression.ZipArchive(zip, System.IO.Compression.ZipArchiveMode.Create, true))
+		{
+			using StreamWriter entry = new StreamWriter(archive.CreateEntry("inside.txt").Open());
+			entry.Write("zipped words");
+		}
+		Dictionary<string, (string Type, byte[] Body)> served = new Dictionary<string, (string, byte[])>
+		{
+			["/docs/page.html"]   = ("text/html", System.Text.Encoding.UTF8.GetBytes("<html><head><style>p{}</style></head><body><h1>Title</h1><p>Some &amp; words</p><script>x()</script></body></html>")),
+			["/files/report.pdf"] = ("application/pdf", System.Text.Encoding.ASCII.GetBytes(pdf)),
+			["/files/bundle.zip"] = ("application/zip", zip.ToArray()),
+		};
+
+		System.Net.Sockets.TcpListener probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+		probe.Start();
+		int port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+		probe.Stop();
+		using System.Net.HttpListener listener = new System.Net.HttpListener();
+		listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+		listener.Start();
+		Task serving = Task.Run(async () =>
+		{
+			while (listener.IsListening)
+			{
+				System.Net.HttpListenerContext request;
+				try
+				{ request = await listener.GetContextAsync(); }
+				catch { break; }
+				if (served.TryGetValue(request.Request.Url!.AbsolutePath, out (string Type, byte[] Body) file))
+				{
+					request.Response.ContentType = file.Type;
+					await request.Response.OutputStream.WriteAsync(file.Body, ct);
+				}
+				else
+				{
+					request.Response.StatusCode = 404;
+				}
+				request.Response.Close();
+			}
+		}, ct);
+
+		string     at   = $"http://127.0.0.1:{port}";
+		ToolResult page = await WebFetch.FetchAsync("live1", $"{at}/docs/page.html", ct);
+		ctx.Assert(page.ExitCode == 0 && page.StdOut.Contains("HTTP 200, text/html", StringComparison.Ordinal) && page.StdOut.Contains("/page.html  (", StringComparison.Ordinal)
+			&& page.StdOut.Contains("/text.txt  (", StringComparison.Ordinal) && page.StdOut.Contains("/outline.html  (", StringComparison.Ordinal) && page.StdOut.Contains("read_file", StringComparison.Ordinal),
+			$"Fetch: a page is saved with its text and outline, and listed — {page.StdOut} {page.StdErr}");
+		string folder = page.StdOut.Contains("Saved in ", StringComparison.Ordinal) ? page.StdOut.Split("Saved in ")[1].Split(':')[0] : string.Empty;
+		ctx.AssertEqual("Title Some & words", folder.Length > 0 && File.Exists($"{folder}/text.txt") ? File.ReadAllText($"{folder}/text.txt") : string.Empty, "Fetch: the text has no tags, scripts or styles, and its entities are decoded");
+
+		ToolResult report = await WebFetch.FetchAsync("live2", $"{at}/files/report.pdf", ct);
+		string     pdfDir = report.StdOut.Contains("Saved in ", StringComparison.Ordinal) ? report.StdOut.Split("Saved in ")[1].Split(':')[0] : string.Empty;
+		ctx.Assert(report.ExitCode == 0 && report.StdOut.Contains("the PDF's text", StringComparison.Ordinal) && File.Exists($"{pdfDir}/text.txt") && File.ReadAllText($"{pdfDir}/text.txt").Contains("Hello PDF", StringComparison.Ordinal),
+			$"Fetch: a PDF gets its text extracted — {report.StdOut} {report.StdErr}");
+
+		ToolResult bundle = await WebFetch.FetchAsync("live3", $"{at}/files/bundle.zip", ct);
+		ctx.Assert(bundle.ExitCode == 0 && bundle.StdOut.Contains("/bundle.zip  (", StringComparison.Ordinal) && bundle.StdOut.Contains("It is binary (Zip archive", StringComparison.Ordinal),
+			$"Fetch: an archive is saved and named for what it is — {bundle.StdOut} {bundle.StdErr}");
+
+		ToolResult missing = await WebFetch.FetchAsync("live4", $"{at}/nothing", ct);
+		ctx.Assert(missing.ExitCode != 0 && missing.StdErr.Contains("HTTP 404", StringComparison.Ordinal), $"Fetch: a missing page is an error — {missing.StdErr}");
+
+		ToolResult notWeb = await WebFetch.FetchAsync("live5", "file:///etc/passwd", ct);
+		ctx.Assert(notWeb.ExitCode != 0 && notWeb.StdErr.Contains("http", StringComparison.Ordinal), $"Fetch: only http and https — {notWeb.StdErr}");
+
+		listener.Stop();
+		await serving;
 	}
 
 	private static async Task FileClockAsync(TestContext ctx, string root, CancellationToken ct)
@@ -330,7 +409,7 @@ public static class ToolSandboxTests
 		ToolResult tool = await BrowserScreenshotTool.TakeAsync("tool", "shot_page.html", $"{folder}/tool.png", "5", "10", null, null, ct);
 		ctx.Assert(tool.ExitCode == 0 && File.Exists($"{folder}/tool.png"), $"Screenshot: without a seed, the tool works too — {tool.StdOut} {tool.StdErr}");
 
-		await ShellTools.AgentBashAsync("shot_cleanup", $"rm -rf '{folder}' shot_page.html shot_broken.html shot_lib.js shot_lib.py", null, ct);
+		await ShellTools.AgentBashAsync("shot_cleanup", $"rm -rf '{folder}' shot_page.html shot_broken.html shot_shader.html shot_lib.js shot_lib.py", null, ct);
 	}
 
 	private static async Task<string> ScreenshotAsync(TestContext ctx, CancellationToken ct)
@@ -357,6 +436,11 @@ public static class ToolSandboxTests
 
 		ToolResult broken = await BrowserScreenshotTool.TakeAsync("broken", "shot_broken.html", $"{folder}/broken.png", "5", "10", null, null, ct);
 		ctx.Assert(broken.ExitCode == 0 && broken.StdOut.Contains("shot boom", StringComparison.Ordinal) && broken.StdOut.Contains("shot note", StringComparison.Ordinal) && broken.StdOut.Contains("shot_gone.png", StringComparison.Ordinal), $"Screenshot: a plain page is captured, with its errors, console messages and failed files listed — {broken.StdOut} {broken.StdErr}");
+		// three.js logs a shader that fails to compile in full, numbered: only the error and the lines around it come back.
+		File.WriteAllText("shot_shader.html", "<!doctype html><script>const src = []; for (let i = 1; i <= 1400; i++) src.push(i + ': float line' + i + ' = 0.0;'); console.error('THREE.WebGLProgram: shader error\\nERROR: 0:1201: \\'getShadowMask\\' : no matching overloaded function found\\n' + src.join('\\n'));</script>");
+		ToolResult shader = await BrowserScreenshotTool.TakeAsync("shader", "shot_shader.html", $"{folder}/shader.png", "2", "10", null, null, ct);
+		ctx.Assert(shader.ExitCode == 0 && shader.StdOut.Contains("ERROR: 0:1201", StringComparison.Ordinal) && shader.StdOut.Contains("1201: float line1201", StringComparison.Ordinal) && shader.StdOut.Contains("1197: float", StringComparison.Ordinal) && !shader.StdOut.Contains("1196: float", StringComparison.Ordinal) && !shader.StdOut.Contains("700: float", StringComparison.Ordinal) && shader.StdOut.Length < 3000,
+			$"Screenshot: a shader error keeps the error and the source lines around it, not the whole shader ({shader.StdOut.Length} characters) — {shader.StdOut[..Math.Min(600, shader.StdOut.Length)]}");
 		ToolResult missing = await BrowserScreenshotTool.TakeAsync("missing", "shot_gone.html", $"{folder}/gone.png", "1", "10", null, null, ct);
 		ctx.Assert(missing.ExitCode != 0 && missing.StdErr.Contains("no file at", StringComparison.Ordinal), $"Screenshot: a missing page says so — {missing.StdErr}");
 		ToolResult rough = await BrowserScreenshotTool.TakeAsync("rough", "shot_page.html", $"{folder}/rough.png", "1", "16.67", null, null, ct);

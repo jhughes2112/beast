@@ -38,7 +38,7 @@ public static class HostCommandTests
 			ctx.Assert(               !withHost.Roles["Default"].SystemPrompt.Contains("Test OS"), "host_command: the note never reaches the stored role");
 
 			// No role's own prompt says anything about seeded runs: that is added only while one is under way.
-			foreach (string name in new[] { "Default", "Developer", "Reviewer", "Explorer", "WebFetch", "WebSearch", "MediaReader", ReasoningSummarizer.RoleName })
+			foreach (string name in new[] { "Default", "Developer", "Reviewer", FileSubagent.RoleName, "WebSearch", "MediaReader", ReasoningSummarizer.RoleName })
 				ctx.Assert(!noHost.GetRole(name)!.SystemPrompt.Contains("seeded", StringComparison.OrdinalIgnoreCase), $"Seeded run: {name}'s own prompt leaves it out");
 			foreach (string name in new[] { "Default", "Developer", "Reviewer" })
 				ctx.Assert(noHost.GetRole(name)!.Tools.Contains("browser_screenshot"), $"Screenshot: {name} has the tool");

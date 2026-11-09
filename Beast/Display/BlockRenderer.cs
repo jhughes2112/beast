@@ -95,11 +95,11 @@ internal static class BlockRenderer
 			}
 		}
 
-		// The header already carries the filename, so the condensed preview is just the goal — one line per
-		// source line so a multi-line goal keeps its newlines rather than being collapsed onto a single row.
-		if (isToolCall && toolName == "find_relevant_file_sections")
+		// The header already carries the filename, so the condensed preview is just the prompt — one line per
+		// source line so a multi-line prompt keeps its newlines rather than being collapsed onto a single row.
+		if (isToolCall && toolName == "file_subagent")
 		{
-			string goal = ExtractStringArg(msg.Content, "goal");
+			string goal = ExtractStringArg(msg.Content, "prompt");
 			if (!string.IsNullOrEmpty(goal))
 			{
 				foreach (string gline in goal.Replace("\r\n", "\n").Split('\n'))
@@ -746,8 +746,8 @@ internal static class BlockRenderer
 		// "prompt <value>" property, so the expanded block reads as the instruction itself.
 		if ((toolName == "assign_work" || toolName == "review_work") && propName.Equals("prompt", StringComparison.OrdinalIgnoreCase))
 			return true;
-		// The goal is the body of the call — render it as prose itself, not as a labelled "goal <value>" property.
-		if (toolName == "find_relevant_file_sections" && propName.Equals("goal", StringComparison.OrdinalIgnoreCase))
+		// The prompt is the body of the call — render it as prose itself, not as a labelled "prompt <value>" property.
+		if (toolName == "file_subagent" && propName.Equals("prompt", StringComparison.OrdinalIgnoreCase))
 			return true;
 		// stop_work's summary is free-form user text that should render as markdown.
 		if (toolName == "stop_work" && propName.Equals("summary", StringComparison.OrdinalIgnoreCase))
@@ -768,10 +768,9 @@ internal static class BlockRenderer
 				set.Add("offset");
 				set.Add("lines");
 				break;
-			case "find_relevant_file_sections":
-				// file_path is in the header and offset is noise; the body shows the goal.
+			case "file_subagent":
+				// file_path is in the header and the body shows the prompt.
 				set.Add("file_path");
-				set.Add("offset");
 				break;
 			case "write_file":
 			case "edit_file_replace":

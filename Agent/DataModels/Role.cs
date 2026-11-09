@@ -57,7 +57,7 @@ public class Role
 	public Dictionary<string, int> TurnBudgets { get; }
 
 	// Run this role's models with thinking off, whatever their configured effort. For roles that
-	// transform or digest rather than decide (Explorer, WebFetch, MediaReader): reasoning there only
+	// transform or digest rather than decide (FileSubagent, MediaReader): reasoning there only
 	// spends output budget and time on deliberation nobody reads.
 	[JsonPropertyName("no_reasoning")]
 	public bool NoReasoning { get; }
@@ -87,8 +87,6 @@ public class Role
 				name = "task_complete";
 			else if (Tools.Contains("finish_review"))
 				name = "finish_review";
-			else if (Tools.Contains("return_fetched"))
-				name = "return_fetched";
 			return name;
 		}
 	}
