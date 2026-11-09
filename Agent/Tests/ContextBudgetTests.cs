@@ -44,12 +44,28 @@ public static class ContextBudgetTests
 	private static void TestMaxCompletionTokens(TestContext ctx)
 	{
 		// A turn may use all the window that is left, less the 1024-token edge margin. The compaction line
-		// only decides whether a turn may begin. With a 32768 window and 1000 measured that is 30744 — and
-		// the model's own 8192 preference does NOT lower it. A large file write gets the room it has coming.
+		// only decides whether a turn may begin. With a 32768 window and 1000 measured that is 30744 for a
+		// model that declares no ceiling. A large file write gets the room it has coming.
 		ContextBudget filling = new ContextBudget();
-		filling.Configure(32768, 8192, 3276, 0, 1000);
+		filling.Configure(32768, 0, 3276, 0, 1000);
 		ctx.AssertEqual<int?>(30744, filling.MaxCompletionTokens(), "MaxCompletionTokens: the whole remaining window, less the edge margin");
-		ctx.AssertEqual(8192, filling.OutputAllowance, "OutputAllowance: the model's own preference, unchanged");
+
+		// A ceiling the model declares is a limit, whatever room the window has left.
+		ContextBudget declared = new ContextBudget();
+		declared.Configure(32768, 8192, 3276, 0, 1000);
+		ctx.AssertEqual<int?>(8192, declared.MaxCompletionTokens(), "MaxCompletionTokens: never above the model's declared ceiling");
+		ctx.AssertEqual(8192, declared.OutputAllowance, "OutputAllowance: the model's own ceiling, unchanged");
+
+		// The field numbers: a 1M window and a 128000-token output limit, 6105 tokens in. The ask was
+		// 992871 and the provider refused it as over the model's output limit.
+		ContextBudget wideWindow = new ContextBudget();
+		wideWindow.Configure(1000000, 128000, 7500, 0, 6105);
+		ctx.AssertEqual<int?>(128000, wideWindow.MaxCompletionTokens(), "MaxCompletionTokens: a wide window does not raise the ask past the output limit");
+
+		// The same limit holds on the first request, before anything is measured.
+		ContextBudget firstAsk = new ContextBudget();
+		firstAsk.Configure(1000000, 128000, 7500, 0, 0);
+		ctx.AssertEqual<int?>(128000, firstAsk.MaxCompletionTokens(), "MaxCompletionTokens: the declared ceiling bounds an unmeasured request too");
 
 		// The default ceiling is the case that actually bit: a model declaring no output limit was
 		// handed 4096 with most of a 32k window free, truncating large writes for no reason.

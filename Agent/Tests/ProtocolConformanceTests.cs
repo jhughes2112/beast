@@ -21,9 +21,13 @@ public static class ProtocolConformanceTests
 		public DetectedProtocol Protocol { get; }
 		public string           Endpoint { get; }
 
-		// Messages and ChatCompletions drop media once answered; Responses leaves its server-side
-		// history alone.
-		public bool ElidesAnswered => Protocol != DetectedProtocol.Responses;
+		// Messages and ChatCompletions send the whole history on every request; Responses chains from
+		// its server-side history and sends only what is new.
+		public bool ResendsHistory => Protocol != DetectedProtocol.Responses;
+
+		// Only ChatCompletions replaces media once it is answered and superseded. Messages keeps it,
+		// because rewriting it would invalidate the thinking signed after it.
+		public bool ElidesAnswered => Protocol == DetectedProtocol.ChatCompletions;
 
 		public Api(string name, DetectedProtocol protocol, string endpoint)
 		{
@@ -91,6 +95,7 @@ public static class ProtocolConformanceTests
 					await TestWorkingTimeAsync(ctx, server, api, cts.Token);
 				}
 				await TestMediaAcrossToolTurnsAsync(ctx, server, api, folder, cts.Token);
+				await TestSupersededMediaAsync(ctx, server, api, folder, cts.Token);
 				await TestTwoImagesInOneInspectAsync(ctx, server, api, folder, cts.Token);
 				await TestPixelsReachServerAsync(ctx, server, api, folder, cts.Token);
 				await TestThinkingAnswersMediaAsync(ctx, server, api, folder, cts.Token);
@@ -280,7 +285,10 @@ public static class ProtocolConformanceTests
 	{
 		const int Window = 200000;
 
+		// The model declares no output ceiling here, so the ask is the room left in the window and the
+		// limit it runs into is the window's.
 		Rig rig = Build(server, api);
+		rig.Service.Model.Config.MaxOutputTokens = 0;
 		rig.Session.Bundle.OnUserMessage("write the file");
 		rig.Session.RecordCountedContext(Window * 8 / 10, 0);
 		int committed = rig.Session.Data.Messages.Count;
@@ -291,6 +299,7 @@ public static class ProtocolConformanceTests
 		ctx.AssertEqual(committed, rig.Session.Data.Messages.Count, $"{api.Name} CutOff: and is not committed");
 
 		rig = Build(server, api);
+		rig.Service.Model.Config.MaxOutputTokens = 0;
 		rig.Session.Bundle.OnUserMessage("write the file");
 		rig.Session.RecordCountedContext(Window * 8 / 10, 0);
 		committed = rig.Session.Data.Messages.Count;
@@ -315,6 +324,16 @@ public static class ProtocolConformanceTests
 		ProtocolResult small = await StepAsync(rig, ct);
 		ctx.AssertEqual(ProtocolCallOutcome.Success, small.Outcome, $"{api.Name} CutOff: a cut-off far below the line commits as before");
 		ctx.AssertEqual("length", small.Payload?.FinishReason ?? string.Empty, $"{api.Name} CutOff: reporting why it ended");
+
+		// A ceiling the model declares is asked for as it stands, however much window is left: the
+		// provider refuses a larger ask outright, and a cut-off at that ceiling is not the window's doing.
+		rig = Build(server, api);
+		rig.Session.Bundle.OnUserMessage("write the file");
+		rig.Session.RecordCountedContext(Window * 8 / 10, 0);
+		server.Enqueue(FakeReply.Turn(string.Empty, "partial answer", new List<(string, string, string)>()).WithFinish("length"));
+		ProtocolResult capped = await StepAsync(rig, ct);
+		ctx.AssertEqual(4096, server.Requests()[0].Body["max_completion_tokens"]?.GetValue<int>() ?? 0, $"{api.Name} CutOff: the ask stops at the model's declared output limit");
+		ctx.AssertEqual(ProtocolCallOutcome.Success, capped.Outcome, $"{api.Name} CutOff: and a cut-off at that limit commits");
 	}
 
 	// "data:{...}" with no space after the colon is legal SSE, and uzu streams exactly that. A reader
@@ -450,8 +469,37 @@ public static class ProtocolConformanceTests
 		ctx.AssertEqual(2, sent[2].VisibleMediaCount, $"{api.Name} MediaAcrossTools: a tool-only turn keeps it, so both are in view");
 		ctx.AssertEqual(2, sent[3].VisibleMediaCount, $"{api.Name} MediaAcrossTools: answered but not superseded, both stay in view");
 		ctx.Assert(!sent[3].Body.ToJsonString().Contains(AnsweredMarker, StringComparison.Ordinal), $"{api.Name} MediaAcrossTools: no removal note until newer media arrives");
-		if (!api.ElidesAnswered)
+		if (!api.ResendsHistory)
 			ctx.AssertEqual(1, sent[2].MediaCount, $"{api.Name} MediaAcrossTools: chaining sends only the new image");
+	}
+
+	// Once the model has answered an image and inspects a newer one, ChatCompletions replaces the older
+	// with a note. Messages never does: every image it was shown is in every later request, unchanged.
+	private static async Task TestSupersededMediaAsync(TestContext ctx, FakeProvider server, Api api, string folder, CancellationToken ct)
+	{
+		Rig    rig = Build(server, api);
+		string a   = Png(folder, "old.png", 64);
+		string b   = Png(folder, "new.png", 64);
+		server.Enqueue(FakeReply.Call("c1", "inspect_media", Args(a)));
+		server.Enqueue(FakeReply.Turn("the first looks fine", string.Empty, new List<(string, string, string)> { ("c2", "inspect_media", Args(b)) }));
+		server.Enqueue(FakeReply.Say("both look fine"));
+		rig.Session.Bundle.OnUserMessage("look at old, then new");
+
+		await StepAsync(rig, ct);
+		await StepAsync(rig, ct);
+		await StepAsync(rig, ct);
+
+		FakeRequest third = server.Requests()[2];
+		if (api.ElidesAnswered)
+		{
+			ctx.AssertEqual(1, third.VisibleMediaCount, $"{api.Name} Superseded: the answered image gives way to the newer one");
+			ctx.Assert(third.Body.ToJsonString().Contains(AnsweredMarker, StringComparison.Ordinal), $"{api.Name} Superseded: and a note says so");
+		}
+		else if (api.ResendsHistory)
+		{
+			ctx.AssertEqual(2, third.VisibleMediaCount, $"{api.Name} Superseded: both images stay in the request");
+			ctx.Assert(!third.Body.ToJsonString().Contains(AnsweredMarker, StringComparison.Ordinal), $"{api.Name} Superseded: nothing already sent is rewritten");
+		}
 	}
 
 	// One inspect naming two files puts both in front of the model in the same request, in the order
@@ -766,7 +814,7 @@ public static class ProtocolConformanceTests
 
 		List<FakeRequest> sent    = server.Requests();
 		FakeRequest?      refused = FirstMediaRefusal(sent, 400);
-		if (api.ElidesAnswered)
+		if (api.ResendsHistory)
 		{
 			ctx.AssertEqual(3, refused?.MediaCount ?? 0, $"{api.Name} {label}: three images were refused");
 			FakeRequest retried = sent[sent.Count - 1];
@@ -797,7 +845,7 @@ public static class ProtocolConformanceTests
 		ctx.AssertEqual(ProtocolCallOutcome.Success, last.Outcome, $"{api.Name} BytesRefusal: the turn completes");
 
 		List<FakeRequest> sent = server.Requests();
-		if (api.ElidesAnswered)
+		if (api.ResendsHistory)
 		{
 			ctx.AssertEqual(3, FirstMediaRefusal(sent, 413)?.MediaCount ?? 0, $"{api.Name} BytesRefusal: 900KB of images was refused");
 			ctx.AssertEqual(2,               sent[sent.Count - 1].MediaCount, $"{api.Name} BytesRefusal: re-sent without the oldest");

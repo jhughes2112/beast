@@ -125,9 +125,11 @@ public static class ToolSandboxTests
 		ctx.AssertEqual("a+,a-,b+,b-,c+,c-", string.Join(",", events), "Seeded round: calls run one at a time in call order, even after one fails");
 		ctx.AssertEqual("a,b,c", string.Join(",", seeded.ToolResults.ConvertAll(r => r.Id)), "Seeded round: every call has its result, in call order");
 
+		// Unseeded rounds run the same way, so a later call finds what an earlier one made: the field case
+		// was a screenshot and the inspect of its file in one turn, started together.
 		events.Clear();
 		await ToolDispatch.DispatchAsync(Round(), tools, session, transport, ct);
-		ctx.AssertEqual("a+,b+,c+", string.Join(",", events.GetRange(0, 3)), "Unseeded round: calls overlap");
+		ctx.AssertEqual("a+,a-,b+,b-,c+,c-", string.Join(",", events), "Unseeded round: calls run one at a time in call order too");
 
 		ProtocolCallPayload interrupted = Round();
 		using CancellationTokenSource stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));

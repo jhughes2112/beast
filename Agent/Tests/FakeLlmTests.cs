@@ -108,13 +108,15 @@ public static class FakeLlmTests
 		};
 		LlmModel lateModel = new LlmModel(FakeLlm.LateUsageModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), lateConfig);
 
-		// A sixth id that counts prompts higher than its usage reports, as OpenRouter does.
+		// A sixth id that counts prompts higher than its usage reports, as OpenRouter does. Its output
+		// ceiling is the whole window, as OpenRouter's catalog states for such models: a ceiling below
+		// the room left would bound the ask, and the miscount would never be met.
 		ModelConfig skewedConfig = new ModelConfig
 		{
 			Id              = FakeLlm.SkewedCountModelId,
 			Name            = "Fake Skewed Count",
 			ContextWindow   = FakeLlm.ContextWindow,
-			MaxOutputTokens = 8192,
+			MaxOutputTokens = FakeLlm.ContextWindow,
 		};
 		LlmModel skewedModel = new LlmModel(FakeLlm.SkewedCountModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), skewedConfig);
 
@@ -124,7 +126,7 @@ public static class FakeLlmTests
 			Id              = FakeLlm.StreamRefusalModelId,
 			Name            = "Fake Stream Refusal",
 			ContextWindow   = FakeLlm.ContextWindow,
-			MaxOutputTokens = 8192,
+			MaxOutputTokens = FakeLlm.ContextWindow,
 		};
 		LlmModel refusalModel = new LlmModel(FakeLlm.StreamRefusalModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), refusalConfig);
 

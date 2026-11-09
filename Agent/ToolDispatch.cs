@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 
 // Shared tool-call dispatch for the root SessionRunner and the SubagentRunner. Stateless: given a
-// completed assistant payload, it runs that turn's tool calls in parallel, settles the session's
+// completed assistant payload, it runs that turn's tool calls one at a time in call order, settles the session's
 // response budget against the measured sizes, and writes the results back into the payload so the
 // caller can commit them. Name fuzzy-matching and argument repair mirror what the producing protocol
 // expects. Transport framing for the tool call and its result is emitted by the bundle fan-out (the
@@ -60,8 +60,7 @@ public static class ToolDispatch
 		return new ToolResult(raw.Id, raw.StdOut, raw.StdErr, raw.ExitCode, estimated);
 	}
 
-	// Runs a call on its own clock and adds what it worked to the session. Calls in a round each add their own,
-	// however much they overlapped.
+	// Runs a call on its own clock and adds what it worked to the session. Calls in a round each add their own.
 	private static async Task<ToolResult> ExecuteTimedAsync(SemanticToolCall toolCall, Dictionary<string, Tool> toolLookup, Session session, int maxOutputTokens, ITransportServer transport, CancellationToken ct)
 	{
 		ToolClock clock   = new ToolClock();
@@ -79,9 +78,9 @@ public static class ToolDispatch
 	// Dispatches every tool call in the payload, filling payload.ToolResults in call order. Returns
 	// true when at least one tool ran (the assistant turn continues), false when the turn carried no
 	// tool calls (the turn is complete). seeded is for a seeded model, so a run can repeat: the sandbox's file times
-	// and the clock its shell sees follow the tool call count instead of the real clock, and calls run one at a time
-	// in call order, because calls that overlap reach shared files and the model's endpoint in whatever order they
-	// happen to get there.
+	// and the clock its shell sees follow the tool call count instead of the real clock. Seeded or not, calls run one
+	// at a time in call order, because calls that overlap reach shared files and the model's endpoint in whatever
+	// order they happen to get there.
 	public static async Task<bool> DispatchAsync(ProtocolCallPayload payload, Tool[] tools, Session session, ITransportServer transport, CancellationToken ct, bool seeded = false)
 	{
 		if (payload.ToolCalls.Count == 0)
@@ -109,13 +108,19 @@ public static class ToolDispatch
 		// not of how much room the caller happens to have left. Sizing outputs from the remaining
 		// window is what asked a review to fit in six tokens; the round is charged to the budget
 		// after the fact instead, and an over-window conversation compacts on the next pass.
+		//
+		// A round runs in call order. A model writes its calls in the order it means them: a shell command
+		// that makes a page, the screenshot of that page, the inspect of that screenshot, all in one turn.
+		// Started together, the inspect looked for the picture before the browser had saved it ("File not
+		// found") and the screenshot looked for the page before the shell had written it ("There is no file
+		// at"). So every call runs alone, after the one before it has finished: a round that always comes out
+		// the same is worth more than the time overlapping saved.
 		Task<ToolResult>[] tasks = new Task<ToolResult>[toolCalls.Count];
 		for (int i = 0; i < toolCalls.Count; i++)
 		{
 			tasks[i] = ExecuteTimedAsync(toolCalls[i], toolLookup, session, MaxRawOutputTokens, transport, ct);
 			// WhenAny only waits. A failure stays in the task, for the loop below to handle like any other.
-			if (seeded)
-				await Task.WhenAny(tasks[i]);
+			await Task.WhenAny(tasks[i]);
 		}
 
 		// Drain each call independently rather than letting Task.WhenAll make the whole round hostage to

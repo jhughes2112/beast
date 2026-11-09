@@ -8,7 +8,8 @@ using System;
 // inline at every call site.
 //
 // The budget never dictates how big an OUTPUT may be — not a tool's, not a subagent's, and not the
-// model's own completion. It used to do all three by dividing up whatever room was left, which meant
+// model's own completion, beyond the ceiling the model itself declares (see MaxCompletionTokens). It
+// used to do all three by dividing up whatever room was left, which meant
 // a nearly-full conversation asked a subagent for a review in six tokens and asked the model to write
 // a file in 2,717. Both are impossible demands that produce useless work, and the truncated work then
 // re-enters the context and confuses the model that produced it. Sizes are now decided by what the
@@ -118,8 +119,8 @@ public class ContextBudget
 	}
 
 	// Max output tokens to request next. The compaction line decides when a new turn may BEGIN, not how
-	// big one may be: a turn that starts below the line may use all the window that is left. A configured
-	// ceiling does not lower that — a model that declares no output limit was being handed the 4096-token
+	// big one may be: a turn that starts below the line may use all the window that is left. The default
+	// allowance does not lower that — a model that declares no output limit was being handed the 4096-token
 	// default with 16k of window free, which truncates a large file write for no reason at all. Models
 	// cannot see their own context size, so a truncated write reads to them as a failed write: they start
 	// the file again from the top, the context grows, and the next attempt is truncated sooner. Stopping
@@ -138,6 +139,11 @@ public class ContextBudget
 	// max_tokens against -c), and the rejection reads as overflow, which compacts, which starts a
 	// successor whose measurement is once again 0 — a compaction loop that never advances. Until a
 	// response says how big this conversation is, the model's own allowance is the whole story.
+	//
+	// A ceiling the model DOES declare — reported by the provider's catalog, or set by the user in
+	// /config — is a hard limit, and the room left never raises the ask past it. The window is only the
+	// guess for a model that declares none: a 1M-window model with a 128000-token output limit was asked
+	// for 992871 tokens on a 6105-token conversation, and the provider refused the request outright.
 	public int? MaxCompletionTokens()
 	{
 		long room = RoomToCompactionLine();
@@ -148,6 +154,10 @@ public class ContextBudget
 			want = 0;
 		else
 			want = Math.Min(OutputAllowance, room);
+
+		if (_maxOutputTokens > 0 && want > _maxOutputTokens)
+			want = _maxOutputTokens;
+
 		return (int)want;
 	}
 
@@ -177,9 +187,10 @@ public class ContextBudget
 		return margin;
 	}
 
-	// The answer size this model asks for on its own account: its configured ceiling (or the default
-	// when it has none), tightened by an explicit caller cap. A PREFERENCE, not a limit — the floor
-	// above overrides it upward whenever the window has more room to give. Nothing here depends on
+	// The answer size this model asks for on its own account: its declared ceiling (or the default
+	// when it has none), tightened by an explicit caller cap. The default and the caller cap are a
+	// PREFERENCE, not a limit — the floor above overrides them upward whenever the window has more room
+	// to give; only the declared ceiling holds against it. Nothing here depends on
 	// how full the conversation is, which is what makes it a usable reference point for "was that
 	// response cut short because the window was tight, or because the model simply ran long?".
 	public int OutputAllowance

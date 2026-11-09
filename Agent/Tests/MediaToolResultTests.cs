@@ -33,6 +33,7 @@ public static class MediaToolResultTests
 			TestMediaBudgetKeepsNewest(ctx);
 			TestMediaBudgetLearnsImageCount(ctx);
 			TestMediaBudgetDropsOldest(ctx);
+			TestStaleThinkingDropped(ctx);
 		}
 		finally
 		{
@@ -372,6 +373,105 @@ public static class MediaToolResultTests
 		MediaBudget textOnly = new MediaBudget();
 		textOnly.Apply(new JsonArray(), 0, "text", true);
 		ctx.Assert(!textOnly.LearnFromRefusal(TestModel(), 413, "{\"error\":\"too big\"}", null, logger), "MediaBudget: a 413 on a request with no media is not ours to fix");
+	}
+
+	// A model with preserved thinking signs each thinking block against the history before it. The
+	// field case: answered media was replaced by a note, and the session died on its sixth request with
+	// "The block is bound to a different conversation". Messages no longer replaces answered media at
+	// all. What can still take an image out is a cap the provider imposed, and the note left in its
+	// place invalidates the blocks produced while it was in view. Once the model has refused one they
+	// are left out for good — and only they: the thinking before the replaced media, and the thinking
+	// produced after the note, still replay.
+	private static void TestStaleThinkingDropped(TestContext ctx)
+	{
+		ctx.Log("    StaleThinkingDropped");
+		ProtocolAnthropic anthropic = new ProtocolAnthropic(null);
+		JsonArray         native    = (JsonArray)Reflect.GetField(anthropic, "_native")!;
+
+		native.Add((JsonNode)new JsonObject { ["role"] = "user", ["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = "check the page" }) });
+		native.Add((JsonNode)ThinkingTurn("sig-one", "t1"));
+		native.Add((JsonNode)ToolResultTurn("t1", true));
+		native.Add((JsonNode)ThinkingTurn("sig-two", "t2"));
+		string first = RequestBody(anthropic);
+		ctx.Assert(first.Contains("sig-one", StringComparison.Ordinal) && first.Contains("sig-two", StringComparison.Ordinal), "StaleThinking: an unedited history replays all its thinking");
+
+		// Newer media arrives after the model answered the first image, and both stay: answered media is
+		// never rewritten on this protocol.
+		native.Add((JsonNode)ToolResultTurn("t2", true));
+		string uncapped = RequestBody(anthropic);
+		ctx.AssertEqual(2, Occurrences(uncapped, "\"type\":\"image\""), "StaleThinking: answered media stays in the request");
+		ctx.Assert(uncapped.Contains("sig-two", StringComparison.Ordinal), "StaleThinking: and so does the thinking after it");
+
+		// The provider caps the request at one image, so the older becomes a note. A model that has
+		// not refused anything keeps its thinking, as older models require.
+		Reflect.SetField((MediaBudget)Reflect.GetField(anthropic, "_media")!, "_learnedMaxItems", 1);
+		string unlearned = RequestBody(anthropic);
+		ctx.AssertEqual(1, Occurrences(unlearned, "\"type\":\"image\""), "StaleThinking: a capped request replaces the older image with a note");
+		ctx.Assert(unlearned.Contains("sig-two", StringComparison.Ordinal), "StaleThinking: nothing is dropped for a model that has not refused");
+
+		// The refusal, as ExecuteAsync records it. Only the thinking after the replaced image goes.
+		Reflect.SetField(anthropic, "_thinkingBound", true);
+		Reflect.SetField(anthropic, "_mediaReplaced", new List<(int Message, bool Answered)>());
+		string learned = RequestBody(anthropic);
+		ctx.Assert(               learned.Contains("sig-one", StringComparison.Ordinal), "StaleThinking: thinking before the replaced media still replays");
+		ctx.Assert(              !learned.Contains("sig-two", StringComparison.Ordinal), "StaleThinking: thinking after the replaced media is left out");
+		ctx.Assert(         learned.Contains("\"id\":\"t2\"", StringComparison.Ordinal), "StaleThinking: the turn's tool call stays");
+		ctx.Assert(!native.ToJsonString().Contains("sig-two", StringComparison.Ordinal), "StaleThinking: and out of the history, so it never returns");
+
+		// Thinking produced after the note was made against the history as it now stands.
+		native.Add((JsonNode)ThinkingTurn("sig-three", "t3"));
+		native.Add((JsonNode)ToolResultTurn("t3", false));
+		string later = RequestBody(anthropic);
+		ctx.Assert(later.Contains("sig-one", StringComparison.Ordinal) && later.Contains("sig-three", StringComparison.Ordinal), "StaleThinking: later thinking replays while nothing else changes");
+		ctx.Assert(!later.Contains("sig-two", StringComparison.Ordinal), "StaleThinking: thinking once left out never returns");
+
+		// The next image turns the second into a note, which is a new edit behind the third block.
+		native.Add((JsonNode)ThinkingTurn("sig-four", "t4"));
+		native.Add((JsonNode)ToolResultTurn("t4", true));
+		string again = RequestBody(anthropic);
+		ctx.Assert(again.Contains("sig-one", StringComparison.Ordinal), "StaleThinking: the first block outlives every later edit");
+		ctx.Assert(!again.Contains("sig-three", StringComparison.Ordinal) && !again.Contains("sig-four", StringComparison.Ordinal), "StaleThinking: each newly replaced image drops the thinking after it");
+
+		bool real = (bool)Reflect.Static(typeof(ProtocolAnthropic), "RejectsStaleThinking", new[] { typeof(string) }, new object[] { "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.12: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to \\\"drop_block\\\".\"}}" })!;
+		ctx.Assert(real, "StaleThinking: the real Anthropic 400 is recognized");
+		bool other = (bool)Reflect.Static(typeof(ProtocolAnthropic), "RejectsStaleThinking", new[] { typeof(string) }, new object[] { "{\"error\":{\"message\":\"max_tokens: 992871 > 128000\"}}" })!;
+		ctx.Assert(!other, "StaleThinking: an unrelated 400 is not");
+	}
+
+	private static string RequestBody(ProtocolAnthropic anthropic)
+	{
+		Type[]   types = new Type[] { typeof(LlmModel), typeof(List<ToolDefinition>), typeof(string), typeof(int), typeof(bool), typeof(Dictionary<string, JsonNode?>) };
+		object[] args  = new object[] { TestModel(), new List<ToolDefinition>(), null!, 1024, true, new Dictionary<string, JsonNode?>() };
+		return ((JsonObject)Reflect.Instance(anthropic, "BuildRequestBody", types, args)!).ToJsonString();
+	}
+
+	// An assistant turn that thought and then called one tool.
+	private static JsonObject ThinkingTurn(string signature, string toolId)
+	{
+		JsonArray content = new JsonArray();
+		content.Add((JsonNode)new JsonObject { ["type"] = "thinking", ["thinking"] = string.Empty, ["signature"] = signature });
+		content.Add((JsonNode)new JsonObject { ["type"] = "tool_use", ["id"] = toolId, ["name"] = "inspect_media", ["input"] = new JsonObject() });
+		return new JsonObject { ["role"] = "assistant", ["content"] = content };
+	}
+
+	// The user turn answering that tool call, with or without an image in the result.
+	private static JsonObject ToolResultTurn(string toolId, bool withImage)
+	{
+		JsonArray parts = new JsonArray();
+		parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = "done" });
+		if (withImage)
+			parts.Add((JsonNode)new JsonObject { ["type"] = "image", ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = "image/png", ["data"] = "AAAA" } });
+
+		JsonObject result = new JsonObject { ["type"] = "tool_result", ["tool_use_id"] = toolId, ["content"] = parts };
+		return new JsonObject { ["role"] = "user", ["content"] = new JsonArray(result) };
+	}
+
+	private static int Occurrences(string text, string value)
+	{
+		int count = 0;
+		for (int at = text.IndexOf(value, StringComparison.Ordinal); at >= 0; at = text.IndexOf(value, at + value.Length, StringComparison.Ordinal))
+			count++;
+		return count;
 	}
 
 	private static string Role(JsonNode? msg)

@@ -7,8 +7,10 @@ using System.Text.Json.Nodes;
 // Media stays in view while the model reasons about it, and is replaced by a note only once NEWER
 // media arrives after the model has answered (produced a turn with text or thinking) — so the
 // latest batch survives the model's reply and the turns after it, until its next inspect
-// (Messages, ChatCompletions, and the stateless Responses history of the ChatGPT subscription; the
-// regular Responses protocol keeps its history server-side and leaves it alone). Keeping superseded
+// (ChatCompletions, and the stateless Responses history of the ChatGPT subscription; the regular
+// Responses protocol keeps its history server-side and leaves it alone, and Messages never removes
+// answered media, because its models sign their thinking against the history before it and a
+// rewritten image invalidates all the thinking that follows). Keeping superseded
 // media costs twice over: it is re-sent on every later request, so a long visual session grows until
 // the provider refuses the whole thing, and removal invalidates the prompt cache for everything
 // after it. A turn that is nothing but tool calls is not an answer: a model inspecting several
@@ -47,6 +49,14 @@ public class MediaBudget
 	private int _omitted;
 	private int _omittedReported;
 
+	// Every part the last Apply replaced with a note, in document order: the index of the message
+	// holding it, and whether it was answered media (true) or media over the cap (false). A protocol
+	// whose provider ties a model's reasoning to the history before it reads this to see where that
+	// history has just changed.
+	private List<(int Message, bool Answered)> _replaced = new List<(int Message, bool Answered)>();
+
+	public IReadOnlyList<(int Message, bool Answered)> Replaced => _replaced;
+
 	// Removes answered media from an outgoing message array — a per-request clone — when elideAnswered
 	// is set, then keeps only the newest remaining items within the cap, replacing each removed part
 	// with a text part of the protocol's text type ("text" or "input_text"). configMaxImages is the
@@ -70,6 +80,8 @@ public class MediaBudget
 		}
 
 		List<(JsonArray Parent, JsonObject Part)> found = new List<(JsonArray Parent, JsonObject Part)>();
+		List<int> foundAt = new List<int>();
+		List<(int Message, bool Answered)> replaced = new List<(int Message, bool Answered)>();
 		for (int i = 0; i < messages.Count; i++)
 		{
 			if (i < answered)
@@ -77,19 +89,25 @@ public class MediaBudget
 				List<(JsonArray Parent, JsonObject Part)> old = new List<(JsonArray Parent, JsonObject Part)>();
 				Collect(messages[i], old);
 				foreach ((JsonArray parent, JsonObject part) in old)
+				{
 					parent[parent.IndexOf(part)] = new JsonObject { ["type"] = textPartType, ["text"] = AnsweredNote };
+					replaced.Add((i, true));
+				}
 			}
 			else
 			{
 				Collect(messages[i], found);
+				while (foundAt.Count < found.Count)
+					foundAt.Add(i);
 			}
 		}
 
 		// Newest first; once one is dropped every older one goes too, so the model sees an unbroken
 		// recent window rather than a scattering of old items it cannot place.
-		int maxItems = EffectiveMaxItems(configMaxImages);
-		int kept     = 0;
-		int omitted  = 0;
+		int maxItems      = EffectiveMaxItems(configMaxImages);
+		int kept          = 0;
+		int omitted       = 0;
+		int answeredParts = replaced.Count;
 		for (int i = found.Count - 1; i >= 0; i--)
 		{
 			if (maxItems == 0 || kept < maxItems)
@@ -101,11 +119,15 @@ public class MediaBudget
 				(JsonArray parent, JsonObject part) = found[i];
 				parent[parent.IndexOf(part)]        = new JsonObject { ["type"] = textPartType, ["text"] = OmittedNote };
 				omitted++;
+
+				// Walked newest first, so each lands ahead of the last: the list stays in document order.
+				replaced.Insert(answeredParts, (foundAt[i], false));
 			}
 		}
 
 		_itemsSent = kept;
 		_omitted   = omitted;
+		_replaced  = replaced;
 	}
 
 	// Index of the last message carrying media, or -1 when there is none.

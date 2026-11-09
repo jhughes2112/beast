@@ -102,10 +102,9 @@ public class MediaInspector
 		LlmModel? current = registry.GetModel(session.Model);
 		if (!useSubagent && current != null && SupportsAll(current.Config, kinds))
 		{
-			// Superseded media leaves the context (see MediaBudget): say so now, while the model can still act on it.
-			string text = $"{Listing(items)}\n{(items.Count > 1 ? $"These {items.Count} files are" : "This file is")} attached to this result, in this order, for you to examine directly. "
-				+ "They stay in view while you reason about them and are removed from context only when you next call inspect_media, so note anything you will need later; "
-				+ "call inspect_media on them again if you need to see them again.";
+			// Nothing here says the media may later leave the context: where a protocol does replace it
+			// (see MediaBudget), the note left in its place tells the model then, and how to get it back.
+			string text = $"{Listing(items)}\n{(items.Count > 1 ? $"These {items.Count} files are" : "This file is")} attached to this result, in this order, for you to examine directly.";
 			return new ToolResult(toolCallId, text, string.Empty, 0, ToolDispatch.EstimateTokens(text), files);
 		}
 

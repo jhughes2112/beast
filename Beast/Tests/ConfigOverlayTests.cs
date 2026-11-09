@@ -15,6 +15,7 @@ public static class ConfigOverlayTests
 	{
 		ctx.Log("  ConfigOverlayTests");
 		TestEditWithoutToggleIsSaved(ctx);
+		TestMaxOutput(ctx);
 		TestDisabledToggleIsSaved(ctx);
 		TestClearingNothingAddsNoEntry(ctx);
 		TestRetainDefaultsOn(ctx);
@@ -138,7 +139,7 @@ public static class ConfigOverlayTests
 		ConfigOverlay overlay = OpenCatalog(sent);
 
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 9; i++)
+		for (int i = 0; i < 10; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "NaN");
@@ -168,7 +169,7 @@ public static class ConfigOverlayTests
 		overlay = OpenCatalog(sent);
 		overlay.OnConfigFrame(Catalog.Replace("\"modalities\":[\"text\"]}", "\"modalities\":[\"text\"],\"configured\":true,\"override\":{\"temperature\":0.7,\"topP\":0.9}}", StringComparison.Ordinal));
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 9; i++)
+		for (int i = 0; i < 10; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Delete);
 		LeavePassing(overlay, sent);
@@ -186,7 +187,7 @@ public static class ConfigOverlayTests
 		ConfigOverlay overlay = OpenCatalog(sent);
 
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 8; i++)
+		for (int i = 0; i < 9; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "abc");
@@ -205,7 +206,7 @@ public static class ConfigOverlayTests
 		overlay = OpenCatalog(sent);
 		overlay.OnConfigFrame(Catalog.Replace("\"modalities\":[\"text\"]}", "\"modalities\":[\"text\"],\"configured\":true,\"override\":{\"seed\":7}}", StringComparison.Ordinal));
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 8; i++)
+		for (int i = 0; i < 9; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Delete);
 		LeavePassing(overlay, sent);
@@ -220,7 +221,7 @@ public static class ConfigOverlayTests
 		overlay = OpenCatalog(sent);
 		overlay.OnConfigFrame(Catalog.Replace("\"baseUrl\":\"http://x/v1\",", "\"baseUrl\":\"http://x/v1\",\"seedSupported\":false,", StringComparison.Ordinal));
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 8; i++)
+		for (int i = 0; i < 9; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "5");
@@ -250,6 +251,38 @@ public static class ConfigOverlayTests
 		ctx.AssertEqual(false,   entry?["enabled"]?.GetValue<bool>() ?? true, "ConfigOverlay: and the model stays off");
 	}
 
+	// The output limit sits under the window: a typed one is saved, and one already in settings survives
+	// an apply that edits something else.
+	private static void TestMaxOutput(TestContext ctx)
+	{
+		List<string>  sent    = new List<string>();
+		ConfigOverlay overlay = OpenCatalog(sent);
+
+		Press(overlay,     ConsoleKey.Enter);
+		Press(overlay, ConsoleKey.DownArrow);
+		Press(overlay,     ConsoleKey.Enter);
+		Type(overlay, "64000");
+		Press(overlay, ConsoleKey.Enter);
+		LeavePassing(overlay, sent);
+		Press(overlay, ConsoleKey.Escape);
+
+		ctx.AssertEqual(64000, SavedEntry(sent, "plain")?["maxOutputTokens"]?.GetValue<int>() ?? 0, "ConfigOverlay: a typed output limit is saved");
+
+		sent    = new List<string>();
+		overlay = OpenCatalog(sent);
+		overlay.OnConfigFrame(Catalog.Replace("\"modalities\":[\"text\"]}", "\"modalities\":[\"text\"],\"configured\":true,\"override\":{\"maxOutputTokens\":32000}}", StringComparison.Ordinal));
+		Press(overlay, ConsoleKey.Enter);
+		Press(overlay, ConsoleKey.Enter);
+		Type(overlay, "5000");
+		Press(overlay, ConsoleKey.Enter);
+		LeavePassing(overlay, sent);
+		Press(overlay, ConsoleKey.Escape);
+
+		JsonObject? entry = SavedEntry(sent, "plain");
+		ctx.AssertEqual(5000, entry?["contextWindow"]?.GetValue<int>() ?? 0, "ConfigOverlay: the edited window is saved");
+		ctx.AssertEqual(32000, entry?["maxOutputTokens"]?.GetValue<int>() ?? 0, "ConfigOverlay: an output limit already in settings is kept through an apply");
+	}
+
 	// The toggled fields take the same path as typed ones.
 	private static void TestDisabledToggleIsSaved(TestContext ctx)
 	{
@@ -257,7 +290,7 @@ public static class ConfigOverlayTests
 		ConfigOverlay overlay = OpenCatalog(sent);
 
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 6; i++)
+		for (int i = 0; i < 7; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Enter);
 		LeavePassing(overlay, sent);
@@ -303,7 +336,7 @@ public static class ConfigOverlayTests
 		ConfigOverlay overlay = OpenCatalog(sent);
 
 		Press(overlay, ConsoleKey.Enter);
-		for (int i = 0; i < 7; i++)
+		for (int i = 0; i < 8; i++)
 			Press(overlay, ConsoleKey.DownArrow);
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "900");

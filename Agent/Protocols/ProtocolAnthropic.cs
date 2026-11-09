@@ -57,6 +57,20 @@ public class ProtocolAnthropic
 	// Keeps each request's media within the provider's limits (see MediaBudget).
 	private readonly MediaBudget _media = new MediaBudget();
 
+	// True once this endpoint has refused a replayed thinking block because the history before it had
+	// changed. Models with preserved thinking (Fable 5.1 and later, Opus 5.5, Sonnet 5.5, Haiku 5.5) sign
+	// each block against everything that preceded it. Nothing here rewrites history on its own account,
+	// but when the provider refuses a request for carrying too much media, the note MediaBudget leaves
+	// in place of the oldest image invalidates every block produced while that image was in view.
+	// Those blocks are then removed from the native history for good — the reasoning is lost either
+	// way, and a block once left out must stay out. Learned from the 400 rather than assumed: older models carry
+	// no such record, and some of them require the latest turn's thinking to come back intact.
+	private bool _thinkingBound;
+
+	// What MediaBudget had replaced in the last request built (see MediaBudget.Replaced). The next
+	// request's list is compared against it to find where the history has changed since.
+	private IReadOnlyList<(int Message, bool Answered)> _mediaReplaced = new List<(int Message, bool Answered)>();
+
 	public ProtocolAnthropic(ModelCapabilitySink? onCapabilityLearned)
 	{
 		_onCapabilityLearned = onCapabilityLearned;
@@ -84,6 +98,13 @@ public class ProtocolAnthropic
 			|| responseBody.Contains("unexpected",       StringComparison.OrdinalIgnoreCase);
 	}
 
+	// True when a 400 says a replayed thinking block no longer belongs to the conversation it was sent
+	// with. Matched on the request field Anthropic names as the remedy rather than on prose.
+	private static bool RejectsStaleThinking(string responseBody)
+	{
+		return responseBody.Contains("prefix_mismatch_behavior", StringComparison.OrdinalIgnoreCase);
+	}
+
 	// Rebuilds the native wire-format message chain from canonical, stripping thinking and
 	// enforcing user/assistant alternation. Called by ProtocolProxy right after creating or
 	// switching in.
@@ -92,6 +113,7 @@ public class ProtocolAnthropic
 		_native.Clear();
 		_system        = string.Empty;
 		_pendingNative = null;
+		_mediaReplaced = new List<(int Message, bool Answered)>();
 
 		foreach (CanonicalMessage msg in messages)
 		{
@@ -238,8 +260,9 @@ public class ProtocolAnthropic
 
 			// Extra attempts exist only to re-send after learning something about this model: that it
 			// wants the adaptive thinking shape, that it has no thinking at all, or that the request
-			// carried more media than the provider takes. The thinking flags are one-way and the media
-			// limits only shrink below what was refused, so the loop always ends.
+			// carried more media than the provider takes, or that it replayed thinking the model no longer
+			// accepts. The thinking flags are one-way, the media limits only shrink below what was refused,
+			// and refused thinking is removed, so the loop always ends.
 			for (int attempt = 0; ; attempt++)
 			{
 				JsonObject body   = BuildRequestBody(model, tools, forcedToolName, maxTokens, true, extraPayload);
@@ -286,6 +309,29 @@ public class ProtocolAnthropic
 						logger.Write(model.Config.Name, model.Endpoint, "[thinking] model does not support extended thinking; recording it as none and re-sending without it");
 						_onCapabilityLearned?.Invoke(model.ConfigId, "none", null, null, null);
 						continue;
+					}
+
+					// A thinking block came back after the history before it had changed. That is our own
+					// edit, not a dead model. The first refusal teaches that this model checks, and the
+					// re-send leaves out the blocks that follow replaced media; if that was not the edit
+					// at fault, the second leaves out every block, after which nothing is left to refuse.
+					if (RejectsStaleThinking(responseBody))
+					{
+						bool resend = !_thinkingBound;
+						if (resend)
+						{
+							_thinkingBound = true;
+							_mediaReplaced = new List<(int Message, bool Answered)>();
+							logger.Write(model.Config.Name, model.Endpoint, "[thinking] model refused thinking produced before the history changed; re-sending without the thinking that follows replaced media");
+						}
+						else if (DropThinkingAfter(-1))
+						{
+							resend = true;
+							logger.Write(model.Config.Name, model.Endpoint, "[thinking] model still refused replayed thinking; re-sending without any");
+						}
+
+						if (resend)
+							continue;
 					}
 
 					// Too many images, or too many bytes of them: the same history with less media will go.
@@ -798,8 +844,21 @@ public class ProtocolAnthropic
 			// base input rate, so it is deliberately not requested.
 			body["cache_control"] = new JsonObject { ["type"] = "ephemeral" };
 		}
+		// Answered media is never removed here: it would rewrite history the model's thinking is signed
+		// against, and the prompt cache makes carrying it cheap. Only a cap the provider itself imposed
+		// (too many images, too many bytes) takes media out, oldest first.
 		JsonArray messages = CloneMessages();
-		_media.Apply(messages, model.Config.MaxImages, "text", true);
+		_media.Apply(messages, model.Config.MaxImages, "text", false);
+
+		// Media replaced since the last request changes the history under every thinking block after it.
+		// On a model that checks, those blocks go before the request does, and the request is rebuilt.
+		if (_thinkingBound && DropThinkingAfter(FirstMediaChange(_mediaReplaced, _media.Replaced)))
+		{
+			messages = CloneMessages();
+			_media.Apply(messages, model.Config.MaxImages, "text", false);
+		}
+		_mediaReplaced = _media.Replaced;
+
 		body["messages"] = messages;
 
 		if (!string.IsNullOrEmpty(_system))
@@ -916,6 +975,60 @@ public class ProtocolAnthropic
 			messages.Add(msg.DeepClone());
 		}
 		return messages;
+	}
+
+	// The index of the earliest request message whose media was replaced differently between two
+	// requests, or int.MaxValue when nothing changed. Both lists are in document order and only ever
+	// grow or turn one kind of note into the other, so the first entry that differs is the earliest edit.
+	private static int FirstMediaChange(IReadOnlyList<(int Message, bool Answered)> before, IReadOnlyList<(int Message, bool Answered)> now)
+	{
+		int changed = int.MaxValue;
+		int longest = Math.Max(before.Count, now.Count);
+		for (int i = 0; i < longest && changed == int.MaxValue; i++)
+		{
+			if (i >= before.Count)
+				changed = now[i].Message;
+			else if (i >= now.Count)
+				changed = before[i].Message;
+			else if (before[i] != now[i])
+				changed = Math.Min(before[i].Message, now[i].Message);
+		}
+		return changed;
+	}
+
+	// Removes the thinking blocks of every assistant turn after the given request message from the
+	// native history, and says whether any were there. Request messages are counted as CloneMessages
+	// builds them, with consecutive same-role messages as one. Text and tool calls stay.
+	private bool DropThinkingAfter(int message)
+	{
+		bool   dropped = false;
+		int    index   = -1;
+		string last    = string.Empty;
+		foreach (JsonNode? node in _native)
+		{
+			if (node is not JsonObject msg)
+				continue;
+
+			string role = msg["role"]?.GetValue<string>() ?? "user";
+			if (role != last)
+				index++;
+			last = role;
+
+			if (index <= message || role != "assistant")
+				continue;
+
+			JsonArray content = (JsonArray)msg["content"]!;
+			for (int i = content.Count - 1; i >= 0; i--)
+			{
+				string? type = content[i]?["type"]?.GetValue<string>();
+				if (type == "thinking" || type == "redacted_thinking")
+				{
+					content.RemoveAt(i);
+					dropped = true;
+				}
+			}
+		}
+		return dropped;
 	}
 
 	// One request shape for every endpoint: both auth header styles are sent — api.anthropic.com

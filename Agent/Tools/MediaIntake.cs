@@ -14,8 +14,8 @@ using System.Threading.Tasks;
 // user turn or text standing in for them:
 //
 //   - the current model declares the modality  -> attach it, so the model's attention runs over
-//     the media itself; it leaves the context once answered, and the kept staged copy is how the
-//     model looks again
+//     the media itself; on some protocols it leaves the context once answered and superseded, and
+//     the kept staged copy is how the model looks again
 //   - it does not                              -> the file is NOT sent; UnsupportedDisplay is set
 //     and the caller alerts the user to switch models
 //   - the file is text                         -> inlined verbatim
@@ -176,9 +176,10 @@ public static class MediaIntake
 		if (current != null && MediaKinds.Supports(current.Config, kind))
 		{
 			string data = Convert.ToBase64String(await File.ReadAllBytesAsync(staged, ct));
-			// Superseded media leaves the context (see MediaBudget), so the staged copy is kept and its
-			// path named: once newer media arrives, that path is its only way back to the file.
-			string note = $"[attached {display}, saved at {staged}. It stays in view until newer media is attached or inspected, then may be removed from context; call inspect_media on that path to see it again.]";
+			// Superseded media can leave the context on some protocols (see MediaBudget), so the staged
+			// copy is kept and its path named: that path is the model's only way back to the file. The
+			// note left in place of removed media says so when it happens; nothing here needs to.
+			string note = $"[attached {display}, saved at {staged}]";
 			return (note, new MediaAttachment(mimeType, data), string.Empty, kind);
 		}
 

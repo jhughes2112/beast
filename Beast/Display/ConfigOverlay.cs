@@ -99,7 +99,9 @@ internal class ConfigOverlay
 		public string Name = string.Empty;
 
 		// Discovered values exactly as the endpoint reported them (0 / -1 / null = unknown).
-		public int           DiscWindow;
+		public int DiscWindow;
+		// Most tokens one response may hold; 0 = the endpoint states none, and the window is the only bound.
+		public int           DiscMaxOut;
 		public decimal       DiscCostIn  = -1m;
 		public decimal       DiscCostOut = -1m;
 		public List<string>? DiscModalities;
@@ -110,6 +112,7 @@ internal class ConfigOverlay
 
 		// User overrides (0 / -1 / null / empty = none — discovery rules). Blank edits clear these.
 		public int           OvrWindow;
+		public int           OvrMaxOut;
 		public decimal       OvrCostIn  = -1m;
 		public decimal       OvrCostOut = -1m;
 		public List<string>? OvrModalities;
@@ -148,7 +151,7 @@ internal class ConfigOverlay
 		public List<string>? Modalities => OvrModalities ?? DiscModalities;
 
 		// Whether the user has set anything an apply would write for this row.
-		public bool HasOverrides => OvrWindow > 0 || OvrCostIn >= 0 || OvrCostOut >= 0 || OvrModalities != null
+		public bool HasOverrides => OvrWindow > 0 || OvrMaxOut > 0 || OvrCostIn >= 0 || OvrCostOut >= 0 || OvrModalities != null
 			|| OvrEffort.Length > 0 || !OvrRetainReasoning || !OvrSummaries || OvrMaxImages > 0
 			|| OvrTimeout > 0 || OvrSeed.HasValue || OvrSampling.Count > 0 || OvrExtras.Length > 0 || OvrHeaders.Length > 0;
 
@@ -319,6 +322,7 @@ internal class ConfigOverlay
 							Id             = m["id"]?.GetValue<string>() ?? string.Empty,
 							Name           = m["name"]?.GetValue<string>() ?? string.Empty,
 							DiscWindow     = m["contextWindow"]?.GetValue<int>() ?? 0,
+							DiscMaxOut     = m["maxOutputTokens"]?.GetValue<int>() ?? 0,
 							DiscCostIn     = m["costInput"]?.GetValue<decimal>() ?? -1m,
 							DiscCostOut    = m["costOutput"]?.GetValue<decimal>() ?? -1m,
 							DiscModalities = ReadStringList(m["modalities"]),
@@ -332,6 +336,7 @@ internal class ConfigOverlay
 						if (over != null)
 						{
 							row.OvrWindow  = over["contextWindow"]?.GetValue<int>() ?? 0;
+							row.OvrMaxOut  = over["maxOutputTokens"]?.GetValue<int>() ?? 0;
 							JsonNode? cost = over["cost"];
 							if (cost != null)
 							{
@@ -926,6 +931,7 @@ internal class ConfigOverlay
 		row.Enabled            = false;
 		row.Configured         = false;
 		row.OvrWindow          = 0;
+		row.OvrMaxOut          = 0;
 		row.OvrCostIn          = -1m;
 		row.OvrCostOut         = -1m;
 		row.OvrModalities      = null;
@@ -955,7 +961,7 @@ internal class ConfigOverlay
 	// The editable fields of one model, in menu order.
 	private static readonly string[] kDetailFields =
 	{
-		"window", "costIn", "costOut", "modalities", "effort", "summaries", "retain", "timeout", "seed",
+		"window", "maxOut", "costIn", "costOut", "modalities", "effort", "summaries", "retain", "timeout", "seed",
 		"temperature", "topP", "topK", "minP", "frequencyPenalty", "presencePenalty", "repetitionPenalty",
 		"extras", "headers"
 	};
@@ -1200,6 +1206,8 @@ internal class ConfigOverlay
 		{
 			case "window":
 				return "Context window (tokens)";
+			case "maxOut":
+				return "Max output (tokens)";
 			case "costIn":
 				return "Input cost ($ per Mtok)";
 			case "costOut":
@@ -1233,6 +1241,8 @@ internal class ConfigOverlay
 		{
 			case "window":
 				return row.OvrWindow > 0 ? row.OvrWindow.ToString() : row.DiscWindow > 0 ? $"{row.DiscWindow} (discovered)" : "unknown";
+			case "maxOut":
+				return row.OvrMaxOut > 0 ? row.OvrMaxOut.ToString() : row.DiscMaxOut > 0 ? $"{row.DiscMaxOut} (discovered)" : "not reported (up to the context window)";
 			case "costIn":
 				return row.OvrCostIn >= 0 ? $"${row.OvrCostIn:0.####}" : row.DiscCostIn >= 0 ? $"${row.DiscCostIn:0.00} (discovered)" : "unknown";
 			case "costOut":
@@ -1269,6 +1279,8 @@ internal class ConfigOverlay
 			case "costIn":
 			case "costOut":
 				return "Del = back to the discovered value. * means the endpoint does not report it, so it must be set.";
+			case "maxOut":
+				return "Most tokens one response may hold. Blank = the discovered limit, or the context window when none is reported.";
 			case "modalities":
 				return "Comma list of text,image,audio,video,file. * means undiscovered: say what the model accepts.";
 			case "effort":
@@ -1306,6 +1318,8 @@ internal class ConfigOverlay
 		{
 			case "window":
 				return row.OvrWindow > 0 ? row.OvrWindow.ToString() : string.Empty;
+			case "maxOut":
+				return row.OvrMaxOut > 0 ? row.OvrMaxOut.ToString() : string.Empty;
 			case "costIn":
 				return row.OvrCostIn >= 0 ? row.OvrCostIn.ToString("0.####") : string.Empty;
 			case "costOut":
@@ -1342,6 +1356,9 @@ internal class ConfigOverlay
 				case "window":
 					row.OvrWindow = 0;
 					break;
+				case "maxOut":
+					row.OvrMaxOut = 0;
+					break;
 				case "costIn":
 					row.OvrCostIn = -1m;
 					break;
@@ -1374,11 +1391,13 @@ internal class ConfigOverlay
 					break;
 			}
 		}
-		else if (field == "window" || field == "timeout")
+		else if (field == "window" || field == "maxOut" || field == "timeout")
 		{
 			ok = int.TryParse(value, out int number) && number > 0;
 			if (ok && field == "window")
 				row.OvrWindow = number;
+			else if (ok && field == "maxOut")
+				row.OvrMaxOut = number;
 			else if (ok)
 				row.OvrTimeout = number;
 			else
@@ -1510,6 +1529,8 @@ internal class ConfigOverlay
 		JsonObject entry = new JsonObject { ["id"] = row.Id, ["enabled"] = row.Enabled };
 		if (row.OvrWindow > 0)
 			entry["contextWindow"] = row.OvrWindow;
+		if (row.OvrMaxOut > 0)
+			entry["maxOutputTokens"] = row.OvrMaxOut;
 		if (row.OvrCostIn >= 0 || row.OvrCostOut >= 0)
 		{
 			// A half-overridden pair is completed from discovery so the persisted cost object
