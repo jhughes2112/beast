@@ -172,7 +172,7 @@ public static class SandboxTests
 
 	private static async Task TestToolsRefuseAsync(TestContext ctx, string workspace)
 	{
-		ToolResult read = await FileTools.ReadFileAsync("t1", ".beast/settings.json", string.Empty, string.Empty, 500, false, CancellationToken.None);
+		ToolResult read = await FileTools.ReadFileAsync("t1", ".beast/settings.json", string.Empty, string.Empty, 500, CancellationToken.None);
 		ctx.Assert(read.ExitCode != 0 && !read.StdOut.Contains("secret", StringComparison.Ordinal), "Tools: read_file refuses .beast");
 
 		ToolResult write = await FileTools.WriteFileAsync("t2", ".git/hooks/post-checkout", "evil", CancellationToken.None);

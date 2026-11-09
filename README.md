@@ -46,7 +46,7 @@ First launch will open the config picker automatically. Use /config to get back 
 - **Usage-limit auto-resume** — when a subscription window runs out, or an API is rate limited, Beast waits for the reset and continues the turn by itself.
 - **OpenRouter batch model** — `:batch` aren't supported, so they're filtered out now
 - **Repeatable runs** — give a model a seed and Beast removes the differences it can control, so a change you make is the only thing that changes the run. See [Repeatable runs](#repeatable-runs)
-- **Two-step `fetch_url`** — getting a page can take a different path each time, so that work no longer shapes the answer. The fetching agent can only return file paths, or name one file for a fresh agent to summarize from the goal and that file alone
+- **Plain `fetch_url`** — it downloads like curl, makes readable views in code (an HTML page's text and tag outline, a PDF's text, a binary file's type) and lists the files. No model reads the page, so the result is the same whenever the page is
 - **A seed per turn** — a seeded run adds one to the seed for each model reply already in the conversation. With one seed on every request, a run that copied one turn into its context repeated it 27 times
 - **Steadier `curl` output** — per-request headers like `age` and `cf-ray` are removed from HTTP responses in seeded runs, because they differ on every request and pushed runs apart
 - **Output ask retries** — a server that refuses a request only because Beast asked for too much output now gets a smaller ask, even if it refuses mid-stream. These used to look like a full context, which stalled small conversations
@@ -88,7 +88,7 @@ The first model that's available (and the context fits) gets the next turn. Prov
 | **Default** | Chats with you. Mostly read-only. Delegates real work. |
 | **Developer** | Writes code, and if you use git, does it in an isolated worktree. |
 | **Reviewer** | Checks the Developer's work. |
-| **Explorer / WebFetch / WebSearch / MediaReader** | Cheap helpers that prevent context bloat in expensive models.  This lets you run small local models to do simple tasks not pay smart model prices. |
+| **FileSubagent / WebSearch / MediaReader** | Cheap helpers that prevent context bloat in expensive models: `file_subagent` hands one file and a request to a small model with read-only tools, which returns only its answer. This lets you run small local models to do simple tasks, not pay smart model prices. |
 | **HallMonitor** | (optional) Checks the safety of host commands. |
 
 ### Typical Workflow: 
@@ -203,7 +203,7 @@ If a run repeats exactly, you can change one thing, a prompt, a tool, a model se
 - makes `browser_screenshot` run a page for an exact number of timesteps and give the same bytes every time
 - gives shell output that varies from run to run a fixed form, or removes it: HTTP dates and per-request headers, `ls -l` dates, and graphics context addresses
 - tells the model what has to stay the same on every run
-- keeps `fetch_url`'s answer apart from the work of fetching
+- makes `fetch_url` purely mechanical: what it returns depends only on what was downloaded
 - adds one to the seed for each model reply already in the conversation, so no two turns share their random draws. One seed on every request made a copied turn come out the same again and again, and the run looped
 
 None of this helps if the inference engine itself doesn't repeat, and a seed alone doesn't prove it does. Some engines repeat a request sent alone, then give different output when another request overlaps it.

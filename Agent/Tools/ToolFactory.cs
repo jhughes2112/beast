@@ -175,7 +175,7 @@ public static class ToolFactory
 					string     filePath = Str(args, "file_path");
 					string     offset   = Str(args, "offset");
 					string     lines    = Str(args, "lines");
-					ToolResult raw      = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ReadFileMaxLines, false, ct);
+					ToolResult raw      = await FileTools.ReadFileAsync(toolCallId, filePath, offset, lines, ReadFileMaxLines, ct);
 					return ToolDispatch.MeasureRawResult(raw, maxOutputTokens);
 				}
 			});

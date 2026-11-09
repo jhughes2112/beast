@@ -395,8 +395,9 @@ public static class PauseAndTrialTests
 		ctx.AssertContains(sent, "Request: What does line 12 say?", "FileSubagent: the helper gets the request");
 		ctx.AssertContains(sent, $"File: {file} (",                 "FileSubagent: and the file's path");
 		ctx.AssertContains(sent, "400 lines",                       "FileSubagent: and its size");
-		ctx.AssertContains(sent, "lines 1-300 of 400",              "FileSubagent: and says how much of it is shown");
-		ctx.AssertContains(sent, "    12 | line 12 says 84",        "FileSubagent: numbered as in the file");
+		ctx.AssertContains(sent, "Lines 1-300 of 400",              "FileSubagent: and says how much of it is shown");
+		ctx.AssertContains(sent, "\\nline 12 says 84\\n",           "FileSubagent: the file's lines as they are");
+		ctx.Assert(   !sent.Contains("12:line 12", StringComparison.Ordinal), "FileSubagent: with no line numbers added");
 		ctx.Assert(!sent.Contains("line 301 says", StringComparison.Ordinal), "FileSubagent: only the start is in the seed");
 		List<string> names = ToolNames(body);
 		names.Sort(StringComparer.Ordinal);

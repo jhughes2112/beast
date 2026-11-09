@@ -18,7 +18,7 @@ public static class FileToolsTests
 			TestWriteAndRead(ctx, tempDir);
 			TestAppend(ctx, tempDir);
 			await TestReadAsync(ctx, tempDir);
-			await TestReadReflowAsync(ctx, tempDir);
+			await TestReadLongLinesAsync(ctx, tempDir);
 			await TestEditExactAsync(ctx, tempDir);
 			await TestEditFuzzyAsync(ctx, tempDir);
 			await TestEditEchoInterleavedAsync(ctx, tempDir);
@@ -52,50 +52,40 @@ public static class FileToolsTests
 	private static async Task TestReadAsync(TestContext ctx, string tempDir)
 	{
 		string path = Path.Combine(tempDir, "read.txt");
-		File.WriteAllText(path, "line one\nline two\nline three\n");
+		File.WriteAllText(path, "line one\r\nline two\nline three\n");
 
 		using CancellationTokenSource cts = new CancellationTokenSource();
 
-		// Full read returns raw content
-		ToolResult full = await FileTools.ReadFileAsync("testId1", path, string.Empty, string.Empty, 500, false, cts.Token);
+		// The lines as they are, with nothing added, and a final newline adds no empty last line.
+		ToolResult full = await FileTools.ReadFileAsync("testId1", path, string.Empty, string.Empty, 500, cts.Token);
 		ctx.Assert(full.ExitCode == 0, "Read full: success");
-		ctx.AssertContains(full.StdOut, "line one",   "Read full: has line one");
-		ctx.AssertContains(full.StdOut, "line three", "Read full: has line three");
-		ctx.Assert(!full.StdOut.Contains(":"), "Read full: no hash anchors");
+		ctx.AssertEqual("line one\nline two\nline three", full.StdOut, "Read full: the file's lines and nothing else");
 
-		// Windowed read
-		ToolResult windowed = await FileTools.ReadFileAsync("testId2", path, "2", "1", 500, false, cts.Token);
-		ctx.Assert(windowed.ExitCode == 0, "Read windowed: success");
-		ctx.AssertContains(windowed.StdOut, "line two", "Read windowed: has line two");
-		ctx.Assert(!windowed.StdOut.Contains("line one"), "Read windowed: no line one");
+		// offset and lines count the file's own lines.
+		ToolResult windowed = await FileTools.ReadFileAsync("testId2", path, "2", "1", 500, cts.Token);
+		ctx.AssertEqual("line two", windowed.StdOut, "Read windowed: starts at the line named");
+
+		ToolResult beyond = await FileTools.ReadFileAsync("testId3", path, "4", string.Empty, 500, cts.Token);
+		ctx.Assert(beyond.ExitCode != 0 && beyond.StdErr.Contains("has 3 lines", StringComparison.Ordinal), $"Read beyond: the end is the last real line — {beyond.StdErr}");
+
+		ToolResult capped = await FileTools.ReadFileAsync("testId4", path, string.Empty, string.Empty, 2, cts.Token);
+		ctx.AssertEqual("line one\nline two\n[Lines 1-2 of 3; at most 2 lines are shown at once.]", capped.StdOut, "Read capped: says which lines it showed");
 	}
 
-	private static async Task TestReadReflowAsync(TestContext ctx, string tempDir)
+	private static async Task TestReadLongLinesAsync(TestContext ctx, string tempDir)
 	{
 		using CancellationTokenSource cts = new CancellationTokenSource();
 
-		// A long-but-ordinary code line inside an .html file must come back intact, not reflowed.
-		string codeLine = "    [[0,0],[width-1,0],[0,depth-1],[width-1,depth-1],[Math.floor(width/2),0],[Math.floor(width/2),depth-1],[0,Math.floor(depth/2)],[width-1,Math.floor(depth/2)]].forEach(([ox, oz]) => {";
-		string htmlPath = Path.Combine(tempDir, "reflow.html");
-		File.WriteAllText(htmlPath, $"<html><script>\n{codeLine}\n</script></html>\n");
-
-		ToolResult code = await FileTools.ReadFileAsync("reflow1", htmlPath, string.Empty, string.Empty, 500, false, cts.Token);
-		ctx.Assert(code.ExitCode == 0, "Reflow code line: success");
-		ctx.AssertContains(code.StdOut, codeLine, "Reflow code line: line survives unsplit");
-
-		// A genuinely enormous single line still reflows, and no chunk is whitespace-only.
-		string longLine = "    " + string.Join(" ", new string('x', 40), new string('y', 40), new string('z', 40));
-		while (longLine.Length < 5000)
-			longLine = $"{longLine} {longLine.Substring(4)}";
-		string dumpPath = Path.Combine(tempDir, "reflow_dump.txt");
-		File.WriteAllText(dumpPath, longLine);
-
-		ToolResult dump = await FileTools.ReadFileAsync("reflow2", dumpPath, string.Empty, string.Empty, 500, false, cts.Token);
-		ctx.Assert(dump.ExitCode == 0, "Reflow dump line: success");
-		string[] dumpLines = dump.StdOut.Split(Environment.NewLine);
-		ctx.Assert(dumpLines.Length > 1, "Reflow dump line: was split into chunks");
-		foreach (string chunk in dumpLines)
-			ctx.Assert(chunk.Trim().Length > 0, "Reflow dump line: no whitespace-only chunk");
+		// A line too long to show is cut, never split, so offset still names the file's own lines after it.
+		string path = Path.Combine(tempDir, "long.txt");
+		File.WriteAllText(path, $"first\n{new string('x', 5000)}\nthird\n");
+		ToolResult read = await FileTools.ReadFileAsync("long1", path, string.Empty, string.Empty, 500, cts.Token);
+		string[]   rows = read.StdOut.Split('\n');
+		ctx.Assert(rows.Length == 4 && rows[1].StartsWith("xxx", StringComparison.Ordinal) && rows[1].EndsWith("...truncated", StringComparison.Ordinal), $"Read long: the long line is cut short ({rows.Length} rows)");
+		ctx.AssertEqual("third", rows.Length > 2 ? rows[2] : string.Empty, "Read long: and is still one line");
+		ctx.AssertContains(read.StdOut, "cut short", "Read long: and the cut is mentioned");
+		ToolResult third = await FileTools.ReadFileAsync("long2", path, "3", "1", 500, cts.Token);
+		ctx.AssertEqual("third", third.StdOut, "Read long: offset 3 is the file's third line");
 	}
 
 	private static async Task TestEditExactAsync(TestContext ctx, string tempDir)

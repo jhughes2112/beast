@@ -234,7 +234,7 @@ public static class ToolSandboxTests
 		string     at   = $"http://127.0.0.1:{port}";
 		ToolResult page = await WebFetch.FetchAsync("live1", $"{at}/docs/page.html", ct);
 		ctx.Assert(page.ExitCode == 0 && page.StdOut.Contains("HTTP 200, text/html", StringComparison.Ordinal) && page.StdOut.Contains("/page.html  (", StringComparison.Ordinal)
-			&& page.StdOut.Contains("/text.txt  (", StringComparison.Ordinal) && page.StdOut.Contains("/outline.html  (", StringComparison.Ordinal) && page.StdOut.Contains("read_file", StringComparison.Ordinal),
+			&& page.StdOut.Contains("/text.txt  (", StringComparison.Ordinal) && page.StdOut.Contains("/outline.html  (", StringComparison.Ordinal) && !page.StdOut.Contains("read_file", StringComparison.Ordinal),
 			$"Fetch: a page is saved with its text and outline, and listed — {page.StdOut} {page.StdErr}");
 		string folder = page.StdOut.Contains("Saved in ", StringComparison.Ordinal) ? page.StdOut.Split("Saved in ")[1].Split(':')[0] : string.Empty;
 		ctx.AssertEqual("Title Some & words", folder.Length > 0 && File.Exists($"{folder}/text.txt") ? File.ReadAllText($"{folder}/text.txt") : string.Empty, "Fetch: the text has no tags, scripts or styles, and its entities are decoded");
@@ -245,7 +245,7 @@ public static class ToolSandboxTests
 			$"Fetch: a PDF gets its text extracted — {report.StdOut} {report.StdErr}");
 
 		ToolResult bundle = await WebFetch.FetchAsync("live3", $"{at}/files/bundle.zip", ct);
-		ctx.Assert(bundle.ExitCode == 0 && bundle.StdOut.Contains("/bundle.zip  (", StringComparison.Ordinal) && bundle.StdOut.Contains("It is binary (Zip archive", StringComparison.Ordinal),
+		ctx.Assert(bundle.ExitCode == 0 && bundle.StdOut.Contains("/bundle.zip  (", StringComparison.Ordinal) && bundle.StdOut.Contains("It is binary: Zip archive", StringComparison.Ordinal),
 			$"Fetch: an archive is saved and named for what it is — {bundle.StdOut} {bundle.StdErr}");
 
 		ToolResult missing = await WebFetch.FetchAsync("live4", $"{at}/nothing", ct);

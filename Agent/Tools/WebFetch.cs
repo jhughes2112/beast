@@ -10,14 +10,14 @@ using System.Threading.Tasks;
 
 // Backs the fetch_url tool, and does nothing a curl and a few converters would not: it downloads the resource
 // into a numbered folder under /tmp/work, makes readable views of it in code (an HTML page's text and its tag
-// outline, a PDF's text, a binary file's type), and lists what it saved. No model reads anything here; the
-// caller opens the files itself with read_file or readonly_bash, or asks file_subagent about one.
+// outline, a PDF's text, a binary file's type), and lists what it saved. No model reads anything here. The
+// result says what was saved and nothing about what to do with it: the caller's tools already say that.
 public class WebFetch
 {
 	private static readonly HttpClient SharedHttpClient = new();
 	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(120);
 
-	// Anything bigger is refused rather than held in memory; the caller can still curl it in bash.
+	// Anything bigger is refused rather than held in memory.
 	private const long MaxDownloadBytes = 50L * 1024 * 1024;
 
 	// Where fetched files go: the scratch folder a seeded run's prompt sends the model to.
@@ -47,7 +47,7 @@ public class WebFetch
 			long? declared               = response.Content.Headers.ContentLength;
 			(byte[]? bytes, bool tooBig) = declared > MaxDownloadBytes ? (null, true) : await ReadCappedAsync(response, cts.Token);
 			if (tooBig)
-				return new ToolResult(toolCallId, string.Empty, $"Error: {url} is over {MaxDownloadBytes / (1024 * 1024)} MB, so it was not downloaded. If you need it, download it with curl in bash.", 1, 0);
+				return new ToolResult(toolCallId, string.Empty, $"Error: {url} is over {MaxDownloadBytes / (1024 * 1024)} MB, so it was not downloaded.", 1, 0);
 
 			// The server's Content-Disposition filename, when present, is the resource's real name.
 			string? contentType   = response.Content.Headers.ContentType?.MediaType;
@@ -56,8 +56,7 @@ public class WebFetch
 			string  redirect      = landed != uri.AbsoluteUri ? $", redirected to {landed}" : string.Empty;
 
 			string listing = await SaveFilesAsync(directory, landed, contentType, bytes!, suggestedName, cts.Token);
-			string summary = $"Downloaded {url}{redirect}: HTTP {(int)response.StatusCode}, {contentType ?? "no content type"}, {Count(bytes!.Length)} bytes. Saved in {directory}:\n{listing}"
-				+ "Open them with read_file, search them with readonly_bash, or ask file_subagent about one.";
+			string summary = $"Downloaded {url}{redirect}: HTTP {(int)response.StatusCode}, {contentType ?? "no content type"}, {Count(bytes!.Length)} bytes. Saved in {directory}:\n{listing.TrimEnd('\n')}";
 			return new ToolResult(toolCallId, summary, string.Empty, 0, 0);
 		}
 		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -92,7 +91,7 @@ public class WebFetch
 		else if (kind == "binary")
 		{
 			ToolResult type = await ShellTools.AgentBashAsync("fetch_type", $"file -b {Quote(rawPath)}", 30, ct);
-			listing.Append($"- It is binary ({type.StdOut.Trim()}). Extract it with bash before reading: unzip or 7z for archives, tar for tarballs, pandoc for documents.\n");
+			listing.Append($"- It is binary: {type.StdOut.Trim()}\n");
 		}
 
 		GiveToShellUser(directory);

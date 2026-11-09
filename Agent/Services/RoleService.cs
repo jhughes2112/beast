@@ -16,7 +16,7 @@ public class RoleService
 	// Bump whenever a default role's prompts or tools change. A home roles.json written by an older
 	// build is then regenerated from the new defaults — the file would otherwise shadow them forever —
 	// keeping each role's model order and any custom roles, with the old copy saved as roles.json.bak.
-	private const int RolesVersion = 25;
+	private const int RolesVersion = 27;
 
 	// Ends the system prompt of a conversation with tools while a seeded model is answering it, and only then
 	// (Session.SetSeededRun). A seeded run can only repeat if every tool result repeats, and the sandbox's
@@ -631,7 +631,7 @@ public class RoleService
 			It is reasonable to identify work that is out of scope but tangentially related; produce a summary that clearly indicates follow on work and why it was not attempted, but offer to help build it if provided appropriate design input.
 			Never drop a task silently: mark it failed and give the reason. You are only finished when every task is done or consciously failed, and the final checklist goes in your stop_work summary.
 
-			Before delegating, read enough of the project to write a precise brie. Use read_file and readonly_bash (grep -n) to find and read what matters, and file_subagent to have a helper answer a question about one large file; protect your context and do not waste time reading everything.
+			Before delegating, read enough of the project to write a precise brie; protect your context and do not waste time reading everything.
 			Do not write the code yourself in the prompt, you are managing the project, not the developer yourself. The Developer starts with NONE of this conversation, so every assign_work prompt must stand alone:
 			- the goal, and why it matters;
 			- the files and areas involved, with the exact paths and keywords involved;
@@ -764,12 +764,11 @@ public class RoleService
 		const string description  = "Does what the caller asks with one file, read-only, and returns only the answer";
 		const string systemPrompt =
 			"""
-			You work on one file for another agent. Your message holds that agent's request, the file's path and size, and the start of the file with line numbers in the left margin. Do exactly what the request asks, using that file, then call return_to_caller once with your answer and success set to true.
+			You work on one file for another agent. Your message holds that agent's request, the file's path and size, and the start of the file. Do exactly what the request asks, using that file, then call return_to_caller once with your answer and success set to true.
 
-			- read_file reads more of the file by line number; readonly_bash can search it (grep -n, wc, head, tail) or look at files it refers to. Nothing you do can change any file.
-			- Your answer is all the caller receives. Answer the request directly, with exact line numbers, names, values and quotes taken from the file. No preamble.
+			- Your answer is all the caller receives. Answer the request directly, with exact names, values and quotes taken from the file. No preamble.
 			- If the file does not hold what was asked, say so plainly in one line; never guess or pad.
-			- You have a few turns, so do not re-read what you were already given. If you cannot finish, return what you found and say what is missing, with success set to false.
+			- If you cannot finish, return what you found and say what is missing, with success set to false.
 			""";
 		List<string> tools = new List<string> { "read_file", "readonly_bash", "ls" };
 		return new Role(FileSubagent.RoleName, description, RoleKind.Subagent, new List<string>(), tools, systemPrompt, string.Empty, string.Empty, FileSubagent.MaxTurns, new Dictionary<string, int>(), true);

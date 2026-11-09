@@ -22,7 +22,6 @@ public static class FileTools
 		string            offset,
 		string            lines,
 		int               maxLines,
-		bool              numberLines,
 		CancellationToken cancellationToken)
 	{
 		ToolResult result;
@@ -67,32 +66,25 @@ public static class FileTools
 							}
 							else
 							{
-								// Windowed read: split, slice, rejoin. The output is always bounded — at most
-								// maxLines lines, each at most MaxLineLength chars — so a huge file or a single
-								// enormous line can never flood the context. Limits are mentioned, never errors.
-								string[] allLines = fileContent.Replace("\r\n", "\n").Split('\n');
-
-								// A file with no (or very long) lines — minified HTML/JSON, a single-line dump —
-								// is unreadable as one giant line and would otherwise be truncated to nothing
-								// useful. On a raw (un-numbered) read, reflow over-long lines into several so the
-								// caller can page through the content. The numbered Explorer read is left alone so
-								// its line numbers still match the file exactly.
-								if (!numberLines)
-								{
-									bool isHtml = IsHtmlContent(fullPath, fileContent);
-									allLines    = ReflowLongLines(allLines, isHtml);
-								}
+								// Windowed read of the file's lines as they are: no line numbers, since no tool edits by them
+								// and they would only take up context, and no reflow, so offset always names a real line.
+								// The output is always bounded: at most maxLines lines, each cut at MaxLineLength characters.
+								// Limits are mentioned, never errors.
+								string   text     = fileContent.Replace("\r\n", "\n");
+								string[] allLines = text.Split('\n');
+								// As grep counts them: a final newline ends the last line rather than starting another.
+								int total = text.EndsWith('\n') ? allLines.Length - 1 : allLines.Length;
 
 								int startLine = offsetValue <= 0 ? 1 : offsetValue;
 								int startIdx  = startLine - 1;
 
-								if (startIdx >= allLines.Length)
+								if (startIdx >= total)
 								{
-									result = new ToolResult(toolCallId, string.Empty, $"Offset {startLine} is beyond the end of the file (file has {allLines.Length} lines).", 1, 0);
+									result = new ToolResult(toolCallId, string.Empty, $"Offset {startLine} is beyond the end of the file (file has {total} lines).", 1, 0);
 								}
 								else
 								{
-									int available = allLines.Length - startIdx;
+									int available = total - startIdx;
 									int requested = linesValue > 0 ? Math.Min(linesValue, available) : available;
 									int count     = Math.Min(requested, maxLines);
 
@@ -107,20 +99,14 @@ public static class FileTools
 											lineTruncated = true;
 										}
 										if (i > 0)
-											sb.Append(Environment.NewLine);
-										// Line numbers let a reader cite exact locations (file, line, count).
-										if (numberLines)
-										{
-											sb.Append((startLine + i).ToString().PadLeft(6));
-											sb.Append(" | ");
-										}
+											sb.Append('\n');
 										sb.Append(line);
 									}
 
 									if (count < requested)
-										sb.Append($"{Environment.NewLine}[Showing {count} lines from line {startLine}; output capped at {maxLines} lines. Read again from line {startLine + count} to continue.]");
+										sb.Append($"\n[Lines {startLine}-{startLine + count - 1} of {total}; at most {maxLines} lines are shown at once.]");
 									if (lineTruncated)
-										sb.Append($"{Environment.NewLine}[One or more lines exceeded {MaxLineLength} characters and were truncated with \"...truncated\".]");
+										sb.Append($"\n[Lines over {MaxLineLength} characters are cut short and end in \"...truncated\".]");
 
 									result = new ToolResult(toolCallId, sb.ToString(), string.Empty, 0, 0);
 								}
@@ -167,92 +153,6 @@ public static class FileTools
 		}
 
 		return result;
-	}
-
-	// Protective measure only: reflow must never alter the model's view of a normally-authored file, so
-	// nothing below this stupidly-long threshold is touched. Only newline-less dumps (minified HTML/JSON,
-	// single-line blobs) reflow. Chunks are at most this long, so a reflowed line is never also truncated.
-	private const int MaxRawLineLength = 2000;
-
-	// Decides whether content should reflow on a tag boundary rather than at whitespace: true for HTML/XML by
-	// extension, or when the body opens with a tag (covers raw fetch files saved without a telling extension).
-	private static bool IsHtmlContent(string fullPath, string fileContent)
-	{
-		string extension = Path.GetExtension(fullPath).ToLowerInvariant();
-		bool   isHtml    = extension == ".html" || extension == ".htm" || extension == ".xml";
-		if (!isHtml)
-		{
-			string head = fileContent.TrimStart();
-			isHtml      = head.StartsWith("<", StringComparison.Ordinal);
-		}
-		return isHtml;
-	}
-
-	// Breaks lines longer than MaxRawLineLength into several. For HTML, the break lands just after a '>' so a
-	// tag is never split; otherwise it lands at the last whitespace before the limit. When neither is available
-	// the line is cut hard at the limit so the loop always makes progress.
-	private static string[] ReflowLongLines(string[] sourceLines, bool isHtml)
-	{
-		List<string> reflowed = new List<string>(sourceLines.Length);
-		foreach (string line in sourceLines)
-		{
-			if (line.Length <= MaxRawLineLength)
-			{
-				reflowed.Add(line);
-				continue;
-			}
-
-			int start = 0;
-			while (start < line.Length)
-			{
-				int remaining = line.Length - start;
-				if (remaining <= MaxRawLineLength)
-				{
-					reflowed.Add(line.Substring(start));
-					break;
-				}
-
-				int limit   = start + MaxRawLineLength;
-				int breakAt = -1;
-
-				if (isHtml)
-				{
-					for (int i = limit - 1; i > start; i--)
-					{
-						if (line[i] == '>')
-						{
-							breakAt = i + 1;
-							break;
-						}
-					}
-				}
-
-				if (breakAt < 0)
-				{
-					// Never break inside the chunk's leading whitespace — that would emit a
-					// whitespace-only line and strand the content unindented on the next one.
-					int firstContent = start;
-					while (firstContent < limit && char.IsWhiteSpace(line[firstContent]))
-						firstContent++;
-
-					for (int i = limit - 1; i > firstContent; i--)
-					{
-						if (char.IsWhiteSpace(line[i]))
-						{
-							breakAt = i + 1;
-							break;
-						}
-					}
-				}
-
-				if (breakAt <= start)
-					breakAt = limit;
-
-				reflowed.Add(line.Substring(start, breakAt - start));
-				start = breakAt;
-			}
-		}
-		return reflowed.ToArray();
 	}
 
 	public static async Task<ToolResult> EditFileAsync(

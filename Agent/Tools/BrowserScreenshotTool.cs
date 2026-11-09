@@ -27,8 +27,10 @@ public static class BrowserScreenshotTool
 		}
 		else
 		{
+			// Without libfaketime: its frozen wall clock made one 400-step capture take 89 s instead of 3 (Nov 9).
+			// The page needs no fake clock, since it runs on the browser's virtual time, and clockfs still dates the picture.
 			string size = width.HasValue && height.HasValue ? $" {width.Value} {height.Value}" : string.Empty;
-			result      = await ShellTools.BashAsync(toolCallId, $"node {kScriptPath} {Quote(page)} {Quote(Path.GetFullPath(outputPath))} {Quote(steps)} {Quote(stepMs)}{size}", kTimeoutSeconds, ct);
+			result      = await ShellTools.BashAsync(toolCallId, $"env -u LD_PRELOAD node {kScriptPath} {Quote(page)} {Quote(Path.GetFullPath(outputPath))} {Quote(steps)} {Quote(stepMs)}{size}", kTimeoutSeconds, ct);
 		}
 		return result;
 	}

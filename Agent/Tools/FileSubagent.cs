@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 // Backs the file_subagent tool: one file and the caller's request go to a FileSubagent job on the Summarizer's
 // models, which reads the file with read-only tools and answers through return_to_caller. The caller gets that
 // answer and nothing else, so a large file never enters its context. The job is seeded with the start of the
-// file, numbered as the file is, so a short file or a question about its head needs no further reads.
+// file, so a short file or a question about its head needs no further reads.
 public static class FileSubagent
 {
 	public const string RoleName = "FileSubagent";
@@ -33,23 +33,21 @@ public static class FileSubagent
 		}
 		else
 		{
-			ToolResult head = await FileTools.ReadFileAsync(toolCallId, filePath, string.Empty, string.Empty, SeedLines, true, cancellationToken);
+			ToolResult head = await FileTools.ReadFileAsync(toolCallId, filePath, string.Empty, string.Empty, SeedLines, cancellationToken);
 			if (head.ExitCode != 0)
 			{
 				result = head;
 			}
 			else if (head.StdOut.Contains('\0'))
 			{
-				result = new ToolResult(toolCallId, string.Empty, $"Error: {filePath} is binary. Use inspect_media for media, or extract its text to a file first and give that file.", 1, 0);
+				result = new ToolResult(toolCallId, string.Empty, $"Error: {filePath} is binary.", 1, 0);
 			}
 			else
 			{
 				(string? confined, string _) = Sandbox.Confine(filePath, false, false);
 				FileInfo info                = new FileInfo(confined ?? filePath);
 				int      lines               = CountLines(await File.ReadAllTextAsync(info.FullName, cancellationToken));
-				string   shown               = lines > SeedLines ? $"lines 1-{SeedLines} of {lines}" : $"all {lines} lines";
-				string   seed                = $"Request: {prompt}\n\nFile: {filePath} ({info.Length} bytes, {lines} lines)\n"
-					+ $"Start of the file, {shown}, numbered as in the file (read_file reads on from any line; grep -n gives exact line numbers):\n{head.StdOut}";
+				string   seed                = $"Request: {prompt}\n\nFile: {filePath} ({info.Length} bytes, {lines} lines)\nStart of the file:\n{head.StdOut}";
 
 				(bool ok, string answer, int tokens) = await spawn(job.Name, $"file_subagent {filePath}", job.SystemPrompt, seed, job.Tools, job.MaxTurns, cancellationToken);
 				result = ok
