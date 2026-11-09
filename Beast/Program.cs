@@ -98,17 +98,17 @@ public class Program
 			return ctx.Failed > 0 ? 1 : 0;
 		}
 
-		// Build the ordered message list: switches, then prompt, then /quit if non-interactive.
-		bool         nonInteractive = prompt != null || agentSwitches.Count > 0;
-		List<string> messages       = new List<string>(agentSwitches);
+		// The switches, then the prompt, go to the conversation the session shows first: the one last on screen.
+		// A prompt makes the run unattended: it shows everything as it happens, nobody is asked anything, and it
+		// ends by itself once nothing is left running.
+		bool         unattended = prompt != null;
+		List<string> messages   = new List<string>(agentSwitches);
 		if (prompt != null)
 			messages.Add(prompt);
-		if (nonInteractive)
-			messages.Add("/quit");
 
 		ClientLog    log         = new ClientLog(verbose);
-		CollapseMode initialMode = verbose ? CollapseMode.Verbose : CollapseMode.Minimized;
-		IDisplay     display     = nonInteractive ? new DisplayConsole(log, verbose) : new DisplayScreen(initialMode);
+		CollapseMode initialMode = verbose || unattended ? CollapseMode.Verbose : CollapseMode.Minimized;
+		IDisplay     display     = new DisplayScreen(initialMode, unattended);
 
 		// /debug — connect to an already-running agent on port 13131 (start Agent separately in VS).
 		bool useDebug = switches.Contains("/debug");
@@ -140,7 +140,7 @@ public class Program
 			}
 
 			List<LaunchDocker.AgentContainer> agents = await LaunchDocker.ListAgentsAsync(AgentImage);
-			(SessionRecord? chosen, string error)    = ResolveSession(cwd, worktreeArg, nonInteractive, agents);
+			(SessionRecord? chosen, string error)    = ResolveSession(cwd, worktreeArg, unattended, agents);
 			if (error.Length > 0)
 			{
 				LeaveMenuScreen();
@@ -165,7 +165,7 @@ public class Program
 			agentContext = new LaunchDocker(AgentImage, log, chosen, existing);
 		}
 
-		await using BeastApp app = new BeastApp(agentContext, messages, display, log, agentName, session);
+		await using BeastApp app = new BeastApp(agentContext, messages, display, log, agentName, session, unattended);
 		return await app.Run();
 	}
 
@@ -189,18 +189,25 @@ public class Program
 	// folder in place), or, inside a git repository, a worktree session (the agent works on its own checkout
 	// of the repository's root, on a branch of the worktree's name). Returns the session, null when the user
 	// left the menu, or an error to print.
-	//   - --worktree none, and a non-interactive run without --worktree: this folder's most recently used
-	//     bare session, made if it has none.
+	//   - --worktree none: this folder's most recently used bare session, made if it has none.
 	//   - --worktree <name>: that worktree session of this folder's repository, made if it does not exist.
+	//   - An unattended run (-p) without --worktree: the session used here most recently, bare or worktree, so
+	//     a follow-up such as -p "Yes, continue" reaches the work it answers; a new bare session if there is none.
 	//   - Otherwise the session menu, always.
-	private static (SessionRecord? Session, string Error) ResolveSession(string cwd, string? nameArg, bool nonInteractive, List<LaunchDocker.AgentContainer> agents)
+	private static (SessionRecord? Session, string Error) ResolveSession(string cwd, string? nameArg, bool unattended, List<LaunchDocker.AgentContainer> agents)
 	{
 		List<SessionRecord> sessions = SessionStore.List();
 		string              repo     = HostGit.RepoRoot(cwd);
 		SessionRecord?      session  = null;
 		string              error    = string.Empty;
 
-		if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase) || (nonInteractive && string.IsNullOrWhiteSpace(nameArg)))
+		if (unattended && string.IsNullOrWhiteSpace(nameArg))
+		{
+			session = LatestHere(sessions, cwd, repo);
+			if (session == null)
+				(session, error) = BareSession(cwd, null, string.Empty, agents);
+		}
+		else if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase))
 		{
 			(session, error) = BareSession(cwd, SessionStore.FindBare(sessions, cwd), string.Empty, agents);
 		}
@@ -240,6 +247,20 @@ public class Program
 			}
 		}
 		return (session, error);
+	}
+
+	// The session of this folder used most recently: one of its bare sessions, or a worktree session of its
+	// repository, the same ones the session menu lists under Here. sessions is sorted newest first.
+	private static SessionRecord? LatestHere(List<SessionRecord> sessions, string cwd, string repo)
+	{
+		SessionRecord? latest = null;
+		foreach (SessionRecord session in sessions)
+		{
+			bool here = session.IsBare ? SessionStore.SameFolder(session.Folder, cwd) : repo.Length > 0 && SessionStore.SameFolder(session.Folder, repo);
+			if (latest == null && here)
+				latest = session;
+		}
+		return latest;
 	}
 
 	// The bare session found, or a new one of that name when none was (refused for a folder that must not be handed over).
@@ -519,8 +540,10 @@ public class Program
 		Console.WriteLine("  beast [/command1 /command2 ...] [-p <prompt text>]");
 		Console.WriteLine();
 		Console.WriteLine("Options:");
-		Console.WriteLine("  <switch>          Any command switch forwarded to the agent container");
-		Console.WriteLine("  -p <text>         Prompt text; everything after -p is treated as the prompt");
+		Console.WriteLine("  <switch>          Any command switch, sent to the conversation that was last on screen");
+		Console.WriteLine("  -p <text>         Run unattended: everything after -p is the prompt, sent to the conversation last on screen in this");
+		Console.WriteLine("                    folder's most recent session. The whole run shows as it happens, unsure host commands are refused,");
+		Console.WriteLine("                    and Beast exits once nothing is left running, printing the last answer. Ctrl+C stops it.");
 		Console.WriteLine("  --worktree <name> Start (or make) that worktree session of this repository, without the menu; none for this folder's latest bare session");
 		Console.WriteLine("  --test            Run Beast transport tests locally");
 		Console.WriteLine("  --debug           Connect to an agent already running on port 13131 (for VS debugging).");

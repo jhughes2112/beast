@@ -307,9 +307,14 @@ public class DisplayScreen : IDisplay
 
 	private int _currentAnimationIndex = 0;
 
-	public DisplayScreen(CollapseMode initialMode)
+	// An unattended run (beast -p): nobody is at the keyboard. Every key and mouse event is dropped but Ctrl+C,
+	// a question takes its default answer, and a host command HallMonitor was unsure about is refused.
+	private readonly bool _unattended;
+
+	public DisplayScreen(CollapseMode initialMode, bool unattended = false)
 	{
 		_currentMode = initialMode;
+		_unattended  = unattended;
 	}
 
 	public void Attach(ConversationModel model)
@@ -535,6 +540,11 @@ public class DisplayScreen : IDisplay
 
 	public void AskChoice(string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice)
 	{
+		if (_unattended)
+		{
+			onChoice(defaultIndex);
+			return;
+		}
 		List<ChoiceLine> text = new List<ChoiceLine>();
 		foreach (string line in lines)
 			text.Add(new ChoiceLine(line, null, false));
@@ -558,7 +568,14 @@ public class DisplayScreen : IDisplay
 			System.Text.Json.Nodes.JsonNode? root = System.Text.Json.Nodes.JsonNode.Parse(json);
 			string kind = root?["kind"]?.GetValue<string>() ?? string.Empty;
 			string id   = root?["id"]?.GetValue<string>() ?? string.Empty;
-			if (kind == "host-ask" && id.Length > 0)
+			if (kind == "host-ask" && id.Length > 0 && _unattended)
+			{
+				// Nobody to ask: No, which the model sees as a refusal and works around.
+				if (_sendAsync != null)
+					_ = _sendAsync($"/host-answer {id} no");
+				claimed = true;
+			}
+			else if (kind == "host-ask" && id.Length > 0)
 			{
 				string           shell   = root?["shell"]?.GetValue<string>() ?? string.Empty;
 				string           command = root?["command"]?.GetValue<string>() ?? string.Empty;
@@ -1845,6 +1862,14 @@ public class DisplayScreen : IDisplay
 			if (evOpt == null)
 				continue;
 			ConsoleInputEvent inputEv = evOpt.Value;
+
+			// Unattended: nothing typed or clicked reaches the run, but Ctrl+C still stops it.
+			if (_unattended)
+			{
+				if (inputEv.Type == InputEventType.Key && inputEv.Key.Key == ConsoleKey.C && inputEv.Key.Modifiers.HasFlag(ConsoleModifiers.Control))
+					_requestExit?.Invoke();
+				continue;
+			}
 
 			if (inputEv.Type == InputEventType.MouseMove)
 			{

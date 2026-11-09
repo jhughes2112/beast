@@ -99,10 +99,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 			_transport.Config(initial.Id, "{\"kind\":\"no-models\"}");
 
 		// Restore all saved sessions to the client before the first handler starts so the F10 session
-		// tree shows the complete worktree history. The resumed root is replayed last inside
-		// SessionHandler.RunAsync so it becomes the active view.
+		// tree shows the complete worktree history, then the resumed root, which is then activated. That marks
+		// the end of the restore: Beast now knows every conversation, and shows the one it last had on screen
+		// (it keeps that itself), or this root.
 		if (!_ephemeral)
 			RestoreAllSessions(initial);
+		initial.ReplayToTransport();
+		_transport.SessionActivate(initial.Id);
 
 		Task rootHandlerTask = RunRootHandlerAsync(initial, ct);
 		await ReadInputAsync(ct);
@@ -495,7 +498,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		SessionHandler handler = new SessionHandler(initial);
 		initial.TryAttachHandler();
-		await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: true, ct);
+		await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: false, ct);
 	}
 
 	// ---- Session initialization ----

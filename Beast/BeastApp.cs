@@ -53,6 +53,8 @@ public class BeastApp : IAsyncDisposable
 	private readonly ClientLog      _log;
 	private readonly string         _agentName;
 	private readonly SessionRecord? _session;
+	// beast -p: nobody is at the keyboard, and Beast quits once the prompt's work is done.
+	private readonly bool _unattended;
 	// Set when the session is finished (the agent's /finish, or Finish after the connection was lost); on
 	// shutdown its container and its folder under the sessions folder are removed.
 	private bool _sessionFinished;
@@ -91,8 +93,9 @@ public class BeastApp : IAsyncDisposable
 	private readonly System.Collections.Concurrent.ConcurrentQueue<(FrameType Type, string SessionId, string Content)> _frameQueue
 		= new System.Collections.Concurrent.ConcurrentQueue<(FrameType, string, string)>();
 
-	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, ClientLog log, string agentName, SessionRecord? session)
+	public BeastApp(ILauncher agentContext, List<string> messages, IDisplay display, ClientLog log, string agentName, SessionRecord? session, bool unattended = false)
 	{
+		_unattended   = unattended;
 		_agentContext = agentContext;
 		_messages     = messages;
 		_display      = display;
@@ -119,7 +122,7 @@ public class BeastApp : IAsyncDisposable
 			// Still launching: there is no agent to ask yet, so abandon the launch.
 			_cts?.Cancel();
 		}
-		else if (!inWorktree)
+		else if (!inWorktree || _unattended)
 		{
 			_ = SendQuitAsync();
 		}
@@ -221,8 +224,7 @@ public class BeastApp : IAsyncDisposable
 			await _wsClient!.SendAsync("|/host-shells " + _hostRunner.ShellNames, _cts!.Token);
 	}
 
-	// Sends the queued steering messages (command-line switches, prompt, /quit) to the first session the
-	// agent announces, once.
+	// Sends the command-line switches and prompt to the conversation the agent shows at startup, as if typed there.
 	private async Task SendQueuedMessagesAsync(string sessionId)
 	{
 		foreach (string msg in _messages)
@@ -395,11 +397,6 @@ public class BeastApp : IAsyncDisposable
 			_activeSessionId = sessionId;
 			_display.Attach(state.Model);
 		}
-		if (!_queuedSent)
-		{
-			_queuedSent = true;
-			_           = SendQueuedMessagesAsync(sessionId);
-		}
 
 		NotifySessionList();
 		return state;
@@ -414,6 +411,16 @@ public class BeastApp : IAsyncDisposable
 			return;
 
 		_activeSessionId = sessionId;
+		// Once the restore is over, the conversation on screen is the one the next start shows.
+		if (_queuedSent && _session != null)
+		{
+			_session.Focus = sessionId;
+			try
+			{ SessionStore.Save(_session); }
+			catch (Exception)
+			{
+			}
+		}
 		_display.OnStreamEnd();
 		_display.SetAgentBusy(_busySessions.Contains(sessionId), state.BusyStartTick);
 		_display.SetActiveTime(state.StatsWorkedMs);
@@ -596,9 +603,21 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				// which it already does locally before the agent ever hears about it. This frame used
 				// to clear that list, which quietly erased every other session — sibling subagents,
 				// earlier compaction predecessors — that were still alive in the agent.
+				// The first one ends the restore: every conversation is known now, so the one last on screen is shown
+				// when it is still here, else this one, and the command line goes to it.
 				SessionState activated = EnsureSession(sessionId);
 				activated.Status       = SessionStatus.Ongoing;
-				SwitchActiveSession(sessionId);
+				if (!_queuedSent)
+				{
+					string focus = _session != null && _sessions.ContainsKey(_session.Focus) ? _session.Focus : sessionId;
+					SwitchActiveSession(focus);
+					_queuedSent = true;
+					_           = SendQueuedMessagesAsync(focus);
+				}
+				else
+				{
+					SwitchActiveSession(sessionId);
+				}
 				return;
 
 			case FrameType.SessionStatus:
@@ -671,6 +690,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				// Content "subagent" marks a sub-session completion; it gets its own sound.
 				Platform.Current.PlaySound(content == "subagent" ? _subagentSounds : _idleSounds);
 				NotifySessionList();
+				// Unattended, the run is over when nothing is working any more.
+				if (_unattended && _busySessions.Count == 0)
+					RequestGracefulExit();
 				break;
 
 			case FrameType.StreamStart:

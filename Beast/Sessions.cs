@@ -22,6 +22,8 @@ public sealed class SessionRecord
 	public readonly string   Name;
 	public readonly DateTime CreatedUtc;
 	public          DateTime LastUsedUtc;
+	// The conversation last on screen, which the session shows again when it next starts; empty for none yet.
+	public string Focus = string.Empty;
 	// The session's own directory, <SessionStore.Root>/<id> (normally ~/.beast/sessions/<id>).
 	public readonly string Dir;
 
@@ -116,13 +118,14 @@ public static class SessionStore
 			{
 				using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(path));
 				JsonElement root       = doc.RootElement;
-				string      folder     = root.TryGetProperty("folder",   out JsonElement f) ? f.GetString() ?? string.Empty : string.Empty;
-				string      worktree   = root.TryGetProperty("worktree", out JsonElement w) ? w.GetString() ?? string.Empty : string.Empty;
-				DateTime    created    = root.TryGetProperty("created",  out JsonElement c) && c.TryGetDateTime(out DateTime cv) ? cv.ToUniversalTime() : DateTime.MinValue;
-				DateTime    lastUsed   = root.TryGetProperty("lastUsed", out JsonElement l) && l.TryGetDateTime(out DateTime lv) ? lv.ToUniversalTime() : created;
-				string      name       = root.TryGetProperty("name",     out JsonElement n) ? n.GetString() ?? string.Empty : string.Empty;
+				string      folder     = root.TryGetProperty("folder",    out JsonElement f) ? f.GetString() ?? string.Empty : string.Empty;
+				string      worktree   = root.TryGetProperty("worktree",  out JsonElement w) ? w.GetString() ?? string.Empty : string.Empty;
+				DateTime    created    = root.TryGetProperty("created",   out JsonElement c) && c.TryGetDateTime(out DateTime cv) ? cv.ToUniversalTime() : DateTime.MinValue;
+				DateTime    lastUsed   = root.TryGetProperty("lastUsed",  out JsonElement l) && l.TryGetDateTime(out DateTime lv) ? lv.ToUniversalTime() : created;
+				string      name       = root.TryGetProperty("name",      out JsonElement n) ? n.GetString() ?? string.Empty : string.Empty;
+				string      focus      = root.TryGetProperty("focus",    out JsonElement fo) ? fo.GetString() ?? string.Empty : string.Empty;
 				if (folder.Length > 0)
-					session = new SessionRecord(Path.GetFileName(dir), dir, folder, worktree, created, lastUsed, name);
+					session = new SessionRecord(Path.GetFileName(dir), dir, folder, worktree, created, lastUsed, name) { Focus = focus };
 			}
 		}
 		catch (Exception)
@@ -144,6 +147,7 @@ public static class SessionStore
 			writer.WriteString("name",            session.Name);
 			writer.WriteString("created",   session.CreatedUtc);
 			writer.WriteString("lastUsed", session.LastUsedUtc);
+			writer.WriteString("focus",          session.Focus);
 			writer.WriteEndObject();
 		}
 		string path = Path.Combine(session.Dir, RecordFile);
