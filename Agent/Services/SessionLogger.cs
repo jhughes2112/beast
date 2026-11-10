@@ -213,6 +213,33 @@ public class SessionLogger
 		}
 	}
 
+	// What a successful request was billed, beside its outcome: the model that answered and where, the
+	// tokens the provider reported, the per-million prices they were charged at, the cost that came
+	// to, and the session's total afterwards. Everything needed to recompute one request is on its own
+	// lines, so a session's total can be added up from its log and held against the provider's bill.
+	public void WriteUsage(LlmModel model, TokenUsageInfo usage, decimal cost, decimal sessionTotal)
+	{
+		try
+		{
+			CostConfig    price = model.Config.Cost;
+			StringBuilder sb    = new StringBuilder();
+			sb.AppendLine($"billed:   {model.ConfigId} at {model.Endpoint}");
+			sb.AppendLine($"usage:    prompt {usage.PromptTokens} (cached {usage.CachedTokens}), completion {usage.CompletionTokens}");
+			sb.AppendLine($"prices:   input ${price.Input}, output ${price.Output}, cache read ${price.CacheRead}, cache write ${price.CacheWrite} per million tokens");
+			sb.AppendLine($"cost:     ${cost:0.000000}, session total ${sessionTotal:0.000000}");
+			sb.AppendLine();
+			string line = sb.ToString();
+			lock (_fileLock)
+			{
+				File.AppendAllText(_path, line);
+			}
+		}
+		catch (Exception ex)
+		{
+			Console.Error.WriteLine($"[SessionLogger] WriteUsage failed: {ex}");
+		}
+	}
+
 	// A one-line event in this session's own timeline: the things the client is told about a turn
 	// mid-flight — an empty response being retried, a forced tool call not honored, a reasoning
 	// feature being switched off — which otherwise reach the user and vanish. Without them the log

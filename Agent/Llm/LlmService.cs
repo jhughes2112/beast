@@ -300,6 +300,7 @@ public class LlmService
 					if (result.Outcome == ProtocolCallOutcome.Success)
 					{
 						conversation.RecordCost(result.Payload!.Cost);
+						conversation.QueryLog.WriteUsage(_model, result.Payload.Usage, result.Payload.Cost, conversation.TotalCost);
 
 						// A response cut off by the output limit is unfinished work: a half-written tool call
 						// cannot run, and retrying it at the same limit cuts it off the same way. If taking the
