@@ -562,7 +562,7 @@ public class ProtocolChatCompletions
 				if (TryDropReplayedReasoning((int)httpResponse.StatusCode, responseBody, model, logger))
 					continue;
 
-				bool reasoningConfigured = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) != null;
+				bool reasoningConfigured = ReasoningEffort.Sent(model.Config.ReasoningEffort) != null;
 				if (TryAdaptToError(httpResponse, responseBody, reasoningConfigured))
 				{
 					continue;
@@ -780,7 +780,7 @@ httpResponse);
 
 		// Advertise the friendly reasoningEffort word in whichever form the backend currently accepts.
 		// _reasoningMode is advanced by TryAdaptToError as forms are rejected; mode 2 sends nothing.
-		string? effort = ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort);
+		string? effort = ReasoningEffort.Sent(model.Config.ReasoningEffort);
 		if (effort != null)
 		{
 			if (_reasoningMode == 0)

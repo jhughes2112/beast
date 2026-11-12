@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Nodes;
 
@@ -24,20 +25,20 @@ public class LlmModel
 		Config   = config;
 	}
 
-	// The same model with thinking turned off. Returns a copy — the registry's own instance is
-	// shared by every session, so the effort setting is never mutated in place. Used where a call
-	// is a mechanical transformation rather than a problem to solve (compaction), and reasoning
-	// tokens would only spend the output budget on deliberation nobody reads.
+	// The same model thinking as little as it can: thinking off, or its lowest option when the endpoint
+	// says its thinking cannot be turned off. Returns a copy — the registry's own instance is shared by
+	// every session, so the effort setting is never mutated in place. Used where a call is a mechanical
+	// transformation rather than a problem to solve (compaction), and reasoning tokens would only spend
+	// the output budget on deliberation nobody reads.
 	public LlmModel WithoutReasoning()
 	{
-		// Blank no longer means "off" — it means "nobody configured this", which now reads as the
-		// default level (see ReasoningEffort.DefaultWord). Off is the explicit word, both in the test
-		// below and in the copy, or a model with no configured effort would keep right on thinking.
-		if (ReasoningEffort.Parse(Config.ReasoningEffort) == ReasoningLevel.None)
+		List<string> options = Config.ReasoningEfforts ?? new List<string>();
+		string       least   = Config.ThinkingRequired && options.Count > 0 ? options[0] : ReasoningEffort.Off;
+		if (string.Equals(Config.ReasoningEffort, least, StringComparison.OrdinalIgnoreCase))
 			return this;
 
 		ModelConfig quiet     = CopyConfig();
-		quiet.ReasoningEffort = "none";
+		quiet.ReasoningEffort = least;
 		// Nobody reads the thinking on a mechanical call, so do not pay to have it summarized.
 		quiet.ReasoningSummaries = false;
 		return new LlmModel(ConfigId, Endpoint, ApiKey, Extras, Headers, quiet);
@@ -61,6 +62,10 @@ public class LlmModel
 			ContextWindow      = Config.ContextWindow,
 			MaxOutputTokens    = Config.MaxOutputTokens,
 			ReasoningEffort    = Config.ReasoningEffort,
+			ReasoningEfforts   = Config.ReasoningEfforts,
+			EffortsListed      = Config.EffortsListed,
+			DefaultEffort      = Config.DefaultEffort,
+			ThinkingRequired   = Config.ThinkingRequired,
 			ReasoningSummaries = Config.ReasoningSummaries,
 			// Carried: a model that needs its own reasoning replayed needs it on every call.
 			RetainReasoning = Config.RetainReasoning,

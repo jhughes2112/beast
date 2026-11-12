@@ -24,6 +24,38 @@ public static class ConfigOverlayTests
 		TestSampling(ctx);
 		TestFailedTestStaysOnPage(ctx);
 		TestCancelledTestAndUnchangedPage(ctx);
+		TestEffortToggle(ctx);
+	}
+
+	// Effort is chosen, not typed: Enter steps through none and the levels the endpoint lists for the
+	// model (low, medium, high when it lists none), starting from the level in force, and wraps.
+	private static void TestEffortToggle(TestContext ctx)
+	{
+		string Saved(string modelJson, int presses)
+		{
+			List<string>  sent    = new List<string>();
+			ConfigOverlay overlay = new ConfigOverlay(sent.Add);
+			overlay.Open();
+			overlay.OnConfigFrame("{\"kind\":\"catalog\",\"baseUrl\":\"http://x/v1\",\"models\":[" + modelJson + "]}");
+			Press(overlay, ConsoleKey.Enter);
+			for (int i = 0; i < 5; i++)
+				Press(overlay, ConsoleKey.DownArrow);
+			for (int i = 0; i < presses; i++)
+				Press(overlay, ConsoleKey.Enter);
+			LeavePassing(overlay, sent);
+			Press(overlay, ConsoleKey.Escape);
+			return SavedEntry(sent, "m")?["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
+		}
+
+		const string Listed   = "{\"id\":\"m\",\"name\":\"m\",\"contextWindow\":1000,\"costInput\":0,\"costOutput\":0,\"modalities\":[\"text\"],\"efforts\":[\"low\",\"medium\",\"xhigh\"]}";
+		const string Unlisted = "{\"id\":\"m\",\"name\":\"m\",\"contextWindow\":1000,\"costInput\":0,\"costOutput\":0,\"modalities\":[\"text\"]}";
+		const string Required = "{\"id\":\"m\",\"name\":\"m\",\"contextWindow\":1000,\"costInput\":0,\"costOutput\":0,\"modalities\":[\"text\"],\"efforts\":[\"low\",\"medium\",\"xhigh\"],\"thinkingRequired\":true}";
+
+		ctx.AssertEqual("xhigh", Saved(Listed, 1), "ConfigOverlay: effort steps from the default medium to the model's next level");
+		ctx.AssertEqual("none", Saved(Listed, 2), "ConfigOverlay: past the top it wraps to none");
+		ctx.AssertEqual("low",  Saved(Listed, 3), "ConfigOverlay: then up from the bottom");
+		ctx.AssertEqual("high", Saved(Unlisted, 1), "ConfigOverlay: a model whose endpoint lists nothing steps through low, medium, high");
+		ctx.AssertEqual("low",  Saved(Required, 2), "ConfigOverlay: a model whose thinking cannot be turned off skips none");
 	}
 
 	// A failed test keeps the user on the page, with nothing saved and the reason shown; Esc again leaves.

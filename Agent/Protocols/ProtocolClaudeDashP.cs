@@ -253,7 +253,7 @@ public sealed class ProtocolClaudeDashP
 			// compaction from ever rewriting the conversation underneath it.
 			"--autocompact", "1M"
 		};
-		string? effort = ReasoningEffort.AnthropicEffort(model.Config.ReasoningEffort);
+		string? effort = ReasoningEffort.Sent(model.Config.ReasoningEffort);
 		if (effort != null)
 		{
 			args.Add("--effort");

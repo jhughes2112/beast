@@ -1,215 +1,172 @@
 using System;
+using System.Collections.Generic;
 
 
-// The reasoning/thinking level configured for a model, in ascending order. None disables extended
-// thinking entirely.
-public enum ReasoningLevel
-{
-	None,
-	Minimal,
-	Low,
-	Medium,
-	High,
-	Max
-}
-
-// Maps the single human word from settings (reasoningEffort) onto each provider's native reasoning
-// control. The user only ever deals in words (none..max); the per-provider token budgets and effort
-// strings are produced here and never surfaced. Each provider works differently, so there is one
-// translator per wire shape: Anthropic budgets tokens, the OpenAI Responses and Chat Completions APIs
-// take an effort word, and Chat Completions additionally needs softer fallbacks (see ProtocolChatCompletions).
+// A model's reasoning effort is one of ITS OWN options, stored and sent exactly as written. The options
+// come from the model's endpoint wherever it lists them (ModelCatalog: Anthropic's capabilities.effort,
+// OpenRouter's supported_efforts, a server's reasoning.efforts, the ChatGPT backend's and the Claude Code
+// CLI's per-model levels), and otherwise from what the protocol itself takes (StandardWords,
+// AnthropicBudgetWords, ClaudeCodeWords). There is no shared ladder of levels to translate between: Qwen3.8
+// offers low, medium and xhigh, an OpenAI model may stop at high, an Anthropic one goes to max, and each
+// is shown and sent its own words. Only Anthropic's budgeted thinking needs a number, so its protocol
+// names map to budget_tokens here.
+//
+// "none" is the one word that is not an option: it turns thinking off, which each protocol states its
+// own way (no effort field, enable_thinking false), and is offered unless the endpoint says the model's
+// thinking cannot be turned off.
 public static class ReasoningEffort
 {
-	// What an unconfigured model thinks at. A blank setting means "nobody has said", not "never think":
-	// the reasoning models are worth far more with their reasoning on, and a user who wants one quiet
-	// says so with /effort none — which persists as the explicit word and is honored as None below.
-	// A model that cannot reason at all learns it from the provider's first refusal and is written back
-	// as "none", so the default costs one rejected request per such model, once, ever.
-	public const string DefaultWord = "medium";
+	public const string Off = "none";
 
-	// The word actually in force for a model: its configured one, or the default when it has none.
-	// Applied at load time (LlmRegistry) so every reader downstream sees a settled value.
-	public static string Effective(string? word)
+	// The words every Chat Completions and Responses endpoint takes, for a model whose endpoint lists none.
+	private static readonly string[] kStandardWords = { "low", "medium", "high" };
+
+	// Anthropic's effort words in its own order, lowest first: the order capabilities.effort's keys do not
+	// carry, and the levels the Claude Code CLI's --effort takes.
+	private static readonly string[] kAnthropicOrder = { "low", "medium", "high", "xhigh", "max" };
+
+	// Anthropic's budgeted thinking (thinking.type enabled, budget_tokens) for a model whose catalog lists no
+	// effort words. Each name is also an adaptive-thinking effort word, so the setting still holds when a
+	// model turns out to want output_config.effort instead (ProtocolAnthropic.WantsAdaptiveThinking).
+	private static readonly (string Name, int Tokens)[] kAnthropicBudgets = { ("low", 4096), ("medium", 8192), ("high", 16384), ("max", 32000) };
+
+	public static List<string> StandardWords()
 	{
-		return string.IsNullOrEmpty(word) ? DefaultWord : word;
+		return new List<string>(kStandardWords);
 	}
 
-	// True when the word names a level this ladder knows. Used by /effort to refuse a typo outright
-	// rather than let Parse silently read it as None and quietly switch thinking off.
-	public static bool IsKnownWord(string? word)
+	public static List<string> ClaudeCodeWords()
 	{
-		string normalized = (word ?? string.Empty).Trim().ToLowerInvariant();
-		if (normalized == "none" || normalized == "off")
-			return true;
-		return Parse(normalized) != ReasoningLevel.None;
+		return new List<string>(kAnthropicOrder);
 	}
 
-	// Parses a settings word into a level. Common synonyms are accepted; anything unrecognized reads as
-	// None so a typo quietly disables thinking instead of erroring the whole model.
-	public static ReasoningLevel Parse(string? word)
+	public static List<string> AnthropicBudgetWords()
 	{
-		ReasoningLevel level;
-		string         normalized = (word ?? string.Empty).Trim().ToLowerInvariant();
-		switch (normalized)
+		List<string> names = new List<string>();
+		foreach ((string name, int _) in kAnthropicBudgets)
+			names.Add(name);
+		return names;
+	}
+
+	// Anthropic words lowest first: the known ones in Anthropic's order, then any word it adds later, as given.
+	public static List<string> InAnthropicOrder(IEnumerable<string> words)
+	{
+		List<string> given  = new List<string>(words);
+		List<string> result = new List<string>();
+		foreach (string known in kAnthropicOrder)
 		{
-			case "off":
-				level = ReasoningLevel.None;
-				break;
-			case "minimal":
-			case "min":
-			case "minimum":
-			case "lowest":
-				level = ReasoningLevel.Minimal;
-				break;
-			case "low":
-				level = ReasoningLevel.Low;
-				break;
-			case "medium":
-			case "med":
-			case "default":
-			case "normal":
-				level = ReasoningLevel.Medium;
-				break;
-			case "high":
-				level = ReasoningLevel.High;
-				break;
-			case "max":
-			case "maximum":
-			case "highest":
-			case "xhigh":
-				level = ReasoningLevel.Max;
-				break;
-			default:
-				level = ReasoningLevel.None;
-				break;
+			if (given.Contains(known))
+				result.Add(known);
 		}
-		return level;
-	}
-
-	// The canonical word shown after the model name while it is thinking. None shows nothing.
-	public static string DisplayWord(string? word)
-	{
-		ReasoningLevel level = Parse(word);
-		string         result;
-		switch (level)
+		foreach (string word in given)
 		{
-			case ReasoningLevel.Minimal:
-				result = "minimal";
-				break;
-			case ReasoningLevel.Low:
-				result = "low";
-				break;
-			case ReasoningLevel.Medium:
-				result = "medium";
-				break;
-			case ReasoningLevel.High:
-				result = "high";
-				break;
-			case ReasoningLevel.Max:
-				result = "max";
-				break;
-			default:
-				result = string.Empty;
-				break;
+			if (!result.Contains(word))
+				result.Add(word);
 		}
 		return result;
+	}
+
+	public static bool IsOff(string? word)
+	{
+		return string.IsNullOrEmpty(word) || string.Equals(word, Off, StringComparison.OrdinalIgnoreCase);
+	}
+
+	// The option a model thinks at when nobody has chosen one: the endpoint's stated default when it is one
+	// of the options, else the option that names the middle (medium, med, mid, middle and the like), else
+	// the middle option by position. Off for a model with no options.
+	public static string DefaultOf(IReadOnlyList<string> options, string? stated)
+	{
+		string? middle = null;
+		foreach (string option in options)
+		{
+			if (middle == null && NamesMiddle(option))
+				middle = option;
+		}
+
+		string result;
+		if (options.Count == 0)
+			result = Off;
+		else if (!string.IsNullOrEmpty(stated) && Contains(options, stated))
+			result = Spelled(options, stated);
+		else if (middle != null)
+			result = middle;
+		else
+			result = options[options.Count / 2];
+		return result;
+	}
+
+	// True for an option whose word says it is the middle setting: medium, med, mid, middle, midrange,
+	// moderate, normal, standard or balanced.
+	private static bool NamesMiddle(string option)
+	{
+		string word = option.Trim().ToLowerInvariant();
+		return word.StartsWith("med", StringComparison.Ordinal) || word.StartsWith("mid", StringComparison.Ordinal)
+			|| word == "moderate" || word == "normal" || word == "standard" || word == "balanced";
+	}
+
+	// The setting in force: none when chosen and allowed, the chosen option as the model spells it, or the
+	// default for a blank setting or one the model does not offer (an older setting, or another model's word).
+	public static string InForce(string? setting, IReadOnlyList<string> options, string defaultOption, bool thinkingRequired)
+	{
+		string result;
+		if (string.Equals(setting, Off, StringComparison.OrdinalIgnoreCase) && (!thinkingRequired || options.Count == 0))
+			result = Off;
+		else if (!string.IsNullOrEmpty(setting) && Contains(options, setting))
+			result = Spelled(options, setting);
+		else
+			result = defaultOption;
+		return result;
+	}
+
+	// Makes a model's effort concrete as it is loaded: its options (the endpoint's, else its protocol's
+	// words) and its setting settled to none or one of them. Every reader downstream then sends the
+	// setting as it stands.
+	public static void Settle(ModelConfig config, List<string> protocolWords)
+	{
+		config.EffortsListed      = config.EffortsListed || config.ReasoningEfforts != null;
+		config.ReasoningEfforts ??= protocolWords;
+		config.ReasoningEffort    = InForce(config.ReasoningEffort, config.ReasoningEfforts, DefaultOf(config.ReasoningEfforts, config.DefaultEffort), config.ThinkingRequired);
+	}
+
+	// What /config's toggle and /effort offer: none first (unless the model's thinking cannot be turned
+	// off), then the model's options, lowest first.
+	public static List<string> Choices(IReadOnlyList<string> options, bool thinkingRequired)
+	{
+		List<string> choices = new List<string>();
+		if (!thinkingRequired || options.Count == 0)
+			choices.Add(Off);
+		choices.AddRange(options);
+		return choices;
+	}
+
+	// The effort word to send: the setting itself, or null when thinking is off (the field is then omitted
+	// or stated off, as each protocol does).
+	public static string? Sent(string? setting)
+	{
+		return IsOff(setting) ? null : setting;
 	}
 
 	// " (high)" style suffix appended to the model name in the status display; empty when thinking is off.
-	public static string DisplaySuffix(string? word)
+	public static string DisplaySuffix(string? setting)
 	{
-		string display = DisplayWord(word);
-		string result  = string.IsNullOrEmpty(display) ? string.Empty : $" ({display})";
-		return result;
+		return IsOff(setting) ? string.Empty : $" ({setting})";
 	}
 
-	// The OpenAI-style effort token shared by the Responses API (reasoning.effort) and Chat Completions
-	// (reasoning_effort). Returns null for None so the field is omitted. Max collapses to "high": no
-	// portable token above it exists across providers.
-	public static string? OpenAiEffort(string? word)
+	// The Anthropic thinking budget in tokens for one of its budget names, clamped to leave room for the
+	// visible answer within the turn's max_tokens. Returns 0 when thinking is off or there is no room.
+	// Anthropic requires a budget of at least 1024 and strictly less than max_tokens. A word that is not a
+	// budget name (a model's own effort word, met before its catalog was read) gets medium's budget.
+	public static int AnthropicBudget(string? setting, int maxTokens)
 	{
-		ReasoningLevel level = Parse(word);
-		string?        result;
-		switch (level)
+		int target = 0;
+		if (!IsOff(setting))
 		{
-			case ReasoningLevel.Minimal:
-				result = "minimal";
-				break;
-			case ReasoningLevel.Low:
-				result = "low";
-				break;
-			case ReasoningLevel.Medium:
-				result = "medium";
-				break;
-			case ReasoningLevel.High:
-				result = "high";
-				break;
-			case ReasoningLevel.Max:
-				result = "high";
-				break;
-			default:
-				result = null;
-				break;
-		}
-		return result;
-	}
-
-	// The Anthropic output_config.effort word used by models that take ADAPTIVE thinking instead of a
-	// token budget (Opus 4.6 and later reject "thinking.type.enabled" outright). Null for None so the
-	// field is omitted. Minimal has no counterpart in this ladder and reads as low.
-	public static string? AnthropicEffort(string? word)
-	{
-		ReasoningLevel level = Parse(word);
-		string?        result;
-		switch (level)
-		{
-			case ReasoningLevel.Minimal:
-			case ReasoningLevel.Low:
-				result = "low";
-				break;
-			case ReasoningLevel.Medium:
-				result = "medium";
-				break;
-			case ReasoningLevel.High:
-				result = "high";
-				break;
-			case ReasoningLevel.Max:
-				result = "max";
-				break;
-			default:
-				result = null;
-				break;
-		}
-		return result;
-	}
-
-	// The Anthropic thinking budget in tokens, clamped to leave room for the visible answer within the
-	// turn's max_tokens. Returns 0 when thinking is off or there is no room. Anthropic requires a budget
-	// of at least 1024 and strictly less than max_tokens.
-	public static int AnthropicBudget(string? word, int maxTokens)
-	{
-		ReasoningLevel level = Parse(word);
-		int            target;
-		switch (level)
-		{
-			case ReasoningLevel.Minimal:
-				target = 1024;
-				break;
-			case ReasoningLevel.Low:
-				target = 4096;
-				break;
-			case ReasoningLevel.Medium:
-				target = 8192;
-				break;
-			case ReasoningLevel.High:
-				target = 16384;
-				break;
-			case ReasoningLevel.Max:
-				target = 32000;
-				break;
-			default:
-				target = 0;
-				break;
+			target = 8192;
+			foreach ((string name, int tokens) in kAnthropicBudgets)
+			{
+				if (string.Equals(name, setting, StringComparison.OrdinalIgnoreCase))
+					target = tokens;
+			}
 		}
 
 		int budget;
@@ -226,5 +183,28 @@ public static class ReasoningEffort
 				budget = 1024;
 		}
 		return budget;
+	}
+
+	private static bool Contains(IReadOnlyList<string> options, string word)
+	{
+		bool found = false;
+		foreach (string option in options)
+		{
+			if (string.Equals(option, word, StringComparison.OrdinalIgnoreCase))
+				found = true;
+		}
+		return found;
+	}
+
+	// The option as the model spells it, for a word matched without regard to case.
+	private static string Spelled(IReadOnlyList<string> options, string word)
+	{
+		string result = word;
+		foreach (string option in options)
+		{
+			if (string.Equals(option, word, StringComparison.OrdinalIgnoreCase))
+				result = option;
+		}
+		return result;
 	}
 }

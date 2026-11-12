@@ -233,11 +233,33 @@ public class ModelConfig
 	[JsonPropertyName("maxOutputTokens")]
 	public int MaxOutputTokens { get; set; }
 
-	// Friendly reasoning/thinking level: none, minimal, low, medium, high, max (and common synonyms).
-	// The word is translated to each provider's native control in code (Anthropic thinking budget,
-	// OpenAI reasoning effort, etc.); the user never sees the underlying numbers. Empty means none.
+	// The reasoning effort: "none" (thinking off) or one of ReasoningEfforts, sent exactly as written.
+	// Blank means the default. Settled when the model is loaded (LlmRegistry), so a loaded model always
+	// holds none or one of its own options.
 	[JsonPropertyName("reasoningEffort")]
 	public string ReasoningEffort { get; set; } = string.Empty;
+
+	// The model's effort options, lowest first, exactly as its endpoint words them; where the endpoint
+	// lists none, the words its protocol takes (see ReasoningEffort). An auto model's come from its
+	// endpoint's catalog; a manual model may state its own here, and otherwise gets its protocol's.
+	[JsonPropertyName("reasoningEfforts")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public List<string>? ReasoningEfforts { get; set; } = null;
+
+	// True when ReasoningEfforts came from the endpoint (or settings) rather than the protocol's words.
+	// Known only once loaded, and never written.
+	[JsonIgnore]
+	public bool EffortsListed { get; set; } = false;
+
+	// The option the endpoint says the model uses when none is chosen; null when it does not say.
+	[JsonPropertyName("defaultEffort")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public string? DefaultEffort { get; set; } = null;
+
+	// True when the endpoint says this model's thinking cannot be turned off, so effort none is not offered.
+	[JsonPropertyName("thinkingRequired")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+	public bool ThinkingRequired { get; set; } = false;
 
 	// Ask the provider to summarize this model's thinking so the client can show it while the turn
 	// runs, instead of a silent pause. On by default — it is the only window into the slowest and

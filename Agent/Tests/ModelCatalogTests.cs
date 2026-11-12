@@ -78,6 +78,8 @@ public static class ModelCatalogTests
 		TestChatCompletionsAttachmentParts(ctx);
 		TestMediaKinds(ctx);
 		TestAnthropicThinkingShapes(ctx);
+		TestEffortLevels(ctx);
+		TestEffortCatalogShapes(ctx);
 		TestPathMarkerStripping(ctx);
 		TestUnansweredToolCallRepair(ctx);
 		TestAttachmentsSurviveFlush(ctx);
@@ -279,15 +281,13 @@ public static class ModelCatalogTests
 	// reported exactly once — that report is what keeps it from being re-earned every run.
 	private static void TestEffortDefaultAndRefusal(TestContext ctx)
 	{
-		ctx.AssertEqual("medium", ReasoningEffort.Effective(string.Empty), "Effort: a blank setting means the default, not silence");
-		ctx.AssertEqual("medium", ReasoningEffort.Effective(null), "Effort: so does a missing one");
-		ctx.AssertEqual("low", ReasoningEffort.Effective("low"), "Effort: a configured word wins");
-		ctx.AssertEqual("none", ReasoningEffort.Effective("none"), "Effort: 'none' is a choice and survives — it is not 'unset'");
-		ctx.AssertEqual(ReasoningLevel.None, ReasoningEffort.Parse("none"), "Effort: and it still parses as no thinking");
-
-		ctx.Assert(ReasoningEffort.IsKnownWord("max"), "Effort: known words are accepted by /effort");
-		ctx.Assert(ReasoningEffort.IsKnownWord("none"), "Effort: including the one that turns thinking off");
-		ctx.Assert(!ReasoningEffort.IsKnownWord("mediun"), "Effort: a typo is refused rather than silently read as none");
+		List<string> standard = ReasoningEffort.StandardWords();
+		string       dflt     = ReasoningEffort.DefaultOf(standard, null);
+		ctx.AssertEqual("medium", ReasoningEffort.InForce(string.Empty, standard, dflt, false), "Effort: a blank setting means the default, not silence");
+		ctx.AssertEqual("medium", ReasoningEffort.InForce(null, standard, dflt, false), "Effort: so does a missing one");
+		ctx.AssertEqual("low", ReasoningEffort.InForce("low", standard, dflt, false), "Effort: a configured option wins");
+		ctx.AssertEqual("none", ReasoningEffort.InForce("none", standard, dflt, false), "Effort: 'none' is a choice and survives — it is not 'unset'");
+		ctx.AssertNull(ReasoningEffort.Sent("none"), "Effort: and sends no effort");
 
 		// The refusal path: the first 400 naming the parameter switches reasoning off for the
 		// instance and reports it, so nothing pays to discover it a second time.
@@ -296,9 +296,9 @@ public static class ModelCatalogTests
 		{
 			Id              = "gpt-4o-mini",
 			Name            = "gpt-4o-mini",
-			ContextWindow   = 128000,
-			ReasoningEffort = ReasoningEffort.Effective(string.Empty)
+			ContextWindow   = 128000
 		};
+		ReasoningEffort.Settle(config, ReasoningEffort.StandardWords());
 		LlmModel    model  = new LlmModel("gpt-4o-mini", "https://api.openai.com/v1/responses", "key",
 			new List<JsonObject>(), new List<JsonObject>(), config);
 
@@ -456,14 +456,16 @@ public static class ModelCatalogTests
 	// 400 that says so has to be recognized.
 	private static void TestAnthropicThinkingShapes(TestContext ctx)
 	{
-		ctx.AssertEqual("low", ReasoningEffort.AnthropicEffort("minimal"), "AnthropicEffort: minimal collapses to low");
-		ctx.AssertEqual("medium", ReasoningEffort.AnthropicEffort("medium"), "AnthropicEffort: medium");
-		ctx.AssertEqual("max", ReasoningEffort.AnthropicEffort("max"), "AnthropicEffort: max survives (unlike the OpenAI ladder)");
-		ctx.AssertNull(ReasoningEffort.AnthropicEffort(""), "AnthropicEffort: no effort configured yields no field");
-		ctx.AssertNull(ReasoningEffort.AnthropicEffort("none"), "AnthropicEffort: none yields no field");
+		ctx.AssertEqual("xhigh", ReasoningEffort.Sent("xhigh"), "Anthropic effort: the model's own word is sent as it is");
+		ctx.AssertNull(ReasoningEffort.Sent(""), "Anthropic effort: no effort configured yields no field");
+		ctx.AssertNull(ReasoningEffort.Sent("none"), "Anthropic effort: none yields no field");
 
-		// The budgeted form must still be produced for models that take it.
-		ctx.Assert(ReasoningEffort.AnthropicBudget("medium", 16384) > 0, "AnthropicBudget: budgeted form still available");
+		// The budgeted form must still be produced for models that take it: its protocol's names, as numbers.
+		ctx.AssertEqual("low,medium,high,max", string.Join(",", ReasoningEffort.AnthropicBudgetWords()), "AnthropicBudget: the protocol's names");
+		ctx.AssertEqual(4096, ReasoningEffort.AnthropicBudget("low", 64000), "AnthropicBudget: low");
+		ctx.AssertEqual(32000, ReasoningEffort.AnthropicBudget("max", 64000), "AnthropicBudget: max");
+		ctx.AssertEqual(15872, ReasoningEffort.AnthropicBudget("high", 16384), "AnthropicBudget: clamped to leave room for the answer");
+		ctx.AssertEqual(0, ReasoningEffort.AnthropicBudget("none", 64000), "AnthropicBudget: none thinks not at all");
 
 		string real = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"\\\"thinking.type.enabled\\\" is not supported for this model. Use \\\"thinking.type.adaptive\\\" and \\\"output_config.effort\\\" to control thinking behavior.\"}}";
 		bool wants = (bool)Reflect.Static(typeof(ProtocolAnthropic), "WantsAdaptiveThinking", new[] { typeof(string) }, new object[] { real })!;
@@ -738,6 +740,120 @@ public static class ModelCatalogTests
 		ctx.AssertEqual(200000, opus.ContextWindow, "ParseEntry: zero max_input_tokens placeholder falls to the default");
 		ctx.AssertEqual(0, opus.MaxOutputTokens, "ParseEntry: zero max_tokens placeholder stays unknown");
 		ctx.Assert(opus.Created > 0, "ParseEntry: created_at parsed on the 2026 shape");
+	}
+
+	// A model's effort is one of its own options, sent exactly as written: no ladder, no fitting, no
+	// synonyms. A blank setting, or one the model does not offer, runs its default.
+	private static void TestEffortLevels(TestContext ctx)
+	{
+		List<string> qwen = new List<string> { "low", "medium", "xhigh" };
+		ctx.AssertEqual("xhigh", ReasoningEffort.InForce("xhigh", qwen, "medium", false), "InForce: an offered option is kept as it is");
+		ctx.AssertEqual("medium", ReasoningEffort.InForce("high", qwen, "medium", false), "InForce: one the model does not offer runs the default, not a guess at its neighbour");
+		ctx.AssertEqual("xhigh", ReasoningEffort.InForce("XHIGH", qwen, "medium", false), "InForce: matched without regard to case, kept as the model spells it");
+		ctx.AssertEqual("low", ReasoningEffort.InForce("none", qwen, "low", true), "InForce: none is refused where thinking cannot be turned off");
+
+		ctx.AssertEqual("xhigh", ReasoningEffort.DefaultOf(qwen, "xhigh"), "DefaultOf: the endpoint's stated default");
+		ctx.AssertEqual("medium", ReasoningEffort.DefaultOf(qwen, "bogus"), "DefaultOf: else medium when offered");
+		ctx.AssertEqual("mid", ReasoningEffort.DefaultOf(new List<string> { "low", "mid", "high", "max" }, null), "DefaultOf: or mid, where the middle by position would be high");
+		ctx.AssertEqual("Med", ReasoningEffort.DefaultOf(new List<string> { "Light", "Med", "Heavy", "Extreme" }, null), "DefaultOf: or Med, as the model spells it");
+		ctx.AssertEqual("balanced", ReasoningEffort.DefaultOf(new List<string> { "fast", "balanced", "thorough", "exhaustive" }, null), "DefaultOf: or a word like balanced");
+		ctx.AssertEqual("deep", ReasoningEffort.DefaultOf(new List<string> { "quick", "deep", "deeper" }, null), "DefaultOf: else the middle option, whatever its words");
+		ctx.AssertEqual("none", ReasoningEffort.DefaultOf(new List<string>(), null), "DefaultOf: a model with no options thinks not at all");
+
+		ctx.AssertEqual("none,low,medium,xhigh", string.Join(",", ReasoningEffort.Choices(qwen, false)), "Choices: none, then the model's options");
+		ctx.AssertEqual("low,medium,xhigh", string.Join(",", ReasoningEffort.Choices(qwen, true)), "Choices: no none where thinking cannot be turned off");
+		ctx.AssertEqual("low,medium,high,xhigh,max,ultra", string.Join(",", ReasoningEffort.InAnthropicOrder(new[] { "max", "ultra", "high", "low", "xhigh", "medium" })),
+			"InAnthropicOrder: Anthropic's own order, a word it adds later kept at the end");
+
+		ctx.AssertEqual(" (xhigh)", ReasoningEffort.DisplaySuffix("xhigh"), "DisplaySuffix: the setting, as sent");
+		ctx.AssertEqual(string.Empty, ReasoningEffort.DisplaySuffix("none"), "DisplaySuffix: nothing when thinking is off");
+
+		// Settling, as the registry does on load: the protocol's words where none are stated, the default for a blank.
+		ModelConfig manual = new ModelConfig { Id = "m", Name = "m", ReasoningEffort = "max" };
+		ReasoningEffort.Settle(manual, ModelCatalog.ProtocolEfforts("https://api.anthropic.com/v1/messages"));
+		ctx.AssertEqual("max", manual.ReasoningEffort, "Settle: an Anthropic budget name is kept");
+		ctx.Assert(!manual.EffortsListed, "Settle: and its options are known to be the protocol's words");
+		ModelConfig stated = new ModelConfig { Id = "m", Name = "m", ReasoningEfforts = new List<string> { "low", "xhigh" }, ReasoningEffort = "medium" };
+		ReasoningEffort.Settle(stated, ReasoningEffort.StandardWords());
+		ctx.AssertEqual("xhigh", stated.ReasoningEffort, "Settle: options stated in settings win, and an unoffered setting runs the middle one");
+		ctx.Assert(stated.EffortsListed, "Settle: stated options count as listed");
+
+		// Thinking as little as the model can: off, or its lowest option where it cannot be turned off.
+		ModelConfig required = new ModelConfig { Id = "r", Name = "r", ReasoningEfforts = new List<string> { "low", "high" }, ThinkingRequired = true, ReasoningEffort = "high" };
+		LlmModel    quiet    = new LlmModel("r", "http://x/v1/chat/completions", "k", new List<JsonObject>(), new List<JsonObject>(), required).WithoutReasoning();
+		ctx.AssertEqual("low", quiet.Config.ReasoningEffort, "WithoutReasoning: the lowest option where thinking cannot be turned off");
+	}
+
+	// Each endpoint family's way of listing a model's options, kept in its own words; where it lists none,
+	// its protocol's words.
+	private static void TestEffortCatalogShapes(TestContext ctx)
+	{
+		DiscoveredModel Parse(string json, bool anthropic)
+		{
+			return (DiscoveredModel)Reflect.Static(typeof(ModelCatalog), "ParseEntry", new[] { typeof(JsonNode), typeof(bool) }, new object[] { JsonNode.Parse(json)!, anthropic })!;
+		}
+		string Words(DiscoveredModel model) => string.Join(",", model.Efforts ?? new List<string>());
+
+		DiscoveredModel claude = Parse("""
+			{"id":"claude-opus-5-5","capabilities":{
+			  "effort":{"supported":true,"high":{"supported":true},"low":{"supported":true},"max":{"supported":true},"medium":{"supported":true},"xhigh":{"supported":false}},
+			  "thinking":{"supported":true,"types":{"adaptive":{"supported":true},"disabled":{"supported":false}}}}}
+			""", true);
+		ctx.AssertEqual("low,medium,high,max", Words(claude), "Efforts: Anthropic's capabilities.effort in Anthropic's order, unsupported ones left out");
+		ctx.Assert(claude.EffortsListed, "Efforts: listed by the endpoint");
+		ctx.Assert(claude.ThinkingRequired, "Efforts: Anthropic's thinking.types.disabled false means thinking cannot be turned off");
+
+		DiscoveredModel budget = Parse("""{"id":"claude-old","capabilities":{"effort":{"supported":false},"thinking":{"supported":true,"types":{"disabled":{"supported":true}}}}}""", true);
+		ctx.AssertEqual("low,medium,high,max", Words(budget), "Efforts: an Anthropic model without effort words gets its protocol's budget names");
+		ctx.Assert(!budget.EffortsListed && !budget.ThinkingRequired, "Efforts: known to be the protocol's, and thinking can be turned off");
+
+		DiscoveredModel unthinking = Parse("""{"id":"claude-tiny","capabilities":{"thinking":{"supported":false}}}""", true);
+		ctx.AssertEqual(string.Empty, Words(unthinking), "Efforts: an Anthropic model that cannot think has no options");
+
+		DiscoveredModel routed = Parse("""{"id":"openai/gpt-x","reasoning":{"supported_efforts":["high","medium","low","minimal"],"default_effort":"medium","mandatory":true}}""", false);
+		ctx.AssertEqual("minimal,low,medium,high", Words(routed), "Efforts: OpenRouter's supported_efforts, highest first in, lowest first out");
+		ctx.AssertEqual("medium", routed.DefaultEffort, "Efforts: OpenRouter's default_effort");
+		ctx.Assert(routed.ThinkingRequired, "Efforts: OpenRouter's mandatory");
+
+		DiscoveredModel anyLevel = Parse("""{"id":"x/any","reasoning":{"supported_efforts":null,"default_effort":"medium","mandatory":false}}""", false);
+		ctx.AssertEqual("minimal,low,medium,high,xhigh,max", Words(anyLevel), "Efforts: OpenRouter's null allowlist is every word its gateway takes");
+
+		DiscoveredModel splash = Parse("""{"id":"splash/qwen","reasoning":{"thinks":true,"efforts":["low","medium","xhigh"],"default":"xhigh"}}""", false);
+		ctx.AssertEqual("low,medium,xhigh", Words(splash), "Efforts: a server's reasoning.efforts, from the model's template");
+		ctx.AssertEqual("xhigh", splash.DefaultEffort, "Efforts: and its default");
+
+		DiscoveredModel coined = Parse("""{"id":"x/coined","reasoning":{"efforts":["quick","none","Deep"]}}""", false);
+		ctx.AssertEqual("quick,Deep", Words(coined), "Efforts: words Beast has never seen are kept exactly, none aside");
+
+		DiscoveredModel plain = Parse("""{"id":"llama","object":"model"}""", false);
+		ctx.AssertEqual("low,medium,high", Words(plain), "Efforts: a catalog that says nothing gets its protocol's words");
+		ctx.Assert(!plain.EffortsListed, "Efforts: and says so");
+		DiscoveredModel odd = Parse("""{"id":"odd","reasoning":{"something":1}}""", false);
+		ctx.AssertEqual("low,medium,high", Words(odd), "Efforts: an unfamiliar reasoning object is not read as a list");
+
+		List<DiscoveredModel> chatGpt = ChatGptSubscription.ParseCatalog("""
+			{"models":[{"slug":"gpt-x","display_name":"GPT-X","context_window":400000,"default_reasoning_level":"medium",
+			  "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}]},
+			 {"slug":"gpt-y","display_name":"GPT-Y"}]}
+			""");
+		ctx.AssertEqual("low,medium,high,xhigh", chatGpt.Count > 0 ? Words(chatGpt[0]) : string.Empty, "Efforts: the ChatGPT backend's supported_reasoning_levels");
+		ctx.AssertEqual("low,medium,high", chatGpt.Count > 1 ? Words(chatGpt[1]) : string.Empty, "Efforts: a backend model listing none gets the Responses protocol's words");
+
+		string cli = "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"beast-init\",\"response\":{\"models\":["
+			+ "{\"value\":\"opus\",\"resolvedModel\":\"claude-opus-5-5\",\"displayName\":\"Opus 5.5\",\"supportsEffort\":true,\"supportedEffortLevels\":[\"low\",\"medium\",\"high\",\"xhigh\",\"max\"]},"
+			+ "{\"value\":\"haiku\",\"resolvedModel\":\"claude-haiku-4-5-20251001\",\"displayName\":\"Haiku 4.5\",\"supportsEffort\":false},"
+			+ "{\"value\":\"claude-opus-4-8\",\"resolvedModel\":\"claude-opus-4-8\",\"displayName\":\"Opus 4.8\"}]}}}\n";
+		List<DiscoveredModel> subscription = ClaudeCode.ParseCatalog(cli);
+		ctx.AssertEqual("low,medium,high,xhigh,max", subscription.Count > 0 ? Words(subscription[0]) : string.Empty, "Efforts: the Claude Code CLI's supportedEffortLevels");
+		ctx.AssertEqual(string.Empty, subscription.Count > 1 ? Words(subscription[1]) : "?", "Efforts: a CLI model without effort support has no options");
+		ctx.AssertEqual("low,medium,high,xhigh,max", subscription.Count > 2 ? Words(subscription[2]) : string.Empty, "Efforts: one the CLI says nothing about gets its --effort levels");
+
+		ctx.AssertEqual("low,medium,high,xhigh,max", string.Join(",", ModelCatalog.ProtocolEfforts(ClaudeCode.EndpointUrl)), "ProtocolEfforts: the Claude Code CLI's --effort levels");
+		ctx.AssertEqual("low,medium,high", string.Join(",", ModelCatalog.ProtocolEfforts("http://localhost:8080/v1/chat/completions")), "ProtocolEfforts: low, medium, high elsewhere");
+
+		List<AutoModelConfig> configured = new List<AutoModelConfig> { new AutoModelConfig { Id = "splash/qwen", Enabled = true } };
+		DiscoveredModel       fewer      = Parse("""{"id":"splash/qwen","reasoning":{"efforts":["low","xhigh"],"default":"xhigh"}}""", false);
+		ctx.Assert(ModelCatalog.EnabledModelsChanged(new List<DiscoveredModel> { splash }, new List<DiscoveredModel> { fewer }, configured), "CatalogChanged: a change in a model's options is news");
 	}
 
 	private static void TestLmStudioEnrichment(TestContext ctx)

@@ -170,9 +170,9 @@ public class LlmRegistry
 				if (!modelConfig.Enabled)
 					continue;
 
-				// Settle the blank into the default here, once, so no reader downstream has to know
-				// that "unconfigured" and "explicitly none" are different words for different things.
-				modelConfig.ReasoningEffort = ReasoningEffort.Effective(modelConfig.ReasoningEffort);
+				// Settled here, once: its options (stated in settings, else its protocol's words) and its
+				// setting as none or one of them, so no reader downstream has to know what blank meant.
+				ReasoningEffort.Settle(modelConfig, ModelCatalog.ProtocolEfforts(provider.BaseUrl));
 
 				// A decisions-only model is called on /v1/systemone, whatever chat route the provider names.
 				string endpoint = OutputModality.DecisionsOnly(modelConfig.Output)
@@ -311,16 +311,19 @@ public class LlmRegistry
 		// declares nothing is a text model.
 		List<string> output = found.Outputs ?? new List<string> { OutputModality.Text };
 
-		return new ModelConfig
+		ModelConfig config = new ModelConfig
 		{
 			Id              = enabled.Id,
 			Name            = string.IsNullOrEmpty(found.Name) ? enabled.Id : found.Name,
 			Enabled         = true,
 			ContextWindow   = window,
 			MaxOutputTokens = enabled.MaxOutputTokens > 0 ? enabled.MaxOutputTokens : found.MaxOutputTokens,
-			// Blank settles into the default here (see ReasoningEffort.DefaultWord), so an auto model
-			// nobody has configured still reasons rather than silently running with thinking off.
-			ReasoningEffort       = ReasoningEffort.Effective(enabled.ReasoningEffort),
+			ReasoningEffort = enabled.ReasoningEffort,
+			// The options are discovered, never overridden: they are what the endpoint takes.
+			ReasoningEfforts      = found.Efforts,
+			EffortsListed         = found.EffortsListed,
+			DefaultEffort         = found.DefaultEffort,
+			ThinkingRequired      = found.ThinkingRequired,
 			ReasoningSummaries    = enabled.ReasoningSummaries,
 			RetainReasoning       = enabled.RetainReasoning,
 			MaxImages             = enabled.MaxImages,
@@ -337,6 +340,10 @@ public class LlmRegistry
 			Input                 = input,
 			Output                = output
 		};
+		// A blank setting settles into the model's default, so an auto model nobody has configured still
+		// reasons rather than silently running with thinking off; one it does not offer does too.
+		ReasoningEffort.Settle(config, ReasoningEffort.StandardWords());
+		return config;
 	}
 
 	// Expand '*' in role model lists to all registered model IDs at that position. Called once

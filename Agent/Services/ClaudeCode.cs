@@ -153,7 +153,7 @@ public static class ClaudeCode
 				if (version.Length == 0 || value == "default" || !seen.Add(version))
 					continue;
 
-				models.Add(new DiscoveredModel
+				DiscoveredModel model = new DiscoveredModel
 				{
 					Id            = $"{kModelPrefix}{version}",
 					Name          = $"{entry?["displayName"]?.ToString() ?? version} (subscription)",
@@ -162,7 +162,13 @@ public static class ClaudeCode
 					CostOutput    = 0m,
 					CostCacheRead = 0m,
 					Modalities    = new List<string> { "text", "image" }
-				});
+				};
+				// Its effort options as the CLI lists them per model (supportsEffort, supportedEffortLevels),
+				// else the levels the CLI's --effort takes.
+				if (entry != null)
+					ModelCatalog.ReadReasoning(entry, model);
+				model.Efforts ??= ReasoningEffort.ClaudeCodeWords();
+				models.Add(model);
 			}
 		}
 		return models;

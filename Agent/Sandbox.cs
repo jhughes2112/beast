@@ -89,6 +89,13 @@ public static class Sandbox
 		@"\[\.(WebGL|WebGPU)-0x[0-9a-fA-F]+\]",
 		System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+	// The semaphore and shared memory libfaketime names after the process that made them, as its own
+	// warnings print them ("sem_name was /faketime_sem_63"): a process id, which every process started in
+	// the container before (an earlier /clear'd conversation's included) moves on.
+	private static readonly System.Text.RegularExpressions.Regex kFakeTimeName = new System.Text.RegularExpressions.Regex(
+		@"faketime_(sem|shm)_\d+",
+		System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
 	private static readonly SemaphoreSlim _fileClockGate = new SemaphoreSlim(1, 1);
 	private static          long          _fileClockBase;
 	private static          long          _fileClockMinutes;
@@ -210,9 +217,11 @@ public static class Sandbox
 			long   stamp   = start + minutes * 60;
 			string quoted  = Root.Replace("'", "'\\''");
 			WriteFileClock(stamp);
+			// The temp folder's files all take the counted time; the workspace's keep their own, even when the
+			// workspace is inside the temp folder (a native run on a project under /tmp), so that branch is pruned.
 			ToolResult result = await ShellTools.AgentBashAsync("sandbox_file_clock",
 				$"W='{quoted}'\nT='{TempFolder()}'\n" +
-				$"find \"$T\" -xdev -exec touch -h -d '@{stamp}' {{}} + 2>/dev/null\n" +
+				$"find \"$T\" -xdev -path \"$W\" -prune -o -exec touch -h -d '@{stamp}' {{}} + 2>/dev/null\n" +
 				$"touch -h -d '@{stamp}' \"$W\" \"$(dirname \"$W\")\" && {kClockFsPath} \"$T\" {kFileClockPath} && {kClockFsPath} \"$W\" {kFileClockPath}\n", 120, ct);
 			if (result.ExitCode != 0)
 			{
@@ -241,6 +250,7 @@ public static class Sandbox
 	//   - The date column of `ls -l`: files outside clockfs's mounts, and any the workspace already held,
 	//     carry real times. Every line reads the counted time, and the files keep the times they have.
 	//   - Chromium's graphics context tag: an address that memory layout randomization changes every run.
+	//   - libfaketime's semaphore and shared memory names: a process id. They read faketime_sem and faketime_shm.
 	public static string SteadyShellOutput(string text)
 	{
 		string result = text;
@@ -258,6 +268,7 @@ public static class Sandbox
 			result = kHttpHeaderBlock.Replace(result, match => kVolatileHeader.Replace(match.Value, string.Empty));
 			result = kLsDate.Replace(result, match => match.Groups[1].Value + (match.Groups["full"].Success ? full : match.Groups["iso"].Success ? iso : ls));
 			result = kGraphicsContextTag.Replace(result, match => $"[.{match.Groups[1].Value}-0x0]");
+			result = kFakeTimeName.Replace(result, match => $"faketime_{match.Groups[1].Value}");
 		}
 		return result;
 	}

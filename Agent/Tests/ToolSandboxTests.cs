@@ -334,6 +334,12 @@ public static class ToolSandboxTests
 		ctx.Assert(tagged.StdOut.Contains("gl_utils.cc:430] [.WebGL-0x0]GL Driver Message", StringComparison.Ordinal) && tagged.StdOut.Contains("sha 0x3db400156600", StringComparison.Ordinal), $"File clock: a WebGL context's address is fixed and other hex stays — {tagged.StdOut}");
 		ctx.Assert(tagged.StdErr.Contains("[.WebGPU-0x0]x", StringComparison.Ordinal), $"File clock: so is a WebGPU context's, on stderr — {tagged.StdErr}");
 
+		// libfaketime's warnings name its semaphore after a process id, which any earlier process in the container moves on.
+		const string semWarning = "libfaketime: sem_name was /faketime_sem_63, created locally: false";
+		ctx.AssertEqual("libfaketime: sem_name was /faketime_sem, created locally: false", Sandbox.SteadyShellOutput(semWarning), "File clock: libfaketime's semaphore name loses its process id");
+		ctx.AssertEqual(Sandbox.SteadyShellOutput(semWarning), Sandbox.SteadyShellOutput(semWarning.Replace("_63", "_65")), "File clock: so runs a few processes apart read the same");
+		ctx.AssertEqual("shm /faketime_shm and faketime_semaphore_7", Sandbox.SteadyShellOutput("shm /faketime_shm_4021 and faketime_semaphore_7"), "File clock: its shared memory's too, and nothing else");
+
 		string shotFolder = await ScreenshotAsync(ctx, ct);
 		await SeededRoundsAsync(ctx, ct);
 
@@ -365,6 +371,7 @@ public static class ToolSandboxTests
 		ctx.AssertEqual($"date: {realDate}", Sandbox.SteadyShellOutput($"date: {realDate}"), "File clock: without a counted clock a Date header stays as it is");
 		ctx.AssertEqual("-rw-r--r-- 1 a b 2 Sep  9  2001 f", Sandbox.SteadyShellOutput("-rw-r--r-- 1 a b 2 Sep  9  2001 f"), "File clock: without a counted clock a listing stays as it is");
 		ctx.AssertEqual(glMessage, Sandbox.SteadyShellOutput(glMessage), "File clock: without a counted clock a context's address stays as it is");
+		ctx.AssertEqual(semWarning, Sandbox.SteadyShellOutput(semWarning), "File clock: without a counted clock libfaketime's names stay as they are");
 		ctx.AssertEqual(cdnHeaders, Sandbox.SteadyShellOutput(cdnHeaders), "File clock: without a counted clock a response's headers stay as they are");
 		ctx.AssertEqual(second.ToString(), FileTime(Path.Combine(root, "clock_write.txt"), ct), "File clock: the times are on the real files");
 	}

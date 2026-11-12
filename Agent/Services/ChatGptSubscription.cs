@@ -175,9 +175,9 @@ public static class ChatGptSubscription
 				if (slug.Length == 0 || ReadString(entry, "visibility") == "hide")
 					continue;
 
-				string name   = ReadString(entry, "display_name");
-				int    window = ReadInt(entry, "context_window");
-				models.Add(new DiscoveredModel
+				string          name   = ReadString(entry, "display_name");
+				int             window = ReadInt(entry, "context_window");
+				DiscoveredModel model  = new DiscoveredModel
 				{
 					Id            = $"{kModelPrefix}{slug}",
 					Name          = $"{(name.Length > 0 ? name : slug)} (subscription)",
@@ -186,7 +186,13 @@ public static class ChatGptSubscription
 					CostOutput    = 0m,
 					CostCacheRead = 0m,
 					Modalities    = new List<string> { "text", "image" }
-				});
+				};
+				// Its effort options as the backend lists them per model (supported_reasoning_levels), else the
+				// Responses protocol's words.
+				if (entry != null)
+					ModelCatalog.ReadReasoning(entry, model);
+				model.Efforts ??= ReasoningEffort.StandardWords();
+				models.Add(model);
 			}
 		}
 		return models;

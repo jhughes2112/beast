@@ -47,7 +47,7 @@ public class ProtocolAnthropic
 	private bool _adaptiveThinking;
 
 	// False once this model has refused to think in either shape. Effort defaults to medium for models
-	// nobody has configured (see ReasoningEffort.DefaultWord), so it now reaches the small and older
+	// nobody has configured (ReasoningEffort.DefaultOf), so it now reaches the small and older
 	// models that have no extended thinking at all; their refusal is recorded rather than re-earned.
 	private bool _thinkingSupported = true;
 
@@ -906,7 +906,7 @@ public class ProtocolAnthropic
 			{
 				// Newer models (Opus 4.6 and later) reject the budgeted form and want an effort word
 				// on output_config instead, letting the model choose how much to think.
-				string? effort = ReasoningEffort.AnthropicEffort(model.Config.ReasoningEffort);
+				string? effort = ReasoningEffort.Sent(model.Config.ReasoningEffort);
 				if (effort != null)
 				{
 					JsonObject thinking = new JsonObject();

@@ -188,6 +188,22 @@ public class ConfigModelInfo
 	[JsonPropertyName("outputs")]
 	public List<string>? Outputs { get; set; } = null;
 
+	// The model's effort options, lowest first: its endpoint's own words, or its protocol's when the
+	// endpoint lists none (EffortsListed false). Not editable: the effort toggle steps through these.
+	[JsonPropertyName("efforts")]
+	public List<string>? Efforts { get; set; } = null;
+
+	[JsonPropertyName("effortsListed")]
+	public bool EffortsListed { get; set; } = false;
+
+	// The option the endpoint says the model uses when none is chosen; null when it does not say.
+	[JsonPropertyName("defaultEffort")]
+	public string? DefaultEffort { get; set; } = null;
+
+	// True when the endpoint says the model's thinking cannot be turned off, so the toggle has no none.
+	[JsonPropertyName("thinkingRequired")]
+	public bool ThinkingRequired { get; set; } = false;
+
 	// True when a settings entry exists for this model at all; Enabled is that entry's flag.
 	// A configured-but-disabled model keeps its overrides and shows as such in the picker.
 	[JsonPropertyName("configured")]

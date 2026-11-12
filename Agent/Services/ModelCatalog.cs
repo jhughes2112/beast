@@ -28,6 +28,20 @@ public class DiscoveredModel
 	// Unix epoch seconds the model was released, 0 = unknown. Drives newest-first sorting in the
 	// /config picker — the latest models are almost always the ones being reached for.
 	public long Created { get; set; } = 0;
+
+	// The model's reasoning effort options, lowest first, exactly as its endpoint words them; where the
+	// endpoint lists none, the words its protocol takes (EffortsListed false). Empty = the model has no
+	// effort to set. Set for every parsed entry.
+	public List<string>? Efforts { get; set; } = null;
+
+	// True when Efforts came from the endpoint's own list, false when they are its protocol's words.
+	public bool EffortsListed { get; set; } = false;
+
+	// The option the endpoint says the model uses when none is chosen; null when it does not say.
+	public string? DefaultEffort { get; set; } = null;
+
+	// True when the endpoint says thinking cannot be turned off for this model (effort none is refused).
+	public bool ThinkingRequired { get; set; } = false;
 }
 
 // Fetches and normalizes a provider's model catalog. One lenient parser covers every
@@ -77,7 +91,9 @@ public static class ModelCatalog
 		else
 			same = a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens
 				&& a.CostInput == b.CostInput && a.CostOutput == b.CostOutput && a.CostCacheRead == b.CostCacheRead
-				&& SameList(a.Modalities, b.Modalities) && SameList(a.Outputs, b.Outputs);
+				&& SameList(a.Modalities, b.Modalities) && SameList(a.Outputs, b.Outputs)
+				&& SameList(   a.Efforts,    b.Efforts) && a.ThinkingRequired == b.ThinkingRequired
+				&& string.Equals(a.DefaultEffort, b.DefaultEffort, StringComparison.Ordinal);
 		return same;
 	}
 
@@ -381,6 +397,11 @@ public static class ModelCatalog
 		// with ["decisions"]. Absent stays null, which every reader takes as text.
 		model.Outputs = ReadStringList(ReadNode(entry["architecture"], "output_modalities"));
 
+		// Effort options: the endpoint's own where it lists them, else its protocol's words. Anthropic's
+		// Messages API without effort words thinks on a budget, which its protocol names.
+		ReadReasoning(entry, model);
+		model.Efforts ??= anthropic ? ReasoningEffort.AnthropicBudgetWords() : ReasoningEffort.StandardWords();
+
 		// Anthropic fallbacks for anything its catalog left unstated — 200k windows hold across
 		// the current fleet, and text+image only fills in when the capabilities object was absent.
 		if (anthropic)
@@ -392,6 +413,126 @@ public static class ModelCatalog
 		}
 
 		return model;
+	}
+
+	// OpenRouter's effort words, lowest first: what its supported_efforts null ("every gateway value")
+	// stands for, as its ReasoningEffort enum lists them (none aside).
+	private static readonly string[] kOpenRouterWords = { "minimal", "low", "medium", "high", "xhigh", "max" };
+
+	// The effort words a model's protocol takes, for a model whose endpoint lists none: Anthropic's budget
+	// names on its Messages API, the Claude Code CLI's --effort levels, the standard low/medium/high for
+	// everything else (Chat Completions, Responses).
+	public static List<string> ProtocolEfforts(string baseUrl)
+	{
+		List<string> words;
+		if (ClaudeCode.IsEndpoint(baseUrl))
+			words = ReasoningEffort.ClaudeCodeWords();
+		else if (baseUrl.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase))
+			words = ReasoningEffort.AnthropicBudgetWords();
+		else
+			words = ReasoningEffort.StandardWords();
+		return words;
+	}
+
+	// The effort options a catalog entry lists, in whichever shape its endpoint uses, kept as the endpoint
+	// words them and put lowest first. An entry that lists none leaves Efforts null for the caller to give
+	// its protocol's words. The shapes, first match wins:
+	//   - Anthropic: capabilities.effort {supported, low:{supported}, medium, high, xhigh, max}, whose keys
+	//     carry no order (Anthropic's is low..max), and capabilities.thinking: supported false = no
+	//     thinking at all, types.disabled.supported false = thinking cannot be turned off.
+	//   - The Claude Code CLI's model list: supportsEffort, supportedEffortLevels [...].
+	//   - OpenRouter: reasoning {supported_efforts: [...] highest first, or null for every gateway value,
+	//     default_effort, mandatory}.
+	//   - Splash and servers like it: reasoning {efforts: [...] lowest first, default}, the levels the
+	//     model's chat template tells apart.
+	//   - The ChatGPT backend: supported_reasoning_levels [{effort: ...}] lowest first, default_reasoning_level.
+	internal static void ReadReasoning(JsonNode entry, DiscoveredModel model)
+	{
+		JsonObject? capabilities = ReadNode(entry, "capabilities") as JsonObject;
+		JsonObject? reasoning    = ReadNode(entry, "reasoning") as JsonObject;
+		JsonArray?  levels       = AsArrayOrNull(ReadNode(entry, "supported_reasoning_levels"));
+		JsonObject? thinking     = ReadNode(capabilities, "thinking") as JsonObject;
+		if (thinking != null && thinking.ContainsKey("supported") && !ReadSupported(capabilities!, "thinking"))
+		{
+			model.Efforts = new List<string>();
+		}
+		else if (capabilities != null && ReadNode(capabilities, "effort") is JsonObject effort && ReadSupported(capabilities, "effort"))
+		{
+			List<string> listed = new List<string>();
+			foreach (KeyValuePair<string, JsonNode?> level in effort)
+			{
+				if (level.Key != "supported" && ReadSupported(effort, level.Key))
+					listed.Add(level.Key);
+			}
+			model.Efforts = ReasoningEffort.InAnthropicOrder(listed);
+		}
+		else if (ReadNode(entry, "supportedEffortLevels") != null || ReadNode(entry, "supportsEffort") != null)
+		{
+			model.Efforts = ReadBool(entry, "supportsEffort") || ReadNode(entry, "supportsEffort") == null
+				? ReasoningEffort.InAnthropicOrder(ReadStringList(ReadNode(entry, "supportedEffortLevels")) ?? new List<string>())
+				: new List<string>();
+		}
+		else if (reasoning != null && (reasoning.ContainsKey("supported_efforts") || reasoning.ContainsKey("default_effort") || reasoning.ContainsKey("mandatory")))
+		{
+			List<string>? supported = ReadStringList(ReadNode(reasoning, "supported_efforts"));
+			if (supported != null)
+				supported.Reverse();
+			model.Efforts          = WithoutOff(supported ?? new List<string>(kOpenRouterWords));
+			model.DefaultEffort    = ReadString(reasoning, "default_effort");
+			model.ThinkingRequired = ReadBool(reasoning, "mandatory");
+		}
+		else if (reasoning != null && ReadStringList(ReadNode(reasoning, "efforts")) is List<string> efforts)
+		{
+			model.Efforts       = WithoutOff(efforts);
+			model.DefaultEffort = ReadString(reasoning, "default");
+		}
+		else if (levels != null)
+		{
+			List<string> listed = new List<string>();
+			foreach (JsonNode? level in levels)
+			{
+				if (ReadNode(level, "effort") is JsonValue value && value.TryGetValue(out string? word))
+					listed.Add(word);
+			}
+			model.Efforts       = WithoutOff(listed);
+			model.DefaultEffort = ReadString(entry, "default_reasoning_level");
+		}
+
+		if (capabilities != null && ReadNode(thinking, "types") is JsonObject types)
+			model.ThinkingRequired = types.ContainsKey("disabled") && !ReadSupported(types, "disabled");
+		model.EffortsListed = model.Efforts != null;
+	}
+
+	// A list of options without the word that turns thinking off, which Beast offers apart from them.
+	private static List<string> WithoutOff(List<string> words)
+	{
+		List<string> options = new List<string>();
+		foreach (string word in words)
+		{
+			if (!ReasoningEffort.IsOff(word) && !options.Contains(word))
+				options.Add(word);
+		}
+		return options;
+	}
+
+	private static string? ReadString(JsonNode? node, string key)
+	{
+		string? result = null;
+		if (ReadNode(node, key) is JsonValue value && value.TryGetValue(out string? text) && !string.IsNullOrEmpty(text))
+			result = text;
+		return result;
+	}
+
+	private static bool ReadBool(JsonNode? node, string key)
+	{
+		try
+		{
+			return ReadNode(node, key)?.GetValue<bool>() ?? false;
+		}
+		catch (Exception)
+		{
+			return false;
+		}
 	}
 
 	// True when capabilities[feature].supported == true in the nested Anthropic shape.

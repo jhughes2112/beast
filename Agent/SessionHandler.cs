@@ -1139,9 +1139,9 @@ public class SessionHandler
 	// and it is written to settings so the next run starts there. Applies immediately — unlike
 	// /model there is no queue, because nothing about the conversation has to be re-validated.
 	//
-	// A blank effort reports the level in force, which is never blank: an unconfigured model reads as
-	// the default (ReasoningEffort.DefaultWord). An unrecognized word is refused rather than parsed,
-	// since ReasoningEffort.Parse would otherwise read a typo as None and quietly stop the thinking.
+	// A blank effort reports the setting in force, which is never blank: a loaded model holds none or one
+	// of its own options. Only those are accepted, the same choices /config's toggle steps through, so a
+	// word the model does not take is refused rather than sent.
 	private void ApplyEffort(string? args, LlmRegistry registry, ITransportServer transport)
 	{
 		LlmModel? model = registry.GetModel(_activeSession.Model);
@@ -1151,24 +1151,26 @@ public class SessionHandler
 			return;
 		}
 
-		string current = ReasoningEffort.DisplayWord(model.Config.ReasoningEffort);
+		List<string> choices = ReasoningEffort.Choices(model.Config.ReasoningEfforts ?? new List<string>(), model.Config.ThinkingRequired);
+		string       source  = model.Config.EffortsListed ? "as its endpoint lists them" : "its protocol's words: its endpoint lists none";
 		if (string.IsNullOrEmpty(args))
 		{
-			string level = string.IsNullOrEmpty(current) ? "none" : current;
-			transport.Output(_activeSession.Id, $"{model.ConfigId} is thinking at '{level}'. Change it with /effort <none|minimal|low|medium|high|max>.");
+			transport.Output(_activeSession.Id, $"{model.ConfigId} is thinking at '{model.Config.ReasoningEffort}'. Its choices ({source}): {string.Join(", ", choices)}. Change it with /effort <choice>.");
 			return;
 		}
 
-		string word = args.Trim().ToLowerInvariant();
-		if (!ReasoningEffort.IsKnownWord(word))
+		string  word   = args.Trim();
+		string? stored = null;
+		foreach (string choice in choices)
 		{
-			transport.Error(_activeSession.Id, $"Unknown effort '{word}'. Use one of: none, minimal, low, medium, high, max.");
+			if (string.Equals(choice, word, StringComparison.OrdinalIgnoreCase))
+				stored = choice;
+		}
+		if (stored == null)
+		{
+			transport.Error(_activeSession.Id, $"{model.ConfigId} has no effort '{word}'. Its choices ({source}): {string.Join(", ", choices)}.");
 			return;
 		}
-
-		// "off" is accepted at the prompt but stored as the canonical word, so settings only ever
-		// carry the vocabulary the rest of the system reads.
-		string stored = word == "off" ? "none" : word;
 		bool   saved  = registry.UpdateModelReasoning(model.ConfigId, stored, null, null);
 		string suffix = saved ? "saved" : "for this run only — the model has no settings entry to write to";
 

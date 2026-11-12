@@ -207,28 +207,39 @@ public static class CharWidthTests
 		AssertWidth(ctx, (char)0x25FE, 2, "Geometric: U+25FE is wide");
 	}
 
+	// The static table for the symbol blocks is the OS's own (see CharWidth.IsWide): Windows Terminal draws
+	// all of U+2600–U+26FF two columns wide and the dingbats one, while macOS and Linux terminals follow
+	// Unicode, where only the emoji-presentation glyphs are wide. Each expectation is the one for the OS
+	// the tests run on.
 	private static void TestMiscSymbols(TestContext ctx)
 	{
-		// U+2600–U+26FF misc symbols should be wide
-		AssertWidth(ctx, (char)0x2600, 2, "Misc symbols: U+2600 (☃ snowman) is wide");
-		AssertWidth(ctx, (char)0x2611, 2, "Misc symbols: U+2611 (☑ ballot box) is wide");
-		AssertWidth(ctx, (char)0x2603, 2, "Misc symbols: U+2603 (snowman) is wide");
-		AssertWidth(ctx, (char)0x261E, 2, "Misc symbols: U+261E (white pointing hand) is wide");
-		AssertWidth(ctx, (char)0x2660, 2, "Misc symbols: U+2660 (spade) is wide");
-		AssertWidth(ctx, (char)0x2665, 2, "Misc symbols: U+2665 (heart) is wide");
-		AssertWidth(ctx, (char)0x267F, 2, "Misc symbols: U+267F (wheelchair) is wide");
+		bool   windows = OperatingSystem.IsWindows();
+		int    textly  = windows ? 2 : 1;
+		string table   = windows ? "wide in Windows Terminal" : "narrow in Unicode (text presentation)";
+		AssertWidth(ctx, (char)0x2600, textly, $"Misc symbols: U+2600 (☀ sun) is {table}");
+		AssertWidth(ctx, (char)0x2611, textly, $"Misc symbols: U+2611 (☑ ballot box) is {table}");
+		AssertWidth(ctx, (char)0x2603, textly, $"Misc symbols: U+2603 (☃ snowman) is {table}");
+		AssertWidth(ctx, (char)0x261E, textly, $"Misc symbols: U+261E (☞ white pointing hand) is {table}");
+		AssertWidth(ctx, (char)0x2660, textly, $"Misc symbols: U+2660 (♠ spade) is {table}");
+		AssertWidth(ctx, (char)0x2665, textly, $"Misc symbols: U+2665 (♥ heart) is {table}");
+		AssertWidth(ctx, (char)0x2614, 2, "Misc symbols: U+2614 (☔ umbrella with rain) is wide everywhere: emoji presentation");
+		AssertWidth(ctx, (char)0x267F, 2, "Misc symbols: U+267F (♿ wheelchair) is wide everywhere: emoji presentation");
 	}
 
 	private static void TestDingbats(TestContext ctx)
 	{
-		// U+2700–U+27BF dingbats are single-width: text-presentation glyphs like ✓ and ✖ advance one
-		// column in modern terminals (only variation-selector emoji forms are wide, and those arrive as
-		// separate codepoints). Runtime probing overrides these on terminals that disagree.
-		AssertWidth(ctx, (char)0x2700, 1, "Dingbats: U+2700 is single-width");
-		AssertWidth(ctx, (char)0x2713, 1, "Dingbats: U+2713 (✓ checkmark) is single-width");
-		AssertWidth(ctx, (char)0x2714, 1, "Dingbats: U+2714 (✔ heavy check) is single-width");
-		AssertWidth(ctx, (char)0x2716, 1, "Dingbats: U+2716 (✖ multiply) is single-width");
-		AssertWidth(ctx, (char)0x27BF, 1, "Dingbats: U+27BF (end) is single-width");
+		// Text-presentation dingbats like ✓ and ✖ advance one column everywhere. The emoji-presentation
+		// ones (✅ ➿ …) are wide in Unicode's table but narrow in Windows Terminal's. Runtime probing
+		// overrides these on terminals that disagree.
+		bool   windows = OperatingSystem.IsWindows();
+		int    emoji   = windows ? 1 : 2;
+		string table   = windows ? "narrow in Windows Terminal" : "wide in Unicode (emoji presentation)";
+		AssertWidth(ctx, (char)0x2700,     1, "Dingbats: U+2700 is single-width");
+		AssertWidth(ctx, (char)0x2713,     1, "Dingbats: U+2713 (✓ checkmark) is single-width");
+		AssertWidth(ctx, (char)0x2714,     1, "Dingbats: U+2714 (✔ heavy check) is single-width");
+		AssertWidth(ctx, (char)0x2716,     1, "Dingbats: U+2716 (✖ multiply) is single-width");
+		AssertWidth(ctx, (char)0x2705, emoji, $"Dingbats: U+2705 (✅ check mark button) is {table}");
+		AssertWidth(ctx, (char)0x27BF, emoji, $"Dingbats: U+27BF (➿ double curly loop) is {table}");
 	}
 
 	private static void TestStar(TestContext ctx)

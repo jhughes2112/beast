@@ -107,6 +107,12 @@ internal class ConfigOverlay
 		public List<string>? DiscModalities;
 		// Declared outputs; null = not declared, which means text. Display only — never overridden.
 		public List<string>? DiscOutputs;
+		// The model's effort options, lowest first (its endpoint's words, or its protocol's when it lists
+		// none), the endpoint's default, and whether thinking cannot be turned off. The toggle steps through these.
+		public List<string>? DiscEfforts;
+		public bool          DiscEffortsListed;
+		public string?       DiscDefaultEffort;
+		public bool          DiscThinkingRequired;
 		// Unix epoch seconds the model was released; 0 = unknown (sorts to the alphabetical tail).
 		public long Created;
 
@@ -319,18 +325,22 @@ internal class ConfigOverlay
 							continue;
 						ModelRow row = new ModelRow
 						{
-							Id             = m["id"]?.GetValue<string>() ?? string.Empty,
-							Name           = m["name"]?.GetValue<string>() ?? string.Empty,
-							DiscWindow     = m["contextWindow"]?.GetValue<int>() ?? 0,
-							DiscMaxOut     = m["maxOutputTokens"]?.GetValue<int>() ?? 0,
-							DiscCostIn     = m["costInput"]?.GetValue<decimal>() ?? -1m,
-							DiscCostOut    = m["costOutput"]?.GetValue<decimal>() ?? -1m,
-							DiscModalities = ReadStringList(m["modalities"]),
-							DiscOutputs    = ReadStringList(m["outputs"]),
-							Enabled        = m["enabled"]?.GetValue<bool>() ?? false,
-							Configured     = m["configured"]?.GetValue<bool>() ?? false,
-							Missing        = m["missing"]?.GetValue<bool>() ?? false,
-							Created        = m["created"]?.GetValue<long>() ?? 0
+							Id                   = m["id"]?.GetValue<string>() ?? string.Empty,
+							Name                 = m["name"]?.GetValue<string>() ?? string.Empty,
+							DiscWindow           = m["contextWindow"]?.GetValue<int>() ?? 0,
+							DiscMaxOut           = m["maxOutputTokens"]?.GetValue<int>() ?? 0,
+							DiscCostIn           = m["costInput"]?.GetValue<decimal>() ?? -1m,
+							DiscCostOut          = m["costOutput"]?.GetValue<decimal>() ?? -1m,
+							DiscModalities       = ReadStringList(m["modalities"]),
+							DiscOutputs          = ReadStringList(m["outputs"]),
+							DiscEfforts          = ReadStringList(m["efforts"]),
+							DiscEffortsListed    = m["effortsListed"]?.GetValue<bool>() ?? false,
+							DiscDefaultEffort    = m["defaultEffort"]?.GetValue<string>(),
+							DiscThinkingRequired = m["thinkingRequired"]?.GetValue<bool>() ?? false,
+							Enabled              = m["enabled"]?.GetValue<bool>() ?? false,
+							Configured           = m["configured"]?.GetValue<bool>() ?? false,
+							Missing              = m["missing"]?.GetValue<bool>() ?? false,
+							Created              = m["created"]?.GetValue<long>() ?? 0
 						};
 						JsonNode? over = m["override"];
 						if (over != null)
@@ -1066,6 +1076,15 @@ internal class ConfigOverlay
 				row.OvrRetainReasoning = !row.OvrRetainReasoning;
 				NoteEdited(row);
 			}
+			else if (field == "effort")
+			{
+				// Steps to the next of the levels this model takes, the way the host command choice cycles:
+				// only words the endpoint said it accepts can be chosen, so none is ever typed wrong.
+				List<string> choices = EffortChoices(row);
+				int          current = choices.IndexOf(EffortInForce(row));
+				row.OvrEffort        = choices[(current + 1) % choices.Count];
+				NoteEdited(row);
+			}
 			else if (key.Key == ConsoleKey.Enter)
 			{
 				_detailEditing = true;
@@ -1073,6 +1092,29 @@ internal class ConfigOverlay
 				_status        = string.Empty;
 			}
 		}
+	}
+
+	// A row's effort options; a configured model its catalog no longer lists has the standard words.
+	private static List<string> EffortOptions(ModelRow row)
+	{
+		return row.DiscEfforts ?? ReasoningEffort.StandardWords();
+	}
+
+	// The effort toggle's choices for a row: none (unless its thinking cannot be turned off), then its options.
+	private static List<string> EffortChoices(ModelRow row)
+	{
+		return ReasoningEffort.Choices(EffortOptions(row), row.DiscThinkingRequired);
+	}
+
+	private static string EffortDefault(ModelRow row)
+	{
+		return ReasoningEffort.DefaultOf(EffortOptions(row), row.DiscDefaultEffort);
+	}
+
+	// What a row's model is sent now: its setting when the model offers it, else its default.
+	private static string EffortInForce(ModelRow row)
+	{
+		return ReasoningEffort.InForce(row.OvrEffort, EffortOptions(row), EffortDefault(row), row.DiscThinkingRequired);
 	}
 
 	// Records an edit. A row holding an override has a settings entry to keep, enabled or not; without
@@ -1251,7 +1293,15 @@ internal class ConfigOverlay
 				return row.OvrModalities != null ? string.Join(",", row.OvrModalities)
 					: row.DiscModalities != null ? $"{string.Join(",", row.DiscModalities)} (discovered)" : "unknown";
 			case "effort":
-				return row.OvrEffort.Length > 0 ? row.OvrEffort : "medium (default)";
+			{
+				// The setting in force, then every choice, so what the next press brings is in view. A setting
+				// the model does not offer (an older one, or another model's word) says so and runs the default.
+				string inForce = EffortInForce(row);
+				string setting = row.OvrEffort.Length == 0 ? $"{inForce} (default)"
+					: !string.Equals(row.OvrEffort, inForce, StringComparison.OrdinalIgnoreCase) ? $"{inForce} (default; '{row.OvrEffort}' is not offered)" : inForce;
+				string source = row.DiscEffortsListed ? string.Empty : " · protocol's words";
+				return $"{setting}   [{string.Join(" · ", EffortChoices(row))}]{source}";
+			}
 			case "summaries":
 				return row.OvrSummaries ? "on" : "off";
 			case "retain":
@@ -1284,7 +1334,7 @@ internal class ConfigOverlay
 			case "modalities":
 				return "Comma list of text,image,audio,video,file. * means undiscovered: say what the model accepts.";
 			case "effort":
-				return "none/minimal/low/medium/high/max. Blank = medium; 'none' turns thinking off.";
+				return "Enter/space steps through the model's own options (its protocol's words when the endpoint lists none). Del = default.";
 			case "summaries":
 				return "Ask the provider for thinking summaries. Turn off to stop paying for summary tokens.";
 			case "retain":

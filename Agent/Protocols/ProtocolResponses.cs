@@ -48,7 +48,7 @@ public class ProtocolResponses
 	private bool _retryAfterRefusal;
 
 	// Whether this model accepts a reasoning effort at all. Effort now defaults to medium for models
-	// nobody has configured (see ReasoningEffort.DefaultWord), which means it also reaches models that
+	// nobody has configured (ReasoningEffort.DefaultOf), which means it also reaches models that
 	// cannot reason — they answer with a 400 naming the parameter. That refusal is the answer to a
 	// question no catalog can answer, so it is honored here and written back as "none".
 	private bool _reasoningSupported = true;
@@ -502,7 +502,7 @@ public class ProtocolResponses
 		// is requested even with no effort word configured: the reasoning models think at their default
 		// effort whether or not this asks them to, so leaving it out buys silence and nothing else.
 		// Applied before extras so an explicit "reasoning" block in extras can still override it.
-		string?    effort    = _reasoningSupported ? ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) : null;
+		string?    effort    = _reasoningSupported ? ReasoningEffort.Sent(model.Config.ReasoningEffort) : null;
 		JsonObject reasoning = new JsonObject();
 		if (effort != null)
 			reasoning["effort"] = effort;
@@ -1307,7 +1307,7 @@ public class ProtocolResponses
 		// Translate the friendly reasoningEffort word into the Responses-native reasoning.effort object.
 		// Summaries are never requested here: this endpoint only counts tokens, so there is no thinking
 		// to watch and nothing to show.
-		string? effort = _reasoningSupported ? ReasoningEffort.OpenAiEffort(model.Config.ReasoningEffort) : null;
+		string? effort = _reasoningSupported ? ReasoningEffort.Sent(model.Config.ReasoningEffort) : null;
 		if (effort != null)
 		{
 			JsonObject reasoning = new JsonObject();

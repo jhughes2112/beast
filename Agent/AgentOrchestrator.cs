@@ -1152,18 +1152,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 				AutoModelConfig? entry = FindAutoModel(existing, d.Id);
 				payload.Models.Add(new ConfigModelInfo
 				{
-					Id              = d.Id,
-					Name            = d.Name,
-					ContextWindow   = d.ContextWindow,
-					MaxOutputTokens = d.MaxOutputTokens,
-					CostInput       = d.CostInput,
-					CostOutput      = d.CostOutput,
-					Modalities      = d.Modalities,
-					Outputs         = d.Outputs,
-					Configured      = entry != null,
-					Enabled         = entry != null && entry.Enabled,
-					Created         = d.Created,
-					Override        = entry
+					Id               = d.Id,
+					Name             = d.Name,
+					ContextWindow    = d.ContextWindow,
+					MaxOutputTokens  = d.MaxOutputTokens,
+					CostInput        = d.CostInput,
+					CostOutput       = d.CostOutput,
+					Modalities       = d.Modalities,
+					Outputs          = d.Outputs,
+					Efforts          = d.Efforts,
+					EffortsListed    = d.EffortsListed,
+					DefaultEffort    = d.DefaultEffort,
+					ThinkingRequired = d.ThinkingRequired,
+					Configured       = entry != null,
+					Enabled          = entry != null && entry.Enabled,
+					Created          = d.Created,
+					Override         = entry
 				});
 			}
 
