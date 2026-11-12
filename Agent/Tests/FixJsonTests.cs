@@ -186,6 +186,17 @@ public static class FixJsonTests
 			"{\"file_path\": \"/f\", \"old_text\": \"keep\", \"oldText\": \"drop\", \"new_text\": \"b\"}", schema, null);
 		ctx.AssertNotNull(r4, "Arg: canonical-present parses");
 		ctx.AssertEqual("keep", r4?["old_text"]?.GetValue<string>(), "Arg: existing canonical value preserved");
+
+		// The same key emitted twice must not throw (JsonNode defers the duplicate check to first
+		// enumeration, where it surfaces as ArgumentException). The last occurrence wins, at any depth.
+		(JsonObject? r5, string? e5) = FixJson.TryParseWithSchema(
+			"{\"file_path\": \"/first\", \"old_text\": \"a\", \"new_text\": \"b\", \"file_path\": \"/last\"}", schema, null);
+		ctx.AssertNotNull(r5, "Arg: duplicate key parses");
+		ctx.AssertNull(e5, "Arg: duplicate key no error");
+		ctx.AssertEqual("/last", r5?["file_path"]?.GetValue<string>(), "Arg: duplicate key, last occurrence wins");
+
+		JsonObject? r6 = FixJson.TryParseObject("{\"a\": {\"k\": 1, \"k\": 2}, \"a\": {\"k\": 3, \"k\": 4}}");
+		ctx.AssertEqual(4, r6?["a"]?["k"]?.GetValue<int>(), "Arg: nested duplicate keys collapse, last wins");
 	}
 
 	// ─── Loose boolean coercion ──────────────────────────────────────────────

@@ -154,15 +154,51 @@ public static class FixJson
 
 	private static JsonObject? ParseObject(string json)
 	{
+		// Built by hand from a JsonDocument rather than JsonNode.Parse: JsonNode accepts an object with a
+		// repeated key at parse time and then throws ArgumentException the first time the object is
+		// enumerated or indexed, which is far from here and not a JsonException. Models do emit the same
+		// argument twice ({"why":…,"command":…,"why":…}); the last occurrence wins, as in most JSON parsers.
 		JsonObject? result = null;
 		try
 		{
-			result = JsonNode.Parse(json)?.AsObject();
+			using JsonDocument doc = JsonDocument.Parse(json);
+			if (doc.RootElement.ValueKind == JsonValueKind.Object)
+				result = (JsonObject?)ToNode(doc.RootElement);
 		}
 		catch (JsonException)
 		{
 		}
 		return result;
+	}
+
+	// Converts a JsonElement to a detached JsonNode tree, collapsing repeated object keys (last wins) at
+	// every depth so the result is always safe to enumerate.
+	private static JsonNode? ToNode(JsonElement element)
+	{
+		JsonNode? node;
+		if (element.ValueKind == JsonValueKind.Object)
+		{
+			JsonObject obj = new JsonObject();
+			foreach (JsonProperty property in element.EnumerateObject())
+				obj[property.Name] = ToNode(property.Value);
+			node = obj;
+		}
+		else if (element.ValueKind == JsonValueKind.Array)
+		{
+			JsonArray array = new JsonArray();
+			foreach (JsonElement item in element.EnumerateArray())
+				array.Add(ToNode(item));
+			node = array;
+		}
+		else if (element.ValueKind == JsonValueKind.Null)
+		{
+			node = null;
+		}
+		else
+		{
+			node = JsonValue.Create(element.Clone());
+		}
+		return node;
 	}
 
 	// Strips markdown code fences and any prose prefix before the first { or [.
