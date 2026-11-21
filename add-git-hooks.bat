@@ -103,7 +103,7 @@ rem ---------------------------------------------------------------------------
 :::HOOK pre-commit
 #!/bin/sh
 #
-# Formats staged C# files: dotnet format, then unfugly.
+# Formats staged C# files: dotnet format whitespace, then unfugly.
 # Reformatted files are re-staged, so the commit contains the formatted code.
 #
 # Installed by add-git-hooks.bat, which carries this script inside itself --
@@ -144,8 +144,8 @@ if [ -n "$partial" ]; then
 	exit 1
 fi
 
-# Whatever solution this repo has, if it has one. Named nowhere, so this hook
-# is the same file in every repo it is dropped into.
+# dotnet format runs only in a repo that has a solution at its root. The
+# solution itself is never loaded; it just marks the repo as a .NET one.
 sln=""
 for candidate in "$repo_root"/*.slnx "$repo_root"/*.sln; do
 	if [ -f "$candidate" ]; then
@@ -157,8 +157,11 @@ done
 if [ -n "$sln" ]; then
 	include=$(printf '%s' "$staged" | tr '\n' ' ')
 	echo "pre-commit: dotnet format"
+	# Layout only, and --folder treats the repo as loose files, so there is no NuGet restore, no project load and no
+	# compile to wait for. The code-style fixes (var, expression bodies) need types, which makes them slow; they are
+	# applied at build time instead -- see "Style Fixes on Build" in Unfugly's README.
 	# shellcheck disable=SC2086
-	dotnet format "$sln" --no-restore --include $include
+	dotnet format whitespace "$repo_root" --folder --include $include
 fi
 
 # unfugly last: dotnet format flattens aligned assignments, so running it
