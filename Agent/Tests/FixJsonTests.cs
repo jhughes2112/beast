@@ -83,7 +83,10 @@ public static class FixJsonTests
 		ctx.AssertEqual(1, calls.Count, "XmlToolCall: extracted one call");
 		ctx.AssertEqual("read_file", calls.Count > 0 ? calls[0].Name : "", "XmlToolCall: name recovered");
 		if (calls.Count > 0)
+		{
 			ctx.AssertContains(calls[0].ArgumentsJson, "a.cs", "XmlToolCall: arguments recovered");
+		}
+
 		ctx.AssertEqual("I will read the file now.", cleaned, "XmlToolCall: block stripped, prose preserved");
 
 		// IDs are counted, and a loaded conversation's IDs are never issued again.
@@ -112,7 +115,10 @@ public static class FixJsonTests
 		ctx.AssertEqual(   1,                         qwen.Count, "XmlToolCall: qwen function form extracted");
 		ctx.AssertEqual("ls", qwen.Count > 0 ? qwen[0].Name : "", "XmlToolCall: qwen function name");
 		if (qwen.Count > 0)
+		{
 			ctx.AssertContains(qwen[0].ArgumentsJson, "/workspace/Design", "XmlToolCall: qwen parameter value");
+		}
+
 		ctx.AssertEqual("Listing now.", qwenCleaned, "XmlToolCall: qwen block stripped");
 
 		// Observed verbatim from a local coder model: the Qwen form wrapped in <tool_call>, with a
@@ -129,7 +135,10 @@ public static class FixJsonTests
 		ctx.AssertEqual(1, wrapped.Count, "XmlToolCall: observed wrapped block extracted");
 		ctx.AssertEqual("bash", wrapped.Count > 0 ? wrapped[0].Name : "", "XmlToolCall: observed wrapped name");
 		if (wrapped.Count > 0)
+		{
 			ctx.AssertContains(wrapped[0].ArgumentsJson, "garden.html", "XmlToolCall: observed wrapped command survives");
+		}
+
 		ctx.AssertEqual("", wrappedCleaned, "XmlToolCall: observed wrapped block leaves no prose");
 
 		// A well-formed block naming a tool that is NOT offered this turn stays as prose — no
@@ -593,18 +602,26 @@ public static class FixJsonTests
 	{
 		int count = 0;
 		foreach ((string _, JsonNode? _) in obj)
+		{
 			count++;
+		}
+
 		return count;
 	}
 
 	private static JsonObject Prop(string type)
-		=> new JsonObject { ["type"] = type };
+	{
+		return new JsonObject { ["type"] = type };
+	}
 
 	private static JsonObject Props(params (string key, string type)[] fields)
 	{
 		JsonObject props = new JsonObject();
 		foreach ((string key, string type) in fields)
+		{
 			props[key] = Prop(type);
+		}
+
 		return props;
 	}
 
@@ -620,7 +637,10 @@ public static class FixJsonTests
 		{
 			JsonArray req = new JsonArray();
 			foreach (string r in required)
+			{
 				req.Add((JsonNode)r);
+			}
+
 			parameters["required"] = req;
 		}
 

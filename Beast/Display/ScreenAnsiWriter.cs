@@ -22,12 +22,16 @@ public static class ScreenAnsiWriter
 	public static void Write(StringBuilder buf, Screen screen, int startRow, int startCol)
 	{
 		if (screen.W == 0 || screen.H == 0)
+		{
 			return;
+		}
 
 		SgrTracker tracker = new SgrTracker();
 
 		for (int y = 0; y < screen.H; y++)
+		{
 			EmitSpan(buf, screen, y, 0, screen.W - 1, startRow, startCol, ref tracker);
+		}
 
 		buf.Append("\x1b[0m");
 	}
@@ -39,7 +43,9 @@ public static class ScreenAnsiWriter
 	public static void WriteDiff(StringBuilder buf, Screen screen, Screen prev, int startRow, int startCol)
 	{
 		if (screen.W == 0 || screen.H == 0)
+		{
 			return;
+		}
 
 		SgrTracker tracker = new SgrTracker();
 		bool       wrote   = false;
@@ -55,29 +61,40 @@ public static class ScreenAnsiWriter
 				if (!RenderEquals(c, p))
 				{
 					if (first < 0)
+					{
 						first = x;
+					}
+
 					last = x;
 					// A wide glyph being replaced leaves its right half on the terminal; the span must
 					// rewrite that column too even if the new cell there matches the stored prev cell.
 					if (CharWidth.Of(p.Ch) == 2 && x + 1 < screen.W)
+					{
 						last = x + 1;
+					}
 				}
 			}
 
 			if (first < 0)
+			{
 				continue;
+			}
 
 			// Never start a span on a wide glyph's reserved trailing cell — back up onto the glyph so it
 			// is re-emitted whole and the terminal's two-column advance stays aligned with the grid.
 			if (first > 0 && CharWidth.Of(screen.Get(first - 1, y).Ch) == 2)
+			{
 				first--;
+			}
 
 			EmitSpan(buf, screen, y, first, last, startRow, startCol, ref tracker);
 			wrote = true;
 		}
 
 		if (wrote)
+		{
 			buf.Append("\x1b[0m");
+		}
 	}
 
 	// Emits cells [x0, x1] of row y, positioning the cursor first. Threads the SGR tracker so state carries
@@ -141,7 +158,9 @@ public static class ScreenAnsiWriter
 			// to the glyph itself — clipped, or followed by a gap — instead of sliding everything after it
 			// on the row, which is what pushed the F10 panel sideways.
 			if (ch >= '\x80')
+			{
 				anchor = true;
+			}
 		}
 	}
 
@@ -162,9 +181,15 @@ public static class ScreenAnsiWriter
 	private static bool ColorEquals(Rgb? a, Rgb? b)
 	{
 		if (a.HasValue != b.HasValue)
+		{
 			return false;
+		}
+
 		if (!a.HasValue)
+		{
 			return true;
+		}
+
 		Rgb av = a!.Value;
 		Rgb bv = b!.Value;
 		return av.R == bv.R && av.G == bv.G && av.B == bv.B;
@@ -190,11 +215,19 @@ public static class ScreenAnsiWriter
 		CellStyle baseline = haveLast ? lastStyle : CellStyle.None;
 		CellStyle added    = style & ~baseline;
 		if ((added & CellStyle.Bold) != 0)
+		{
 			buf.Append("\x1b[1m");
+		}
+
 		if ((added & CellStyle.Italic) != 0)
+		{
 			buf.Append("\x1b[3m");
+		}
+
 		if ((added & CellStyle.Underline) != 0)
+		{
 			buf.Append("\x1b[4m");
+		}
 
 		if (!haveLast || !ColorEquals(fg, lastFg))
 		{

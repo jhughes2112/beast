@@ -38,18 +38,48 @@ public sealed class SessionRecord
 		LastUsedUtc = lastUsedUtc;
 	}
 
-	public bool IsBare => Worktree.Length == 0;
+	public bool IsBare
+	{
+		get
+		{
+			return Worktree.Length == 0;
+		}
+	}
 
 	// The worktree checkout, bound to /workspace. Only meaningful for a worktree session.
-	public string WorktreePath => Path.Combine(Dir, "worktree");
+	public string WorktreePath
+	{
+		get
+		{
+			return Path.Combine(Dir, "worktree");
+		}
+	}
 
 	// The agent's conversations, logs and staged attachments (AgentState on the agent side).
-	public string StateDir => Path.Combine(Dir, "state");
+	public string StateDir
+	{
+		get
+		{
+			return Path.Combine(Dir, "state");
+		}
+	}
 
 	// The host folder bound to /workspace: where host_command runs.
-	public string WorkspacePath => IsBare ? Folder : WorktreePath;
+	public string WorkspacePath
+	{
+		get
+		{
+			return IsBare ? Folder : WorktreePath;
+		}
+	}
 
-	public string ContainerName => "beast_" + Id;
+	public string ContainerName
+	{
+		get
+		{
+			return "beast_" + Id;
+		}
+	}
 
 	// How the session reads in a list: "worktree fix-login", "bare session tests" or "bare session".
 	public string Describe()
@@ -81,7 +111,9 @@ public static class SessionStore
 				using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
 				string configured      = doc.RootElement.TryGetProperty("sessionsDir", out JsonElement s) && s.ValueKind == JsonValueKind.String ? s.GetString() ?? string.Empty : string.Empty;
 				if (configured.Trim().Length > 0)
+				{
 					root = Path.GetFullPath(configured.Trim());
+				}
 			}
 		}
 		catch (Exception)
@@ -100,7 +132,9 @@ public static class SessionStore
 			{
 				SessionRecord? session = Read(dir);
 				if (session != null)
+				{
 					sessions.Add(session);
+				}
 			}
 		}
 		sessions.Sort((a, b) => b.LastUsedUtc.CompareTo(a.LastUsedUtc));
@@ -125,7 +159,9 @@ public static class SessionStore
 				string      name       = root.TryGetProperty("name",      out JsonElement n) ? n.GetString() ?? string.Empty : string.Empty;
 				string      focus      = root.TryGetProperty("focus",    out JsonElement fo) ? fo.GetString() ?? string.Empty : string.Empty;
 				if (folder.Length > 0)
+				{
 					session = new SessionRecord(Path.GetFileName(dir), dir, folder, worktree, created, lastUsed, name) { Focus = focus };
+				}
 			}
 		}
 		catch (Exception)
@@ -165,14 +201,19 @@ public static class SessionStore
 		string baseName = NameSafe(worktree.Length > 0 ? worktree : leaf);
 		string id       = worktree.Length > 0 ? baseName : $"{baseName}_{RandomTag()}";
 		while (Directory.Exists(Path.Combine(Root, id)) || takenContainerNames.Contains("beast_" + id))
+		{
 			id = $"{baseName}_{RandomTag()}";
+		}
 
 		DateTime      now     = DateTime.UtcNow;
 		SessionRecord session = new SessionRecord(id, Path.Combine(Root, id), NormalizeFolder(folder), worktree, now, now, name);
 		Save(session);
 		Directory.CreateDirectory(session.StateDir);
 		if (!session.IsBare)
+		{
 			Directory.CreateDirectory(session.WorktreePath);
+		}
+
 		return session;
 	}
 
@@ -206,7 +247,9 @@ public static class SessionStore
 				{
 					FileAttributes attrs = File.GetAttributes(file);
 					if ((attrs & FileAttributes.ReadOnly) != 0)
+					{
 						File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+					}
 				}
 				Directory.Delete(path, true);
 			}
@@ -225,7 +268,9 @@ public static class SessionStore
 		foreach (SessionRecord session in sessions)
 		{
 			if (found == null && session.IsBare && SameFolder(session.Folder, folder))
+			{
 				found = session;
+			}
 		}
 		return found;
 	}
@@ -237,7 +282,9 @@ public static class SessionStore
 		foreach (SessionRecord session in sessions)
 		{
 			if (found == null && session.IsBare && SameFolder(session.Folder, folder) && string.Equals(session.Name, name, StringComparison.Ordinal))
+			{
 				found = session;
+			}
 		}
 		return found;
 	}
@@ -247,7 +294,10 @@ public static class SessionStore
 	{
 		int number = 1;
 		while (FindBareNamed(sessions, folder, $"session-{number}") != null)
+		{
 			number++;
+		}
+
 		return $"session-{number}";
 	}
 
@@ -258,7 +308,9 @@ public static class SessionStore
 		foreach (SessionRecord session in sessions)
 		{
 			if (found == null && !session.IsBare && SameFolder(session.Folder, repo) && string.Equals(session.Worktree, worktree, StringComparison.Ordinal))
+			{
 				found = session;
+			}
 		}
 		return found;
 	}
@@ -307,7 +359,9 @@ public static class SessionStore
 		{
 			bool ok = (chars[i] >= 'a' && chars[i] <= 'z') || (chars[i] >= 'A' && chars[i] <= 'Z') || (chars[i] >= '0' && chars[i] <= '9') || chars[i] == '_' || chars[i] == '.' || chars[i] == '-';
 			if (!ok)
+			{
 				chars[i] = '-';
+			}
 		}
 		string safe = new string(chars).Trim('-', '.', '_');
 		return safe.Length > 0 ? safe : "session";

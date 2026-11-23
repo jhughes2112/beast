@@ -50,7 +50,10 @@ public static class AptTools
 				string     install = $"apt-get install -y --no-install-recommends {string.Join(' ', names)}\n";
 				ToolResult run     = await ShellTools.AgentBashAsync(toolCallId, update + install, TimeoutSeconds, ct);
 				if (run.ExitCode == 0)
+				{
 					_listsRefreshed = true;
+				}
+
 				result = run.ExitCode == 0
 					? new ToolResult(toolCallId,             "OK",     string.Empty,            0, 0)
 					: new ToolResult(toolCallId, Tail(run.StdOut), Tail(run.StdErr), run.ExitCode, 0);
@@ -76,13 +79,19 @@ public static class AptTools
 			foreach (char c in raw)
 			{
 				if (!char.IsAsciiLetterLower(c) && !char.IsAsciiDigit(c) && c != '+' && c != '-' && c != '.')
+				{
 					valid = false;
+				}
 			}
 
 			if (valid && !names.Contains(raw))
+			{
 				names.Add(raw);
+			}
 			else if (!valid && invalid.Length == 0)
+			{
 				invalid = raw;
+			}
 		}
 		return (names, invalid);
 	}
@@ -97,7 +106,10 @@ public static class AptTools
 			StringBuilder sb = new StringBuilder();
 			sb.Append($"[...{lines.Length - MaxOutputLines} earlier lines omitted]\n");
 			for (int i = lines.Length - MaxOutputLines; i < lines.Length; i++)
+			{
 				sb.Append(lines[i]).Append('\n');
+			}
+
 			tail = sb.ToString().TrimEnd();
 		}
 		return tail;

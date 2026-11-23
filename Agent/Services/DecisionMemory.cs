@@ -24,7 +24,13 @@ public class DecisionMemory
 		_path = path;
 	}
 
-	public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "decisions.json");
+	public static string DefaultPath
+	{
+		get
+		{
+			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "decisions.json");
+		}
+	}
 
 	// The current lists, re-read from the file first. Copies, so a caller cannot race a write.
 	public (List<string> Always, List<string> Never) Snapshot()
@@ -49,7 +55,10 @@ public class DecisionMemory
 				Reload();
 				List<string> into = always ? _always : _never;
 				if (!into.Contains(normalized))
+				{
 					into.Add(normalized);
+				}
+
 				Save();
 			}
 		}
@@ -97,7 +106,9 @@ public class DecisionMemory
 			{
 				string command = item is JsonValue v && v.TryGetValue(out string? s) ? Normalize(s) : string.Empty;
 				if (command.Length > 0 && !into.Contains(command))
+				{
 					into.Add(command);
+				}
 			}
 		}
 	}
@@ -108,21 +119,31 @@ public class DecisionMemory
 		// the generic JsonArray.Add<T> and serializer options would need type metadata it does not carry.
 		JsonArray always = new JsonArray();
 		foreach (string c in _always)
+		{
 			always.Add((JsonNode?)JsonValue.Create(c));
+		}
+
 		JsonArray never = new JsonArray();
 		foreach (string c in _never)
+		{
 			never.Add((JsonNode?)JsonValue.Create(c));
+		}
+
 		JsonObject root = new JsonObject { ["always"] = always, ["never"] = never };
 
 		try
 		{
 			string? dir = Path.GetDirectoryName(_path);
 			if (dir != null)
+			{
 				Directory.CreateDirectory(dir);
+			}
 
 			using (FileStream stream = File.Create(_path))
 			using (Utf8JsonWriter writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+			{
 				root.WriteTo(writer);
+			}
 		}
 		catch (Exception ex)
 		{

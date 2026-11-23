@@ -55,7 +55,13 @@ public static class ChatGptSubscription
 	private static readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
 	private static readonly HttpClient    _http = new HttpClient { Timeout = kRequestTimeout };
 
-	private static string LockPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "chatgpt-refresh.lock");
+	private static string LockPath
+	{
+		get
+		{
+			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "chatgpt-refresh.lock");
+		}
+	}
 
 	// Where the tokens live. Set once at startup, before anything can send a request.
 	private static SettingsService? _settings;
@@ -96,7 +102,9 @@ public static class ChatGptSubscription
 			request.Headers.TryAddWithoutValidation("User-Agent",                            kUserAgent);
 			request.Headers.TryAddWithoutValidation("session-id",                            sessionKey);
 			if (creds.Residency.Length > 0)
+			{
 				request.Headers.TryAddWithoutValidation("x-openai-internal-codex-residency", creds.Residency);
+			}
 		}
 		return creds;
 	}
@@ -109,7 +117,10 @@ public static class ChatGptSubscription
 		Credentials existing = await GetCredentialsAsync(false, ct);
 		string      error    = existing.Error;
 		if (existing.Error.Length > 0 && existing.NeedsLogin)
+		{
 			error = await DeviceLoginAsync(status, ct);
+		}
+
 		return error;
 	}
 
@@ -173,7 +184,9 @@ public static class ChatGptSubscription
 			{
 				string slug = ReadString(entry, "slug");
 				if (slug.Length == 0 || ReadString(entry, "visibility") == "hide")
+				{
 					continue;
+				}
 
 				string          name   = ReadString(entry, "display_name");
 				int             window = ReadInt(entry, "context_window");
@@ -190,7 +203,10 @@ public static class ChatGptSubscription
 				// Its effort options as the backend lists them per model (supported_reasoning_levels), else the
 				// Responses protocol's words.
 				if (entry != null)
+				{
 					ModelCatalog.ReadReasoning(entry, model);
+				}
+
 				model.Efforts ??= ReasoningEffort.StandardWords();
 				models.Add(model);
 			}
@@ -213,20 +229,34 @@ public static class ChatGptSubscription
 		string        primary   = DescribeWindow(headers, "primary",   now);
 		string        secondary = DescribeWindow(headers, "secondary", now);
 		if (primary.Length > 0)
+		{
 			text.Append($" {primary}.");
+		}
+
 		if (secondary.Length > 0)
+		{
 			text.Append($" {secondary}.");
+		}
 
 		DateTimeOffset? reset = ProtocolHelpers.ResetTimeFromBody(errorBody);
 		if (primary.Length == 0 && secondary.Length == 0 && reset.HasValue)
+		{
 			text.Append($" Resets {ProtocolHelpers.DescribeReset(reset.Value, now)}.");
+		}
 
 		if (Header(headers, "x-codex-credits-unlimited") == "True")
+		{
 			text.Append(" Credits: unlimited.");
+		}
 		else if (Header(headers, "x-codex-credits-has-credits") == "True")
+		{
 			text.Append($" Credits balance: {Header(headers, "x-codex-credits-balance")}.");
+		}
 		else if (Header(headers, "x-codex-credits-has-credits") == "False")
+		{
 			text.Append(" No credits to draw on.");
+		}
+
 		return text.ToString();
 	}
 
@@ -247,15 +277,26 @@ public static class ChatGptSubscription
 	{
 		string name;
 		if (minutes == 10080)
+		{
 			name = "Weekly";
+		}
 		else if (minutes > 0 && minutes % 1440 == 0)
+		{
 			name = $"{minutes / 1440}-day";
+		}
 		else if (minutes > 0 && minutes % 60 == 0)
+		{
 			name = $"{minutes / 60}-hour";
+		}
 		else if (minutes > 0)
+		{
 			name = $"{minutes}-minute";
+		}
 		else
+		{
 			name = "Usage";
+		}
+
 		return name;
 	}
 
@@ -285,14 +326,22 @@ public static class ChatGptSubscription
 		{
 			(string refresh, string access) = LoadedTokens();
 			if (refresh.Length == 0)
+			{
 				(refresh, access) = _settings!.ReadAutoEndpointTokens(IsEndpoint);
+			}
 
 			if (refresh.Length == 0)
+			{
 				result = Failure(kNotSignedIn, true);
+			}
 			else if (!forceRefresh && !IsExpiring(access))
+			{
 				result = FromAccessToken(access);
+			}
 			else
+			{
 				result = await RefreshLockedAsync(access, ct);
+			}
 		}
 		finally
 		{
@@ -424,14 +473,20 @@ public static class ChatGptSubscription
 				new JsonObject { ["device_auth_id"] = deviceAuthId, ["user_code"] = userCode }, ct);
 
 			if (transport.Length > 0 || status == 403 || status == 404)
+			{
 				continue;
+			}
 
 			done                 = true;
 			JsonObject? approved = ParseObject(body);
 			if (status >= 200 && status < 300 && approved != null)
+			{
 				error = await ExchangeCodeAsync(ReadString(approved, "authorization_code"), ReadString(approved, "code_verifier"), ct);
+			}
 			else
+			{
 				error = $"The ChatGPT sign-in was refused (HTTP {status}): {Clip(body)}";
+			}
 		}
 		return error;
 	}
@@ -480,7 +535,10 @@ public static class ChatGptSubscription
 	{
 		Credentials result = FromAccessToken(accessToken);
 		if (result.Error.Length == 0)
+		{
 			_settings!.SaveAutoEndpointTokens(EndpointUrl, IsEndpoint, refreshToken, accessToken);
+		}
+
 		return result;
 	}
 
@@ -505,7 +563,10 @@ public static class ChatGptSubscription
 		JsonObject? payload = JwtPayload(accessToken);
 		long        exp     = 0;
 		if (payload?["exp"] is JsonValue value)
+		{
 			value.TryGetValue(out exp);
+		}
+
 		return DateTimeOffset.FromUnixTimeSeconds(exp) - kRefreshSkew <= DateTimeOffset.UtcNow;
 	}
 
@@ -608,7 +669,10 @@ public static class ChatGptSubscription
 	{
 		string value = string.Empty;
 		if (node is JsonObject obj && obj[key] is JsonValue v && v.TryGetValue(out string? text) && text != null)
+		{
 			value = text;
+		}
+
 		return value;
 	}
 
@@ -617,7 +681,10 @@ public static class ChatGptSubscription
 	{
 		int value = 0;
 		if (node is JsonObject obj && obj[key] is JsonValue v && !v.TryGetValue(out value) && v.TryGetValue(out string? text))
+		{
 			int.TryParse(text, out value);
+		}
+
 		return value;
 	}
 

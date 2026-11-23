@@ -16,7 +16,9 @@ public class Program
 		// Beast is an app, not a shell job: Ctrl+Z never suspends it on macOS/Linux, where a stopped beast
 		// would leave its agent waiting and its terminal modes half set. Windows has no such signal.
 		if (!OperatingSystem.IsWindows())
+		{
 			_ignoreSuspend = PosixSignalRegistration.Create(PosixSignal.SIGTSTP, context => context.Cancel = true);
+		}
 
 		Console.Title         = "Beast";
 		List<string> switches = new List<string>();
@@ -34,9 +36,15 @@ public class Program
 			{
 				List<string> parts = new List<string>();
 				for (int j = i + 1; j < args.Length; j++)
+				{
 					parts.Add(args[j]);
+				}
+
 				if (parts.Count > 0)
+				{
 					prompt = string.Join(" ", parts);
+				}
+
 				break;
 			}
 			else if (arg.StartsWith("/") || arg.StartsWith("-"))
@@ -73,7 +81,9 @@ public class Program
 			bool beastOnly = sw == "/help" || sw == "/h" || sw == "/verbose" || sw == "/debug"
 				|| sw == "/worktree" || sw.StartsWith("/worktree ", StringComparison.Ordinal);
 			if (!beastOnly)
+			{
 				agentSwitches.Add(sw);
+			}
 		}
 
 		if (showHelp)
@@ -104,7 +114,9 @@ public class Program
 		bool         unattended = prompt != null;
 		List<string> messages   = new List<string>(agentSwitches);
 		if (prompt != null)
+		{
 			messages.Add(prompt);
+		}
 
 		ClientLog    log         = new ClientLog(verbose);
 		CollapseMode initialMode = verbose || unattended ? CollapseMode.Verbose : CollapseMode.Minimized;
@@ -148,7 +160,9 @@ public class Program
 				return 1;
 			}
 			if (chosen == null)
+			{
 				return 0; // user left the session menu
+			}
 
 			// The menu may have stopped or deleted containers; pair the session with its container as it is now.
 			agents = await LaunchDocker.ListAgentsAsync(AgentImage);
@@ -205,7 +219,9 @@ public class Program
 		{
 			session = LatestHere(sessions, cwd, repo);
 			if (session == null)
+			{
 				(session, error) = BareSession(cwd, null, string.Empty, agents);
+			}
 		}
 		else if (string.Equals(nameArg, "none", StringComparison.OrdinalIgnoreCase))
 		{
@@ -214,9 +230,13 @@ public class Program
 		else if (!string.IsNullOrWhiteSpace(nameArg))
 		{
 			if (repo.Length == 0)
+			{
 				error = $"--worktree needs a git repository, and {cwd} is not in one.";
+			}
 			else
+			{
 				(session, error) = WorktreeSession(repo, nameArg, sessions, agents);
+			}
 		}
 		else
 		{
@@ -239,10 +259,14 @@ public class Program
 					foreach (SessionRecord s in sessions)
 					{
 						if (s.Id == id)
+						{
 							session = s;
+						}
 					}
 					if (session == null)
+					{
 						error = "That session is gone.";
+					}
 				}
 			}
 		}
@@ -258,7 +282,9 @@ public class Program
 		{
 			bool here = session.IsBare ? SessionStore.SameFolder(session.Folder, cwd) : repo.Length > 0 && SessionStore.SameFolder(session.Folder, repo);
 			if (latest == null && here)
+			{
 				latest = session;
+			}
 		}
 		return latest;
 	}
@@ -272,7 +298,9 @@ public class Program
 		{
 			error = UnsafeWorkspaceReason(folder);
 			if (error.Length == 0)
+			{
 				session = SessionStore.Create(folder, string.Empty, ContainerNames(agents), name);
+			}
 		}
 		return (session, error);
 	}
@@ -287,7 +315,9 @@ public class Program
 		{
 			error = UnsafeWorkspaceReason(repo);
 			if (error.Length == 0)
+			{
 				session = SessionStore.Create(repo, safe, ContainerNames(agents));
+			}
 		}
 		return (session, error);
 	}
@@ -296,7 +326,10 @@ public class Program
 	{
 		HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
 		foreach (LaunchDocker.AgentContainer agent in agents)
+		{
 			names.Add(agent.Name);
+		}
+
 		return names;
 	}
 
@@ -307,7 +340,9 @@ public class Program
 		foreach (LaunchDocker.AgentContainer agent in agents)
 		{
 			if (found == null && agent.SessionId == session.Id)
+			{
 				found = agent;
+			}
 		}
 		return found;
 	}
@@ -340,7 +375,10 @@ public class Program
 			if (here)
 			{
 				if (initial < 0)
+				{
 					initial = items.Count;
+				}
+
 				string label = !session.IsBare ? $"Worktree session: {session.Worktree}" : session.Name.Length > 0 ? $"Bare session: {session.Name}" : "Bare session (this folder, no worktree)";
 				items.Add(SessionItem(session, label, agents));
 			}
@@ -355,24 +393,34 @@ public class Program
 		if (repo.Length > 0 && repoRefusal.Length == 0)
 		{
 			if (initial < 0)
+			{
 				initial = items.Count;
+			}
+
 			items.Add(new SelectMenu.Item("New worktree session", string.Empty, string.Empty, false) { IsCreate = true, Suggestion = "work" });
 		}
 		if (cwdRefusal.Length == 0)
 		{
 			if (initial < 0)
+			{
 				initial = items.Count;
+			}
+
 			items.Add(new SelectMenu.Item("New bare session in this folder", BareChoice, string.Empty, false) { IsCreate = true, Suggestion = SessionStore.FreeBareName(sessions, cwd) });
 		}
 		if (repoRefusal.Length > 0 || cwdRefusal.Length > 0)
+		{
 			items.Add(new SelectMenu.Item("  No new session here: " + (repoRefusal.Length > 0 ? $"the repository is {repoRefusal}" : $"this folder is {cwdRefusal}"), string.Empty, string.Empty, true) { IsHeader = true });
+		}
 
 		if (elsewhere.Count > 0)
 		{
 			items.Add(new SelectMenu.Item(string.Empty, string.Empty, string.Empty, true) { IsHeader = true });
 			items.Add(new SelectMenu.Item("Elsewhere", string.Empty, string.Empty, true) { IsHeader = true });
 			foreach (SessionRecord session in elsewhere)
+			{
 				items.Add(SessionItem(session, $"{session.Folder}  ·  {session.Describe()}", agents));
+			}
 		}
 
 		List<LaunchDocker.AgentContainer> strays = new List<LaunchDocker.AgentContainer>();
@@ -382,17 +430,23 @@ public class Program
 			foreach (SessionRecord session in sessions)
 			{
 				if (agent.SessionId == session.Id)
+				{
 					owned = true;
+				}
 			}
 			if (!owned)
+			{
 				strays.Add(agent);
+			}
 		}
 		if (strays.Count > 0)
 		{
 			items.Add(new SelectMenu.Item(string.Empty, string.Empty, string.Empty, true) { IsHeader = true });
 			items.Add(new SelectMenu.Item("Agent containers that belong to no session", string.Empty, string.Empty, true) { IsHeader = true });
 			foreach (LaunchDocker.AgentContainer agent in strays)
+			{
 				items.Add(new SelectMenu.Item($"container {agent.Name}", string.Empty, agent.Running ? "running" : "stopped", true) { Tag = agent });
+			}
 		}
 
 		return SelectMenu.Choose("Beast — sessions", "↑/↓ select · Enter start · S stop a busy agent · Del delete · Esc quit",
@@ -421,11 +475,17 @@ public class Program
 				LaunchDocker.AgentContainer? agent = ContainerOf(session, agents);
 				item.Note = SessionNote(session, agents);
 				if (key.Key == ConsoleKey.Enter && agent != null && agent.Running)
+				{
 					result = new SelectMenu.KeyResult($"'{session.Describe()}' is busy: a Beast window is using it. Press S to stop its agent.", true, false);
+				}
 				else if (stop)
+				{
 					result = StopFromMenu(agent, session.Describe(), item);
+				}
 				else if (delete)
+				{
 					result = DeleteSessionFromMenu(session, agent);
+				}
 			}
 			else if (item.Tag is LaunchDocker.AgentContainer stray)
 			{
@@ -433,18 +493,30 @@ public class Program
 				foreach (LaunchDocker.AgentContainer agent in agents)
 				{
 					if (agent.Id == stray.Id)
+					{
 						now = agent;
+					}
 				}
 				if (now == null)
+				{
 					result = new SelectMenu.KeyResult("That container is already gone.", false, true);
+				}
 				else if (stop)
+				{
 					result = StopFromMenu(now, $"container {now.Name}", item);
+				}
 				else if (delete && now.Running)
+				{
 					result = new SelectMenu.KeyResult("It is running; press S to stop it first.", true, false);
+				}
 				else if (delete)
+				{
 					result = Outcome(LaunchDocker.RemoveStoppedAsync(now).GetAwaiter().GetResult(), $"Deleted container {now.Name}.", true);
+				}
 				else
+				{
 					result = new SelectMenu.KeyResult("This container belongs to no session; Del deletes it.", true, false);
+				}
 			}
 		}
 		return result;
@@ -474,7 +546,9 @@ public class Program
 				string error = LaunchDocker.StopAgentAsync(agent).GetAwaiter().GetResult();
 				result       = Outcome(error, $"Stopped the agent of '{what}'.", false);
 				if (error.Length == 0)
+				{
 					item.Note = "stopped";
+				}
 			}
 		}
 		return result;
@@ -504,7 +578,10 @@ public class Program
 			}
 			lines.Add(string.Empty);
 			if (agent != null)
+			{
 				lines.Add("Agent only: delete the agent's container (what was installed in it). The session stays, and starting it makes a fresh agent.");
+			}
+
 			lines.Add(session.IsBare
 				? "Everything: also forget the session, its conversations and logs."
 				: "Everything: also delete the worktree (uncommitted changes are lost), its conversations and logs, and its branch if merged. An unmerged branch is kept, so its commits are not lost.");
@@ -523,9 +600,15 @@ public class Program
 				string error = agent != null ? LaunchDocker.RemoveStoppedAsync(agent).GetAwaiter().GetResult() : string.Empty;
 				string note  = string.Empty;
 				if (error.Length == 0 && !session.IsBare)
+				{
 					(note, error) = HostGit.RemoveWorktree(session);
+				}
+
 				if (error.Length == 0)
+				{
 					error = SessionStore.DeleteDir(session);
+				}
+
 				result = Outcome(error, $"Deleted '{session.Describe()}' of {session.Folder}{(note.Length > 0 ? "; " + note : string.Empty)}.", true);
 			}
 		}
@@ -562,7 +645,10 @@ public class Program
 		string what   = UnsafeWhat(cwd);
 		string reason = string.Empty;
 		if (what.Length > 0)
+		{
 			reason = $"Beast will not make a session for {SessionStore.NormalizeFolder(cwd)}: it is {what}. That folder would be handed to the agent as its workspace to read and change, so it has to be a project folder that is fully yours. Run Beast from a project folder instead.";
+		}
+
 		return reason;
 	}
 
@@ -578,21 +664,38 @@ public class Program
 
 		string what = string.Empty;
 		if (string.Equals(folder, home, cmp))
+		{
 			what = "your home folder";
+		}
 		else if (home.StartsWith(folder + Path.DirectorySeparatorChar, cmp))
+		{
 			what = "a folder that contains your home folder";
+		}
 		else if (string.Equals(folder, beast, cmp) || folder.StartsWith(beast + Path.DirectorySeparatorChar, cmp))
+		{
 			what = "inside Beast's own folder (~/.beast)";
+		}
 		else if (string.Equals(folder, sessions, cmp) || folder.StartsWith(sessions + Path.DirectorySeparatorChar, cmp))
+		{
 			what = "inside Beast's sessions folder (sessionsDir)";
+		}
 		else if (sessions.StartsWith(folder + Path.DirectorySeparatorChar, cmp))
+		{
 			what = "a folder that contains Beast's sessions folder (sessionsDir)";
+		}
 		else if (string.Equals(folder, root, cmp) || folder.Length == 0)
+		{
 			what = "the root of a drive";
+		}
 		else if (InSystemFolder(folder, cmp))
+		{
 			what = "part of the operating system or its installed programs";
+		}
 		else if (!CanWrite(folder))
+		{
 			what = "a folder you cannot write to";
+		}
+
 		return what;
 	}
 
@@ -621,7 +724,9 @@ public class Program
 			{
 				string sys = Path.TrimEndingDirectorySeparator(path);
 				if (string.Equals(folder, sys, cmp) || folder.StartsWith(sys + Path.DirectorySeparatorChar, cmp))
+				{
 					inside = true;
+				}
 			}
 		}
 		return inside;
@@ -635,7 +740,9 @@ public class Program
 		{
 			string probe = Path.Combine(folder, $".beast-write-check-{Guid.NewGuid():N}");
 			using (new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose))
+			{
 				writable = true;
+			}
 		}
 		catch (UnauthorizedAccessException)
 		{

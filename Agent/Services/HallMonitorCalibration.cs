@@ -110,11 +110,29 @@ public class HallMonitorCalibration
 		_lifetime = lifetime;
 	}
 
-	public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "hallmonitor.json");
+	public static string DefaultPath
+	{
+		get
+		{
+			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "hallmonitor.json");
+		}
+	}
 
-	public static string Fingerprint => s_fingerprint.Value;
+	public static string Fingerprint
+	{
+		get
+		{
+			return s_fingerprint.Value;
+		}
+	}
 
-	public static List<(string Command, bool Dangerous)> Commands => s_commands.Value;
+	public static List<(string Command, bool Dangerous)> Commands
+	{
+		get
+		{
+			return s_commands.Value;
+		}
+	}
 
 	// What a calibration run measures: the built-in commands, then each Always answer as safe and each Never
 	// answer as dangerous. An answer repeating a built-in command keeps the built-in label.
@@ -123,18 +141,24 @@ public class HallMonitorCalibration
 		List<(string Command, bool Dangerous)> set     = new List<(string Command, bool Dangerous)>(Commands);
 		HashSet<string>                        builtIn = new HashSet<string>(StringComparer.Ordinal);
 		foreach ((string command, bool _) in Commands)
+		{
 			builtIn.Add(command);
+		}
 
 		(List<string> Always, List<string> Never) answers = _memory.Snapshot();
 		foreach (string command in answers.Always)
 		{
 			if (builtIn.Add(command))
+			{
 				set.Add((command, false));
+			}
 		}
 		foreach (string command in answers.Never)
 		{
 			if (builtIn.Add(command))
+			{
 				set.Add((command, true));
+			}
 		}
 		return set;
 	}
@@ -169,7 +193,9 @@ public class HallMonitorCalibration
 			}
 		}
 		if (start)
+		{
 			_ = Task.Run(WorkAsync);
+		}
 	}
 
 	// Where the model's calibration stands, for a verdict that could not use it.
@@ -191,12 +217,18 @@ public class HallMonitorCalibration
 			lock (_lock)
 			{
 				if (_queue.Count > 0)
+				{
 					model = _queue.Dequeue();
+				}
 				else
+				{
 					_working = false;
+				}
 			}
 			if (model == null)
+			{
 				break;
+			}
 
 			await CalibrateAsync(model);
 		}
@@ -214,9 +246,14 @@ public class HallMonitorCalibration
 			CalibrationResult result = await RunAsync(model, set, remaining =>
 			{
 				lock (_lock)
+				{
 					_active[id] = (remaining, total);
+				}
+
 				if (remaining % 10 == 0)
+				{
 					_report(new CalibrationStatus(id, remaining, total, "running", $"HallMonitor is calibrating {id}"));
+				}
 			}, _lifetime);
 
 			if (result.Failed > total * MaxFailedShare)
@@ -243,7 +280,9 @@ public class HallMonitorCalibration
 		finally
 		{
 			lock (_lock)
+			{
 				_active.Remove(id);
+			}
 		}
 	}
 
@@ -262,9 +301,13 @@ public class HallMonitorCalibration
 			{
 				(double allowScore, double blockScore, List<string> _, string scoreError) = HallMonitor.Score(answers);
 				if (scoreError.Length == 0)
+				{
 					scored.Add((allowScore, blockScore, dangerous));
+				}
 				else
+				{
 					failed++;
+				}
 			}
 			else
 			{
@@ -322,13 +365,19 @@ public class HallMonitorCalibration
 		double allow = Math.Floor(Math.Round((lowestDanger - AllowMargin) / 0.05, 6)) * 0.05;
 		double block = Math.Max(MinimumBlock, Math.Ceiling(Math.Round((highestSafe + 0.01) / 0.05, 6)) * 0.05);
 		if (block > 0.95)
+		{
 			block = 1;
+		}
 
 		string problem = string.Empty;
 		if (dangerous == 0 || safe == 0)
+		{
 			problem = "the calibration commands produced no usable answers";
+		}
 		else if (allow < 0.05)
+		{
 			problem = $"it scored a dangerous command only {lowestDanger:0.00}, too close to safe to allow anything";
+		}
 
 		return (Math.Round(Math.Max(allow, 0), 2), Math.Round(block, 2), problem);
 	}
@@ -380,10 +429,16 @@ public class HallMonitorCalibration
 			{
 				string? dir = Path.GetDirectoryName(_path);
 				if (dir != null)
+				{
 					Directory.CreateDirectory(dir);
+				}
+
 				using (FileStream stream = File.Create(_path))
 				using (Utf8JsonWriter writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+				{
 					root.WriteTo(writer);
+				}
+
 				_loadedWriteTime = File.GetLastWriteTimeUtc(_path);
 			}
 			catch (Exception ex)
@@ -435,7 +490,9 @@ public class HallMonitorCalibration
 		for (string? line = reader.ReadLine(); line != null; line = reader.ReadLine())
 		{
 			if (line.Trim().Length > 0 && JsonNode.Parse(line) is JsonObject item)
+			{
 				commands.Add((Text(item, "cmd"), string.Equals(Text(item, "label"), "dangerous", StringComparison.OrdinalIgnoreCase)));
+			}
 		}
 		return commands;
 	}
@@ -450,10 +507,14 @@ public class HallMonitorCalibration
 		{
 			all.Append(key).Append('|').Append(question.Instructions).Append('|');
 			foreach ((string option, DecisionOption meaning) in question.Options)
+			{
 				all.Append(option).Append('|').Append(meaning.Description).Append('|').Append(meaning.Flag).Append('|');
+			}
 		}
 		foreach ((string command, bool dangerous) in Commands)
+		{
 			all.Append(command).Append('|').Append(dangerous).Append('|');
+		}
 
 		byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(all.ToString()));
 		return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();

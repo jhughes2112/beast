@@ -102,18 +102,48 @@ public static class Sandbox
 	private static          bool          _fileClockFailed;
 	private static volatile string?       _fakeTime;
 
-	public static bool ShellUserActive => _shellUserActive;
+	public static bool ShellUserActive
+	{
+		get
+		{
+			return _shellUserActive;
+		}
+	}
 
 	// Whether this container can mount clockfs at all; one created by an older Beast has no fuse device.
-	public static bool FileClockAvailable => _shellUserActive && File.Exists(kClockFsPath) && File.Exists(kFuseDevice);
+	public static bool FileClockAvailable
+	{
+		get
+		{
+			return _shellUserActive && File.Exists(kClockFsPath) && File.Exists(kFuseDevice);
+		}
+	}
 
 	// The counted time now, in unix seconds; 0 until the first seeded round.
-	public static long FileClockNow => _fileClockBase + _fileClockMinutes * 60;
+	public static long FileClockNow
+	{
+		get
+		{
+			return _fileClockBase + _fileClockMinutes * 60;
+		}
+	}
 
 	// Whether a seeded run has started counting time in this container.
-	public static bool CountingTime => _fakeTime != null;
+	public static bool CountingTime
+	{
+		get
+		{
+			return _fakeTime != null;
+		}
+	}
 
-	private static string Root => _root.Length > 0 ? _root : Environment.CurrentDirectory;
+	private static string Root
+	{
+		get
+		{
+			return _root.Length > 0 ? _root : Environment.CurrentDirectory;
+		}
+	}
 
 	// Called once at startup with the workspace root. The shell user is only used when the agent is
 	// root on Linux and the image created the account.
@@ -160,9 +190,14 @@ public static class Sandbox
 			string     locked  = Listed(result.StdOut, "LOCKED ");
 			string     removed = Listed(result.StdOut, "REMOVED ");
 			if (locked.Length > 0)
+			{
 				note = $"[sandbox: {locked} now belongs to the agent and is read-only for you — top-level folders whose names start with '.' always do. Use a name without the dot (e.g. venv/, not .venv/).]";
+			}
+
 			if (removed.Length > 0)
+			{
 				note = (note.Length > 0 ? note + "\n" : string.Empty) + $"[sandbox: the symlink {removed} was removed — top-level names starting with '.' belong to the agent.]";
+			}
 		}
 		return note;
 	}
@@ -184,7 +219,10 @@ public static class Sandbox
 			try
 			{
 				if (_fileClockBase == 0)
+				{
 					failure = await StartFileClockAsync(ct);
+				}
+
 				if (failure.Length == 0)
 				{
 					_fileClockMinutes += toolCalls;
@@ -306,7 +344,9 @@ public static class Sandbox
 		foreach (string line in output.Split('\n'))
 		{
 			if (line.StartsWith(marker, StringComparison.Ordinal))
+			{
 				names.Add(line.Substring(marker.Length).Trim());
+			}
 		}
 		return string.Join(", ", names);
 	}
@@ -363,7 +403,9 @@ public static class Sandbox
 	public static void GiveToShellUser(string path)
 	{
 		if (_shellUserActive)
+		{
 			chown(Encoding.UTF8.GetBytes(path + "\0"), _uid, _gid);
+		}
 	}
 
 	// Adds the shell user's identity to a process start: setpriv drops to it before bash runs, and
@@ -448,7 +490,10 @@ public static class Sandbox
 			pending.RemoveAt(0);
 
 			if (name == ".")
+			{
 				continue;
+			}
+
 			if (name == "..")
 			{
 				string? parent = System.IO.Path.GetDirectoryName(System.IO.Path.TrimEndingDirectorySeparator(resolved));
@@ -488,7 +533,9 @@ public static class Sandbox
 		{
 			FileInfo info = new FileInfo(path);
 			if (info.Attributes != (FileAttributes)(-1) && info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+			{
 				target = info.LinkTarget;
+			}
 		}
 		catch (Exception)
 		{
@@ -500,7 +547,10 @@ public static class Sandbox
 	{
 		List<string> parts = new List<string>();
 		foreach (string part in path.Split(new char[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries))
+		{
 			parts.Add(part);
+		}
+
 		return parts;
 	}
 
@@ -514,7 +564,9 @@ public static class Sandbox
 			{
 				string[] fields = line.Split(':');
 				if (fields.Length > 3 && fields[0] == name && uint.TryParse(fields[2], out uint uid) && uint.TryParse(fields[3], out uint gid))
+				{
 					result = (true, uid, gid);
+				}
 			}
 		}
 		catch (Exception)

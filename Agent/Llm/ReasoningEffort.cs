@@ -44,7 +44,10 @@ public static class ReasoningEffort
 	{
 		List<string> names = new List<string>();
 		foreach ((string name, int _) in kAnthropicBudgets)
+		{
 			names.Add(name);
+		}
+
 		return names;
 	}
 
@@ -56,12 +59,16 @@ public static class ReasoningEffort
 		foreach (string known in kAnthropicOrder)
 		{
 			if (given.Contains(known))
+			{
 				result.Add(known);
+			}
 		}
 		foreach (string word in given)
 		{
 			if (!result.Contains(word))
+			{
 				result.Add(word);
+			}
 		}
 		return result;
 	}
@@ -80,18 +87,29 @@ public static class ReasoningEffort
 		foreach (string option in options)
 		{
 			if (middle == null && NamesMiddle(option))
+			{
 				middle = option;
+			}
 		}
 
 		string result;
 		if (options.Count == 0)
+		{
 			result = Off;
+		}
 		else if (!string.IsNullOrEmpty(stated) && Contains(options, stated))
+		{
 			result = Spelled(options, stated);
+		}
 		else if (middle != null)
+		{
 			result = middle;
+		}
 		else
+		{
 			result = options[options.Count / 2];
+		}
+
 		return result;
 	}
 
@@ -110,11 +128,18 @@ public static class ReasoningEffort
 	{
 		string result;
 		if (string.Equals(setting, Off, StringComparison.OrdinalIgnoreCase) && (!thinkingRequired || options.Count == 0))
+		{
 			result = Off;
+		}
 		else if (!string.IsNullOrEmpty(setting) && Contains(options, setting))
+		{
 			result = Spelled(options, setting);
+		}
 		else
+		{
 			result = defaultOption;
+		}
+
 		return result;
 	}
 
@@ -134,7 +159,10 @@ public static class ReasoningEffort
 	{
 		List<string> choices = new List<string>();
 		if (!thinkingRequired || options.Count == 0)
+		{
 			choices.Add(Off);
+		}
+
 		choices.AddRange(options);
 		return choices;
 	}
@@ -165,7 +193,9 @@ public static class ReasoningEffort
 			foreach ((string name, int tokens) in kAnthropicBudgets)
 			{
 				if (string.Equals(name, setting, StringComparison.OrdinalIgnoreCase))
+				{
 					target = tokens;
+				}
 			}
 		}
 
@@ -180,7 +210,9 @@ public static class ReasoningEffort
 			int ceiling = maxTokens - 512;
 			budget      = target > ceiling ? ceiling : target;
 			if (budget < 1024)
+			{
 				budget = 1024;
+			}
 		}
 		return budget;
 	}
@@ -191,7 +223,9 @@ public static class ReasoningEffort
 		foreach (string option in options)
 		{
 			if (string.Equals(option, word, StringComparison.OrdinalIgnoreCase))
+			{
 				found = true;
+			}
 		}
 		return found;
 	}
@@ -203,7 +237,9 @@ public static class ReasoningEffort
 		foreach (string option in options)
 		{
 			if (string.Equals(option, word, StringComparison.OrdinalIgnoreCase))
+			{
 				result = option;
+			}
 		}
 		return result;
 	}

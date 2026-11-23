@@ -119,7 +119,10 @@ public interface ITransportServer
 		catch (OperationCanceledException)
 		{
 			if (cancellationToken.IsCancellationRequested)
+			{
 				return null;
+			}
+
 			return string.Empty;
 		}
 	}

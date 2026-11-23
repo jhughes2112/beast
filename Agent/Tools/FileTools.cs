@@ -99,14 +99,22 @@ public static class FileTools
 											lineTruncated = true;
 										}
 										if (i > 0)
+										{
 											sb.Append('\n');
+										}
+
 										sb.Append(line);
 									}
 
 									if (count < requested)
+									{
 										sb.Append($"\n[Lines {startLine}-{startLine + count - 1} of {total}; at most {maxLines} lines are shown at once.]");
+									}
+
 									if (lineTruncated)
+									{
 										sb.Append($"\n[Lines over {MaxLineLength} characters are cut short and end in \"...truncated\".]");
+									}
 
 									result = new ToolResult(toolCallId, sb.ToString(), string.Empty, 0, 0);
 								}
@@ -296,12 +304,16 @@ public static class FileTools
 		// Fold away identical leading/trailing lines of the replaced span.
 		int prefix = 0;
 		while (prefix < oldLines.Length && prefix < newLines.Length && oldLines[prefix] == newLines[prefix])
+		{
 			prefix++;
+		}
 
 		int suffix = 0;
 		while (suffix < oldLines.Length - prefix && suffix < newLines.Length - prefix
 			&& oldLines[oldLines.Length - 1 - suffix] == newLines[newLines.Length - 1 - suffix])
+		{
 			suffix++;
+		}
 
 		// Everything before the change is identical in both files, so the first changed line has the
 		// same number in each. Numbers track the new file; removed lines carry the number of the
@@ -319,7 +331,9 @@ public static class FileTools
 		sb.Append($"Edit applied at line {realStart + 1}:\n");
 
 		for (int i = firstBefore; i < realStart; i++)
+		{
 			AppendDiffLine(sb, i + 1, '|', allLines[i]);
+		}
 
 		List<(char Marker, string Text)> ops = DiffLines(oldLines, prefix, removedCount, newLines, prefix, addedCount);
 		int newLineNo = realStart;
@@ -337,7 +351,9 @@ public static class FileTools
 		}
 
 		for (int i = afterStart; i <= lastAfter; i++)
+		{
 			AppendDiffLine(sb, i + 1, '|', allLines[i]);
+		}
 
 		return sb.ToString();
 	}
@@ -353,9 +369,14 @@ public static class FileTools
 		if ((long)oldCount * newCount > 1_000_000)
 		{
 			for (int i = 0; i < oldCount; i++)
+			{
 				ops.Add((Marker: '-', Text: oldLines[oldStart + i]));
+			}
+
 			for (int j = 0; j < newCount; j++)
+			{
 				ops.Add((Marker: '+', Text: newLines[newStart + j]));
+			}
 		}
 		else
 		{
@@ -366,9 +387,13 @@ public static class FileTools
 				for (int j = newCount - 1; j >= 0; j--)
 				{
 					if (oldLines[oldStart + i] == newLines[newStart + j])
+					{
 						lcs[i, j] = lcs[i + 1, j + 1] + 1;
+					}
 					else
+					{
 						lcs[i, j] = Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+					}
 				}
 			}
 
@@ -429,7 +454,9 @@ public static class FileTools
 		for (int i = 0; i < limit; i++)
 		{
 			if (content[i] == '\n')
+			{
 				count++;
+			}
 		}
 		return count;
 	}
@@ -524,6 +551,8 @@ public static class FileTools
 
 		Directory.CreateDirectory(directory);
 		foreach (string created in missing)
+		{
 			Sandbox.GiveToShellUser(created);
+		}
 	}
 }

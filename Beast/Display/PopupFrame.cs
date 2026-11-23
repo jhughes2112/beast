@@ -33,9 +33,14 @@ internal static class PopupFrame
 	{
 		string fitted = text;
 		if (max <= 0)
+		{
 			fitted = string.Empty;
+		}
 		else if (text.Length > max)
+		{
 			fitted = max > 1 ? text.Substring(0, max - 1) + "…" : text.Substring(0, max);
+		}
+
 		return fitted;
 	}
 
@@ -55,7 +60,10 @@ internal static class PopupFrame
 			current = current.Length == 0 ? Fit(word, width) : $"{current} {word}";
 		}
 		if (current.Length > 0)
+		{
 			lines.Add(current);
+		}
+
 		return lines;
 	}
 }

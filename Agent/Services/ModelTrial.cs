@@ -37,9 +37,13 @@ internal static class ModelTrial
 		if (result.Outcome != ProtocolCallOutcome.Success)
 		{
 			if (deadline.IsCancellationRequested)
+			{
 				error = $"No answer within {seconds}s.";
+			}
 			else
+			{
 				error = string.IsNullOrEmpty(result.ErrorMessage) ? result.Outcome.ToString() : result.ErrorMessage;
+			}
 		}
 		return error;
 	}

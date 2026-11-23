@@ -116,7 +116,13 @@ public class ProtocolResponses
 	}
 
 	// The subscription backend takes the system prompt as a developer message, as the Codex CLI sends it.
-	private string SystemRole => _subscription ? "developer" : "system";
+	private string SystemRole
+	{
+		get
+		{
+			return _subscription ? "developer" : "system";
+		}
+	}
 
 	// Clears native chaining state so the next turn replays the full canonical history once.
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
@@ -140,7 +146,9 @@ public class ProtocolResponses
 			else if (msg is AssistantMessage am)
 			{
 				if (!string.IsNullOrEmpty(am.Text))
+				{
 					input.Add((JsonNode)BuildMessageItem("assistant", "output_text", am.Text));
+				}
 
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
@@ -178,20 +186,29 @@ public class ProtocolResponses
 	{
 		JsonObject item = BuildMessageItem("user", "input_text", text);
 		if (attachments == null || attachments.Count == 0)
+		{
 			return item;
+		}
 
 		JsonArray content = (JsonArray)item["content"]!;
 
 		// A message that is nothing but a dropped image has no words; drop the empty text part
 		// rather than sending a blank block alongside the media.
 		if (string.IsNullOrEmpty(text))
+		{
 			content.Clear();
+		}
+
 		foreach (MediaAttachment att in attachments)
 		{
 			if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+			{
 				content.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
+			}
 			else
+			{
 				content.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+			}
 		}
 		return item;
 	}
@@ -211,7 +228,10 @@ public class ProtocolResponses
 		if (_pendingReasoning != null)
 		{
 			foreach (JsonNode? item in _pendingReasoning)
+			{
 				_deltaInput.Add(item!.DeepClone());
+			}
+
 			_pendingReasoning = null;
 		}
 
@@ -267,17 +287,25 @@ public class ProtocolResponses
 
 		JsonArray parts = new JsonArray();
 		if (!string.IsNullOrEmpty(output))
+		{
 			parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = output });
+		}
 
 		foreach (MediaFile file in media)
 		{
 			MediaAttachment? att = MediaKinds.LoadAttachment(file.Path, file.MimeType);
 			if (att == null)
+			{
 				parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = MediaKinds.MissingNote(file.Path) });
+			}
 			else if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+			{
 				parts.Add((JsonNode)new JsonObject { ["type"] = "input_image", ["image_url"] = $"data:{att.MimeType};base64,{att.Base64Data}" });
+			}
 			else
+			{
 				parts.Add((JsonNode)new JsonObject { ["type"] = "input_text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+			}
 		}
 
 		item["output"] = parts;
@@ -308,7 +336,10 @@ public class ProtocolResponses
 				JsonObject body      = BuildBody(model, tools, forcedToolName, maxCompletionTokens, extraPayload);
 				string?    mediaNote = _media.TakeNote();
 				if (mediaNote != null)
+				{
 					logger.Note(mediaNote);
+				}
+
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				if (_streamingSupported)
@@ -320,12 +351,16 @@ public class ProtocolResponses
 						continue;
 					}
 					if (streamResult != null)
+					{
 						return streamResult;
+					}
 				}
 
 				// The subscription backend only streams; there is no non-streaming request to fall back to.
 				if (_subscription)
+				{
 					return ProtocolResult.Transient("The ChatGPT subscription stream ended without a result", null);
+				}
 
 				string requestJson = body.ToJsonString();
 
@@ -350,7 +385,10 @@ public class ProtocolResponses
 				{
 					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 					if (timeout != null)
+					{
 						return timeout;
+					}
+
 					throw;
 				}
 				catch (HttpRequestException ex)
@@ -370,7 +408,9 @@ public class ProtocolResponses
 				{
 					JsonNode? root = JsonNode.Parse(responseBody);
 					if (root == null)
+					{
 						return ProtocolResult.Transient("Empty response from Responses API", null);
+					}
 
 					return CommitResponse(bundle, root, model);
 				}
@@ -389,7 +429,9 @@ public class ProtocolResponses
 				// trim it and re-send the turn.
 				if (LearnReasoningRefusal(model, statusCode, responseBody, logger)
 					|| _media.LearnFromRefusal(model, statusCode, responseBody, _onCapabilityLearned, logger))
+				{
 					continue;
+				}
 
 				// A 4xx other than the 429 handled above (and the genuinely retryable 408/425) is a permanent
 				// client error: the request itself is bad, so retrying just burns the transient budget and then
@@ -432,7 +474,9 @@ public class ProtocolResponses
 		{
 			input = _rehydratedInput != null ? (JsonArray)_rehydratedInput.DeepClone() : new JsonArray();
 			foreach (JsonNode? item in _deltaInput)
+			{
 				input.Add(item!.DeepClone());
+			}
 		}
 		else
 		{
@@ -447,7 +491,9 @@ public class ProtocolResponses
 
 		// The subscription backend rejects max_output_tokens; its own limits bound the reply.
 		if (maxCompletionTokens.HasValue && !_subscription)
+		{
 			body["max_output_tokens"] = maxCompletionTokens.Value;
+		}
 
 		ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
 
@@ -471,9 +517,15 @@ public class ProtocolResponses
 				t["type"]    = "function";
 				t["name"]    = td.Function.Name;
 				if (!string.IsNullOrEmpty(td.Function.Description))
+				{
 					t["description"] = td.Function.Description;
+				}
+
 				if (td.Function.Parameters != null)
+				{
 					t["parameters"] = td.Function.Parameters.DeepClone();
+				}
+
 				toolsArr.Add((JsonNode)t);
 			}
 			body["tools"] = toolsArr;
@@ -505,11 +557,20 @@ public class ProtocolResponses
 		string?    effort    = _reasoningSupported ? ReasoningEffort.Sent(model.Config.ReasoningEffort) : null;
 		JsonObject reasoning = new JsonObject();
 		if (effort != null)
+		{
 			reasoning["effort"] = effort;
+		}
+
 		if (_summarySupported && model.Config.ReasoningSummaries)
+		{
 			reasoning["summary"] = "auto";
+		}
+
 		if (reasoning.Count > 0)
+		{
 			body["reasoning"] = reasoning;
+		}
+
 		_sentReasoning = reasoning.Count > 0;
 
 		foreach ((string name, JsonNode? value) in extraPayload)
@@ -533,11 +594,15 @@ public class ProtocolResponses
 	private static bool IsReasoningRejection(string errorBody)
 	{
 		if (string.IsNullOrEmpty(errorBody))
+		{
 			return false;
+		}
 
 		string lower = errorBody.ToLowerInvariant();
 		if (!lower.Contains("reasoning"))
+		{
 			return false;
+		}
 
 		return lower.Contains("unsupported")
 			|| lower.Contains("not supported")
@@ -556,7 +621,9 @@ public class ProtocolResponses
 		// back is an outage, and switching a feature off over one would be learning the wrong lesson
 		// permanently.
 		if (statusCode < 400 || statusCode >= 500)
+		{
 			return false;
+		}
 
 		if (_summarySupported && model.Config.ReasoningSummaries && IsSummaryRejection(errorBody))
 		{
@@ -580,7 +647,9 @@ public class ProtocolResponses
 	private static bool IsSummaryRejection(string errorBody)
 	{
 		if (string.IsNullOrEmpty(errorBody))
+		{
 			return false;
+		}
 
 		string lower = errorBody.ToLowerInvariant();
 		return lower.Contains("reasoning.summary")
@@ -649,7 +718,10 @@ public class ProtocolResponses
 		{
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return timeout;
+			}
+
 			throw;
 		}
 		catch (HttpRequestException ex)
@@ -684,7 +756,9 @@ public class ProtocolResponses
 
 			// The subscription only streams, so no refusal here is a verdict on streaming support.
 			if (_subscription)
+			{
 				return SubscriptionFailure(model, httpResponse, statusCode, errorBody, logger);
+			}
 
 			// An empty body says nothing about streaming support — it is what a busy server emits while
 			// it unwinds a previous request, and latching streaming off over it costs the session the
@@ -746,20 +820,28 @@ public class ProtocolResponses
 				{
 					string? line = await reader.ReadLineAsync(requestCts.Token);
 					if (line == null)
+					{
 						break;
+					}
 
 					requestCts.CancelAfter(idleTimeout);
 
 					string? data = ProtocolHelpers.SseData(line);
 					if (data == null)
+					{
 						continue;
+					}
 
 					if (data == "[DONE]")
+					{
 						break;
+					}
 
 					JsonNode? eventNode = JsonNode.Parse(data);
 					if (eventNode == null)
+					{
 						continue;
+					}
 
 					string? eventType = eventNode["type"]?.GetValue<string>();
 
@@ -857,7 +939,10 @@ public class ProtocolResponses
 			// A stream that went silent past the deadline is a timeout, not a user cancel.
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return timeout;
+			}
+
 			throw;
 		}
 		catch (Exception ex)
@@ -873,13 +958,18 @@ public class ProtocolResponses
 		}
 
 		if (streamError != null)
+		{
 			return StreamFailure(model, streamError, httpResponse.Headers, logger);
+		}
 
 		if (finalResponseNode != null)
 		{
 			JsonArray? output = finalResponseNode["output"] as JsonArray;
 			if ((output == null || output.Count == 0) && streamedItems.Count > 0)
+			{
 				finalResponseNode["output"] = streamedItems;
+			}
+
 			return CommitResponse(bundle, finalResponseNode, model);
 		}
 
@@ -983,7 +1073,9 @@ public class ProtocolResponses
 		foreach (JsonNode? item in output)
 		{
 			if (item == null)
+			{
 				continue;
+			}
 
 			string? type = item["type"]?.GetValue<string>();
 			if (type == "function_call")
@@ -1031,7 +1123,10 @@ public class ProtocolResponses
 			// that follows records the turn itself, preceded by its reasoning.
 			JsonArray history = _rehydratedInput ?? new JsonArray();
 			foreach (JsonNode? item in _deltaInput)
+			{
 				history.Add(item!.DeepClone());
+			}
+
 			_rehydratedInput       = history;
 			_pendingReasoning      = ReplayableReasoning(output);
 			_assistantTurnOnServer = false;
@@ -1072,7 +1167,9 @@ public class ProtocolResponses
 		foreach (JsonNode? item in output)
 		{
 			if (item?["type"]?.GetValue<string>() != "reasoning" || item["encrypted_content"] == null)
+			{
 				continue;
+			}
 
 			JsonObject replay = new JsonObject
 			{
@@ -1090,15 +1187,23 @@ public class ProtocolResponses
 	private static void AppendReasoningText(JsonArray? parts, StringBuilder builder)
 	{
 		if (parts == null)
+		{
 			return;
+		}
 
 		foreach (JsonNode? part in parts)
 		{
 			string? text = part?["text"]?.GetValue<string>();
 			if (string.IsNullOrEmpty(text))
+			{
 				continue;
+			}
+
 			if (builder.Length > 0)
+			{
 				builder.Append("\n\n");
+			}
+
 			builder.Append(text);
 		}
 	}
@@ -1109,7 +1214,9 @@ public class ProtocolResponses
 		decimal        cost      = 0m;
 		JsonNode?      usageNode = responseRoot["usage"];
 		if (usageNode == null)
+		{
 			return (usage, cost);
+		}
 
 		int totalInputTokens   = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
 		usage.CompletionTokens = usageNode["output_tokens"]?.GetValue<int>() ?? 0;
@@ -1158,12 +1265,17 @@ public class ProtocolResponses
 		// too. The first real turn's usage measures the conversation instead; the caller treats a failed
 		// count as "not known yet".
 		if (_subscription)
+		{
 			return TracerResult.Failed("The ChatGPT subscription cannot count tokens ahead of a turn");
+		}
 
 		// An endpoint already found to have no count route goes straight to the tracer.
 		string known = _endpointFacts.ResponsesCountRoute;
 		if (known == EndpointFacts.NoCountRoute)
+		{
 			return await ExecuteTracerAsync(model, tools, forcedToolName, extraHeaders, extraPayload, logger, cancellationToken);
+		}
+
 		string route = known.Length > 0 ? known : kOpenAiCountRoute;
 
 		// Build the count endpoint URL: model.Endpoint ends with /responses, count endpoint is /responses<route>
@@ -1203,7 +1315,10 @@ public class ProtocolResponses
 		{
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return TracerResult.Failed(timeout.ErrorMessage);
+			}
+
 			throw;
 		}
 		catch (HttpRequestException ex)
@@ -1221,10 +1336,14 @@ public class ProtocolResponses
 		{
 			JsonNode? root = JsonNode.Parse(responseBody);
 			if (root == null)
+			{
 				return TracerResult.Failed("Empty response from count endpoint");
+			}
 
 			if (known.Length == 0)
+			{
 				_endpointFacts.RecordResponsesCountRoute(route);
+			}
 
 			int inputTokens = root["input_tokens"]?.GetValue<int>() ?? 0;
 			return TracerResult.Success(inputTokens, 0);
@@ -1295,9 +1414,15 @@ public class ProtocolResponses
 				t["type"]    = "function";
 				t["name"]    = td.Function.Name;
 				if (!string.IsNullOrEmpty(td.Function.Description))
+				{
 					t["description"] = td.Function.Description;
+				}
+
 				if (td.Function.Parameters != null)
+				{
 					t["parameters"] = td.Function.Parameters.DeepClone();
+				}
+
 				toolsArr.Add((JsonNode)t);
 			}
 			body["tools"] = toolsArr;
@@ -1319,7 +1444,10 @@ public class ProtocolResponses
 		foreach ((string name, JsonNode? value) in extraPayload)
 		{
 			if (name == "stream" || name == "max_output_tokens" || name == "tool_choice" || name == "previous_response_id")
+			{
 				continue;
+			}
+
 			body[name] = value?.DeepClone();
 		}
 
@@ -1365,7 +1493,10 @@ public class ProtocolResponses
 			{
 				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 				if (timeout != null)
+				{
 					return TracerResult.Failed(timeout.ErrorMessage);
+				}
+
 				throw;
 			}
 			catch (HttpRequestException ex)
@@ -1383,12 +1514,16 @@ public class ProtocolResponses
 			{
 				JsonNode? root = JsonNode.Parse(responseBody);
 				if (root == null)
+				{
 					return TracerResult.Failed("Empty response from Responses API");
+				}
 
 				// Responses API reports usage at the top level
 				JsonNode? usageNode = root["usage"];
 				if (usageNode == null)
+				{
 					return TracerResult.Failed("No usage info in tracer response");
+				}
 
 				int inputTokens  = usageNode["input_tokens"]?.GetValue<int>() ?? 0;
 				int cachedTokens = usageNode["input_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;

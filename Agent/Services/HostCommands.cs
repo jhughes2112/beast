@@ -68,7 +68,9 @@ public class HostCommands
 		get
 		{
 			lock (_lock)
+			{
 				return new List<string>(_shells);
+			}
 		}
 	}
 
@@ -78,10 +80,14 @@ public class HostCommands
 		foreach (string name in names.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
 		{
 			if (!shells.Contains(name))
+			{
 				shells.Add(name);
+			}
 		}
 		lock (_lock)
+		{
 			_shells = shells;
+		}
 	}
 
 	public HostCommands(HallMonitor monitor, SettingsService settings, ITransportServer transport)
@@ -96,7 +102,10 @@ public class HostCommands
 	{
 		UnsurePolicy policy = UnsurePolicy.Ask;
 		if (Enum.TryParse(text, true, out UnsurePolicy parsed))
+		{
 			policy = parsed;
+		}
+
 		return policy;
 	}
 
@@ -121,23 +130,34 @@ public class HostCommands
 		{
 			SemaphoreSlim gate = GateFor(sessionId);
 			using (ToolClock.Wait())
+			{
 				await gate.WaitAsync(ct);
+			}
+
 			try
 			{
 				HallMonitorVerdict verdict;
 				using (ToolClock.Wait())
+				{
 					verdict = await _monitor.CheckAsync(command, ct);
+				}
+
 				HallMonitorAction action  = verdict.ActionFor(ParsePolicy(_settings.Settings.HallMonitorUnsure));
 				string            refusal = string.Empty;
 				if (action == HallMonitorAction.AskHuman)
 				{
 					HumanAnswer answer;
 					using (ToolClock.Wait())
+					{
 						answer = await AskAsync(sessionId, shell, command, verdict.Reason, ct);
+					}
+
 					if (!_monitor.RecordHumanAnswer(command, answer))
+					{
 						refusal = answer == HumanAnswer.Never
 							? "The user refused this command and will refuse it every time. Do not run it or a variant of it again."
 							: "The user declined to run this command. Do not retry it or a variant of it; ask them if it is really needed.";
+					}
 				}
 				else if (action == HallMonitorAction.Refuse)
 				{
@@ -147,9 +167,13 @@ public class HostCommands
 				}
 
 				if (refusal.Length > 0)
+				{
 					result = new ToolResult(toolCallId, string.Empty, refusal, 1, 0);
+				}
 				else
+				{
 					result = await ExecuteAsync(sessionId, toolCallId, shell, command, timeoutSeconds ?? DefaultTimeoutSeconds, ct);
+				}
 			}
 			finally
 			{
@@ -179,7 +203,9 @@ public class HostCommands
 		string id = Guid.NewGuid().ToString("N");
 		TaskCompletionSource<HumanAnswer> answered = new TaskCompletionSource<HumanAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
 		lock (_lock)
+		{
 			_asks[id] = answered;
+		}
 
 		JsonObject frame = new JsonObject
 		{
@@ -206,7 +232,9 @@ public class HostCommands
 		finally
 		{
 			lock (_lock)
+			{
 				_asks.Remove(id);
+			}
 		}
 		return answer;
 	}
@@ -216,7 +244,9 @@ public class HostCommands
 		string  id  = Guid.NewGuid().ToString("N");
 		HostRun run = new HostRun(sessionId);
 		lock (_lock)
+		{
 			_runs[id] = run;
+		}
 
 		_transport.StreamStart(sessionId, StreamTag.Host);
 		_transport.StreamChunk(sessionId,        command);
@@ -247,14 +277,20 @@ public class HostCommands
 				{
 				}
 				if (ct.IsCancellationRequested)
+				{
 					throw;
+				}
+
 				timedOut = true;
 			}
 		}
 		finally
 		{
 			lock (_lock)
+			{
 				_runs.Remove(id);
+			}
+
 			_transport.StreamEnd(sessionId, StreamTag.Host);
 		}
 
@@ -265,10 +301,15 @@ public class HostCommands
 			stdOut = run.StdOut.ToString().TrimEnd();
 			stdErr = run.StdErr.ToString().TrimEnd();
 			if (run.Capped)
+			{
 				stdErr = (stdErr + $"\n[output truncated: exceeded the {MaxCapturedChars / (1024 * 1024)} MB capture limit]").TrimStart();
+			}
 		}
 		if (message.Length > 0)
+		{
 			stdErr = stdErr.Length > 0 ? stdErr + "\n" + message : message;
+		}
+
 		if (timedOut)
 		{
 			stdErr   = (stdErr + $"\nError: Command timed out after {timeout} seconds.").TrimStart();
@@ -290,7 +331,9 @@ public class HostCommands
 		{
 			string[] parts = content.Substring("/host-output ".Length).Split(' ', 3);
 			if (parts.Length >= 2)
+			{
 				OnOutput(parts[0], parts[1] == "e", parts.Length == 3 ? parts[2] : string.Empty);
+			}
 		}
 		else if (content.StartsWith("/host-exit ", StringComparison.Ordinal))
 		{
@@ -299,7 +342,10 @@ public class HostCommands
 			if (parts.Length >= 2 && int.TryParse(parts[1], out int code))
 			{
 				lock (_lock)
+				{
 					_runs.TryGetValue(parts[0], out run);
+				}
+
 				run?.Exited.TrySetResult((code, parts.Length == 3 ? parts[2] : string.Empty));
 			}
 		}
@@ -310,7 +356,10 @@ public class HostCommands
 			if (parts.Length == 2 && Enum.TryParse(parts[1], true, out HumanAnswer answer))
 			{
 				lock (_lock)
+				{
 					_asks.TryGetValue(parts[0], out ask);
+				}
+
 				ask?.TrySetResult(answer);
 			}
 		}
@@ -327,16 +376,23 @@ public class HostCommands
 	{
 		HostRun? run;
 		lock (_lock)
+		{
 			_runs.TryGetValue(id, out run);
+		}
+
 		if (run != null)
 		{
 			lock (run)
 			{
 				StringBuilder sink = isError ? run.StdErr : run.StdOut;
 				if (sink.Length + lines.Length + 1 <= MaxCapturedChars)
+				{
 					sink.Append(lines).Append('\n');
+				}
 				else
+				{
 					run.Capped = true;
+				}
 			}
 			_transport.StreamChunk(run.SessionId, "\n" + lines);
 		}

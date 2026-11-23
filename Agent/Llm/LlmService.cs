@@ -66,22 +66,59 @@ public class LlmService
 	// A rate limit lifting further out than this ends the turn on this model instead of being waited out.
 	private static readonly TimeSpan kLongRateLimit = TimeSpan.FromMinutes(5);
 
-	public LlmModel Model => _model;
+	public LlmModel Model
+	{
+		get
+		{
+			return _model;
+		}
+	}
 
 	// Whether this model's reasoning goes back to it as plain text, so it fills the window like any other
 	// message. Only Chat Completions does that: Messages replays signed blocks only within the live chain
 	// and drops them on rehydrate, and the others hold or encrypt theirs out of canonical's sight.
-	public bool ResendsThinking => _model.Config.RetainReasoning && _handler.GetDetectedProtocol() == DetectedProtocol.ChatCompletions;
-	public bool IsDown          => _availability.IsDown;
+	public bool ResendsThinking
+	{
+		get
+		{
+			return _model.Config.RetainReasoning && _handler.GetDetectedProtocol() == DetectedProtocol.ChatCompletions;
+		}
+	}
+
+	public bool IsDown
+	{
+		get
+		{
+			return _availability.IsDown;
+		}
+	}
 
 	// Whether a seed really reaches this model. A seed set on a protocol with no such parameter means nothing.
-	public bool Seeded => _model.Config.Seed.HasValue && ProtocolProxy.TakesSeed(_handler.GetDetectedProtocol());
+	public bool Seeded
+	{
+		get
+		{
+			return _model.Config.Seed.HasValue && ProtocolProxy.TakesSeed(_handler.GetDetectedProtocol());
+		}
+	}
 
 	// When this model's backoff ends; in the past when it can serve now.
-	public DateTimeOffset AvailableAt => _availability.AvailableAt;
+	public DateTimeOffset AvailableAt
+	{
+		get
+		{
+			return _availability.AvailableAt;
+		}
+	}
 
 	// The role's model list, read by the registry to find this service's slot and build the next fallback.
-	public IReadOnlyList<string> RoleModelIds => _roleModelIds;
+	public IReadOnlyList<string> RoleModelIds
+	{
+		get
+		{
+			return _roleModelIds;
+		}
+	}
 
 	// detectedProtocol is resolved by LlmRegistry.ProbeEndpointsAsync before any session starts.
 	// availability is shared across all service instances for the same model so rate-limit and
@@ -104,11 +141,15 @@ public class LlmService
 	public async Task<TracerResult> RunTracerAsync(Session conversation, Tool[] tools, string? forcedToolName, CancellationToken cancellationToken)
 	{
 		if (_availability.IsDown)
+		{
 			return TracerResult.Failed($"LLM {_model.Config.Name} is permanently down");
+		}
 
 		// The prompt is measured as the model will see it.
 		if (tools.Length > 0)
+		{
 			conversation.SetSeededRun(Seeded);
+		}
 
 		List<ToolDefinition> toolDefs = new List<ToolDefinition>();
 		for (int i = 0; i < tools.Length; i++)
@@ -141,7 +182,9 @@ public class LlmService
 
 		// A conversation that can use tools is told when its run is seeded, whichever model turns out to serve it.
 		if (tools.Length > 0)
+		{
 			conversation.SetSeededRun(Seeded);
+		}
 
 		if (_availability.IsDown == false)
 		{
@@ -203,7 +246,9 @@ public class LlmService
 							TimeSpan remaining = _availability.AvailableAt - DateTimeOffset.UtcNow;
 							TimeSpan slice     = remaining < TimeSpan.FromMilliseconds(250) ? remaining : TimeSpan.FromMilliseconds(250);
 							if (slice > TimeSpan.Zero)
+							{
 								await Task.Delay(slice, linked.Token);
+							}
 						}
 						if (inputArrived)
 						{
@@ -275,7 +320,9 @@ public class LlmService
 							int livePrompt = inputTokens > 0 ? inputTokens : contextBaseline;
 							int liveCached = inputTokens > 0 ? cachedTokens : cachedBaseline;
 							if (liveCached > livePrompt)
+							{
 								liveCached = livePrompt;
+							}
 
 							// The three reported counts are a partition of the live context, so they always
 							// add back up to the occupancy shown beside them.
@@ -329,10 +376,15 @@ public class LlmService
 						// transient. No special tracking: an unrepairable tool call is just another transient.
 						Dictionary<string, Tool> toolLookup = new Dictionary<string, Tool>(tools.Length);
 						foreach (Tool t in tools)
+						{
 							toolLookup[t.Definition.Function.Name] = t;
+						}
+
 						string? unrepairable = ToolDispatch.FixToolCalls(result.Payload!, toolLookup);
 						if (unrepairable == null)
+						{
 							break;
+						}
 
 						// Tell the model what was wrong before the retry, so it corrects the call instead of
 						// blindly re-rolling the same mistake. It goes in as a user message: the broken assistant
@@ -404,9 +456,14 @@ public class LlmService
 						// Prefer the server-stated retry time when the response carried one (the helper already
 						// folds in a one-second margin); otherwise fall back to exponential backoff capped at 60s.
 						if (result.RetryAfter.HasValue)
+						{
 							_availability.ExtendBackoff(result.RetryAfter.Value);
+						}
 						else
+						{
 							_availability.ExtendBackoff(DateTimeOffset.UtcNow.AddSeconds(Math.Min(60, 1 << Math.Min(transientRetries - 1, 6))));
+						}
+
 						int backoffSeconds = (int)Math.Ceiling(Math.Max(0, (_availability.AvailableAt - DateTimeOffset.UtcNow).TotalSeconds));
 						transport.Status(conversation.Id, waitOutFailures ? $"Transient error, waiting on the seeded model (try {transientRetries}), next in {backoffSeconds}s: {result.ErrorMessage}" : $"Transient error, retry ({transientRetries}/{maxTransientRetries}) in {backoffSeconds}s: {result.ErrorMessage}");
 						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Transient error", transientRetries, maxTransientRetries, result.RetryAfter, false);

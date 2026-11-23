@@ -59,17 +59,26 @@ public sealed class MediaProbe
 				{
 					int eq = line.IndexOf('=');
 					if (eq <= 0)
+					{
 						continue;
+					}
+
 					string key   = line.Substring(0, eq).Trim();
 					string value = line.Substring(eq + 1).Trim();
 
 					// The first video stream wins; ffprobe lists streams before the format block.
 					if (key == "width" && width == 0)
+					{
 						int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out width);
+					}
 					else if (key == "height" && height == 0)
+					{
 						int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out height);
+					}
 					else if (key == "duration")
+					{
 						double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
+					}
 				}
 			}
 		}

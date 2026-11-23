@@ -78,11 +78,15 @@ public class RoleService
 	{
 		Roles.TryGetValue(name, out Role? role);
 		if (role != null && role.Models.Count == 0 && Roles.TryGetValue(ReasoningSummarizer.RoleName, out Role? summarizer))
+		{
 			role = role.WithModels(summarizer.Models);
+		}
 
 		// Added here, not in the role's prompt, because roles.json is shared between machines.
 		if (role != null && role.Tools.Contains("host_command") && _hostMachine.Length > 0)
+		{
 			role = role.WithSystemPrompt($"{role.SystemPrompt}\n\n{MachinesNote(_hostMachine)}");
+		}
 
 		return role;
 	}
@@ -120,7 +124,10 @@ public class RoleService
 	// The raw home-scope cache is part of that state: LoadRoles replaces it before the stages
 	// that can fail, and a /role save works from it — restoring only the published set would
 	// let a later save persist model lists from the very configuration the rollback rejected.
-	public (Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) SnapshotRoles() => (Roles, _rawHomeRoles);
+	public (Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) SnapshotRoles()
+	{
+		return (Roles, _rawHomeRoles);
+	}
 
 	public void RestoreRoles((Dictionary<string, Role> Published, Dictionary<string, Role> RawHome) snapshot)
 	{
@@ -150,7 +157,9 @@ public class RoleService
 			foreach ((string id, List<string> outputs) in allModels)
 			{
 				if (OutputModality.Produces(outputs, role.Produces) && !expanded.Contains(id))
+				{
 					expanded.Insert(starIdx++, id);
+				}
 			}
 			updated[name] = role.WithModels(expanded);
 		}
@@ -165,7 +174,9 @@ public class RoleService
 		foreach (Role role in Roles.Values)
 		{
 			if (role.Kind == RoleKind.Subagent)
+			{
 				subagentRoles.Add(role);
+			}
 		}
 		return subagentRoles;
 	}
@@ -191,15 +202,21 @@ public class RoleService
 			HallMonitorRole()
 		};
 		foreach (Role role in defaults)
+		{
 			fresh[role.Name] = role;
+		}
 
 		// The USER file is the real one — roles are a per-person preference, not a per-checkout
 		// fact, and /role edits belong somewhere every project sees. Written from the defaults
 		// when missing, then layered over them.
 		if (!File.Exists(_homeDirRolesPath))
+		{
 			WriteRolesFile(_homeDirRolesPath, defaults);
+		}
 		else
+		{
 			ApplyHomeRoles(defaults, fresh);
+		}
 
 		// Snapshot the HOME-scope view (defaults + home file) BEFORE the project layer merges in.
 		// Saving works from this: writing the merged set to the home file would promote a repo's
@@ -213,7 +230,9 @@ public class RoleService
 		{
 			RolesFile? projectFile = ReadRolesFile(_workDirRolesPath);
 			if (projectFile != null)
+			{
 				ApplyRolesFile(projectFile, fresh);
+			}
 		}
 
 		// Published as a single reference swap: a reader racing a reload sees the complete old set
@@ -236,22 +255,31 @@ public class RoleService
 		{
 			List<string> saved = new List<string>(modelIds);
 			if (raw.Models.Contains("*"))
+			{
 				saved.Add("*");
+			}
 
 			List<Role> all = new List<Role>();
 			foreach ((string name, Role role) in _rawHomeRoles)
 			{
 				if (string.Equals(name, roleName, StringComparison.OrdinalIgnoreCase))
+				{
 					all.Add(role.WithModels(saved));
+				}
 				else
+				{
 					all.Add(role);
+				}
 			}
 
 			written = WriteRolesFile(_homeDirRolesPath, all);
 		}
 
 		if (written)
+		{
 			LoadRoles();
+		}
+
 		return written;
 	}
 
@@ -268,7 +296,9 @@ public class RoleService
 		bool wroteProject = UpdateProjectRolesEnablement(added, removedIds);
 
 		if (wroteHome || wroteProject)
+		{
 			LoadRoles();
+		}
 	}
 
 	// Returns the role's updated model list, or null when the enablement change touches nothing in it.
@@ -278,7 +308,9 @@ public class RoleService
 		foreach ((string id, List<string> outputs) in added)
 		{
 			if (OutputModality.Produces(outputs, role.Produces))
+			{
 				addedIds.Add(id);
+			}
 		}
 
 		List<string> updated = new List<string>(role.Models);
@@ -405,11 +437,16 @@ public class RoleService
 						{
 							Role role = block[i];
 							if (!string.Equals(role.Name, roleName, StringComparison.OrdinalIgnoreCase))
+							{
 								continue;
+							}
 
 							List<string> saved = new List<string>(modelIds);
 							if (role.Models.Contains("*"))
+							{
 								saved.Add("*");
+							}
+
 							block[i] = role.WithModels(saved);
 							found    = true;
 						}
@@ -441,9 +478,13 @@ public class RoleService
 		foreach (Role role in roles)
 		{
 			if (role.Kind == RoleKind.Agent)
+			{
 				file.Agents.Add(role);
+			}
 			else
+			{
 				file.Subagents.Add(role);
+			}
 		}
 
 		bool written = false;
@@ -453,7 +494,9 @@ public class RoleService
 
 			string? dir = Path.GetDirectoryName(path);
 			if (dir != null)
+			{
 				Directory.CreateDirectory(dir);
+			}
 
 			File.WriteAllText(path, json);
 			written = true;
@@ -474,7 +517,9 @@ public class RoleService
 		{
 			string json = File.ReadAllText(path);
 			if (!string.IsNullOrWhiteSpace(json))
+			{
 				file = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
+			}
 		}
 		catch (JsonException ex)
 		{
@@ -503,9 +548,14 @@ public class RoleService
 	private static void ApplyRolesFile(RolesFile file, Dictionary<string, Role> target)
 	{
 		foreach (Role role in file.Agents)
+		{
 			AssignRole(target, role, RoleKind.Agent);
+		}
+
 		foreach (Role role in file.Subagents)
+		{
 			AssignRole(target, role, RoleKind.Subagent);
+		}
 	}
 
 	// Layers the home file over the defaults. A file from an older build is regenerated instead: the
@@ -529,7 +579,9 @@ public class RoleService
 
 			WriteRolesFile(_homeDirRolesPath, migrated);
 			foreach (Role role in migrated)
+			{
 				target[role.Name] = role;
+			}
 		}
 		else if (file != null)
 		{
@@ -542,9 +594,14 @@ public class RoleService
 	{
 		Dictionary<string, List<string>> oldModels = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 		foreach (Role role in old.Agents)
+		{
 			oldModels[role.Name] = role.Models;
+		}
+
 		foreach (Role role in old.Subagents)
+		{
 			oldModels[role.Name] = role.Models;
+		}
 
 		List<Role>      migrated     = new List<Role>();
 		HashSet<string> defaultNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -560,12 +617,16 @@ public class RoleService
 		foreach (Role role in old.Agents)
 		{
 			if (IsCustom(role.Name, defaultNames))
+			{
 				migrated.Add(role.WithKind(RoleKind.Agent));
+			}
 		}
 		foreach (Role role in old.Subagents)
 		{
 			if (IsCustom(role.Name, defaultNames))
+			{
 				migrated.Add(role.WithKind(RoleKind.Subagent));
+			}
 		}
 		return migrated;
 	}
@@ -584,7 +645,9 @@ public class RoleService
 	private static void AssignRole(Dictionary<string, Role> target, Role role, RoleKind kind)
 	{
 		if (string.IsNullOrEmpty(role.Name))
+		{
 			return;
+		}
 
 		Role kinded         = role.WithKind(kind);
 		target[kinded.Name] = kinded;

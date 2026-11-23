@@ -32,9 +32,14 @@ static class ProtocolHelpers
 	public static void ApplyTemperatureAndTopP(JsonObject body, ModelConfig config)
 	{
 		if (config.Temperature.HasValue)
+		{
 			body["temperature"] = config.Temperature.Value;
+		}
+
 		if (config.TopP.HasValue)
+		{
 			body["top_p"] = config.TopP.Value;
+		}
 	}
 
 	// Whether a finish reason says the output limit ended the turn: "length" on the OpenAI shapes,
@@ -58,7 +63,10 @@ static class ProtocolHelpers
 	public static string? SseData(string line)
 	{
 		if (!line.StartsWith("data:", StringComparison.Ordinal))
+		{
 			return null;
+		}
+
 		return line.Length > 5 && line[5] == ' ' ? line.Substring(6) : line.Substring(5);
 	}
 
@@ -88,7 +96,9 @@ static class ProtocolHelpers
 	public static ProtocolResult? TimeoutOrRethrow(CancellationToken cancellationToken, LlmModel model)
 	{
 		if (cancellationToken.IsCancellationRequested)
+		{
 			return null;
+		}
 
 		int seconds = RequestTimeoutSeconds(model);
 		return ProtocolResult.Transient($"Request to {model.Config.Name} timed out: the endpoint sent nothing for {seconds}s (too slow, or queued behind other requests). Retrying.", null);
@@ -97,16 +107,23 @@ static class ProtocolHelpers
 	public static bool IsRateLimited(HttpResponseMessage response, string responseBody)
 	{
 		if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+		{
 			return true;
+		}
+
 		if (response.Headers.Contains("Retry-After"))
+		{
 			return true;
+		}
 
 		if (response.Headers.TryGetValues("X-RateLimit-Remaining", out IEnumerable<string>? values))
 		{
 			foreach (string v in values)
 			{
 				if (v == "0")
+				{
 					return true;
+				}
 			}
 		}
 
@@ -146,7 +163,9 @@ static class ProtocolHelpers
 		{
 			int parsed = ParseRateLimitSecondsFromBody(responseBody);
 			if (parsed > 0)
+			{
 				return parsed;
+			}
 		}
 
 		return ParseResetSeconds(responseBody);
@@ -167,7 +186,10 @@ static class ProtocolHelpers
 	{
 		string description = $"{name} window: {usedPercent:0.#}% used ({Math.Max(0, 100 - usedPercent):0.#}% left)";
 		if (reset.HasValue)
+		{
 			description = $"{description}, resets {DescribeReset(reset.Value, now)}";
+		}
+
 		return description;
 	}
 
@@ -190,9 +212,13 @@ static class ProtocolHelpers
 				System.Text.Json.Nodes.JsonNode? root  = System.Text.Json.Nodes.JsonNode.Parse(responseBody);
 				System.Text.Json.Nodes.JsonNode? error = root?["error"] ?? root;
 				if (error?["resets_in_seconds"] is System.Text.Json.Nodes.JsonValue inSeconds && inSeconds.TryGetValue(out int relative) && relative > 0)
+				{
 					seconds = relative + 1;
+				}
 				else if (error?["resets_at"] is System.Text.Json.Nodes.JsonValue at && at.TryGetValue(out long epoch))
+				{
 					seconds = EpochToSecondsFromNow(epoch);
+				}
 			}
 			catch (System.Text.Json.JsonException)
 			{
@@ -291,7 +317,9 @@ static class ProtocolHelpers
 	public static bool IsAccountError(string errorText)
 	{
 		if (string.IsNullOrEmpty(errorText))
+		{
 			return false;
+		}
 
 		string lower = errorText.ToLowerInvariant();
 		return lower.Contains("credit balance")
@@ -312,7 +340,9 @@ static class ProtocolHelpers
 	public static bool IsContextOverflow(string errorText)
 	{
 		if (string.IsNullOrEmpty(errorText))
+		{
 			return false;
+		}
 
 		string lower = errorText.ToLowerInvariant();
 		return lower.Contains("prompt is too long")

@@ -12,14 +12,14 @@ public static class AnsiString
 	// Returns the number of visible (printable) characters, ignoring ANSI escape sequences.
 	public static int VisibleLength(string s)
 	{
-		int len = 0;
+		int  len   = 0;
 		bool inEsc = false;
 		foreach (char c in s)
 		{
 			if (c == '\x1b')
 			{ inEsc = true; continue; }
 			if (inEsc)
-			{ if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) inEsc = false; continue; }
+			{ if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) { inEsc = false; } continue; }
 			len += CharWidth(c);
 		}
 		return len;
@@ -31,9 +31,9 @@ public static class AnsiString
 	// otherwise returns empty string.
 	public static string GetCloseSequences(string s)
 	{
-		bool inEsc = false;
-		StringBuilder escBuf = new StringBuilder();
-		bool foundNonResetSgr = false;
+		bool          inEsc            = false;
+		StringBuilder escBuf           = new StringBuilder();
+		bool          foundNonResetSgr = false;
 
 		foreach (char c in s)
 		{
@@ -50,7 +50,7 @@ public static class AnsiString
 				escBuf.Append(c);
 				if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
 				{
-					inEsc = false;
+					inEsc      = false;
 					string esc = escBuf.ToString();
 					// Check if this is an SGR sequence (ends with 'm')
 					if (esc.Length >= 2 && esc[esc.Length - 1] == 'm' && esc[1] == '[')
@@ -80,18 +80,21 @@ public static class AnsiString
 	// if any formatting codes were left open at the truncation point.
 	public static string TruncateVisible(string s, int maxVisible)
 	{
-		StringBuilder sb = new StringBuilder();
-		int count = 0;
-		bool inEsc = false;
+		StringBuilder sb    = new StringBuilder();
+		int           count = 0;
+		bool          inEsc = false;
 		foreach (char c in s)
 		{
 			if (c == '\x1b')
 			{ inEsc = true; sb.Append(c); continue; }
 			if (inEsc)
-			{ sb.Append(c); if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) inEsc = false; continue; }
+			{ sb.Append(c); if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) { inEsc = false; } continue; }
 			int cw = CharWidth(c);
 			if (count + cw > maxVisible)
+			{
 				break;
+			}
+
 			sb.Append(c);
 			count += cw;
 		}
@@ -109,9 +112,15 @@ public static class AnsiString
 		int cp = c;
 		// Surrogate handling: AnsiString operates on raw UTF-16 char sequences.
 		if (cp >= 0xD800 && cp <= 0xDBFF)
-			return 2;  // high surrogate: start of wide emoji pair
+		{
+			return 2; // high surrogate: start of wide emoji pair
+		}
+
 		if (cp >= 0xDC00 && cp <= 0xDFFF)
-			return 0;  // low surrogate: already counted by high
+		{
+			return 0; // low surrogate: already counted by high
+		}
+
 		return CharWidthRef.Of(c);
 	}
 
@@ -121,13 +130,15 @@ public static class AnsiString
 	{
 		List<string> result = new List<string>();
 		if (maxWidth < 1)
+		{
 			maxWidth = 1;
+		}
 
-		StringBuilder currentLine = new StringBuilder();
+		StringBuilder currentLine     = new StringBuilder();
 		StringBuilder currentEscState = new StringBuilder();
-		int visLen = 0;
-		bool inEsc = false;
-		StringBuilder escBuf = new StringBuilder();
+		int           visLen          = 0;
+		bool          inEsc           = false;
+		StringBuilder escBuf          = new StringBuilder();
 
 		foreach (char c in s)
 		{
@@ -144,14 +155,18 @@ public static class AnsiString
 				escBuf.Append(c);
 				if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
 				{
-					inEsc = false;
+					inEsc      = false;
 					string esc = escBuf.ToString();
 					currentLine.Append(esc);
 					// Track state: a reset clears accumulated state.
 					if (esc == "\x1b[0m" || esc == "\x1b[m")
+					{
 						currentEscState.Clear();
+					}
 					else
+					{
 						currentEscState.Append(esc);
+					}
 				}
 				continue;
 			}
@@ -179,21 +194,25 @@ public static class AnsiString
 	{
 		List<string> result = new List<string>();
 		if (maxWidth < 1)
+		{
 			maxWidth = 1;
+		}
 
-		StringBuilder currentLine    = new StringBuilder();
+		StringBuilder currentLine     = new StringBuilder();
 		StringBuilder currentEscState = new StringBuilder();
-		StringBuilder wordBuf        = new StringBuilder();
-		StringBuilder wordEscBuf     = new StringBuilder(); // ANSI codes embedded inside the current word
-		int visLen        = 0;  // visible chars on current line
-		int wordVisLen    = 0;  // visible chars in pending word
-		bool inEsc        = false;
-		StringBuilder escBuf = new StringBuilder();
+		StringBuilder wordBuf         = new StringBuilder();
+		StringBuilder wordEscBuf      = new StringBuilder(); // ANSI codes embedded inside the current word
+		int           visLen          = 0;                   // visible chars on current line
+		int           wordVisLen      = 0;                   // visible chars in pending word
+		bool          inEsc           = false;
+		StringBuilder escBuf          = new StringBuilder();
 
 		void FlushWord(bool soft)
 		{
 			if (wordVisLen == 0 && wordBuf.Length == 0)
+			{
 				return;
+			}
 
 			// If the pending word fits on the current line, append it.
 			if (visLen + wordVisLen <= maxWidth)
@@ -216,10 +235,10 @@ public static class AnsiString
 			{
 				// Word is longer than the line width: hard-break inside it.
 				// Re-walk wordBuf and emit chunks character by character.
-				StringBuilder esc = new StringBuilder();
+				StringBuilder esc           = new StringBuilder();
 				StringBuilder chunkEscState = new StringBuilder(currentEscState.ToString());
-				bool wInEsc = false;
-				StringBuilder wEscBuf = new StringBuilder();
+				bool          wInEsc        = false;
+				StringBuilder wEscBuf       = new StringBuilder();
 				foreach (char wc in wordBuf.ToString())
 				{
 					if (wc == '\x1b')
@@ -230,12 +249,16 @@ public static class AnsiString
 						currentLine.Append(wc);
 						if ((wc >= 'A' && wc <= 'Z') || (wc >= 'a' && wc <= 'z'))
 						{
-							wInEsc = false;
+							wInEsc   = false;
 							string e = wEscBuf.ToString();
 							if (e == "\x1b[0m" || e == "\x1b[m")
+							{
 								chunkEscState.Clear();
+							}
 							else
+							{
 								chunkEscState.Append(e);
+							}
 						}
 						continue;
 					}
@@ -272,24 +295,32 @@ public static class AnsiString
 				escBuf.Append(c);
 				if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
 				{
-					inEsc = false;
+					inEsc      = false;
 					string esc = escBuf.ToString();
 					// ANSI codes belong to whatever they were inside — pending word or current line.
 					if (wordBuf.Length > 0)
 					{
 						wordBuf.Append(esc);
 						if (esc == "\x1b[0m" || esc == "\x1b[m")
+						{
 							wordEscBuf.Clear();
+						}
 						else
+						{
 							wordEscBuf.Append(esc);
+						}
 					}
 					else
 					{
 						currentLine.Append(esc);
 						if (esc == "\x1b[0m" || esc == "\x1b[m")
+						{
 							currentEscState.Clear();
+						}
 						else
+						{
 							currentEscState.Append(esc);
+						}
 					}
 				}
 				continue;
@@ -332,18 +363,26 @@ public static class AnsiString
 	{
 		int indent = 0;
 		while (indent < s.Length && s[indent] == ' ')
+		{
 			indent++;
-		if (indent == 0)
-			return WordWrap(s, maxWidth);
+		}
 
-		string prefix = new string(' ', indent);
-		string body   = s.Substring(indent);
-		int bodyWidth = Math.Max(1, maxWidth - indent);
+		if (indent == 0)
+		{
+			return WordWrap(s, maxWidth);
+		}
+
+		string prefix    = new string(' ', indent);
+		string body      = s.Substring(indent);
+		int    bodyWidth = Math.Max(1, maxWidth - indent);
 
 		List<string> wrapped = WordWrap(body, bodyWidth);
 		List<string> result  = new List<string>();
 		foreach (string line in wrapped)
+		{
 			result.Add(prefix + line);
+		}
+
 		return result;
 	}
 
@@ -353,9 +392,15 @@ public static class AnsiString
 	{
 		int vl = VisibleLength(s);
 		if (vl == visibleWidth)
+		{
 			return s;
+		}
+
 		if (vl > visibleWidth)
+		{
 			return TruncateVisible(s, visibleWidth);
+		}
+
 		return s + new string(' ', visibleWidth - vl);
 	}
 }

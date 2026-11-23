@@ -33,7 +33,10 @@ public class DisplayScreen : IDisplay
 			"compact", "model", "effort", "cancel", "attach", "pause", "resume"
 		};
 		foreach (string verb in AgentOrchestrator.GlobalCommands)
+		{
 			verbs.Add(verb);
+		}
+
 		return verbs;
 	}
 
@@ -320,7 +323,10 @@ public class DisplayScreen : IDisplay
 	public void Attach(ConversationModel model)
 	{
 		if (_model != null)
+		{
 			_model.MessageUpdated -= OnMessageUpdated;
+		}
+
 		_model                 = model;
 		_model.Mode            = _currentMode;
 		_model.MessageUpdated += OnMessageUpdated;
@@ -337,7 +343,9 @@ public class DisplayScreen : IDisplay
 			_stack = null;
 			_dirtySlots.Clear();
 			if (_runCts != null)
+			{
 				Redraw();
+			}
 		}
 	}
 
@@ -408,11 +416,18 @@ public class DisplayScreen : IDisplay
 		TimeSpan ts = TimeSpan.FromMilliseconds(ms);
 		string   text;
 		if (ts.TotalHours >= 1)
+		{
 			text = $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}";
+		}
 		else if (ts.TotalMinutes >= 1)
+		{
 			text = $"{ts.Minutes}:{ts.Seconds:D2}";
+		}
 		else
+		{
 			text = $"{(int)ts.TotalSeconds}s";
+		}
+
 		return text;
 	}
 
@@ -423,7 +438,10 @@ public class DisplayScreen : IDisplay
 			_completions.Clear();
 			_completions.Add("/verbose");
 			foreach (string c in completions)
+			{
 				_completions.Add(c);
+			}
+
 			Redraw();
 		}
 	}
@@ -431,8 +449,14 @@ public class DisplayScreen : IDisplay
 	// Entering/leaving the streaming state changes the slot's forced-expanded rendering even when its
 	// content hasn't changed, so the slot is marked dirty here as well as on content updates.
 	public void OnStreamStart(int streamIndex, FrameType type) { lock (_consoleLock) { _streamingSlot = streamIndex; _dirtySlots.Add(streamIndex); _busyWordIndex++; _followReadyTick = 0; } }
-	public void OnStreamChunk(string chunk)                    { lock (_consoleLock) _followReadyTick = 0; }
-	public void OnStreamEnd  ()                                { lock (_consoleLock) { if (_streamingSlot >= 0) _dirtySlots.Add(_streamingSlot); _streamingSlot = -1; } }
+	public void OnStreamChunk(string chunk)
+	{
+		lock (_consoleLock)
+		{
+			_followReadyTick = 0;
+		}
+	}
+	public void OnStreamEnd() { lock (_consoleLock) { if (_streamingSlot >= 0) { _dirtySlots.Add(_streamingSlot); } _streamingSlot = -1; } }
 
 	public void SetAgentBusy(bool busy, long startTick)
 	{
@@ -459,7 +483,10 @@ public class DisplayScreen : IDisplay
 			{
 				_agentBusy = false;
 				if (_streamingSlot >= 0)
+				{
 					_dirtySlots.Add(_streamingSlot);
+				}
+
 				_streamingSlot = -1;
 				Redraw();
 			}
@@ -480,7 +507,10 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 		{
 			if (_configOverlay == null)
+			{
 				_configOverlay = new ConfigOverlay(cmd => { _ = SendAsync(cmd); });
+			}
+
 			_configOverlay.Open();
 		}
 		Redraw();
@@ -492,7 +522,10 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 		{
 			if (_roleOverlay == null)
+			{
 				_roleOverlay = new RoleOverlay(cmd => { _ = SendAsync(cmd); });
+			}
+
 			_roleOverlay.Open();
 		}
 		Redraw();
@@ -517,14 +550,24 @@ public class DisplayScreen : IDisplay
 			// everything else, so all of them can share the one frame type.
 			consumed = _calibrationPopup.OnConfigFrame(json);
 			if (!consumed)
+			{
 				consumed = OnHostAskFrame(json);
+			}
+
 			if (!consumed)
+			{
 				consumed = _roleOverlay != null && _roleOverlay.OnConfigFrame(json);
+			}
+
 			if (!consumed)
+			{
 				consumed = _configOverlay != null && _configOverlay.OnConfigFrame(json);
+			}
 		}
 		if (consumed)
+		{
 			Redraw();
+		}
 	}
 
 	// Shows an agent error in the overlay's status line while it is open (no-op otherwise).
@@ -532,9 +575,14 @@ public class DisplayScreen : IDisplay
 	{
 		bool consumed;
 		lock (_consoleLock)
+		{
 			consumed = _configOverlay != null && _configOverlay.ShowAgentError(text);
+		}
+
 		if (consumed)
+		{
 			Redraw();
+		}
 	}
 	public void SetRequestExit(Action requestExit) { _requestExit = requestExit; }
 
@@ -547,9 +595,15 @@ public class DisplayScreen : IDisplay
 		}
 		List<ChoiceLine> text = new List<ChoiceLine>();
 		foreach (string line in lines)
+		{
 			text.Add(new ChoiceLine(line, null, false));
+		}
+
 		lock (_consoleLock)
+		{
 			_choices.Add(new ChoicePopup(string.Empty, string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, onChoice));
+		}
+
 		Redraw();
 	}
 
@@ -572,7 +626,10 @@ public class DisplayScreen : IDisplay
 			{
 				// Nobody to ask: No, which the model sees as a refusal and works around.
 				if (_sendAsync != null)
+				{
 					_ = _sendAsync($"/host-answer {id} no");
+				}
+
 				claimed = true;
 			}
 			else if (kind == "host-ask" && id.Length > 0)
@@ -596,7 +653,9 @@ public class DisplayScreen : IDisplay
 				_choices.Add(new ChoicePopup(id, asker, "HOST command", Palette.HostFg, lines, labels, 2, 2, 700, choice =>
 				{
 					if (_sendAsync != null)
+					{
 						_ = _sendAsync($"/host-answer {id} {HostAnswers[choice]}");
+					}
 				}));
 				RefreshSessionActivity();
 				claimed = true;
@@ -606,7 +665,9 @@ public class DisplayScreen : IDisplay
 				for (int i = _choices.Count - 1; i >= 0; i--)
 				{
 					if (_choices[i].Id == id)
+					{
 						_choices.RemoveAt(i);
+					}
 				}
 				RefreshSessionActivity();
 				claimed = true;
@@ -625,7 +686,10 @@ public class DisplayScreen : IDisplay
 		foreach (SessionDisplayInfo s in _sessionList)
 		{
 			if (!_sessionMarked.Contains(s.Id))
+			{
 				continue;
+			}
+
 			if (s.IsBusy)
 			{
 				busy++;
@@ -637,11 +701,16 @@ public class DisplayScreen : IDisplay
 			}
 		}
 		if (busy > 0)
+		{
 			lines.Add($"({busy} marked session(s) still running will be kept.)");
+		}
 
 		List<ChoiceLine> text = new List<ChoiceLine> { new ChoiceLine($"Delete {ids.Count} session(s) and everything under them?", null, false), new ChoiceLine(string.Empty, null, false) };
 		foreach (string line in lines)
+		{
 			text.Add(new ChoiceLine(line, null, false));
+		}
+
 		List<string> labels = new List<string> { "&Delete", "&Cancel" };
 		_choices.Add(new ChoicePopup(string.Empty, string.Empty, "Delete sessions", new Rgb(230, 90, 90), text, labels, 1, 1, 0, choice =>
 		{
@@ -652,9 +721,15 @@ public class DisplayScreen : IDisplay
 					// Each callback rebuilds the list via SetSessionList; clamp afterward, then preview whatever
 					// now sits at the selection so the view follows.
 					foreach (string id in ids)
+					{
 						_sessionDeleteCallback?.Invoke(id);
+					}
+
 					if (_sessionTreeSelected >= _sessionList.Count)
+					{
 						_sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
+					}
+
 					PreviewSelectedSession();
 				}
 				_sessionMarked.Clear();
@@ -677,7 +752,10 @@ public class DisplayScreen : IDisplay
 	{
 		_waitingSessions.Clear();
 		foreach (string id in ChoicePopup.WaitingSessions(_choices))
+		{
 			_waitingSessions.Add(id);
+		}
+
 		_anySessionEngaged = SessionTree.AnyEngaged(_sessionList, _waitingSessions);
 	}
 
@@ -690,7 +768,9 @@ public class DisplayScreen : IDisplay
 		{
 			string first = ChoicePopup.WaitingSessions(_choices)[0];
 			if (!string.Equals(first, _sessionActiveId, StringComparison.Ordinal))
+			{
 				_sessionSwitchCallback?.Invoke(first);
+			}
 		}
 	}
 
@@ -700,7 +780,9 @@ public class DisplayScreen : IDisplay
 	{
 		string id = _sessionActiveId;
 		if (_sessionTreeOpen && _sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
+		{
 			id = _sessionList[_sessionTreeSelected].Id;
+		}
 
 		foreach (SessionDisplayInfo session in _sessionList)
 		{
@@ -708,7 +790,9 @@ public class DisplayScreen : IDisplay
 			{
 				PlayAction action = SessionTreeLayer.ActionFor(session);
 				if (action != PlayAction.None)
+				{
 					_ = SendToAsync(id, action == PlayAction.Pause ? "/pause" : "/resume");
+				}
 			}
 		}
 	}
@@ -732,11 +816,16 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 		{
 			if (!_pendingGhost.TryGetValue(sessionId, out List<string>? queued) || queued.Count == 0)
+			{
 				return;
+			}
+
 			_pendingGhost.Remove(sessionId);
 			// Only the viewed session's ghost is on screen, so a redraw is needed only for it.
 			if (string.Equals(sessionId, _sessionActiveId, StringComparison.Ordinal))
+			{
 				Redraw();
+			}
 		}
 	}
 
@@ -745,11 +834,18 @@ public class DisplayScreen : IDisplay
 		lock (_consoleLock)
 		{
 			if (lines.Length == 0)
+			{
 				_pendingGhost.Remove(sessionId);
+			}
 			else
+			{
 				_pendingGhost[sessionId] = new List<string>(lines);
+			}
+
 			if (string.Equals(sessionId, _sessionActiveId, StringComparison.Ordinal))
+			{
 				Redraw();
+			}
 		}
 	}
 
@@ -765,11 +861,20 @@ public class DisplayScreen : IDisplay
 			// The F10 overlay being open does not suppress following. A waiting approval does: the view
 			// belongs to the session that asked until the user has answered.
 			if (_waitingSessions.Count > 0)
+			{
 				return true;
+			}
+
 			if (_scrollTarget >= 0.5f)
+			{
 				return true;
+			}
+
 			if (_followReadyTick == 0)
+			{
 				return true;
+			}
+
 			return Environment.TickCount64 - _followReadyTick < FollowDelayMs;
 		}
 	}
@@ -783,7 +888,9 @@ public class DisplayScreen : IDisplay
 		if (stable)
 		{
 			if (_followReadyTick == 0)
+			{
 				_followReadyTick = Environment.TickCount64;
+			}
 		}
 		else
 		{
@@ -807,7 +914,10 @@ public class DisplayScreen : IDisplay
 		{
 			_sessionList.Clear();
 			foreach (SessionDisplayInfo s in sessions)
+			{
 				_sessionList.Add(s);
+			}
+
 			_sessionActiveId = activeId;
 			RefreshSessionActivity();
 
@@ -817,12 +927,19 @@ public class DisplayScreen : IDisplay
 			{
 				bool present = false;
 				foreach (SessionDisplayInfo s in _sessionList)
+				{
 					present = present || string.Equals(s.Id, id, StringComparison.Ordinal);
+				}
+
 				if (!present)
+				{
 					gone.Add(id);
+				}
 			}
 			foreach (string id in gone)
+			{
 				_sessionMarked.Remove(id);
+			}
 
 			// The F10 selection drives the view, so it must always point at the session currently
 			// being viewed. When the view changes on its own (auto-track follows a subagent) or the
@@ -839,14 +956,20 @@ public class DisplayScreen : IDisplay
 
 			// Clamp selection to valid range.
 			if (_sessionTreeSelected >= _sessionList.Count)
+			{
 				_sessionTreeSelected = Math.Max(0, _sessionList.Count - 1);
+			}
 
 			// Keep the selected row scrolled into view after a reorder.
 			int visRows = Math.Max(1, _lastHeight - 6);
 			if (_sessionTreeSelected < _sessionTreeScroll)
+			{
 				_sessionTreeScroll = _sessionTreeSelected;
+			}
 			else if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
+			{
 				_sessionTreeScroll = _sessionTreeSelected - visRows + 1;
+			}
 
 			Redraw();
 		}
@@ -882,12 +1005,16 @@ public class DisplayScreen : IDisplay
 		// mouse reporting is still off and the input loop hasn't started, so the only input records are
 		// the probe's own CPR replies. The first Redraw below erases the probe's scratch row.
 		lock (_consoleLock)
+		{
 			CharWidth.InitialProbe();
+		}
 
 		Console.Write("\x1b[?1000h\x1b[?1003h\x1b[?1006h"); // EnableMouse
 
 		lock (_consoleLock)
+		{
 			Redraw();
+		}
 
 		InputLoop(_runCts.Token);
 
@@ -949,7 +1076,9 @@ public class DisplayScreen : IDisplay
 		int w = Console.WindowWidth;
 		int h = Console.WindowHeight;
 		if (w < 10 || h < 5)
+		{
 			return;
+		}
 
 		// When the session tree panel is open it claims the right edge, so the history reflows into the
 		// remaining width rather than being painted over. Every width-dependent step below (block layout,
@@ -1056,20 +1185,35 @@ public class DisplayScreen : IDisplay
 		if (rebuilt)
 		{
 			if (_pendingToggleSlot >= 0 && _scrollTarget >= 0.5f)
+			{
 				ResolvePendingToggleAnchor(stack, totalRows, historyH, maxOffset);
+			}
 			else
+			{
 				ApplyLayoutAnchoring(oldStack, stack);
+			}
 		}
 		_pendingToggleSlot = -1;
 
 		if (_scrollTarget > maxOffset)
+		{
 			_scrollTarget = maxOffset;
+		}
+
 		if (_scrollTarget < 0f)
+		{
 			_scrollTarget = 0f;
+		}
+
 		if (_historyScrollOffset > maxOffset)
+		{
 			_historyScrollOffset = maxOffset;
+		}
+
 		if (_historyScrollOffset < 0f)
+		{
 			_historyScrollOffset = 0f;
+		}
 
 		_scrollbarTopRow    = 0;
 		_scrollbarHeight    = historyH;
@@ -1078,7 +1222,9 @@ public class DisplayScreen : IDisplay
 		// Scroll offset is "rows from the bottom"; convert to "rows from the top" of the stack.
 		int viewOffsetFromTop = totalRows - historyH - (int)Math.Round(_historyScrollOffset);
 		if (viewOffsetFromTop < 0)
+		{
 			viewOffsetFromTop = 0;
+		}
 
 		// Render only the visible window directly — cost scales with what is on screen, not history size.
 		// The window is a fresh composite of the cached block Screens; the effects below (hover,
@@ -1237,7 +1383,9 @@ public class DisplayScreen : IDisplay
 		// panel. Drawn after the glow (and after the panel) so it stays crisp. Clicking it copies that block
 		// (Shift+click appends) — handled in the MouseClick branch.
 		if (_mouseRow >= 0 && _mouseRow < historyH && _mouseCol >= 0 && _mouseCol < historyW && SlotAtTerminalRow(_mouseRow).HasValue)
+		{
 			frame.WriteText(historyW - 6, _mouseRow, "⧉ ", Palette.CopyIconFg, Palette.CopyIconBg, CellStyle.Bold);
+		}
 
 		// 6. Emit. With a matching previous frame only the changed cells are written; a first frame,
 		// resize, or explicit erase falls back to a full write.
@@ -1275,9 +1423,15 @@ public class DisplayScreen : IDisplay
 			foreach (DisplayMessage msg in _model.Messages)
 			{
 				if (ConversationModel.ShouldHide(msg.Type, _model.Mode))
+				{
 					continue;
+				}
+
 				if (msg.Length == 0)
+				{
 					continue;
+				}
+
 				stack.Add(BuildLayerFor(msg, w));
 			}
 		}
@@ -1332,7 +1486,10 @@ public class DisplayScreen : IDisplay
 			foreach (int slot in _dirtySlots)
 			{
 				if (slot < 0 || slot >= _model.Messages.Count)
+				{
 					continue;
+				}
+
 				DisplayMessage msg     = _model.Messages[slot];
 				bool           visible = !ConversationModel.ShouldHide(msg.Type, _model.Mode) && msg.Length > 0;
 				bool           present = stack.PlacementOfSlot(slot).HasValue;
@@ -1363,14 +1520,21 @@ public class DisplayScreen : IDisplay
 	{
 		BlockPlacement? tp = stack.PlacementOfSlot(_pendingToggleSlot);
 		if (!tp.HasValue)
+		{
 			return;
+		}
 
 		int   desiredViewTop = tp.Value.Top - _pendingToggleRow;
 		float offset         = totalRows - historyH - desiredViewTop;
 		if (offset < 0f)
+		{
 			offset = 0f;
+		}
+
 		if (offset > maxOffset)
+		{
 			offset = maxOffset;
+		}
 
 		_historyScrollOffset = offset;
 		_scrollTarget        = offset;
@@ -1382,24 +1546,37 @@ public class DisplayScreen : IDisplay
 	private bool ScrollHoveredBlockHorizontally(int delta)
 	{
 		if (_hoverSlot < 0 || _stack == null)
+		{
 			return false;
+		}
 
 		int blockW = _stack.BlockWidthOfSlot(_hoverSlot);
 		int maxOff = blockW - _layoutWidth;
 		if (maxOff <= 0)
+		{
 			return false; // nothing hidden to the side
+		}
 
 		int cur  = _blockHScroll.TryGetValue(_hoverSlot, out int v) ? v : 0;
 		int next = cur + delta;
 		if (next < 0)
+		{
 			next = 0;
+		}
+
 		if (next > maxOff)
+		{
 			next = maxOff;
+		}
 
 		if (next == 0)
+		{
 			_blockHScroll.Remove(_hoverSlot);
+		}
 		else
+		{
 			_blockHScroll[_hoverSlot] = next;
+		}
 
 		Redraw();
 		return true;
@@ -1408,10 +1585,14 @@ public class DisplayScreen : IDisplay
 	private void ApplyLayoutAnchoring(StackLayout? oldStack, StackLayout stack)
 	{
 		if (oldStack == null)
+		{
 			return;
+		}
 		// Pinned to the bottom: follow new content instead of anchoring (the normal streaming case).
 		if (_scrollTarget < 0.5f)
+		{
 			return;
+		}
 
 		int oldViewTop = _lastViewTop;
 		IReadOnlyList<BlockPlacement> oldP = oldStack.Placements;
@@ -1477,11 +1658,18 @@ public class DisplayScreen : IDisplay
 	{
 		int result;
 		if (bottom <= viewTop)
+		{
 			result = 0;
+		}
 		else if (top >= viewTop)
+		{
 			result = d;
+		}
 		else
+		{
 			result = d > 0 ? d : 0;
+		}
+
 		return result;
 	}
 
@@ -1500,10 +1688,16 @@ public class DisplayScreen : IDisplay
 	{
 		long now = Environment.TickCount64;
 		if (_scrollbarShowUntil == 0 || now >= _scrollbarShowUntil)
+		{
 			return 0f;
+		}
+
 		long remaining = _scrollbarShowUntil - now;
 		if (remaining >= ScrollbarFadeMs)
+		{
 			return 1f;
+		}
+
 		return (float)remaining / ScrollbarFadeMs;
 	}
 
@@ -1521,7 +1715,9 @@ public class DisplayScreen : IDisplay
 		foreach (string c in _completions)
 		{
 			if (c.StartsWith(_currentInputText, StringComparison.OrdinalIgnoreCase) && c.Length > _currentInputText.Length)
+			{
 				_completionMatches.Add(c);
+			}
 		}
 		if (_completionMatches.Count == 0)
 		{
@@ -1531,17 +1727,25 @@ public class DisplayScreen : IDisplay
 		}
 		_completionActive = true;
 		if (_completionIndex < 0 || _completionIndex >= _completionMatches.Count)
+		{
 			_completionIndex = 0;
+		}
 	}
 
 	// Returns the substring that would be appended if Tab were pressed right now, or empty if no popup.
 	private string ComputeGhostSuffix()
 	{
 		if (!_completionActive || _completionMatches.Count == 0)
+		{
 			return string.Empty;
+		}
+
 		string pick = _completionMatches[_completionIndex];
 		if (pick.Length <= _currentInputText.Length)
+		{
 			return string.Empty;
+		}
+
 		return pick.Substring(_currentInputText.Length);
 	}
 
@@ -1554,13 +1758,18 @@ public class DisplayScreen : IDisplay
 	private void RenderPendingGhost(Screen frame, int w, int historyW, int ghostTop, int ghostRows)
 	{
 		if (ghostTop < 0 || w <= 0 || historyW <= 0 || ghostRows <= 0)
+		{
 			return;
+		}
 
 		List<string> entries;
 		lock (_consoleLock)
 		{
 			if (!_pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued) || queued.Count == 0)
+			{
 				return;
+			}
+
 			entries = new List<string>(queued);
 		}
 
@@ -1590,7 +1799,9 @@ public class DisplayScreen : IDisplay
 		}
 
 		if (wrapped.Count == 0)
+		{
 			return;
+		}
 
 		// Keep the most recent rows when the queue is taller than the cap.
 		int show       = Math.Min(ghostRows, wrapped.Count);
@@ -1621,15 +1832,23 @@ public class DisplayScreen : IDisplay
 	private void PreviewSelectedSession()
 	{
 		if (_sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
+		{
 			_sessionSwitchCallback?.Invoke(_sessionList[_sessionTreeSelected].Id);
+		}
 	}
 
 	private int? SlotAtTerminalRow(int row)
 	{
 		if (_stack == null)
+		{
 			return null;
+		}
+
 		if (row < 0 || row >= _lastHistoryHeight)
+		{
 			return null;
+		}
+
 		int sourceRow = row + _lastViewTop;
 		return _stack.SlotAtRow(sourceRow);
 	}
@@ -1640,11 +1859,15 @@ public class DisplayScreen : IDisplay
 	{
 		int? slot = SlotAtTerminalRow(row);
 		if (!slot.HasValue || _model == null || slot.Value < 0 || slot.Value >= _model.Messages.Count)
+		{
 			return false;
+		}
 
 		string text = BlockCopyText(_model.Messages[slot.Value]);
 		if (string.IsNullOrEmpty(text))
+		{
 			return false;
+		}
 
 		if (add)
 		{
@@ -1673,13 +1896,19 @@ public class DisplayScreen : IDisplay
 			if (!string.IsNullOrEmpty(msg.PairedResponseContent))
 			{
 				if (sb.Length > 0)
+				{
 					sb.Append('\n');
+				}
+
 				sb.Append(msg.PairedResponseContent);
 			}
 			if (!string.IsNullOrEmpty(msg.PairedResponseError))
 			{
 				if (sb.Length > 0)
+				{
 					sb.Append('\n');
+				}
+
 				sb.Append(msg.PairedResponseError);
 			}
 			text = sb.ToString();
@@ -1701,7 +1930,9 @@ public class DisplayScreen : IDisplay
 		string name     = paren >= 0 ? content.Substring(0, paren).Trim() : content;
 		string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+		{
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
+		}
 
 		sb.Append(name);
 		if (!string.IsNullOrWhiteSpace(argsJson))
@@ -1726,14 +1957,23 @@ public class DisplayScreen : IDisplay
 						? prop.Value.GetString() ?? string.Empty
 						: prop.Value.ToString();
 					if (val.IndexOf('\n') >= 0 || val.Length > 120)
+					{
 						blockArgs.Add(val);
+					}
 					else
+					{
 						inlineArgs.Add($"{prop.Name}: {val}");
+					}
 				}
 				if (inlineArgs.Count > 0)
+				{
 					sb.Append("  ").Append(string.Join("  ", inlineArgs));
+				}
+
 				foreach (string block in blockArgs)
+				{
 					sb.Append('\n').Append(block);
+				}
 			}
 			catch (JsonException)
 			{
@@ -1784,7 +2024,9 @@ public class DisplayScreen : IDisplay
 						_draining = false;
 					}
 					if (_redrawPending)
+					{
 						needRedraw = true;
+					}
 
 					int curW = Console.WindowWidth;
 					int curH = Console.WindowHeight;
@@ -1844,7 +2086,9 @@ public class DisplayScreen : IDisplay
 						needRedraw = true;
 					}
 					if (needRedraw)
+					{
 						Redraw();
+					}
 				}
 			}
 
@@ -1860,14 +2104,20 @@ public class DisplayScreen : IDisplay
 			ConsoleInputEvent? evOpt = _stashedInput ?? Platform.Current.ReadInput(pollTimeout);
 			_stashedInput            = null;
 			if (evOpt == null)
+			{
 				continue;
+			}
+
 			ConsoleInputEvent inputEv = evOpt.Value;
 
 			// Unattended: nothing typed or clicked reaches the run, but Ctrl+C still stops it.
 			if (_unattended)
 			{
 				if (inputEv.Type == InputEventType.Key && inputEv.Key.Key == ConsoleKey.C && inputEv.Key.Modifiers.HasFlag(ConsoleModifiers.Control))
+				{
 					_requestExit?.Invoke();
+				}
+
 				continue;
 			}
 
@@ -1881,7 +2131,10 @@ public class DisplayScreen : IDisplay
 				{
 					ConsoleInputEvent? next = Platform.Current.ReadInput(0);
 					if (next == null)
+					{
 						break;
+					}
+
 					if (next.Value.Type != InputEventType.MouseMove)
 					{
 						_stashedInput = next;
@@ -1915,7 +2168,9 @@ public class DisplayScreen : IDisplay
 
 					// A window is on top: the history behind it does not scroll.
 					if (MouseBlockedByWindow(inputEv.Row, inputEv.Col))
+					{
 						continue;
+					}
 
 					// Re-resolve the block under the cursor: it's the wheel target, and on a vertical scroll the
 					// content moves under a stationary mouse so the highlight should track it.
@@ -1929,7 +2184,9 @@ public class DisplayScreen : IDisplay
 					{
 						int hDelta = inputEv.WheelDelta > 0 ? HScrollWheelStep : -HScrollWheelStep;
 						if (ScrollHoveredBlockHorizontally(hDelta))
+						{
 							continue;
+						}
 					}
 
 					_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
@@ -1948,13 +2205,21 @@ public class DisplayScreen : IDisplay
 				// and sent with the next message. A password or API key must not end up there.
 				bool blocked;
 				lock (_consoleLock)
+				{
 					blocked = MouseBlockedByWindow(inputEv.Row, inputEv.Col);
+				}
+
 				if (blocked)
+				{
 					continue;
+				}
 
 				string pasted = PasteFromClipboard(inputBuffer, ref cursorPos, pasteBuffers, ref pasteSeq);
 				if (pasted.Length > 0)
+				{
 					inCompletion = false;
+				}
+
 				continue;
 			}
 
@@ -1968,14 +2233,19 @@ public class DisplayScreen : IDisplay
 
 					// A click on a window stays on that window: nothing behind it may toggle or scroll.
 					if (MouseBlockedByWindow(inputEv.Row, inputEv.Col))
+					{
 						continue;
+					}
 
 					// A click inside the session-tree panel is the panel's, not the history's — never toggle a
 					// block underneath it. Its one clickable thing is the Pause/Play button.
 					if (_sessionTreeOpen && inputEv.Col >= _historyWidth)
 					{
 						if (inputEv.Row == _treeButtonRow)
+						{
 							TogglePause();
+						}
+
 						continue;
 					}
 
@@ -1984,7 +2254,9 @@ public class DisplayScreen : IDisplay
 					// panel-area guard above already excluded clicks over the F10 panel, so this works whether
 					// the panel is open or closed.
 					if ((inputEv.Col == _historyWidth - 6 || inputEv.Col == _historyWidth - 5) && CopyBlockAtRow(inputEv.Row, inputEv.Shift))
+					{
 						continue;
+					}
 
 					if (inputEv.Col >= scrollCol && _scrollbarMaxOffset > 0
 						&& inputEv.Row >= _scrollbarTopRow
@@ -2012,7 +2284,9 @@ public class DisplayScreen : IDisplay
 							{
 								int topRow = op.Value.Top - _lastViewTop;
 								if (topRow >= 0 && topRow < _lastHistoryHeight)
+								{
 									desiredRow = topRow;
+								}
 							}
 							_pendingToggleSlot = slot.Value;
 							_pendingToggleRow  = desiredRow;
@@ -2034,7 +2308,10 @@ public class DisplayScreen : IDisplay
 				// key prompt must land there, never in the chat input hidden behind the modal.
 				bool configPaste;
 				lock (_consoleLock)
+				{
 					configPaste = _configOverlay != null && _configOverlay.IsOpen && _configOverlay.HandlePaste(inputEv.Text);
+				}
+
 				if (configPaste)
 				{
 					Redraw();
@@ -2067,7 +2344,10 @@ public class DisplayScreen : IDisplay
 			if (key.Key == ConsoleKey.C && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				_requestExit?.Invoke();
 				continue;
 			}
@@ -2101,14 +2381,20 @@ public class DisplayScreen : IDisplay
 			if (roleOpen)
 			{
 				lock (_consoleLock)
+				{
 					_roleOverlay!.HandleKey(key);
+				}
+
 				Redraw();
 				continue;
 			}
 			if (configOpen)
 			{
 				lock (_consoleLock)
+				{
 					_configOverlay!.HandleKey(key);
+				}
+
 				Redraw();
 				continue;
 			}
@@ -2131,7 +2417,9 @@ public class DisplayScreen : IDisplay
 						{
 							_sessionTreeSelected--;
 							if (_sessionTreeSelected < _sessionTreeScroll)
+							{
 								_sessionTreeScroll = _sessionTreeSelected;
+							}
 							// Live preview: show the highlighted session behind the panel immediately.
 							PreviewSelectedSession();
 						}
@@ -2145,7 +2433,10 @@ public class DisplayScreen : IDisplay
 							_sessionTreeSelected++;
 							int visRows = Math.Max(1, _lastHeight - 6);
 							if (_sessionTreeSelected >= _sessionTreeScroll + visRows)
+							{
 								_sessionTreeScroll = _sessionTreeSelected - visRows + 1;
+							}
+
 							PreviewSelectedSession();
 						}
 						Redraw();
@@ -2160,7 +2451,10 @@ public class DisplayScreen : IDisplay
 						{
 							string id = _sessionList[_sessionTreeSelected].Id;
 							if (!_sessionMarked.Remove(id))
+							{
 								_sessionMarked.Add(id);
+							}
+
 							Redraw();
 						}
 						treeHandled = true;
@@ -2172,7 +2466,9 @@ public class DisplayScreen : IDisplay
 					}
 				}
 				if (treeHandled)
+				{
 					continue;
+				}
 			}
 
 			if (key.Key == ConsoleKey.Enter && !shift && !alt)
@@ -2185,7 +2481,9 @@ public class DisplayScreen : IDisplay
 					_followReadyTick = 0;
 					popupActive      = _completionActive && _completionMatches.Count > 0;
 					if (popupActive)
+					{
 						accept = _completionMatches[_completionIndex];
+					}
 				}
 				if (popupActive && accept != null)
 				{
@@ -2226,7 +2524,9 @@ public class DisplayScreen : IDisplay
 				if (text.Length > 0)
 				{
 					if (history.Count == 0 || history[history.Count - 1] != text)
+					{
 						history.Add(text);
+					}
 					// Ghost all submitted text (including slash commands) so the user sees what was sent.
 					// Keyed by the session being viewed — which is exactly the session the text is sent to.
 					lock (_consoleLock)
@@ -2242,14 +2542,19 @@ public class DisplayScreen : IDisplay
 				}
 
 				lock (_consoleLock)
+				{
 					_scrollTarget = 0f;
+				}
 
 				SetInput("", 0);
 			}
 			else if ((key.Key == ConsoleKey.Enter && (shift || alt)) || (key.Key == ConsoleKey.J && ctrl))
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				inCompletion = false;
 				inputBuffer.Insert(cursorPos, '\n');
 				cursorPos++;
@@ -2265,7 +2570,9 @@ public class DisplayScreen : IDisplay
 					_followReadyTick = 0;
 					popupActive      = _completionActive && _completionMatches.Count > 0;
 					if (popupActive)
+					{
 						accept = _completionMatches[_completionIndex];
+					}
 				}
 
 				if (popupActive && accept != null)
@@ -2280,7 +2587,9 @@ public class DisplayScreen : IDisplay
 				{
 					List<string> completionsCopy;
 					lock (_consoleLock)
+					{
 						completionsCopy = new List<string>(_completions);
+					}
 
 					InputLayer.UpdateMatches(inputBuffer.ToString(), matches, completionsCopy);
 					if (matches.Count > 0)
@@ -2298,7 +2607,10 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.Backspace && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				inCompletion = false;
 				int newPos   = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
 				inputBuffer.Remove(newPos, cursorPos - newPos);
@@ -2308,7 +2620,10 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.Backspace)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				inCompletion = false;
 				if (cursorPos > 0)
 				{
@@ -2320,7 +2635,10 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.Delete && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				inCompletion = false;
 				int newPos   = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
 				inputBuffer.Remove(cursorPos, newPos - cursorPos);
@@ -2329,7 +2647,10 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.Delete)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				inCompletion = false;
 				if (cursorPos < inputBuffer.Length)
 				{
@@ -2358,50 +2679,72 @@ public class DisplayScreen : IDisplay
 					_scrollbarShowUntil = Environment.TickCount64 + ScrollbarShowMs;
 					_followReadyTick    = 0;
 					if (key.Key == ConsoleKey.UpArrow)
+					{
 						_scrollTarget += 1;
+					}
 					else
+					{
 						_scrollTarget = Math.Max(0f, _scrollTarget - 1);
+					}
 				}
 			}
 			else if (key.Key == ConsoleKey.LeftArrow && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				cursorPos = InputLayer.WordStartBefore(inputBuffer.ToString(), cursorPos);
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.LeftArrow)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				if (cursorPos > 0)
 				{ cursorPos--; SetInput(inputBuffer.ToString(), cursorPos); }
 			}
 			else if (key.Key == ConsoleKey.RightArrow && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				cursorPos = InputLayer.WordEndAfter(inputBuffer.ToString(), cursorPos);
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.RightArrow)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				if (cursorPos < inputBuffer.Length)
 				{ cursorPos++; SetInput(inputBuffer.ToString(), cursorPos); }
 			}
 			else if (key.Key == ConsoleKey.Home)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				cursorPos = 0;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.End)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				cursorPos = inputBuffer.Length;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
@@ -2419,7 +2762,10 @@ public class DisplayScreen : IDisplay
 					{
 						_completionIndex--;
 						if (_completionIndex < 0)
+						{
 							_completionIndex = _completionMatches.Count - 1;
+						}
+
 						Redraw();
 					}
 					continue;
@@ -2428,7 +2774,10 @@ public class DisplayScreen : IDisplay
 				{
 					int upW = Console.WindowWidth;
 					if (upW < 1)
+					{
 						upW = 80;
+					}
+
 					(int upLine, int upCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
 					cursorPos               = InputLayer.CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
 					SetInput(inputBuffer.ToString(), cursorPos);
@@ -2438,7 +2787,10 @@ public class DisplayScreen : IDisplay
 					if (historyIndex == -1)
 					{ historySavedDraft = inputBuffer.ToString(); historyIndex = history.Count - 1; }
 					else if (historyIndex > 0)
+					{
 						historyIndex--;
+					}
+
 					string entry = history[historyIndex];
 					inputBuffer.Clear();
 					inputBuffer.Append(entry);
@@ -2460,7 +2812,10 @@ public class DisplayScreen : IDisplay
 					{
 						_completionIndex++;
 						if (_completionIndex >= _completionMatches.Count)
+						{
 							_completionIndex = 0;
+						}
+
 						Redraw();
 					}
 					continue;
@@ -2469,7 +2824,10 @@ public class DisplayScreen : IDisplay
 				{
 					int downW = Console.WindowWidth;
 					if (downW < 1)
+					{
 						downW = 80;
+					}
+
 					(int downLine, int downCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, downW);
 					int totalLines              = InputLayer.WrapInput(inputBuffer.ToString(), downW).Count;
 					if (downLine < totalLines - 1)
@@ -2485,7 +2843,10 @@ public class DisplayScreen : IDisplay
 					if (historyIndex >= history.Count)
 					{ historyIndex = -1; entry = historySavedDraft; }
 					else
+					{
 						entry = history[historyIndex];
+					}
+
 					inputBuffer.Clear();
 					inputBuffer.Append(entry);
 					cursorPos = inputBuffer.Length;
@@ -2517,7 +2878,10 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.Escape)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				if (inputBuffer.Length > 0)
 				{
 					inputBuffer.Clear();
@@ -2537,7 +2901,9 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.F9)
 			{
 				lock (_consoleLock)
+				{
 					TogglePause();
+				}
 			}
 			else if (key.Key == ConsoleKey.F10)
 			{
@@ -2564,7 +2930,9 @@ public class DisplayScreen : IDisplay
 							_sessionTreeScroll = 0;
 							int visRows        = Math.Max(1, _lastHeight - 6);
 							if (_sessionTreeSelected >= visRows)
+							{
 								_sessionTreeScroll = _sessionTreeSelected - visRows + 1;
+							}
 						}
 						Redraw();
 					}
@@ -2573,14 +2941,20 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.A && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				cursorPos = 0;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
 			else if (key.Key == ConsoleKey.E && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				cursorPos = inputBuffer.Length;
 				SetInput(inputBuffer.ToString(), cursorPos);
 			}
@@ -2591,12 +2965,17 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.V && (ctrl || alt))
 			{
 				if (PasteFromClipboard(inputBuffer, ref cursorPos, pasteBuffers, ref pasteSeq).Length > 0)
+				{
 					inCompletion = false;
+				}
 			}
 			else if (key.Key == ConsoleKey.X && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				if (inputBuffer.Length > 0)
 				{
 					Platform.Current.SetClipboardText(inputBuffer.ToString());
@@ -2609,19 +2988,28 @@ public class DisplayScreen : IDisplay
 			else if (key.Key == ConsoleKey.D && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				_requestExit?.Invoke();
 			}
 			else if (key.Key == ConsoleKey.O && ctrl)
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				CycleCollapseMode();
 			}
 			else if (!char.IsControl(key.KeyChar))
 			{
 				lock (_consoleLock)
+				{
 					_followReadyTick = 0;
+				}
+
 				inCompletion = false;
 				inputBuffer.Insert(cursorPos, key.KeyChar);
 				cursorPos++;
@@ -2646,7 +3034,9 @@ public class DisplayScreen : IDisplay
 		// under the one the user actually submitted to.
 		string target;
 		lock (_consoleLock)
+		{
 			target = _sessionActiveId;
+		}
 
 		// Serialized: each submission is fired and forgotten, so two in quick succession would
 		// otherwise interleave on the wire — /attach(A), /attach(B), text(B), text(A) — and the
@@ -2660,9 +3050,13 @@ public class DisplayScreen : IDisplay
 			{
 				string staged = StageAttachment(path);
 				if (staged.Length > 0)
+				{
 					await SendToAsync(target, $"/attach {staged}\x01{path}");
+				}
 				else
+				{
 					SetStatus($"Could not attach {path}");
+				}
 			}
 			await SendToAsync(target, text);
 		}
@@ -2682,16 +3076,22 @@ public class DisplayScreen : IDisplay
 	private string PasteFromClipboard(StringBuilder inputBuffer, ref int cursorPos, Dictionary<string, string> pasteBuffers, ref int pasteSeq)
 	{
 		lock (_consoleLock)
+		{
 			_followReadyTick = 0;
+		}
 
 		(string insert, string report) = PasteMediaMarkers();
 		if (insert.Length == 0)
 		{
 			string clip = Platform.Current.GetClipboardText();
 			if (!string.IsNullOrEmpty(clip))
+			{
 				insert = InputLayer.BuildPasteInsert(clip, pasteBuffers, ref pasteSeq);
+			}
 			else
+			{
 				SetStatus(report.Length > 0 ? report : "Clipboard is empty.");
+			}
 		}
 		else if (report.Length > 0)
 		{
@@ -2710,7 +3110,9 @@ public class DisplayScreen : IDisplay
 	private (string Markers, string Report) PasteMediaMarkers()
 	{
 		if (_agentStateDir.Length == 0)
+		{
 			return (string.Empty, string.Empty);
+		}
 
 		StringBuilder markers   = new StringBuilder();
 		int           fileCount = 0;
@@ -2720,11 +3122,15 @@ public class DisplayScreen : IDisplay
 			fileCount++;
 		}
 		if (fileCount > 0)
+		{
 			return (markers.ToString(), fileCount == 1 ? "Attached 1 file from the clipboard." : $"Attached {fileCount} files from the clipboard.");
+		}
 
 		string image = Platform.Current.SaveClipboardImage(MediaIntake.EnsureStagingFolder(_agentStateDir));
 		if (image.Length > 0)
+		{
 			return ($"[ path {image} ] ", "Attached the clipboard image.");
+		}
 
 		// Nothing usable. Say so rather than doing nothing visible — a silent no-op here reads as
 		// a broken feature, and the most common cause (an image-only clipboard swallowed by the
@@ -2739,14 +3145,18 @@ public class DisplayScreen : IDisplay
 	private string StageAttachment(string path)
 	{
 		if (_agentStateDir.Length == 0)
+		{
 			return string.Empty;
+		}
 
 		try
 		{
 			string  folder = MediaIntake.EnsureStagingFolder(_agentStateDir);
 			string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
 			if (parent != null && string.Equals(Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar), parent.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+			{
 				return Path.GetFileName(path);
+			}
 
 			string staged = $"{Guid.NewGuid():N}{Path.GetExtension(path)}";
 			File.Copy(path, Path.Combine(folder, staged), true);
@@ -2813,9 +3223,13 @@ public class DisplayScreen : IDisplay
 		try
 		{
 			if (targetSessionId != null && _sendToAsync != null)
+			{
 				await _sendToAsync(targetSessionId, text);
+			}
 			else
+			{
 				await _sendAsync!(text);
+			}
 		}
 		catch (Exception ex)
 		{

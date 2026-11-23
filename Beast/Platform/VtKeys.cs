@@ -19,11 +19,19 @@ internal static class VtKeys
 	{
 		// Named editing keys. These overlap with Ctrl-I/M/H but the terminal meaning is the named key.
 		if (c == '\t')
+		{
 			return KeyEvent('\t', ConsoleKey.Tab, shift, alt, ctrl);
+		}
+
 		if (c == '\r' || c == '\n')
+		{
 			return KeyEvent('\r', ConsoleKey.Enter, shift, alt, ctrl);
+		}
+
 		if (c == '\b' || c == '\x7f')
+		{
 			return KeyEvent('\b', ConsoleKey.Backspace, shift, alt, ctrl);
+		}
 
 		// Remaining control chars 0x01-0x1A are Ctrl + a letter (A=0x01 .. Z=0x1A). Surface them as the
 		// letter key with the Control modifier so DisplayScreen's Ctrl-A/E/V/X/C/D/O/J handlers fire.
@@ -79,15 +87,23 @@ internal static class VtKeys
 	{
 		ConsoleInputEvent? ctl = TranslateControlChar(c, false, true, false);
 		if (ctl != null)
+		{
 			return ctl.Value;
+		}
 
 		ConsoleKey key = (ConsoleKey)0;
 		if (c >= 'a' && c <= 'z')
+		{
 			key = (ConsoleKey)('A' + (c - 'a'));
+		}
 		else if (c >= 'A' && c <= 'Z')
+		{
 			key = (ConsoleKey)c;
+		}
 		else if (c >= '0' && c <= '9')
+		{
 			key = (ConsoleKey)c;
+		}
 
 		return KeyEvent(c, key, false, true, false);
 	}
@@ -108,16 +124,25 @@ internal static class VtKeys
 
 		// ESC [ Z is Shift+Tab (back-tab).
 		if (final == 'Z')
+		{
 			return KeyEvent('\t', ConsoleKey.Tab, true, alt, ctrl);
+		}
 
 		ConsoleKey key;
 		if (final == '~')
+		{
 			key = TildeCodeToKey(ParseLeadingInt(paramStr));
+		}
 		else
+		{
 			key = FinalToKey(final);
+		}
 
 		if (key == (ConsoleKey)0)
+		{
 			return null;
+		}
+
 		return KeyEvent('\0', key, shift, alt, ctrl);
 	}
 
@@ -176,7 +201,9 @@ internal static class VtKeys
 			|| !int.TryParse(parts[0], out int cb)
 			|| !int.TryParse(parts[1], out int cx)
 			|| !int.TryParse(parts[2], out int cy))
+		{
 			return null;
+		}
 
 		return DecodeMouse(cb, cx - 1, cy - 1, terminator == 'M');
 	}
@@ -207,10 +234,14 @@ internal static class VtKeys
 		}
 
 		if ((cb & 0x20) != 0) // motion
+		{
 			return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
+		}
 
 		if (press && (btn == 0 || btn == 2)) // left or right button press
+		{
 			return new ConsoleInputEvent { Type = InputEventType.MouseClick, Col = col, Row = row, Shift = shift, Right = btn == 2 };
+		}
 
 		return new ConsoleInputEvent { Type = InputEventType.MouseMove, Col = col, Row = row };
 	}
@@ -219,7 +250,10 @@ internal static class VtKeys
 	{
 		int i = 0;
 		while (i < s.Length && char.IsDigit(s[i]))
+		{
 			i++;
+		}
+
 		return i > 0 && int.TryParse(s.Substring(0, i), out int v) ? v : -1;
 	}
 
@@ -234,7 +268,9 @@ internal static class VtKeys
 		{
 			// Collapse '\r\n' into the single '\n' already appended.
 			if (sb.Length == 0 || sb[sb.Length - 1] != '\n')
+			{
 				sb.Append('\n');
+			}
 		}
 		else
 		{
@@ -249,7 +285,10 @@ internal static class VtKeys
 		int col  = -1;
 		int semi = resp.LastIndexOf(';');
 		if (semi >= 0 && !int.TryParse(resp.Substring(semi + 1), out col))
+		{
 			col = -1;
+		}
+
 		return col;
 	}
 }

@@ -18,7 +18,9 @@ public static class AnsiToScreen
 	public static (int EndX, Rgb? FinalFg, Rgb? FinalBg) WriteLine(Screen target, int x0, int y, string ansiText, Rgb? baseFg, Rgb? baseBg)
 	{
 		if (y < 0 || y >= target.H)
+		{
 			return (x0, baseFg, baseBg);
+		}
 
 		Rgb?      fg    = baseFg;
 		Rgb?      bg    = baseBg;
@@ -34,9 +36,15 @@ public static class AnsiToScreen
 			{
 				int j = i + 2;
 				while (j < ansiText.Length && !(ansiText[j] >= '@' && ansiText[j] <= '~'))
+				{
 					j++;
+				}
+
 				if (j >= ansiText.Length)
+				{
 					break;
+				}
+
 				char final = ansiText[j];
 				if (final == 'm')
 				{
@@ -54,7 +62,9 @@ public static class AnsiToScreen
 			// A surrogate half cannot live in a single-char cell, so an astral emoji would corrupt the row;
 			// show a placeholder so the column count stays in step with what the terminal draws.
 			if (char.IsSurrogate(glyph))
+			{
 				glyph = '?';
+			}
 
 			int width = CharWidth.Of(glyph);
 			if (width == 0)
@@ -92,10 +102,15 @@ public static class AnsiToScreen
 	public static void PadRowBackground(Screen target, int cx, int y, Rgb? fg, Rgb? bg)
 	{
 		if (y < 0 || y >= target.H)
+		{
 			return;
+		}
+
 		Cell pad = new Cell(' ', fg, bg, CellStyle.None);
 		for (int x = cx; x < target.W; x++)
+		{
 			target.Set(x, y, pad);
+		}
 	}
 
 	private static void ApplySgr(string s, int start, int end,
@@ -105,10 +120,10 @@ public static class AnsiToScreen
 		List<int> p = ParseParams(s, start, end);
 		if (p.Count == 0)
 		{
-			fg = baseFg;
-			bg = baseBg;
+			fg    = baseFg;
+			bg    = baseBg;
 			style = CellStyle.None;
-			dim = false;
+			dim   = false;
 			return;
 		}
 
@@ -119,10 +134,10 @@ public static class AnsiToScreen
 			switch (code)
 			{
 				case 0:
-					fg = baseFg;
-					bg = baseBg;
+					fg    = baseFg;
+					bg    = baseBg;
 					style = CellStyle.None;
-					dim = false;
+					dim   = false;
 					k++;
 					break;
 				case 1:
@@ -143,7 +158,7 @@ public static class AnsiToScreen
 					break;
 				case 22:
 					style &= ~CellStyle.Bold;
-					dim = false;
+					dim    = false;
 					k++;
 					break;
 				case 23:
@@ -213,25 +228,28 @@ public static class AnsiToScreen
 	private static List<int> ParseParams(string s, int start, int end)
 	{
 		List<int> result = new List<int>();
-		int value = 0;
-		bool any = false;
+		int       value  = 0;
+		bool      any    = false;
 		for (int i = start; i < end; i++)
 		{
 			char c = s[i];
 			if (c >= '0' && c <= '9')
 			{
 				value = value * 10 + (c - '0');
-				any = true;
+				any   = true;
 			}
 			else if (c == ';' || c == ':')
 			{
 				result.Add(any ? value : 0);
 				value = 0;
-				any = false;
+				any   = false;
 			}
 		}
 		if (any || (start < end && s[end - 1] != ';' && s[end - 1] != ':'))
+		{
 			result.Add(value);
+		}
+
 		return result;
 	}
 
@@ -279,12 +297,18 @@ public static class AnsiToScreen
 	public static Rgb Palette256(int n)
 	{
 		if (n < 16)
+		{
 			return StandardAnsi(n & 7, n >= 8);
+		}
+
 		if (n >= 232)
 		{
 			int v = 8 + (n - 232) * 10;
 			if (v > 255)
+			{
 				v = 255;
+			}
+
 			return new Rgb((byte)v, (byte)v, (byte)v);
 		}
 		int c = n - 16;

@@ -85,7 +85,9 @@ public static class MediaResizeTests
 			}
 			File.Delete(scaled);
 			if (changed.Length > 0 && changed != scaled)
+			{
 				File.Delete(changed);
+			}
 		}
 	}
 
@@ -97,7 +99,10 @@ public static class MediaResizeTests
 		{
 			ProcessStartInfo psi = new ProcessStartInfo { FileName = "ffmpeg", RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
 			foreach (string arg in new string[] { "-v", "error", "-y", "-f", "lavfi", "-i", $"color=c={color}:s={width}x{height}", "-frames:v", "1", path })
+			{
 				psi.ArgumentList.Add(arg);
+			}
+
 			using Process process = new Process { StartInfo = psi };
 			process.Start();
 			Task<string> stdout = process.StandardOutput.ReadToEndAsync();

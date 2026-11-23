@@ -54,7 +54,10 @@ public static class CharWidthTests
 		int              width = AnsiString.VisibleLength(lines[0].Text);
 		bool             same  = true;
 		foreach (RenderLine line in lines)
+		{
 			same = same && AnsiString.VisibleLength(line.Text) == width;
+		}
+
 		ctx.Assert(same, "CodeBoxWideGlyphs: every box row closes in the same column");
 	}
 

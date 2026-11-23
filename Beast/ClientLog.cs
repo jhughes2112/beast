@@ -14,7 +14,9 @@ public class ClientLog
 	public void Verbose(string message)
 	{
 		if (_verbose)
+		{
 			Console.Error.WriteLine(message);
+		}
 	}
 
 	// Always emits an error message to stderr.

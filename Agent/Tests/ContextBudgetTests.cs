@@ -182,9 +182,14 @@ public static class ContextBudgetTests
 				ContextBudget budget = new ContextBudget();
 				budget.Configure(window, 0, reserve, 0, measured);
 				if (!budget.IsExhausted() && (budget.MaxCompletionTokens() ?? 0) <= ContextBudget.MinUsefulOutput)
+				{
 					violations++;
+				}
+
 				if (budget.IsExhausted() != (measured >= ContextBudget.CompactionThreshold(window, reserve, measured)))
+				{
 					disagree++;
+				}
 			}
 		}
 		ctx.AssertEqual(0, violations, "ZeroOutputZone: no size below the line is sent with less than a useful answer");

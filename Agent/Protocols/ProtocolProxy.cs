@@ -13,7 +13,9 @@ public enum DetectedProtocol
 	Responses,
 	ChatCompletions,
 	// An Anthropic subscription driven through the Claude Code CLI (claude-code:// endpoints).
-	ClaudeDashP
+	ClaudeDashP,
+	// A Google subscription driven through the Antigravity CLI's ACP server (antigravity:// endpoints).
+	Antigravity
 }
 
 // Every LLMService has a single ProtocolProxy that abstracts which protocol it speaks and makes sure that the correct one gets called.
@@ -49,6 +51,7 @@ public class ProtocolProxy
 	private ProtocolResponses?       _protocolResponses;
 	private ProtocolAnthropic?       _protocolAnthropic;
 	private ProtocolClaudeDashP?     _protocolClaudeDashP;
+	private ProtocolAntigravity?     _protocolAntigravity;
 
 	// The canonical message list the live protocol's native state was built from. Native state is a
 	// MIRROR of one conversation, so it is only reusable for that same conversation: handed a
@@ -104,13 +107,30 @@ public class ProtocolProxy
 	private static DetectedProtocol DetectProtocolFromUrl(string endpoint)
 	{
 		if (ClaudeCode.IsEndpoint(endpoint))
+		{
 			return DetectedProtocol.ClaudeDashP;
+		}
+
+		if (Antigravity.IsEndpoint(endpoint))
+		{
+			return DetectedProtocol.Antigravity;
+		}
+
 		if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
+		{
 			return DetectedProtocol.Anthropic;
+		}
+
 		if (endpoint.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+		{
 			return DetectedProtocol.ChatCompletions;
+		}
+
 		if (endpoint.EndsWith("/responses", StringComparison.OrdinalIgnoreCase))
+		{
 			return DetectedProtocol.Responses;
+		}
+
 		return DetectedProtocol.Unknown;
 	}
 
@@ -142,20 +162,28 @@ public class ProtocolProxy
 	{
 		DetectedProtocol protocol = DetectProtocolFromUrl(endpoint);
 		if (protocol == DetectedProtocol.Unknown)
+		{
 			return (DetectedProtocol.Unknown, endpoint);
+		}
 
 		// Not a network address: the CLI is a local process, so there is nothing to reach.
-		if (protocol == DetectedProtocol.ClaudeDashP)
+		if (protocol == DetectedProtocol.ClaudeDashP || protocol == DetectedProtocol.Antigravity)
+		{
 			return (protocol, endpoint);
+		}
 
 		if (await CanReachEndpointAsync(endpoint))
+		{
 			return (protocol, endpoint);
+		}
 
 		if (endpoint.Contains("host.docker.internal", StringComparison.OrdinalIgnoreCase))
 		{
 			string fallback = endpoint.Replace("host.docker.internal", "localhost", StringComparison.OrdinalIgnoreCase);
 			if (await CanReachEndpointAsync(fallback))
+			{
 				return (protocol, fallback);
+			}
 		}
 
 		return (protocol, endpoint);
@@ -173,11 +201,13 @@ public class ProtocolProxy
 		DropClaudeDashP();
 	}
 
-	// The Claude Code protocol owns a live process, so discarding it must also end that process.
+	// The CLI-driven protocols each own a live process, so discarding one must also end that process.
 	private void DropClaudeDashP()
 	{
 		_protocolClaudeDashP?.Dispose();
 		_protocolClaudeDashP = null;
+		_protocolAntigravity?.Dispose();
+		_protocolAntigravity = null;
 	}
 
 	// Fan-out methods called by ListenerBundle for external events (user input, tool results,
@@ -188,6 +218,7 @@ public class ProtocolProxy
 		_protocolResponses?.OnSystemMessage(text);
 		_protocolAnthropic?.OnSystemMessage(text);
 		_protocolClaudeDashP?.OnSystemMessage(text);
+		_protocolAntigravity?.OnSystemMessage(text);
 	}
 	public void OnUserMessage(string text)
 	{
@@ -195,6 +226,7 @@ public class ProtocolProxy
 		_protocolResponses?.OnUserMessage(text);
 		_protocolAnthropic?.OnUserMessage(text);
 		_protocolClaudeDashP?.OnUserMessage(text);
+		_protocolAntigravity?.OnUserMessage(text);
 	}
 
 	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
@@ -203,6 +235,7 @@ public class ProtocolProxy
 		_protocolResponses?.OnUserMessage(text, attachments);
 		_protocolAnthropic?.OnUserMessage(text, attachments);
 		_protocolClaudeDashP?.OnUserMessage(text, attachments);
+		_protocolAntigravity?.OnUserMessage(text, attachments);
 	}
 
 	public void OnAssistantTurn(string text, string thinking, IReadOnlyList<SemanticToolCall> toolCalls)
@@ -211,6 +244,7 @@ public class ProtocolProxy
 		_protocolResponses?.OnAssistantTurn(text, thinking, toolCalls);
 		_protocolAnthropic?.OnAssistantTurn(text, thinking, toolCalls);
 		_protocolClaudeDashP?.OnAssistantTurn(text, thinking, toolCalls);
+		_protocolAntigravity?.OnAssistantTurn(text, thinking, toolCalls);
 	}
 
 	public void OnToolResult(ToolResult result)
@@ -219,6 +253,7 @@ public class ProtocolProxy
 		_protocolResponses?.OnToolResult(result);
 		_protocolAnthropic?.OnToolResult(result);
 		_protocolClaudeDashP?.OnToolResult(result);
+		_protocolAntigravity?.OnToolResult(result);
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(ListenerBundle bundle, List<ToolDefinition> tools, string? forcedToolName, int? maxCompletionTokens,
@@ -234,23 +269,39 @@ LiveUsageProgress onProgress, ITransportServer transport, SessionLogger logger, 
 			(DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(endpoint, cancellationToken);
 			_detected = probed;
 			if (effectiveEndpoint != endpoint)
+			{
 				_model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Headers, _model.Config);
+			}
 		}
 
 		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
 		if (_detected == DetectedProtocol.Anthropic)
+		{
 			return await EnsureProtocolAnthropic(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
+		}
 
 		if (_detected == DetectedProtocol.Responses)
+		{
 			return await EnsureProtocolResponses(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
+		}
 
 		if (_detected == DetectedProtocol.ChatCompletions)
+		{
 			return await EnsureProtocolChatCompletions(canonical).ExecuteAsync(_model, bundle, tools, forcedToolName, maxCompletionTokens, headers, payload, onProgress, logger, cancellationToken);
+		}
 
 		// Claude Code takes no forced tool choice or per-call output ceiling; its own loop sizes each call.
 		if (_detected == DetectedProtocol.ClaudeDashP)
+		{
 			return await EnsureProtocolClaudeDashP(canonical).ExecuteAsync(_model, bundle, tools, onProgress, logger, cancellationToken);
+		}
+
+		// Neither does Antigravity.
+		if (_detected == DetectedProtocol.Antigravity)
+		{
+			return await EnsureProtocolAntigravity(canonical).ExecuteAsync(_model, bundle, tools, onProgress, logger, cancellationToken);
+		}
 
 		logger.ProtocolFailure(_model, _detected, "UnknownProtocol", null, $"Endpoint speaks no recognized protocol: {endpoint}", null, null);
 		return ProtocolResult.Failed($"Endpoint speaks no recognized protocol: {endpoint}");
@@ -270,24 +321,39 @@ SessionLogger logger, CancellationToken cancellationToken)
 			(DetectedProtocol probed, string effectiveEndpoint) = await ProbeEndpointAsync(_model.Endpoint, cancellationToken);
 			_detected = probed;
 			if (effectiveEndpoint != _model.Endpoint)
+			{
 				_model = new LlmModel(_model.ConfigId, effectiveEndpoint, _model.ApiKey, _model.Extras, _model.Headers, _model.Config);
+			}
 		}
 
 		IReadOnlyList<CanonicalMessage> canonical = bundle.Canonical.Messages;
 
 		if (_detected == DetectedProtocol.Anthropic)
+		{
 			return await EnsureProtocolAnthropic(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+		}
 
 		if (_detected == DetectedProtocol.Responses)
+		{
 			return await EnsureProtocolResponses(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+		}
 
 		if (_detected == DetectedProtocol.ChatCompletions)
+		{
 			return await EnsureProtocolChatCompletions(canonical).CountTokensAsync(_model, tools, forcedToolName, headers, payload, logger, cancellationToken);
+		}
 
 		// Claude Code has no way to count a prompt without sending it. The first real turn's usage
 		// measures the conversation instead, and the caller treats a failed count as "not known yet".
 		if (_detected == DetectedProtocol.ClaudeDashP)
+		{
 			return TracerResult.Failed("Claude Code cannot count tokens ahead of a turn");
+		}
+
+		if (_detected == DetectedProtocol.Antigravity)
+		{
+			return TracerResult.Failed("Antigravity cannot count tokens ahead of a turn");
+		}
 
 		return TracerResult.Failed($"Endpoint speaks no recognized protocol");
 	}
@@ -359,6 +425,21 @@ SessionLogger logger, CancellationToken cancellationToken)
 		return _protocolClaudeDashP;
 	}
 
+	internal ProtocolAntigravity EnsureProtocolAntigravity(IReadOnlyList<CanonicalMessage> canonical)
+	{
+		if (_protocolAntigravity == null || !ReferenceEquals(_nativeSource, canonical))
+		{
+			DropClaudeDashP();
+			_protocolAntigravity = new ProtocolAntigravity();
+			_protocolAntigravity.Rehydrate(canonical);
+			_protocolChatCompletions = null;
+			_protocolResponses       = null;
+			_protocolAnthropic       = null;
+			_nativeSource            = canonical;
+		}
+		return _protocolAntigravity;
+	}
+
 	// Returns the currently detected protocol for logging purposes.
 	public DetectedProtocol GetDetectedProtocol()
 	{
@@ -370,9 +451,11 @@ SessionLogger logger, CancellationToken cancellationToken)
 	// Null nodes and empty-string JsonValues are skipped so settings files can contain
 	// self-documenting placeholder keys. Non-string nodes (arrays, objects, numbers) are
 	// never skipped â€” they are always intentional.
-	private static bool IsEmptyExtra(JsonNode? node) =>
-		node is null ||
+	private static bool IsEmptyExtra(JsonNode? node)
+	{
+		return node is null ||
 		(node is JsonValue jv && jv.TryGetValue<string>(out string? s) && string.IsNullOrEmpty(s));
+	}
 
 	// Builds the extra-headers and extra-payload dictionaries from the model's headers and extras.
 	// Both are replicated verbatim with no key interpretation: each extras entry's properties are
@@ -396,7 +479,9 @@ SessionLogger logger, CancellationToken cancellationToken)
 			foreach ((string name, JsonNode? value) in headerObject)
 			{
 				if (IsEmptyExtra(value)) // empty/null values are ignored, so the settings file can be self-documenting
+				{
 					continue;
+				}
 
 				headers[name] = value!.ToString();
 			}
@@ -407,7 +492,9 @@ SessionLogger logger, CancellationToken cancellationToken)
 			foreach ((string name, JsonNode? value) in extraObject)
 			{
 				if (IsEmptyExtra(value))
+				{
 					continue;
+				}
 
 				// DeepClone: the node belongs to the extras tree and gets parented into the
 				// request body downstream; re-using it across turns would throw.

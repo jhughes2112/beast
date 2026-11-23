@@ -72,7 +72,13 @@ public class Role
 
 	// The output modality with the blank settled, for comparing against what models produce.
 	[JsonIgnore]
-	public string Produces => OutputModality.Length > 0 ? OutputModality : global::OutputModality.Text;
+	public string Produces
+	{
+		get
+		{
+			return OutputModality.Length > 0 ? OutputModality : global::OutputModality.Text;
+		}
+	}
 
 	// Terminator tool this role finishes with when run as a subagent, chosen by its tool list;
 	// return_to_caller is the fallback for roles that declare no explicit terminator. Terminators
@@ -84,9 +90,14 @@ public class Role
 		{
 			string name = "return_to_caller";
 			if (Tools.Contains("task_complete"))
+			{
 				name = "task_complete";
+			}
 			else if (Tools.Contains("finish_review"))
+			{
 				name = "finish_review";
+			}
+
 			return name;
 		}
 	}

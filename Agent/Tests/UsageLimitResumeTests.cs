@@ -111,10 +111,14 @@ public static class UsageLimitResumeTests
 			foreach ((FrameType type, string text) in new List<(FrameType Type, string Text)>(transport.Sent))
 			{
 				if (type == FrameType.Status && text.Contains(needle, StringComparison.Ordinal))
+				{
 					seen = true;
+				}
 			}
 			if (!seen)
+			{
 				await Task.Delay(50, ct);
+			}
 		}
 		return seen;
 	}
@@ -125,7 +129,9 @@ public static class UsageLimitResumeTests
 		foreach ((FrameType type, string _) in new List<(FrameType Type, string Text)>(transport.Sent))
 		{
 			if (type == wanted)
+			{
 				any = true;
+			}
 		}
 		return any;
 	}

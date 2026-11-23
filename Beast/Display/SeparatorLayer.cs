@@ -37,52 +37,58 @@ internal static class SeparatorLayer
 	// single-cell glyphs, no emoji) so the word that follows the spinner doesn't jitter as it cycles.
 	internal static readonly string[][] BusyAnimations = new string[][]
 	{
-		new[] { "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙" }, // Worm
-        new[] { "∙∙∙∙", "●∙∙∙", "●●∙∙", "●●●∙", "●●●●", "∙●●●", "∙∙●●", "∙∙∙●" }, // Growth
-        new[] { "⠋   ", " ⠙  ", "  ⠹ ", "   ⠸", "   ⠼", "  ⠴ ", " ⠦  ", "⠧   " }, // Braille chase
-        new[] { "←↖↑↗", "↖↑↗→", "↑↗→↘", "↗→↘↓", "→↘↓↙", "↘↓↙←", "↓↙←↖", "↙←↖↑" }, // Arrow wave
-        new[] { "    ", "▃   ", "▆▃  ", "█▆▃ ", "▇█▆▃", " ▇█▆", "  ▇█", "   ▇" }, // Pulse bar
-        new[] { "▖   ", " ▘  ", "  ▝ ", "   ▗", "  ▝ ", " ▘  " },             // Quadrant scan
-        new[] { "◢◣◤◥", "◣◤◥◢", "◤◥◢◣", "◥◢◣◤" },                         // Triangles
-        new[] { "||||", "////", "----", "\\\\\\\\" },                        // Rotating pipes (escaped)
-        new[] { "◇◇◇◇", "◈◇◇◇", "◆◈◇◇", "◈◆◈◇", "◇◈◆◈", "◇◇◈◆", "◇◇◇◈" },    // Diamond pulse
-        new[] { "○◔◑◕", "◔◑◕●", "◑◕●◕", "◕●◕◑", "●◕◑◔", "◕◑◔○" },           // Moon cycle
-        new[] { "▐░▒▓", "░▒▓█", "▒▓█▓", "▓█▓▒", "█▓▒░", "▓▒░▐" },           // Density wave
-        new[] { "⊶⊷⊶⊷", "⊷⊶⊷⊶" },                                         // Oscillation
-        new[] { "◜◠◝◞", "◠◝◞◡", "◝◞◡◟", "◞◡◟◜", "◡◟◜◠", "◟◜◠◝" },           // Arc flow
-        new[] { "⌞⌜⌝⌟", "⌜⌝⌟⌞", "⌝⌟⌞⌜", "⌟⌞⌜⌝" },                         // Corner spin
-        new[] { "[●  ]", "[ ● ]", "[  ●]", "[ ● ]" },                     // Scanner
-        new[] { "{  }", " { }", "{  }", " { }" },                         // Pulse brackets
-        new[] { "<  >", "< > ", " >< ", "< > " },                         // Jaws
-        new[] { "v   ", " v  ", "  v ", "   v", "  ^ ", " ^  " },          // Gravity bounce
-        new[] { "◰◱◲◳", "◱◲◳◰", "◲◳◰◱", "◳◰◱◲" },                         // Box corners
-        new[] { "◴◵◶◷", "◵◶◷◴", "◶◷◴◵", "◷◴◵◶" },                         // Clock rotate
-        new[] { "⠐⠠⢀⡀", "⠠⢀⡀⠐", "⢀⡀⠐⠠", "⡀⠐⠠⢀" },                   // Marquee
-        new[] { "⠁⠂⠄⡀", "⠂⠄⡀⠠", "⠄⡀⠠⠐", "⡀⠠⠐⠈" },                   // Staircase
+		new[] { "●∙∙∙", "∙●∙∙", "∙∙●∙", "∙∙∙●", "∙∙●∙", "∙●∙∙" },                 // Worm
+		new[] { "∙∙∙∙", "●∙∙∙", "●●∙∙", "●●●∙", "●●●●", "∙●●●", "∙∙●●", "∙∙∙●" }, // Growth
+		new[] { "⠋   ", " ⠙  ", "  ⠹ ", "   ⠸", "   ⠼", "  ⠴ ", " ⠦  ", "⠧   " }, // Braille chase
+		new[] { "←↖↑↗", "↖↑↗→", "↑↗→↘", "↗→↘↓", "→↘↓↙", "↘↓↙←", "↓↙←↖", "↙←↖↑" }, // Arrow wave
+		new[] { "    ", "▃   ", "▆▃  ", "█▆▃ ", "▇█▆▃", " ▇█▆", "  ▇█", "   ▇" }, // Pulse bar
+		new[] { "▖   ", " ▘  ", "  ▝ ", "   ▗", "  ▝ ", " ▘  " },                 // Quadrant scan
+		new[] { "◢◣◤◥", "◣◤◥◢", "◤◥◢◣", "◥◢◣◤" },                         // Triangles
+		new[] { "||||", "////", "----", "\\\\\\\\" },                     // Rotating pipes (escaped)
+		new[] { "◇◇◇◇", "◈◇◇◇", "◆◈◇◇", "◈◆◈◇", "◇◈◆◈", "◇◇◈◆", "◇◇◇◈" }, // Diamond pulse
+		new[] { "○◔◑◕", "◔◑◕●", "◑◕●◕", "◕●◕◑", "●◕◑◔", "◕◑◔○" },         // Moon cycle
+		new[] { "▐░▒▓", "░▒▓█", "▒▓█▓", "▓█▓▒", "█▓▒░", "▓▒░▐" },         // Density wave
+		new[] { "⊶⊷⊶⊷", "⊷⊶⊷⊶" }, // Oscillation
+		new[] { "◜◠◝◞", "◠◝◞◡", "◝◞◡◟", "◞◡◟◜", "◡◟◜◠", "◟◜◠◝" }, // Arc flow
+		new[] { "⌞⌜⌝⌟", "⌜⌝⌟⌞", "⌝⌟⌞⌜", "⌟⌞⌜⌝" },                 // Corner spin
+		new[] { "[●  ]", "[ ● ]", "[  ●]", "[ ● ]" },             // Scanner
+		new[] { "{  }", " { }", "{  }", " { }" },                 // Pulse brackets
+		new[] { "<  >", "< > ", " >< ", "< > " },                 // Jaws
+		new[] { "v   ", " v  ", "  v ", "   v", "  ^ ", " ^  " }, // Gravity bounce
+		new[] { "◰◱◲◳", "◱◲◳◰", "◲◳◰◱", "◳◰◱◲" },                 // Box corners
+		new[] { "◴◵◶◷", "◵◶◷◴", "◶◷◴◵", "◷◴◵◶" },                 // Clock rotate
+		new[] { "⠐⠠⢀⡀", "⠠⢀⡀⠐", "⢀⡀⠐⠠", "⡀⠐⠠⢀" },                 // Marquee
+		new[] { "⠁⠂⠄⡀", "⠂⠄⡀⠠", "⠄⡀⠠⠐", "⡀⠠⠐⠈" },                 // Staircase
 
-        // --- Single-cell spinners (width 1) ---
-        new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" },     // Braille spin
-        new[] { "◐", "◓", "◑", "◒" },                                     // Half-circle spin
-        new[] { "◜", "◝", "◞", "◟" },                                     // Arc corners spin
-        new[] { "○", "◔", "◑", "◕", "●", "◕", "◑", "◔" },                 // Moon phases
-        new[] { "∙", "•", "●", "◉", "●", "•" },                           // Fisheye pulse
-        new[] { "✶", "✷", "✸", "✹", "✺", "✹", "✸", "✷" },                 // Star twinkle
-        new[] { "⠁", "⠂", "⠄", "⡀", "⠄", "⠂" },                           // Gravity drip
-        new[] { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂" }, // Equalizer column
+		// --- Single-cell spinners (width 1) ---
+		new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }, // Braille spin
+		new[] { "◐", "◓", "◑", "◒" },                     // Half-circle spin
+		new[] { "◜", "◝", "◞", "◟" },                     // Arc corners spin
+		new[] { "○", "◔", "◑", "◕", "●", "◕", "◑", "◔" }, // Moon phases
+		new[] { "∙", "•", "●", "◉", "●", "•" },           // Fisheye pulse
+		new[] { "✶", "✷", "✸", "✹", "✺", "✹", "✸", "✷" }, // Star twinkle
+		new[] { "⠁", "⠂", "⠄", "⡀", "⠄", "⠂" },           // Gravity drip
+		new[] { "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂" }, // Equalizer column
 
-        // --- Lengthy multi-cell animations ---
-        new[] { "●       ", " ●      ", "  ●     ", "   ●    ", "    ●   ", "     ●  ", "      ● ", "       ●", "      ● ", "     ●  ", "    ●   ", "   ●    ", "  ●     ", " ●      " }, // Bouncing ball
-        new[] { "▰▱▱▱▱▱▱▱▱▱", "▱▰▱▱▱▱▱▱▱▱", "▱▱▰▱▱▱▱▱▱▱", "▱▱▱▰▱▱▱▱▱▱", "▱▱▱▱▰▱▱▱▱▱", "▱▱▱▱▱▰▱▱▱▱", "▱▱▱▱▱▱▰▱▱▱", "▱▱▱▱▱▱▱▰▱▱", "▱▱▱▱▱▱▱▱▰▱", "▱▱▱▱▱▱▱▱▱▰", "▱▱▱▱▱▱▱▱▰▱", "▱▱▱▱▱▱▱▰▱▱", "▱▱▱▱▱▱▰▱▱▱", "▱▱▱▱▱▰▱▱▱▱", "▱▱▱▱▰▱▱▱▱▱", "▱▱▱▰▱▱▱▱▱▱", "▱▱▰▱▱▱▱▱▱▱", "▱▰▱▱▱▱▱▱▱▱" }, // Knight Rider
-        new[] { "▁▂▃▄▅▆▇█", "▂▃▄▅▆▇█▇", "▃▄▅▆▇█▇▆", "▄▅▆▇█▇▆▅", "▅▆▇█▇▆▅▄", "▆▇█▇▆▅▄▃", "▇█▇▆▅▄▃▂", "█▇▆▅▄▃▂▁", "▇▆▅▄▃▂▁▂", "▆▅▄▃▂▁▂▃", "▅▄▃▂▁▂▃▄", "▄▃▂▁▂▃▄▅", "▃▂▁▂▃▄▅▆", "▂▁▂▃▄▅▆▇" }, // Scrolling wave
-        new[] { "▶▷▷▷▷▷", "▷▶▷▷▷▷", "▷▷▶▷▷▷", "▷▷▷▶▷▷", "▷▷▷▷▶▷", "▷▷▷▷▷▶" }, // Arrow march
-        new[] { "╲   ╱", " ╲ ╱ ", "  ╳  ", " ╱ ╲ ", "╱   ╲", " ╱ ╲ ", "  ╳  ", " ╲ ╱ " }, // Weaving helix
-        new[] { "━━━━━━━━━✦", "━━━━━━━━✦ ", "━━━━━━━✦  ", "━━━━━━✦   ", "━━━━━✦    ", "━━━━✦     ", "━━━✦      ", "━━✦       ", "━✦        ", "✦         ", "          ", "    ✸     ", "          " }, // Burning fuse
-        new[] { "⊙         ", "·⊙        ", "··⊙       ", " ··⊙      ", "  ··⊙     ", "   ··⊙    ", "    ··⊙   ", "     ··⊙  ", "      ··⊙ ", "       ··⊙" }, // Comet
-        new[] { "      ", "▰     ", "▰▰    ", "▰▰▰   ", "▰▰▰▰  ", "▰▰▰▰▰ ", "▰▰▰▰▰▰", "▱▰▰▰▰▰", "▱▱▰▰▰▰", "▱▱▱▰▰▰", "▱▱▱▱▰▰", "▱▱▱▱▱▰", "▱▱▱▱▱▱" }, // Fill and drain
-        new[] { "●           ", " ●          ", "  ●         ", "   ●        ", "    ●       ", "     ●      ", "      ●     ", "       ●    ", "        ●   ", "         ●  ", "          ● ", "           ●", "          ● ", "         ●  ", "        ●   ", "       ●    ", "      ●     ", "     ●      ", "    ●       ", "   ●        ", "  ●         ", " ●          " } // Long ping-pong
-    };
+		// --- Lengthy multi-cell animations ---
+		new[] { "●       ", " ●      ", "  ●     ", "   ●    ", "    ●   ", "     ●  ", "      ● ", "       ●", "      ● ", "     ●  ", "    ●   ", "   ●    ", "  ●     ", " ●      " }, // Bouncing ball
+		new[] { "▰▱▱▱▱▱▱▱▱▱", "▱▰▱▱▱▱▱▱▱▱", "▱▱▰▱▱▱▱▱▱▱", "▱▱▱▰▱▱▱▱▱▱", "▱▱▱▱▰▱▱▱▱▱", "▱▱▱▱▱▰▱▱▱▱", "▱▱▱▱▱▱▰▱▱▱", "▱▱▱▱▱▱▱▰▱▱", "▱▱▱▱▱▱▱▱▰▱", "▱▱▱▱▱▱▱▱▱▰", "▱▱▱▱▱▱▱▱▰▱", "▱▱▱▱▱▱▱▰▱▱", "▱▱▱▱▱▱▰▱▱▱", "▱▱▱▱▱▰▱▱▱▱", "▱▱▱▱▰▱▱▱▱▱", "▱▱▱▰▱▱▱▱▱▱", "▱▱▰▱▱▱▱▱▱▱", "▱▰▱▱▱▱▱▱▱▱" }, // Knight Rider
+		new[] { "▁▂▃▄▅▆▇█", "▂▃▄▅▆▇█▇", "▃▄▅▆▇█▇▆", "▄▅▆▇█▇▆▅", "▅▆▇█▇▆▅▄", "▆▇█▇▆▅▄▃", "▇█▇▆▅▄▃▂", "█▇▆▅▄▃▂▁", "▇▆▅▄▃▂▁▂", "▆▅▄▃▂▁▂▃", "▅▄▃▂▁▂▃▄", "▄▃▂▁▂▃▄▅", "▃▂▁▂▃▄▅▆", "▂▁▂▃▄▅▆▇" }, // Scrolling wave
+		new[] { "▶▷▷▷▷▷", "▷▶▷▷▷▷", "▷▷▶▷▷▷", "▷▷▷▶▷▷", "▷▷▷▷▶▷", "▷▷▷▷▷▶" },             // Arrow march
+		new[] { "╲   ╱", " ╲ ╱ ", "  ╳  ", " ╱ ╲ ", "╱   ╲", " ╱ ╲ ", "  ╳  ", " ╲ ╱ " }, // Weaving helix
+		new[] { "━━━━━━━━━✦", "━━━━━━━━✦ ", "━━━━━━━✦  ", "━━━━━━✦   ", "━━━━━✦    ", "━━━━✦     ", "━━━✦      ", "━━✦       ", "━✦        ", "✦         ", "          ", "    ✸     ", "          " }, // Burning fuse
+		new[] { "⊙         ", "·⊙        ", "··⊙       ", " ··⊙      ", "  ··⊙     ", "   ··⊙    ", "    ··⊙   ", "     ··⊙  ", "      ··⊙ ", "       ··⊙" }, // Comet
+		new[] { "      ", "▰     ", "▰▰    ", "▰▰▰   ", "▰▰▰▰  ", "▰▰▰▰▰ ", "▰▰▰▰▰▰", "▱▰▰▰▰▰", "▱▱▰▰▰▰", "▱▱▱▰▰▰", "▱▱▱▱▰▰", "▱▱▱▱▱▰", "▱▱▱▱▱▱" },           // Fill and drain
+		new[] { "●           ", " ●          ", "  ●         ", "   ●        ", "    ●       ", "     ●      ", "      ●     ", "       ●    ", "        ●   ", "         ●  ", "          ● ", "           ●", "          ● ", "         ●  ", "        ●   ", "       ●    ", "      ●     ", "     ●      ", "    ●       ", "   ●        ", "  ●         ", " ●          " } // Long ping-pong
+	};
 
-	internal static int AnimationCount => BusyAnimations.Length;
+	internal static int AnimationCount
+	{
+		get
+		{
+			return BusyAnimations.Length;
+		}
+	}
 
 	// Builds the 1-row separator Screen. Idle: plain horizontal rule. Busy: animated label on the left.
 	// The right end always carries the "{Role} F10(N/T)" status (role in yellow), independent of busy state.
@@ -93,23 +99,25 @@ internal static class SeparatorLayer
 		DrawRightStatus(sep, w, role, sessionActive, sessionTotal);
 
 		if (!agentBusy)
+		{
 			return sep;
+		}
 
-		long elapsed = Environment.TickCount64 - busyStartTick;
-		string[] anim = BusyAnimations[currentAnimationIndex % BusyAnimations.Length];
-		int frameIdx = (int)(elapsed / 125) % anim.Length;
-		string frames = anim[frameIdx];
-		string word   = BusyWords[busyWordIndex % BusyWords.Length];
+		long     elapsed  = Environment.TickCount64 - busyStartTick;
+		string[] anim     = BusyAnimations[currentAnimationIndex % BusyAnimations.Length];
+		int      frameIdx = (int)(elapsed / 125) % anim.Length;
+		string   frames   = anim[frameIdx];
+		string   word     = BusyWords[busyWordIndex % BusyWords.Length];
 
-		TimeSpan ts = TimeSpan.FromMilliseconds(elapsed);
-		string timeLabel = ts.TotalHours >= 1
+		TimeSpan ts        = TimeSpan.FromMilliseconds(elapsed);
+		string   timeLabel = ts.TotalHours >= 1
 			? $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}"
 			: ts.TotalMinutes >= 1
 				? $"{ts.Minutes}:{ts.Seconds:D2}"
 				: $"{ts.TotalSeconds:F1}s";
 
-		string label = $" {frames} {word} {timeLabel} ";
-		Rgb busyFg = new Rgb(126, 192, 196);
+		string label  = $" {frames} {word} {timeLabel} ";
+		Rgb    busyFg = new Rgb(126, 192, 196);
 		AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, DisplayScreen.Palette.Background);
 
 		return sep;
@@ -120,21 +128,27 @@ internal static class SeparatorLayer
 	private static void DrawRightStatus(Screen sep, int w, string role, int sessionActive, int sessionTotal)
 	{
 		if (sessionTotal <= 0)
+		{
 			return;
+		}
 
-		string hint = $"F10({sessionActive}/{sessionTotal})";
-		bool hasRole = !string.IsNullOrEmpty(role);
+		string hint    = $"F10({sessionActive}/{sessionTotal})";
+		bool   hasRole = !string.IsNullOrEmpty(role);
 		string roleSeg = hasRole ? role + " " : "";
-		string text = $" {roleSeg}{hint} ";
+		string text    = $" {roleSeg}{hint} ";
 
 		int startCol = w - text.Length;
 		if (startCol < 0)
+		{
 			return;
+		}
 
 		// Lay down the full text (including the clearing spaces and the grey hint) in grey first,
 		// then overwrite just the role characters in yellow.
 		AnsiToScreen.WriteLine(sep, startCol, 0, text, DisplayScreen.Palette.MedGrey, DisplayScreen.Palette.Background);
 		if (hasRole)
+		{
 			AnsiToScreen.WriteLine(sep, startCol + 1, 0, role, DisplayScreen.Palette.Yellow, DisplayScreen.Palette.Background);
+		}
 	}
 }

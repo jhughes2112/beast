@@ -59,7 +59,13 @@ public class LaunchDocker : ILauncher
 		_dockerClient = DockerEndpoint.CreateClient();
 	}
 
-	public int HostPort => _hostPort;
+	public int HostPort
+	{
+		get
+		{
+			return _hostPort;
+		}
+	}
 
 	// Every Beast agent container on this machine: those labelled with a session, and older ones (the
 	// previous folder label, or an unlabelled beast_* name). Best effort: Docker unreachable reads as none.
@@ -87,8 +93,10 @@ public class LaunchDocker : ILauncher
 				bool    labelled  = container.Labels != null && container.Labels.TryGetValue(SessionLabel, out sessionId);
 				bool    older     = container.Labels != null && container.Labels.ContainsKey(OldFolderLabel);
 				if (labelled || older || name.StartsWith("beast_", StringComparison.Ordinal))
+				{
 					agents.Add(new AgentContainer(container.ID, name, labelled ? sessionId ?? string.Empty : string.Empty,
 						string.Equals(container.State, "running", StringComparison.OrdinalIgnoreCase), current.Length > 0 && container.ImageID == current));
+				}
 			}
 		}
 		catch (Exception)
@@ -151,7 +159,10 @@ public class LaunchDocker : ILauncher
 		else
 		{
 			if (_existing != null)
+			{
 				await _dockerClient.Containers.RemoveContainerAsync(_existing.Id, new ContainerRemoveParameters { Force = true }, cancellationToken);
+			}
+
 			port = await CreateAsync(name, cancellationToken);
 		}
 		return port;
@@ -172,7 +183,9 @@ public class LaunchDocker : ILauncher
 			IPHostEntry entry = await Dns.GetHostEntryAsync(hostname, cancellationToken);
 			AddName(names, entry.HostName);
 			foreach (string alias in entry.Aliases)
+			{
 				AddName(names, alias);
+			}
 		}
 		catch (SocketException)
 		{
@@ -186,7 +199,9 @@ public class LaunchDocker : ILauncher
 				try
 				{
 					if (nic.OperationalStatus == OperationalStatus.Up)
+					{
 						AddName(names, $"{hostname}.{nic.GetIPProperties().DnsSuffix}");
+					}
 				}
 				catch (PlatformNotSupportedException)
 				{
@@ -196,7 +211,10 @@ public class LaunchDocker : ILauncher
 
 		List<string> hosts = new List<string> { "host.docker.internal:host-gateway" };
 		foreach (string name in names)
+		{
 			hosts.Add($"{name}:host-gateway");
+		}
+
 		return hosts;
 	}
 
@@ -206,7 +224,9 @@ public class LaunchDocker : ILauncher
 	{
 		string clean = name.Trim().TrimEnd('.').ToLowerInvariant();
 		if (clean.Length > 0 && clean != "localhost" && !names.Contains(clean))
+		{
 			names.Add(clean);
+		}
 	}
 
 	private async Task<int> ResumeAsync(AgentContainer existing, CancellationToken cancellationToken)
@@ -230,11 +250,16 @@ public class LaunchDocker : ILauncher
 			foreach (PortBinding binding in bindings)
 			{
 				if (port == 0)
+				{
 					int.TryParse(binding.HostPort, out port);
+				}
 			}
 		}
 		if (port == 0)
+		{
 			throw new InvalidOperationException("The session's agent container has no published port; delete its agent from the session menu and start again.");
+		}
+
 		return port;
 	}
 
@@ -412,7 +437,9 @@ public class LaunchDocker : ILauncher
 				string output = await proc.StandardOutput.ReadToEndAsync(ct);
 				await proc.WaitForExitAsync(ct);
 				if (proc.ExitCode == 0)
+				{
 					value = output.Trim();
+				}
 			}
 		}
 		catch (Win32Exception)
@@ -427,7 +454,9 @@ public class LaunchDocker : ILauncher
 	public async Task<bool> IsAliveAsync()
 	{
 		if (_containerId == null)
+		{
 			return false;
+		}
 
 		try
 		{
@@ -445,7 +474,9 @@ public class LaunchDocker : ILauncher
 	public async Task<string> GetLogsAsync(CancellationToken cancellationToken)
 	{
 		if (_containerId == null)
+		{
 			return string.Empty;
+		}
 
 		try
 		{

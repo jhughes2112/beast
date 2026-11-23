@@ -72,13 +72,21 @@ internal class ChoicePopup
 		foreach (ChoicePopup choice in choices)
 		{
 			if (choice.SessionId.Length > 0 && !waiting.Contains(choice.SessionId))
+			{
 				waiting.Add(choice.SessionId);
+			}
 		}
 		return waiting;
 	}
 
 	// Whether keys are still being ignored, so the display knows to redraw once they are not.
-	public bool Arming => Environment.TickCount64 < _armedAt;
+	public bool Arming
+	{
+		get
+		{
+			return Environment.TickCount64 < _armedAt;
+		}
+	}
 
 	// Handles one key. Returns the chosen answer's index, or -1 while the question is still open.
 	public int HandleKey(ConsoleKeyInfo key)
@@ -88,15 +96,25 @@ internal class ChoicePopup
 		{
 			int hotkey = _hotkeys.IndexOf(char.ToLowerInvariant(key.KeyChar));
 			if (key.Key == ConsoleKey.LeftArrow)
+			{
 				_selected = Math.Max(0, _selected - 1);
+			}
 			else if (key.Key == ConsoleKey.RightArrow || key.Key == ConsoleKey.Tab)
+			{
 				_selected = Math.Min(_labels.Count - 1, _selected + 1);
+			}
 			else if (key.Key == ConsoleKey.Enter)
+			{
 				chosen = _selected;
+			}
 			else if (key.Key == ConsoleKey.Escape)
+			{
 				chosen = _escapeIndex;
+			}
 			else if (hotkey >= 0 && char.IsLetterOrDigit(key.KeyChar))
+			{
 				chosen = hotkey;
+			}
 		}
 		return chosen;
 	}
@@ -129,20 +147,31 @@ internal class ChoicePopup
 			foreach (string piece in pieces)
 			{
 				if (!line.Verbatim)
+				{
 					rows.Add((piece, fg));
+				}
 				else if (verbatimRows < maxVerbatim - 1)
+				{
 					rows.Add((piece, fg));
+				}
 				else if (verbatimRows == maxVerbatim - 1)
+				{
 					rows.Add(("…", fg));
+				}
+
 				if (line.Verbatim)
+				{
 					verbatimRows++;
+				}
 			}
 		}
 		rows.Add((string.Empty, textFg));
 		int choiceRow = rows.Count;
 		rows.Add((string.Empty, textFg));
 		if (waiting > 0)
+		{
 			rows.Add(($"{waiting} more waiting", dimFg));
+		}
 
 		int    bh = rows.Count + 2;
 		Screen s  = new Screen(bw, bh, new Cell(' ', textFg, bg, CellStyle.None));
@@ -152,7 +181,9 @@ internal class ChoicePopup
 		for (int i = 0; i < rows.Count; i++)
 		{
 			for (int k = 0; k < rows[i].Text.Length && 2 + k < bw - 1; k++)
+			{
 				s.Set(2 + k, i + 1, new Cell(rows[i].Text[k], rows[i].Fg, bg, CellStyle.None));
+			}
 		}
 
 		// The answers on one row, the selected one highlighted, its hotkey underlined; dim while arming.
@@ -164,7 +195,10 @@ internal class ChoicePopup
 			bool   selected = c == _selected;
 			Rgb    fg       = !armed ? dimFg : selected ? selFg : textFg;
 			for (int k = 0; k < label.Length && x0 + k < bw - 1; k++)
+			{
 				s.Set(x0 + k, choiceRow + 1, new Cell(label[k], fg, selected ? selBg : bg, k == _hotkeyAt[c] + 1 ? CellStyle.Underline : CellStyle.None));
+			}
+
 			x0 += label.Length + 2;
 		}
 		return s;
@@ -180,7 +214,9 @@ internal class ChoicePopup
 			for (int i = 0; i < visible.Length; i++)
 			{
 				if (char.IsControl(visible[i]))
+				{
 					visible[i] = '¿';
+				}
 			}
 			string rest = new string(visible);
 			while (rest.Length > width)

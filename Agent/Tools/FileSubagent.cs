@@ -64,10 +64,15 @@ public static class FileSubagent
 		foreach (char c in text)
 		{
 			if (c == '\n')
+			{
 				count++;
+			}
 		}
 		if (text.EndsWith('\n'))
+		{
 			count--;
+		}
+
 		return count;
 	}
 }

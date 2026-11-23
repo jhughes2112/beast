@@ -12,10 +12,10 @@ using System.Threading.Tasks;
 // counted here — no response reports them in a form we could price).
 public class WebSearchAnswer
 {
-	public bool Ok { get; }
-	public string Text { get; }
-	public string Error { get; }
-	public decimal Cost { get; }
+	public bool    Ok    { get; }
+	public string  Text  { get; }
+	public string  Error { get; }
+	public decimal Cost  { get; }
 
 	// HTTP status of a failed call, 0 when the failure was not an HTTP response. Carried so the
 	// caller can recognise a 402 (credits exhausted) and tell the human, which is the one search
@@ -24,10 +24,10 @@ public class WebSearchAnswer
 
 	private WebSearchAnswer(bool ok, string text, string error, decimal cost, int httpStatus)
 	{
-		Ok = ok;
-		Text = text;
-		Error = error;
-		Cost = cost;
+		Ok         = ok;
+		Text       = text;
+		Error      = error;
+		Cost       = cost;
 		HttpStatus = httpStatus;
 	}
 
@@ -82,11 +82,19 @@ public abstract class WebSearchProvider
 	protected static void PrependSystem(JsonArray messages, string systemPrompt)
 	{
 		if (!string.IsNullOrWhiteSpace(systemPrompt))
+		{
 			messages.Insert(0, new JsonObject { ["role"] = "system", ["content"] = systemPrompt });
+		}
 	}
 
 	// Per-call fee derived from the published per-1000 price.
-	protected decimal SearchFee => PricePerThousand / 1000m;
+	protected decimal SearchFee
+	{
+		get
+		{
+			return PricePerThousand / 1000m;
+		}
+	}
 
 	// The single prompt every provider sends. The query drives retrieval and the goal steers what
 	// comes back, matching how the caller is told to fill the two arguments.
@@ -99,34 +107,40 @@ public abstract class WebSearchProvider
 	// statuses, and unparseable bodies all come back as an error string, because one provider
 	// failing must let the caller fall through to the next rather than kill the tool call.
 	protected static async Task<(JsonNode? Root, string Error, int Status)> PostJsonAsync(
-		string url,
-		JsonObject body,
+		string                     url,
+		JsonObject                 body,
 		Dictionary<string, string> headers,
-		CancellationToken ct)
+		CancellationToken          ct)
 	{
-		JsonNode? root = null;
-		string error = string.Empty;
-		int status = 0;
+		JsonNode? root   = null;
+		string    error  = string.Empty;
+		int       status = 0;
 		try
 		{
 			using HttpClient http = new HttpClient();
-			http.Timeout = TimeSpan.FromSeconds(180);
+			http.Timeout          = TimeSpan.FromSeconds(180);
 
 			using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url);
-			request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+			request.Content                  = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
 			foreach ((string name, string value) in headers)
 			{
 				if (!string.IsNullOrEmpty(value))
+				{
 					request.Headers.TryAddWithoutValidation(name, value);
+				}
 			}
 
 			using HttpResponseMessage response = await http.SendAsync(request, ct);
-			string text = await response.Content.ReadAsStringAsync(ct);
+			string text                        = await response.Content.ReadAsStringAsync(ct);
 			status = (int)response.StatusCode;
 			if (!response.IsSuccessStatusCode)
+			{
 				error = $"HTTP {status}: {Clip(text, 400)}";
+			}
 			else
+			{
 				root = JsonNode.Parse(text);
+			}
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)
 		{
@@ -144,7 +158,10 @@ public abstract class WebSearchProvider
 	protected static JsonNode? Child(JsonNode? node, string key)
 	{
 		if (node is JsonObject obj && obj.TryGetPropertyValue(key, out JsonNode? value))
+		{
 			return value;
+		}
+
 		return null;
 	}
 
@@ -156,7 +173,10 @@ public abstract class WebSearchProvider
 	protected static string Text(JsonNode? node)
 	{
 		if (node == null)
+		{
 			return string.Empty;
+		}
+
 		try
 		{
 			return node.GetValue<string>() ?? string.Empty;
@@ -182,10 +202,12 @@ public abstract class WebSearchProvider
 
 		JsonArray? choices = Array(Child(root, "choices"));
 		if (choices == null || choices.Count == 0)
+		{
 			return string.Empty;
+		}
 
 		JsonNode? message = Child(choices[0], "message");
-		string answer = Text(Child(message, "content")).Trim();
+		string    answer  = Text(Child(message, "content")).Trim();
 
 		JsonArray? annotations = Array(Child(message, "annotations"));
 		if (annotations != null)
@@ -203,7 +225,9 @@ public abstract class WebSearchProvider
 	protected static void AddUrl(List<string> urls, string url)
 	{
 		if (url.Length > 0)
+		{
 			urls.Add(url);
+		}
 	}
 
 	// Appends a deduplicated source list so every provider's answer carries its citations, even
@@ -211,7 +235,9 @@ public abstract class WebSearchProvider
 	protected static string AppendSources(string answer, List<string> urls)
 	{
 		if (urls.Count == 0)
+		{
 			return answer;
+		}
 
 		StringBuilder sb = new StringBuilder(answer);
 		sb.Append("\n\nSources:\n");
@@ -219,7 +245,9 @@ public abstract class WebSearchProvider
 		foreach (string url in urls)
 		{
 			if (url.Length > 0 && seen.Add(url))
+			{
 				sb.Append("- ").Append(url).Append('\n');
+			}
 		}
 		return sb.ToString();
 	}
@@ -227,7 +255,10 @@ public abstract class WebSearchProvider
 	private static string Clip(string text, int max)
 	{
 		if (text.Length <= max)
+		{
 			return text;
+		}
+
 		return text.Substring(0, max) + "…";
 	}
 }
@@ -247,14 +278,22 @@ public static class WebSearchRegistry
 		new WebSearchGemini()
 	};
 
-	public static WebSearchProvider[] All => kAll;
+	public static WebSearchProvider[] All
+	{
+		get
+		{
+			return kAll;
+		}
+	}
 
 	public static WebSearchProvider? Find(string id)
 	{
 		foreach (WebSearchProvider provider in kAll)
 		{
 			if (string.Equals(provider.Id, id, StringComparison.OrdinalIgnoreCase))
+			{
 				return provider;
+			}
 		}
 		return null;
 	}
@@ -267,19 +306,25 @@ public static class WebSearchRegistry
 		foreach (AutoProviderConfig auto in settings.Auto)
 		{
 			if (HostMatches(auto.BaseUrl, provider.Domain) && !string.IsNullOrEmpty(auto.ApiKey))
+			{
 				return auto.ApiKey;
+			}
 		}
 		foreach (ProviderConfig manual in settings.Providers)
 		{
 			if (HostMatches(manual.BaseUrl, provider.Domain) && !string.IsNullOrEmpty(manual.ApiKey))
+			{
 				return manual.ApiKey;
+			}
 		}
 
 		// The pre-providers settings block still holds a usable OpenRouter key for upgraders.
 		OpenrouterSearchConfig? legacy = settings.WebSearch?.Openrouter;
 		if (legacy != null && string.Equals(provider.Id, "openrouter", StringComparison.OrdinalIgnoreCase)
 			&& !string.IsNullOrEmpty(legacy.ApiKey) && !legacy.ApiKey.StartsWith("YOUR_", StringComparison.Ordinal))
+		{
 			return legacy.ApiKey;
+		}
 
 		return string.Empty;
 	}
@@ -293,15 +338,21 @@ public static class WebSearchRegistry
 		foreach (WebSearchProviderConfig entry in EffectiveEntries(settings))
 		{
 			if (!entry.Enabled)
+			{
 				continue;
+			}
 
 			WebSearchProvider? provider = Find(entry.Provider);
 			if (provider == null)
+			{
 				continue;
+			}
 
 			string apiKey = ResolveApiKey(settings, provider);
 			if (apiKey.Length == 0)
+			{
 				continue;
+			}
 
 			string model = string.IsNullOrEmpty(entry.Model) ? provider.DefaultModel : entry.Model;
 			usable.Add((provider, apiKey, model));
@@ -324,13 +375,17 @@ public static class WebSearchRegistry
 			{
 				entries.Add(entry);
 				if (string.Equals(entry.Provider, "openrouter", StringComparison.OrdinalIgnoreCase))
+				{
 					hasOpenRouter = true;
+				}
 			}
 		}
 
 		OpenrouterSearchConfig? legacy = settings.WebSearch?.Openrouter;
 		if (!hasOpenRouter && legacy != null && legacy.Enabled)
+		{
 			entries.Add(new WebSearchProviderConfig { Provider = "openrouter", Enabled = true, Model = legacy.Model });
+		}
 
 		return entries;
 	}
@@ -338,9 +393,15 @@ public static class WebSearchRegistry
 	private static bool HostMatches(string baseUrl, string domain)
 	{
 		if (string.IsNullOrEmpty(baseUrl))
+		{
 			return false;
+		}
+
 		if (!Uri.TryCreate(baseUrl.TrimEnd('/'), UriKind.Absolute, out Uri? uri))
+		{
 			return baseUrl.Contains(domain, StringComparison.OrdinalIgnoreCase);
+		}
+
 		return uri.Host.Equals(domain, StringComparison.OrdinalIgnoreCase)
 			|| uri.Host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase);
 	}

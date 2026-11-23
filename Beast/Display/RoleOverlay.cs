@@ -36,7 +36,13 @@ internal class RoleOverlay
 		_sendCommand = sendCommand;
 	}
 
-	public bool IsOpen => _open;
+	public bool IsOpen
+	{
+		get
+		{
+			return _open;
+		}
+	}
 
 	public void Open()
 	{
@@ -61,13 +67,17 @@ internal class RoleOverlay
 	public bool OnConfigFrame(string json)
 	{
 		if (!_open)
+		{
 			return false;
+		}
 
 		try
 		{
 			JsonNode? root = JsonNode.Parse(json);
 			if ((root?["kind"]?.GetValue<string>() ?? string.Empty) != "roles")
+			{
 				return false;
+			}
 
 			_roles.Clear();
 			string active = root?["active"]?.GetValue<string>() ?? string.Empty;
@@ -78,7 +88,9 @@ internal class RoleOverlay
 				foreach (JsonNode? entry in list)
 				{
 					if (entry == null)
+					{
 						continue;
+					}
 
 					RoleEntry role = new RoleEntry
 					{
@@ -92,7 +104,10 @@ internal class RoleOverlay
 						foreach (JsonNode? model in models)
 						{
 							if (model == null)
+							{
 								continue;
+							}
+
 							role.Models.Add((
 								model["id"]?.GetValue<string>() ?? string.Empty,
 								model["label"]?.GetValue<string>() ?? string.Empty,
@@ -107,7 +122,9 @@ internal class RoleOverlay
 			for (int i = 0; i < _roles.Count; i++)
 			{
 				if (string.Equals(_roles[i].Name, active, StringComparison.OrdinalIgnoreCase))
+				{
 					_roleIndex = i;
+				}
 			}
 			_modelIndex = 0;
 			_scroll     = 0;
@@ -125,7 +142,10 @@ internal class RoleOverlay
 		if (_roles.Count == 0)
 		{
 			if (key.Key == ConsoleKey.Escape)
+			{
 				_open = false;
+			}
+
 			return true;
 		}
 
@@ -148,12 +168,16 @@ internal class RoleOverlay
 		else if (key.Key == ConsoleKey.UpArrow)
 		{
 			if (_modelIndex > 0)
+			{
 				_modelIndex--;
+			}
 		}
 		else if (key.Key == ConsoleKey.DownArrow)
 		{
 			if (_modelIndex < role.Models.Count - 1)
+			{
 				_modelIndex++;
+			}
 		}
 		else if (key.KeyChar == '+' || key.KeyChar == '=' || key.Key == ConsoleKey.Add || key.Key == ConsoleKey.OemPlus)
 		{
@@ -174,7 +198,9 @@ internal class RoleOverlay
 		RoleEntry role   = _roles[_roleIndex];
 		int       target = _modelIndex + step;
 		if (_modelIndex < 0 || _modelIndex >= role.Models.Count || target < 0 || target >= role.Models.Count)
+		{
 			return;
+		}
 
 		(string Id, string Label, bool Available) moved = role.Models[_modelIndex];
 		role.Models[_modelIndex]                        = role.Models[target];
@@ -186,15 +212,21 @@ internal class RoleOverlay
 	private void SaveCurrent()
 	{
 		if (_roles.Count == 0)
+		{
 			return;
+		}
 
 		RoleEntry role = _roles[_roleIndex];
 		if (!role.Dirty)
+		{
 			return;
+		}
 
 		JsonArray models = new JsonArray();
 		foreach ((string id, string label, bool available) in role.Models)
+		{
 			models.Add((JsonNode)id!);
+		}
 
 		JsonObject payload = new JsonObject { ["role"] = role.Name, ["models"] = models };
 		_sendCommand("/config-role-apply " + payload.ToJsonString());
@@ -246,9 +278,14 @@ internal class RoleOverlay
 
 		int visRows = bh - 6;
 		if (_modelIndex < _scroll)
+		{
 			_scroll = _modelIndex;
+		}
+
 		if (_modelIndex >= _scroll + visRows)
+		{
 			_scroll = _modelIndex - visRows + 1;
+		}
 
 		// Size the id column to the widest id actually present rather than to the panel: padding
 		// every row out to a fixed share of the width left a canyon between the ids and their
@@ -258,19 +295,28 @@ internal class RoleOverlay
 		foreach ((string id, string label, bool available) in role.Models)
 		{
 			if (id.Length > idWidth)
+			{
 				idWidth = id.Length;
+			}
 		}
 		int idCeiling = Math.Max(12, innerW - 36);
 		if (idWidth > idCeiling)
+		{
 			idWidth = idCeiling;
+		}
+
 		if (idWidth < 12)
+		{
 			idWidth = 12;
+		}
 
 		for (int r = 0; r < visRows; r++)
 		{
 			int idx = _scroll + r;
 			if (idx >= role.Models.Count)
+			{
 				break;
+			}
 
 			(string id, string label, bool available) = role.Models[idx];
 			bool sel   = idx == _modelIndex;
@@ -285,7 +331,9 @@ internal class RoleOverlay
 		}
 
 		if (_status.Length > 0)
+		{
 			AnsiToScreen.WriteLine(s, 2, bh - 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
+		}
 
 		return s;
 	}

@@ -37,7 +37,9 @@ public static class ClaudeCodeLiveTests
 		foreach (AutoProviderConfig auto in new SettingsService().Settings.Auto)
 		{
 			if (ClaudeCode.IsEndpoint(auto.BaseUrl))
+			{
 				token = auto.ApiKey;
+			}
 		}
 		if (token.Length == 0)
 		{
@@ -152,7 +154,9 @@ public static class ClaudeCodeLiveTests
 			rig.Session.CommitAssistantTurn(result.Payload!);
 			bool hasCalls = await ToolDispatch.DispatchAsync(result.Payload!, rig.Tools, rig.Session, rig.Transport, ct);
 			if (hasCalls)
+			{
 				rig.Session.CommitToolResults(result.Payload!);
+			}
 		}
 		return result;
 	}

@@ -96,7 +96,9 @@ public static class Summarizer
 				// with the conversation, eats the chunk budget stage by stage, and compaction dies
 				// on exactly the long conversations it exists to rescue.
 				if (running.Length > RunningSummaryAllowance(service))
+				{
 					running = await CompressRunningAsync(session, service, running, transport, appToken);
+				}
 
 				int  attemptBudget = StageBudget(service, prompt.Length, budgetCeiling);
 				bool stageDone     = false;
@@ -128,7 +130,9 @@ public static class Summarizer
 					string stagePrompt = BuildStagePrompt(running, chunk, prompt, isFinal, isFinal && stage == 0);
 
 					if (!isFinal || stage > 0)
+					{
 						transport.Status(session.Id, $"[Compaction] Summarizing segment {stage + 1}...");
+					}
 
 					// Each attempt gets a fresh throwaway session so a failed or oversized attempt
 					// leaves no state behind; its provider-reported cost still rolls into the real
@@ -146,7 +150,9 @@ public static class Summarizer
 						stage++;
 						stageDone = true;
 						if (isFinal)
+						{
 							summary = running;
+						}
 					}
 					else if (ProtocolHelpers.IsAccountError(result.ErrorMessage ?? string.Empty))
 					{
@@ -189,7 +195,10 @@ public static class Summarizer
 						// rather than looping. A Failed outcome already marked the model down; restore
 						// it, since the model is not what was broken.
 						if (result.Outcome == ProtocolCallOutcome.Failed)
+						{
 							registry.ResetAvailability(service.Model.ConfigId);
+						}
+
 						attemptBudget /= 2;
 						budgetCeiling  = attemptBudget;
 						transport.Status(session.Id, $"[Compaction] Segment failed on {service.Model.Config.Name} ({result.ErrorMessage}); retrying with less source context ({attemptBudget} chars).");
@@ -198,7 +207,9 @@ public static class Summarizer
 			}
 
 			if (failed)
+			{
 				summary = null;
+			}
 		}
 		else
 		{
@@ -228,10 +239,14 @@ public static class Summarizer
 
 		string compressed = running;
 		if (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.AssistantText.Length > 0)
+		{
 			compressed = result.Payload.AssistantText;
+		}
 
 		if (compressed.Length > allowance)
+		{
 			compressed = compressed.Substring(0, allowance);
+		}
 
 		return compressed;
 	}
@@ -248,22 +263,34 @@ public static class Summarizer
 			if (msg is UserMessage um)
 			{
 				if (!string.IsNullOrWhiteSpace(um.Text))
+				{
 					blocks.Add($"[user]\n{um.Text}\n");
+				}
 			}
 			else if (msg is AssistantMessage am)
 			{
 				StringBuilder sb = new StringBuilder();
 				if (!string.IsNullOrWhiteSpace(am.Text))
+				{
 					sb.Append($"[assistant]\n{am.Text}\n");
+				}
+
 				foreach (SemanticToolCall tc in am.ToolCalls)
+				{
 					sb.Append($"[assistant tool call: {tc.Name}]\n{tc.ArgumentsJson}\n");
+				}
+
 				if (sb.Length > 0)
+				{
 					blocks.Add(sb.ToString());
+				}
 			}
 			else if (msg is ToolResultMessage tr)
 			{
 				if (!string.IsNullOrEmpty(tr.Content))
+				{
 					blocks.Add($"[tool result]\n{tr.Content}\n");
+				}
 			}
 		}
 		return blocks;
@@ -361,7 +388,9 @@ public static class Summarizer
 		// arithmetic above says is free.
 		long ceiling = (long)window * kChunkWindowPercent / 100 * kCharsPerToken;
 		if (budget > ceiling)
+		{
 			budget = ceiling;
+		}
 
 		return budget > int.MaxValue ? int.MaxValue : (int)budget;
 	}
@@ -381,12 +410,21 @@ public static class Summarizer
 	{
 		int output = service.Model.Config.ContextWindow / kSummaryOutputDivisor;
 		if (output < kMinSummaryOutputTokens)
+		{
 			output = kMinSummaryOutputTokens;
+		}
+
 		if (output > kMaxSummaryOutputTokens)
+		{
 			output = kMaxSummaryOutputTokens;
+		}
+
 		int modelMax = service.Model.Config.MaxOutputTokens;
 		if (modelMax > 0 && modelMax < output)
+		{
 			output = modelMax;
+		}
+
 		return output;
 	}
 

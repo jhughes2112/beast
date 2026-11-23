@@ -16,7 +16,13 @@ public class CanonicalConversation
 		_messages = messages;
 	}
 
-	public IReadOnlyList<CanonicalMessage> Messages => _messages;
+	public IReadOnlyList<CanonicalMessage> Messages
+	{
+		get
+		{
+			return _messages;
+		}
+	}
 
 	public void OnSystemMessage(string text)
 	{
@@ -57,7 +63,10 @@ public class CanonicalConversation
 	{
 		string content = result.StdOut;
 		if (!string.IsNullOrEmpty(result.StdErr))
+		{
 			content = content + "\nstderr: " + result.StdErr;
+		}
+
 		_messages.Add(new ToolResultMessage(result.Id, content, result.Media.Count > 0 ? result.Media : null, result.ExitCode));
 	}
 }

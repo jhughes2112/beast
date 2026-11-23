@@ -92,7 +92,10 @@ public class SessionHandler
 	public async Task RunAsync(LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, bool replayOnStart, CancellationToken ct)
 	{
 		if (replayOnStart)
+		{
 			_activeSession.ReplayToTransport();
+		}
+
 		_activeSession.SendStats();
 		_activeSession.AnnounceToClient();
 
@@ -112,7 +115,9 @@ public class SessionHandler
 				// list — rebuilding from the session's model would land on the one that failed last,
 				// whose fallback chain has nothing after it.
 				if (_activeSession.HasPending)
+				{
 					RetryExhaustedModels(roleService, registry);
+				}
 
 				// 1. Drain pending commands and queued text; refresh role, service, and completions.
 				await DrainInput(roleService, registry, transport, ct);
@@ -134,7 +139,9 @@ public class SessionHandler
 					// User-requested /compact: the successor picks up wherever the predecessor stood,
 					// so nothing is injected to restart it — it runs only if the history calls for it.
 					if (!await CompactAsync(role, false, registry, roleService, transport, orchestrator, ct))
+					{
 						_service = null;
+					}
 				}
 
 				// 3. Wait if there is nothing to do.
@@ -153,7 +160,9 @@ public class SessionHandler
 				// commit text with unresolved media — so the model was called with NOTHING new,
 				// answered its own previous reply, and the user saw an unprompted second response.
 				if (_activeSession.HasPending)
+				{
 					continue;
+				}
 
 				// 4. Run one turn cluster.
 				_activeSession.EnsureNamedAndAnnounce();
@@ -180,7 +189,10 @@ public class SessionHandler
 					_activeSession.SetDispatchScope(null);
 					_activeSession.SendIdle();
 					if (!_activeSession.Ephemeral)
+					{
 						SaveSession(_activeSession);
+					}
+
 					SaveRolledUpCost(orchestrator);
 				}
 
@@ -204,7 +216,9 @@ public class SessionHandler
 						: $"Model '{_service?.Model.Config.Name ?? _activeSession.Model}' rejected the request as too large, but this conversation fills almost none of its window — compaction cannot fix that. The model's contextWindow or maxOutputTokens in settings.json most likely does not match what the provider really allows. Correct it, then /reload or /model.");
 					_service = null;
 					if (_lastFailure == null)
+					{
 						_lastFailure = "the context window filled and compaction could not run";
+					}
 
 					// Park until a human actually answers the alert. Dropping the service was not
 					// enough on its own: the next iteration rebuilds one from the role, finds the
@@ -231,20 +245,27 @@ public class SessionHandler
 				// last assistant text). The obligation — and with it every budget — is cleared; from here
 				// on this is just a session the user can chat with.
 				if (_activeSession.OwesReply && BudgetBlown())
+				{
 					NotifyComplete(role.Name, orchestrator, true);
+				}
 			}
 		}
 		catch (OperationCanceledException)
 		{
 			if (!ct.IsCancellationRequested)
+			{
 				Console.Error.WriteLine($"[SessionHandler] Session {_activeSession.Id} exited on unexpected OCE.");
+			}
 		}
 		finally
 		{
 			_scope.Dispose();
 			RollUpCost(orchestrator);
 			if (!_activeSession.Ephemeral)
+			{
 				SaveSession(_activeSession);
+			}
+
 			SaveRolledUpCost(orchestrator);
 			_activeSession.SendIdle();
 			NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator, false);
@@ -254,7 +275,9 @@ public class SessionHandler
 			// orchestrator so a fresh handler processes that input rather than leaving it to sit.
 			_activeSession.DetachHandler();
 			if (!ct.IsCancellationRequested && !_activeSession.Deleted && _activeSession.HasPending)
+			{
 				orchestrator.EnsureHandler(_activeSession);
+			}
 		}
 	}
 
@@ -313,13 +336,17 @@ public class SessionHandler
 			ApplyPendingModelSwitch(role, registry);
 			LlmService? service = _service;
 			if (service == null)
+			{
 				break;
+			}
 
 			Tool[] offered = service.Seeded ? WithoutHostCommand(tools) : tools;
 
 			contextFull = await CheckContextFullAsync(service, offered, transport, _scope.Token);
 			if (contextFull)
+			{
 				break;
+			}
 
 			// No caller-imposed output cap: a session answers at the size its work warrants, and the
 			// model's own ceiling (or the window remainder) is the only bound.
@@ -369,7 +396,9 @@ public class SessionHandler
 				_activeSession.Data.WorkTurns = _workTurns;
 				_activeSession.CommitAssistantTurn(result.Payload!);
 				if (result.Payload!.Usage.PromptTokens > 0)
+				{
 					_lastInputTokens = result.Payload.Usage.PromptTokens;
+				}
 
 				// WORKING fills the vacancy: a model that just served a turn becomes the role's
 				// sticky preference only when none is set. A turn already in flight when the user
@@ -397,7 +426,9 @@ public class SessionHandler
 				}
 
 				if (hasToolCalls)
+				{
 					_activeSession.CommitToolResults(result.Payload!);
+				}
 
 				// Drain any queued commands (e.g. /model) between tool rounds so they take
 				// effect before the next LLM call rather than waiting for the turn to end.
@@ -426,7 +457,10 @@ public class SessionHandler
 	{
 		double used = 0.0;
 		if (_activeSession.MaxWorkTurns > 0)
+		{
 			used = (double)_workTurns / _activeSession.MaxWorkTurns;
+		}
+
 		return used;
 	}
 
@@ -495,7 +529,10 @@ public class SessionHandler
 				nudge = role.EndOfTurnPrompt;
 			}
 			if (nudge != null && !TailIsUserMessage())
+			{
 				_activeSession.AddUserMessage(nudge);
+			}
+
 			complete = true;
 		}
 		return complete;
@@ -527,9 +564,14 @@ public class SessionHandler
 		for (int i = messages.Count - 1; i >= 0; i--)
 		{
 			if (messages[i] is AssistantMessage)
+			{
 				break;
+			}
+
 			if (messages[i] is UserMessage um)
+			{
 				pendingBytes += System.Text.Encoding.UTF8.GetByteCount(um.Text);
+			}
 		}
 		int estimate = _activeSession.ContextLength + (pendingBytes / 3) + _activeSession.Budget.PendingReserve;
 
@@ -711,7 +753,9 @@ public class SessionHandler
 		}
 
 		if (seed == null)
+		{
 			transport.Status(_activeSession.Id, "[Compaction] Summarization could not complete at any retreat point.");
+		}
 
 		return seed;
 	}
@@ -742,7 +786,9 @@ public class SessionHandler
 			// the user compacts by hand mid-round, arrives here with calls still open.
 			(List<CanonicalMessage> settled, List<CanonicalMessage> pending) = MechanicalCompaction.SplitPending(_activeSession.Data.Messages);
 			if (pending.Count > 0)
+			{
 				transport.Status(_activeSession.Id, $"[Compaction] Holding {pending.Count} in-flight message(s) aside.");
+			}
 
 			string                  logPath = CompactionLog.PathFor(_activeSession.Id);
 			bool                    resends = _service != null && _service.ResendsThinking;
@@ -788,9 +834,14 @@ public class SessionHandler
 			{
 				string ledger = MechanicalCompaction.BuildLedger(_activeSession.Data.Messages);
 				if (File.Exists(logPath) || MechanicalCompaction.HasMemoryCalls(seed))
+				{
 					ledger = MechanicalCompaction.WithMemoryNote(ledger);
+				}
+
 				if (ledger.Length > 0)
+				{
 					seed.Insert(0, new UserMessage(ledger));
+				}
 
 				// The held-aside tail goes back on the end, after everything compaction produced, so
 				// the calls sit in the same order the model made them. Any still unanswered is closed
@@ -808,7 +859,9 @@ public class SessionHandler
 				// the seed already ends on user text. Checked last, once the verbatim tail and any
 				// held-aside round are back in place, since those are what the seed ends on.
 				if (resumeWork && MechanicalCompaction.NeedsResumePrompt(seed))
+				{
 					seed.Add(new UserMessage(Nudges.ResumeAfterCompaction()));
+				}
 			}
 
 			LlmService? service = seed == null ? null : registry.CreateService(role, _activeSession.Model, 0, false, registry.SeedOf(_activeSession));
@@ -832,7 +885,10 @@ public class SessionHandler
 				predecessor.SendIdle();
 				RollUpCost(orchestrator);
 				if (!predecessor.Ephemeral)
+				{
 					SaveSession(predecessor);
+				}
+
 				SaveRolledUpCost(orchestrator);
 
 				// A child successor gets the next ID under the same parent; a root successor gets the
@@ -842,7 +898,9 @@ public class SessionHandler
 				{
 					successorId = parent.AllocateChildId();
 					if (!parent.Ephemeral)
+					{
 						SessionService.Save(parent.Data);
+					}
 				}
 				else
 				{
@@ -865,7 +923,10 @@ public class SessionHandler
 
 				successor.UpdateModel(service.Model);
 				if (predecessor.WorkInProgress)
+				{
 					successor.BeginWork();
+				}
+
 				successor.SetDispatchScope(_scope);
 
 				// Announce the successor like any other new session, then ask the client to show it.
@@ -889,11 +950,19 @@ public class SessionHandler
 				}
 
 				if (parent == null)
+				{
 					transport.SessionActivate(successor.Id);
+				}
 				else
+				{
 					parent.AddChild(successor);
+				}
+
 				if (!successor.Ephemeral)
+				{
 					SaveSession(successor);
+				}
+
 				orchestrator.RegisterSession(successor);
 
 				// The caller waiting on the predecessor (if any) is now waiting on the successor,
@@ -925,9 +994,15 @@ public class SessionHandler
 	// True when the last measured input token count fills the current model's context window.
 	// Recomputed each drain from the stored measurement; clears automatically when the model or
 	// conversation changes so /model and /compact always resolve it without a sticky flag.
-	private bool IsContextBlocked => _lastInputTokens > 0
+	private bool IsContextBlocked
+	{
+		get
+		{
+			return _lastInputTokens > 0
 		&& _activeSession.ContextWindow > 0
 		&& _lastInputTokens >= ContextBudget.CompactionThreshold(_activeSession.ContextWindow, GetCompactionReserve(), _lastInputTokens);
+		}
+	}
 
 	// Drains all pending commands and queued text for any session type.
 	// When the context is full, plain text is dropped with a message;
@@ -981,7 +1056,9 @@ public class SessionHandler
 		{
 			int sep = entry.IndexOf('\x01');
 			if (sep >= 0)
+			{
 				stagedPaths.Add(entry.Substring(sep + 1));
+			}
 		}
 
 		StringBuilder         text        = new StringBuilder(MediaIntake.StripPathMarkers(line, stagedPaths));
@@ -998,13 +1075,23 @@ public class SessionHandler
 				stagedName, originalPath, _activeSession, registry, ct);
 
 			if (attachment != null)
+			{
 				attachments.Add(attachment);
+			}
+
 			if (note.Length > 0)
+			{
 				text.Append("\n\n").Append(note);
+			}
+
 			if (unsupportedDisplay.Length > 0)
+			{
 				unsupported.Add((unsupportedDisplay, kind, stagedName));
+			}
 			else if (attachment == null)
+			{
 				MediaIntake.DiscardStaged(stagedName);
+			}
 		}
 
 		_activeSession.Bundle.OnUserMessage(text.ToString(), attachments);
@@ -1042,7 +1129,10 @@ public class SessionHandler
 		foreach (LlmModel model in capable)
 		{
 			if (names.Length > 0)
+			{
 				names.Append('\n');
+			}
+
 			names.Append("  /model ").Append(model.ConfigId).Append($"   (in:${model.Config.Cost.Input:0.00}/Mtok)");
 		}
 
@@ -1086,7 +1176,9 @@ public class SessionHandler
 
 					// New input on a completed session: clear status so the session runs again.
 					if (_activeSession.Status != SessionStatus.Ongoing)
+					{
 						_activeSession.ResumeFromComplete();
+					}
 				}
 				continue;
 			}
@@ -1101,11 +1193,17 @@ public class SessionHandler
 				case "compact":
 					_wantsCompact = true;
 					if (_activeSession.Status != SessionStatus.Ongoing)
+					{
 						_activeSession.ResumeFromComplete();
+					}
+
 					break;
 				case "model":
 					if (args != null)
+					{
 						QueueModelSwitch(args, roleService, registry, transport);
+					}
+
 					break;
 				case "effort":
 					ApplyEffort(args, registry, transport);
@@ -1114,14 +1212,22 @@ public class SessionHandler
 					// Staged-file notice from the client: "stagedName\x01originalPath". Held until
 					// the message text arrives so the files land on the turn they belong to.
 					if (args != null)
+					{
 						_activeSession.AddPendingAttachment(args);
+					}
+
 					break;
 				case "resume":
 					// Session.Resume already released the session; this line exists to wake it.
 					if (!_activeSession.RequestSend())
+					{
 						transport.Status(_activeSession.Id, "Nothing to resume: the model has already answered.");
+					}
 					else if (_activeSession.Status != SessionStatus.Ongoing)
+					{
 						_activeSession.ResumeFromComplete();
+					}
+
 					break;
 				case "help":
 					transport.Output(_activeSession.Id, "Commands: /compact, /model <id>, /effort <none|minimal|low|medium|high|max>, /pause, /resume, /cancel");
@@ -1164,7 +1270,9 @@ public class SessionHandler
 		foreach (string choice in choices)
 		{
 			if (string.Equals(choice, word, StringComparison.OrdinalIgnoreCase))
+			{
 				stored = choice;
+			}
 		}
 		if (stored == null)
 		{
@@ -1238,7 +1346,9 @@ public class SessionHandler
 			_lastInputTokens = 0;
 			transport.Status(_activeSession.Id, $"Model queued: {target.ConfigId}");
 			if (_activeSession.Status != SessionStatus.Ongoing)
+			{
 				_activeSession.ResumeFromComplete();
+			}
 		}
 	}
 
@@ -1296,7 +1406,9 @@ public class SessionHandler
 		_lastToolChars = MechanicalCompaction.ToolDefinitionChars(full);
 
 		if (!windDown)
+		{
 			return full;
+		}
 
 		// Wind-down: restrict to the terminator tool only.
 		Tool? terminator = null;
@@ -1319,7 +1431,9 @@ public class SessionHandler
 		foreach (Tool tool in tools)
 		{
 			if (tool.Definition.Function.Name != "host_command")
+			{
 				kept.Add(tool);
+			}
 		}
 		return kept.ToArray();
 	}
@@ -1365,7 +1479,10 @@ public class SessionHandler
 			{
 				await _activeSession.WaitForInputAsync(ct);
 				if (ct.IsCancellationRequested || _activeSession.Deleted)
+				{
 					break;
+				}
+
 				if (_activeSession.HasPending)
 				{
 					resumed = true;
@@ -1468,10 +1585,15 @@ public class SessionHandler
 		// A deleted session must never be written again — its files were just removed, and a
 		// late save from a still-unwinding handler would silently resurrect them.
 		if (session.Deleted)
+		{
 			return;
+		}
 
 		if (session.InferDisplayName())
+		{
 			session.AnnounceToClient();
+		}
+
 		SessionService.Save(session.Data);
 	}
 
@@ -1487,11 +1609,17 @@ public class SessionHandler
 			string       currentModelId = activeModel != null ? activeModel.ConfigId : _activeSession.Model + " (not available)";
 			List<string> enabledModels  = registry.GetEnabledModelsForRole(activeRole);
 			if (!string.IsNullOrEmpty(currentModelId) && enabledModels.Contains(currentModelId))
+			{
 				candidates.Add("/model " + currentModelId + ModelPricingLabel(currentModelId, registry));
+			}
+
 			foreach (string modelId in enabledModels)
 			{
 				if (modelId == currentModelId)
+				{
 					continue;
+				}
+
 				candidates.Add("/model " + modelId + ModelPricingLabel(modelId, registry));
 			}
 		}
@@ -1505,14 +1633,19 @@ public class SessionHandler
 	{
 		LlmModel? model = registry.GetModel(modelId);
 		if (model == null)
+		{
 			return string.Empty;
+		}
 
 		CostConfig cost  = model.Config.Cost;
 		string     label = $"  in:${cost.Input:0.00} out:${cost.Output:0.00} /Mtok";
 
 		string modalities = ModalityLabel(model.Config);
 		if (modalities.Length > 0)
+		{
 			label += "  " + modalities;
+		}
+
 		return label;
 	}
 
@@ -1524,7 +1657,10 @@ public class SessionHandler
 		foreach (string input in config.Input)
 		{
 			if (string.Equals(input, "text", StringComparison.OrdinalIgnoreCase))
+			{
 				continue;
+			}
+
 			label = label.Length == 0 ? input.ToLowerInvariant() : label + "," + input.ToLowerInvariant();
 		}
 		return label.Length == 0 ? string.Empty : "+" + label;
@@ -1592,7 +1728,10 @@ public class SessionHandler
 			RollUpCost(orchestrator);
 			orchestrator.CompleteSession(_activeSession.Id, ok, output, tokens);
 			if (!_activeSession.Ephemeral)
+			{
 				SaveSession(_activeSession);
+			}
+
 			SaveRolledUpCost(orchestrator);
 		}
 	}
@@ -1635,7 +1774,10 @@ public class SessionHandler
 			while (ancestor != null)
 			{
 				if (!ancestor.Ephemeral && !ancestor.Deleted)
+				{
 					SessionService.Save(ancestor.Data);
+				}
+
 				ancestor = orchestrator.FindParent(ancestor);
 			}
 		}
@@ -1647,7 +1789,9 @@ public class SessionHandler
 		for (int i = messages.Count - 1; i >= 0; i--)
 		{
 			if (messages[i] is AssistantMessage am && !string.IsNullOrWhiteSpace(am.Text))
+			{
 				return am.Text;
+			}
 		}
 		return string.Empty;
 	}

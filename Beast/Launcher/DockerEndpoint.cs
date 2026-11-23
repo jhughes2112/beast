@@ -64,7 +64,9 @@ internal static class DockerEndpoint
 				if (e.Data != null)
 				{
 					lock (output)
+					{
 						output.Append(e.Data);
+					}
 				}
 			};
 			process.ErrorDataReceived += (sender, e) => { };
@@ -78,14 +80,18 @@ internal static class DockerEndpoint
 				if (process.ExitCode != 0)
 				{
 					lock (output)
+					{
 						output.Clear();
+					}
 				}
 			}
 			else
 			{
 				process.Kill();
 				lock (output)
+				{
 					output.Clear();
+				}
 			}
 		}
 		catch (Win32Exception)
@@ -95,7 +101,10 @@ internal static class DockerEndpoint
 
 		string host;
 		lock (output)
+		{
 			host = output.ToString().Trim();
+		}
+
 		return host;
 	}
 
@@ -105,13 +114,18 @@ internal static class DockerEndpoint
 	{
 		Uri? uri = null;
 		if (host.StartsWith("npipe:////", StringComparison.OrdinalIgnoreCase))
+		{
 			uri = new Uri($"npipe://{host.Substring("npipe:////".Length)}");
+		}
 		else if (host.StartsWith("npipe://", StringComparison.OrdinalIgnoreCase)
 			|| host.StartsWith("unix://",  StringComparison.OrdinalIgnoreCase)
 			|| host.StartsWith("tcp://",   StringComparison.OrdinalIgnoreCase)
 			|| host.StartsWith("http://",  StringComparison.OrdinalIgnoreCase)
 			|| host.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+		{
 			uri = new Uri(host);
+		}
+
 		return uri;
 	}
 }

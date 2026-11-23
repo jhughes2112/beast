@@ -18,11 +18,24 @@ public sealed class WorkMeter
 
 	public static WorkMeter? Current
 	{
-		get => _current.Value;
-		set => _current.Value = value;
+		get
+		{
+			return _current.Value;
+		}
+
+		set
+		{
+			_current.Value = value;
+		}
 	}
 
-	public long Ms => Interlocked.Read(ref _ticks) * 1000 / Stopwatch.Frequency;
+	public long Ms
+	{
+		get
+		{
+			return Interlocked.Read(ref _ticks) * 1000 / Stopwatch.Frequency;
+		}
+	}
 
 	public void Add(long stopwatchTicks)
 	{
@@ -35,7 +48,10 @@ public sealed class WorkMeter
 	{
 		long now = Stopwatch.GetTimestamp();
 		if (mark != 0)
+		{
 			Add(now - mark);
+		}
+
 		mark = now;
 	}
 }
@@ -56,8 +72,15 @@ public sealed class ToolClock
 
 	public static ToolClock? Current
 	{
-		get => _current.Value;
-		set => _current.Value = value;
+		get
+		{
+			return _current.Value;
+		}
+
+		set
+		{
+			_current.Value = value;
+		}
 	}
 
 	public long WorkedMs
@@ -93,7 +116,9 @@ public sealed class ToolClock
 		else
 		{
 			lock (clock._lock)
+			{
 				clock._subWorkMs += workedMs;
+			}
 		}
 	}
 
@@ -102,7 +127,9 @@ public sealed class ToolClock
 		lock (_lock)
 		{
 			if (_waiters++ == 0)
+			{
 				_waitStarted = Stopwatch.GetTimestamp();
+			}
 		}
 	}
 
@@ -111,7 +138,9 @@ public sealed class ToolClock
 		lock (_lock)
 		{
 			if (--_waiters == 0)
+			{
 				_waitedTicks += Stopwatch.GetTimestamp() - _waitStarted;
+			}
 		}
 	}
 
@@ -143,18 +172,25 @@ public sealed class WorkTimingHandler : DelegatingHandler
 	{
 		WorkMeter? meter = WorkMeter.Current;
 		if (meter != null && request.Content != null)
+		{
 			request.Content = new TimedRequestContent(request.Content, meter);
+		}
 
 		HttpResponseMessage response = await base.SendAsync(request, cancellationToken);
 		if (meter != null)
+		{
 			response.Content = new TimedResponseContent(response.Content, meter);
+		}
+
 		return response;
 	}
 
 	private static void CopyHeaders(HttpContent from, HttpContent to)
 	{
 		foreach (System.Collections.Generic.KeyValuePair<string, System.Collections.Generic.IEnumerable<string>> header in from.Headers)
+		{
 			to.Headers.TryAddWithoutValidation(header.Key, header.Value);
+		}
 	}
 
 	private sealed class TimedRequestContent : HttpContent
@@ -186,7 +222,10 @@ public sealed class WorkTimingHandler : DelegatingHandler
 		protected override void Dispose(bool disposing)
 		{
 			if (disposing)
+			{
 				_inner.Dispose();
+			}
+
 			base.Dispose(disposing);
 		}
 	}
@@ -224,7 +263,10 @@ public sealed class WorkTimingHandler : DelegatingHandler
 		protected override void Dispose(bool disposing)
 		{
 			if (disposing)
+			{
 				_inner.Dispose();
+			}
+
 			base.Dispose(disposing);
 		}
 	}
@@ -267,27 +309,78 @@ public sealed class WorkTimingHandler : DelegatingHandler
 		private void Arrived(ReadOnlySpan<byte> data)
 		{
 			if (data.Length > 0 && (_mark != 0 || data[0] != (byte)':'))
+			{
 				_meter.Received(ref _mark);
+			}
 		}
 
-		public override bool CanRead  => true;
-		public override bool CanSeek  => false;
-		public override bool CanWrite => false;
-		public override long Length   => throw new NotSupportedException();
+		public override bool CanRead
+		{
+			get
+			{
+				return true;
+			}
+		}
+
+		public override bool CanSeek
+		{
+			get
+			{
+				return false;
+			}
+		}
+
+		public override bool CanWrite
+		{
+			get
+			{
+				return false;
+			}
+		}
+
+		public override long Length
+		{
+			get
+			{
+				throw new NotSupportedException();
+			}
+		}
+
 		public override long Position
 		{
-			get => throw new NotSupportedException();
-			set => throw new NotSupportedException();
+			get
+			{
+				throw new NotSupportedException();
+			}
+
+			set
+			{
+				throw new NotSupportedException();
+			}
 		}
-		public override void Flush    () { }
-		public override long Seek     (long offset, SeekOrigin origin) => throw new NotSupportedException();
-		public override void SetLength(long value)                     => throw new NotSupportedException();
-		public override void Write    (byte[] buffer, int offset, int count) => throw new NotSupportedException();
+		public override void Flush() { }
+		public override long Seek (long offset, SeekOrigin origin)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void SetLength(long value)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void Write(byte[] buffer, int offset, int count)
+		{
+			throw new NotSupportedException();
+		}
 
 		protected override void Dispose(bool disposing)
 		{
 			if (disposing)
+			{
 				_inner.Dispose();
+			}
+
 			base.Dispose(disposing);
 		}
 	}

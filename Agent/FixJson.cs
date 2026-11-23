@@ -40,7 +40,9 @@ public static class FixJson
 
 	// Returns a slash-separated snapshot of all counters: mark/struct/name/arg/type/extra
 	public static string GetCounters()
-		=> $"{_markdownStrips}/{_structuralRepairs}/{_toolNameCorrections}/{_argNameCorrections}/{_typeCoercions}/{_extraArgsStripped}";
+	{
+		return $"{_markdownStrips}/{_structuralRepairs}/{_toolNameCorrections}/{_argNameCorrections}/{_typeCoercions}/{_extraArgsStripped}";
+	}
 
 	// Simple parse: strips markdown and repairs structural truncation. No schema awareness.
 	public static JsonObject? TryParseObject(string json)
@@ -61,7 +63,9 @@ public static class FixJson
 				{
 					string? repaired = Repair(normalized, null);
 					if (repaired != null)
+					{
 						result = ParseObject(repaired);
+					}
 				}
 			}
 		}
@@ -90,7 +94,9 @@ public static class FixJson
 			{
 				string? repaired = Repair(normalized, log);
 				if (repaired != null)
+				{
 					obj = ParseObject(repaired);
+				}
 			}
 		}
 
@@ -111,7 +117,9 @@ public static class FixJson
 		// Stage 5: missing required args (hard error — no safe default)
 		string? missingError = CheckRequiredArgs(obj, schema.Name, parameters);
 		if (missingError != null)
+		{
 			return (null, missingError);
+		}
 
 		return (obj, null);
 	}
@@ -163,7 +171,9 @@ public static class FixJson
 		{
 			using JsonDocument doc = JsonDocument.Parse(json);
 			if (doc.RootElement.ValueKind == JsonValueKind.Object)
+			{
 				result = (JsonObject?)ToNode(doc.RootElement);
+			}
 		}
 		catch (JsonException)
 		{
@@ -180,14 +190,20 @@ public static class FixJson
 		{
 			JsonObject obj = new JsonObject();
 			foreach (JsonProperty property in element.EnumerateObject())
+			{
 				obj[property.Name] = ToNode(property.Value);
+			}
+
 			node = obj;
 		}
 		else if (element.ValueKind == JsonValueKind.Array)
 		{
 			JsonArray array = new JsonArray();
 			foreach (JsonElement item in element.EnumerateArray())
+			{
 				array.Add(ToNode(item));
+			}
+
 			node = array;
 		}
 		else if (element.ValueKind == JsonValueKind.Null)
@@ -215,7 +231,9 @@ public static class FixJson
 				t              = t.Substring(newline + 1).Trim();
 				int closeFence = t.LastIndexOf("```", StringComparison.Ordinal);
 				if (closeFence >= 0)
+				{
 					t = t.Substring(0, closeFence).Trim();
+				}
 			}
 		}
 
@@ -225,12 +243,18 @@ public static class FixJson
 		int start    = -1;
 
 		if (objStart >= 0 && (arrStart < 0 || objStart < arrStart))
+		{
 			start = objStart;
+		}
 		else if (arrStart >= 0)
+		{
 			start = arrStart;
+		}
 
 		if (start > 0)
+		{
 			t = t.Substring(start);
+		}
 
 		if (!string.Equals(t, json.Trim(), StringComparison.Ordinal))
 		{
@@ -272,7 +296,10 @@ public static class FixJson
 			{
 				sb.Append(c);
 				if (c == '"')
+				{
 					inDoubleStr = false;
+				}
+
 				continue;
 			}
 
@@ -315,12 +342,17 @@ public static class FixJson
 			{
 				int keyStart = i;
 				while (i < json.Length && (char.IsLetterOrDigit(json[i]) || json[i] == '_' || json[i] == '$'))
+				{
 					i++;
+				}
+
 				int keyEnd = i;
 
 				int j = i;
 				while (j < json.Length && char.IsWhiteSpace(json[j]))
+				{
 					j++;
+				}
 
 				if (j < json.Length && json[j] == ':')
 				{
@@ -361,11 +393,18 @@ public static class FixJson
 			if (c == '"')
 			{ inStr = !inStr; continue; }
 			if (inStr)
+			{
 				continue;
+			}
+
 			if (c == '{' || c == '[')
+			{
 				depth++;
+			}
 			else if (c == '}' || c == ']')
+			{
 				depth--;
+			}
 		}
 
 		return depth > 0 || inStr;
@@ -389,7 +428,9 @@ public static class FixJson
 			if (c == '"')
 			{ inString = !inString; continue; }
 			if (inString)
+			{
 				continue;
+			}
 
 			if (c == '{' || c == '[')
 			{
@@ -398,10 +439,15 @@ public static class FixJson
 			else if (c == '}' || c == ']')
 			{
 				if (openers.Count == 0)
+				{
 					return null;
+				}
+
 				char open = openers.Pop();
 				if ((c == '}') != (open == '{'))
+				{
 					return null;
+				}
 			}
 		}
 
@@ -411,12 +457,17 @@ public static class FixJson
 		{
 			string work = json.TrimEnd();
 			if (inString)
+			{
 				work += '"';
+			}
+
 			work = StripTrailingStructural(work);
 
 			StringBuilder sb = new StringBuilder(work);
 			foreach (char open in openers)
+			{
 				sb.Append(open == '{' ? '}' : ']');
+			}
 
 			result = sb.ToString();
 			Interlocked.Increment(ref _structuralRepairs);
@@ -434,7 +485,9 @@ public static class FixJson
 			changed  = false;
 			string t = work.TrimEnd();
 			if (t.Length == 0)
+			{
 				break;
+			}
 
 			char last = t[t.Length - 1];
 			if (last == ',')
@@ -468,7 +521,10 @@ public static class FixJson
 				{
 					int slashes = 0;
 					for (int j = i - 1; j >= 0 && t[j] == '\\'; j--)
+					{
 						slashes++;
+					}
+
 					if (slashes % 2 == 0)
 					{ openIdx = i; break; }
 				}
@@ -478,7 +534,10 @@ public static class FixJson
 			{
 				string stripped = t.Substring(0, openIdx).TrimEnd();
 				if (stripped.Length > 0 && stripped[stripped.Length - 1] == ',')
+				{
 					stripped = stripped.Substring(0, stripped.Length - 1);
+				}
+
 				result = stripped;
 			}
 		}
@@ -493,17 +552,23 @@ public static class FixJson
 	{
 		JsonObject? props = parameters?["properties"]?.AsObject();
 		if (props == null)
+		{
 			return;
+		}
 
 		foreach ((string key, JsonNode? schema) in props)
 		{
 			string? schemaType = schema?["type"]?.GetValue<string>();
 			if (schemaType == null || !obj.ContainsKey(key))
+			{
 				continue;
+			}
 
 			JsonNode? value = obj[key];
 			if (value == null)
+			{
 				continue;
+			}
 
 			bool coerced = false;
 
@@ -563,9 +628,15 @@ public static class FixJson
 	{
 		string t = raw.Trim().ToLowerInvariant();
 		if (t == "true" || t == "yes" || t == "y" || t == "1" || t == "on")
+		{
 			return true;
+		}
+
 		if (t == "false" || t == "no" || t == "n" || t == "0" || t == "off")
+		{
 			return false;
+		}
+
 		return null;
 	}
 
@@ -579,18 +650,24 @@ public static class FixJson
 	{
 		JsonObject? props = parameters?["properties"]?.AsObject();
 		if (props == null)
+		{
 			return;
+		}
 
 		List<string> schemaNames = new List<string>();
 		foreach ((string name, JsonNode? _) in props)
+		{
 			schemaNames.Add(name);
+		}
 
 		// Canonical names already present (exact) are off-limits as rename targets.
 		HashSet<string> taken = new HashSet<string>(StringComparer.Ordinal);
 		foreach ((string key, JsonNode? _) in obj)
 		{
 			if (props.ContainsKey(key))
+			{
 				taken.Add(key);
+			}
 		}
 
 		// Collect renames first; the obj cannot be mutated while it is being enumerated.
@@ -598,7 +675,9 @@ public static class FixJson
 		foreach ((string key, JsonNode? _) in obj)
 		{
 			if (props.ContainsKey(key))
+			{
 				continue;
+			}
 
 			string? canonical = BestArgNameMatch(key, schemaNames, taken);
 			if (canonical != null)
@@ -613,7 +692,10 @@ public static class FixJson
 			JsonNode? value = obj[from];
 			obj.Remove(from);
 			if (value != null)
+			{
 				obj[to] = value.DeepClone();
+			}
+
 			Interlocked.Increment(ref _argNameCorrections);
 			log?.Invoke($"json-heal [arg] '{from}' → '{to}': {GetCounters()}");
 		}
@@ -629,7 +711,10 @@ public static class FixJson
 		foreach (string name in schemaNames)
 		{
 			if (taken.Contains(name))
+			{
 				continue;
+			}
+
 			if (string.Equals(key, name, StringComparison.OrdinalIgnoreCase))
 			{
 				caseMatch = name;
@@ -637,7 +722,9 @@ public static class FixJson
 			}
 		}
 		if (caseCount == 1)
+		{
 			return caseMatch;
+		}
 
 		string  lowerKey = key.ToLowerInvariant();
 		string? best     = null;
@@ -646,11 +733,17 @@ public static class FixJson
 		foreach (string name in schemaNames)
 		{
 			if (taken.Contains(name))
+			{
 				continue;
+			}
+
 			int threshold = Math.Max(1, Math.Min(3, name.Length / 3));
 			int dist      = LevenshteinDistance(lowerKey, name.ToLowerInvariant());
 			if (dist > threshold)
+			{
 				continue;
+			}
+
 			if (dist < bestDist)
 			{
 				bestDist = dist;
@@ -671,13 +764,17 @@ public static class FixJson
 	{
 		JsonObject? props = parameters?["properties"]?.AsObject();
 		if (props == null)
+		{
 			return;
+		}
 
 		List<string> toRemove = new List<string>();
 		foreach ((string key, JsonNode? _) in obj)
 		{
 			if (!props.ContainsKey(key))
+			{
 				toRemove.Add(key);
+			}
 		}
 
 		foreach (string key in toRemove)
@@ -693,19 +790,26 @@ public static class FixJson
 	{
 		JsonArray? required = parameters?["required"]?.AsArray();
 		if (required == null)
+		{
 			return null;
+		}
 
 		string? error = null;
 		foreach (JsonNode? req in required)
 		{
 			if (req == null)
+			{
 				continue;
+			}
+
 			string fieldName = req.GetValue<string>();
 
 			// Required so models write it, but a command is worth more than its note: refusing one over a
 			// missing note costs a whole turn, and compaction has a fallback.
 			if (string.Equals(fieldName, MechanicalCompaction.WhyArgument, StringComparison.Ordinal))
+			{
 				continue;
+			}
 
 			if (!string.IsNullOrEmpty(fieldName) && !obj.ContainsKey(fieldName))
 			{
@@ -727,7 +831,9 @@ public static class FixJson
 		int[] curr = new int[n + 1];
 
 		for (int j = 0; j <= n; j++)
+		{
 			prev[j] = j;
+		}
 
 		for (int i = 1; i <= m; i++)
 		{

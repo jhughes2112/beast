@@ -115,7 +115,9 @@ public class BeastApp : IAsyncDisposable
 		if (_connectionLost)
 		{
 			if (!_exitAsked)
+			{
 				_cts?.Cancel();
+			}
 		}
 		else if (_wsClient == null)
 		{
@@ -141,9 +143,13 @@ public class BeastApp : IAsyncDisposable
 			{
 				_exitAsked = false;
 				if (choice == 0)
+				{
 					_ = _wsClient?.SendAsync(_activeSessionId + "|/finish", _cts!.Token);
+				}
 				else if (choice == 1)
+				{
 					_ = SendQuitAsync();
+				}
 			});
 		}
 	}
@@ -181,7 +187,10 @@ public class BeastApp : IAsyncDisposable
 		{
 			_exitAsked = false;
 			if (finishable && choice == 0)
+			{
 				FinishOnHost();
+			}
+
 			_cts?.Cancel();
 		});
 	}
@@ -192,9 +201,13 @@ public class BeastApp : IAsyncDisposable
 	{
 		(_, string error) = HostGit.RemoveWorktree(_session!);
 		if (error.Length > 0)
+		{
 			_log.Error($"Could not finish worktree '{_session!.Worktree}': {error}. The session is kept.");
+		}
 		else
+		{
 			_sessionFinished = true;
+		}
 	}
 
 	// Sends /quit to the agent so it saves the session, then waits for it to disconnect.
@@ -205,12 +218,16 @@ public class BeastApp : IAsyncDisposable
 		try
 		{
 			if (_wsClient != null)
+			{
 				await _wsClient.SendAsync(_activeSessionId + "|/quit", _cts!.Token);
+			}
 		}
 		catch { }
 
 		if (_readTask != null)
+		{
 			await Task.WhenAny(_readTask, Task.Delay(3000));
+		}
 
 		_cts?.Cancel();
 	}
@@ -221,14 +238,18 @@ public class BeastApp : IAsyncDisposable
 	private async Task SendHostShellsAsync()
 	{
 		if (_hostRunner != null)
+		{
 			await _wsClient!.SendAsync("|/host-shells " + _hostRunner.ShellNames, _cts!.Token);
+		}
 	}
 
 	// Sends the command-line switches and prompt to the conversation the agent shows at startup, as if typed there.
 	private async Task SendQueuedMessagesAsync(string sessionId)
 	{
 		foreach (string msg in _messages)
+		{
 			await _wsClient!.SendAsync(sessionId + "|" + msg, _cts!.Token);
+		}
 	}
 
 	public async Task<int> Run()
@@ -320,7 +341,9 @@ public class BeastApp : IAsyncDisposable
 			{
 				string? message = await wsClient.ReceiveAsync(token);
 				if (message == null)
+				{
 					break;
+				}
 
 				(FrameType type, string sessionId, string content) = ParseFrame(message);
 				_frameQueue.Enqueue((type, sessionId, content));
@@ -352,7 +375,9 @@ public class BeastApp : IAsyncDisposable
 	public void DrainFrameQueue()
 	{
 		while (_frameQueue.TryDequeue(out (FrameType Type, string SessionId, string Content) frame))
+		{
 			ProcessFrame(frame.Type, frame.SessionId, frame.Content);
+		}
 	}
 
 	// The kind of block a stream with this tag fills.
@@ -360,11 +385,18 @@ public class BeastApp : IAsyncDisposable
 	{
 		FrameType type = FrameType.Output;
 		if (tag == StreamTag.Thinking)
+		{
 			type = FrameType.Thinking;
+		}
 		else if (tag == StreamTag.Tool)
+		{
 			type = FrameType.Tool;
+		}
 		else if (tag == StreamTag.Host)
+		{
 			type = FrameType.Host;
+		}
+
 		return type;
 	}
 
@@ -373,11 +405,15 @@ public class BeastApp : IAsyncDisposable
 	{
 		string[] parts = message.Split('|', 3);
 		if (parts.Length == 1 || !byte.TryParse(parts[0], out byte typeByte))
+		{
 			return (FrameType.Output, string.Empty, message);
+		}
 
 		// Old single-pipe format (no session ID) — backward compatibility.
 		if (parts.Length == 2)
+		{
 			return ((FrameType)typeByte, string.Empty, parts[1]);
+		}
 
 		return ((FrameType)typeByte, parts[1], parts[2]);
 	}
@@ -387,7 +423,9 @@ public class BeastApp : IAsyncDisposable
 	private SessionState EnsureSession(string sessionId)
 	{
 		if (_sessions.TryGetValue(sessionId, out SessionState? existing))
+		{
 			return existing;
+		}
 
 		SessionState state   = new SessionState();
 		_sessions[sessionId] = state;
@@ -406,9 +444,14 @@ public class BeastApp : IAsyncDisposable
 	private void SwitchActiveSession(string sessionId)
 	{
 		if (string.Equals(_activeSessionId, sessionId, StringComparison.Ordinal))
+		{
 			return;
+		}
+
 		if (!_sessions.TryGetValue(sessionId, out SessionState? state))
+		{
 			return;
+		}
 
 		_activeSessionId = sessionId;
 		// Once the restore is over, the conversation on screen is the one the next start shows.
@@ -431,7 +474,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		// A stream still running in the session now on screen must be shown as streaming again: without
 		// this its block renders through the full per-frame rebuild, and can be collapsed, until it ends.
 		if (state.StreamIndex >= 0 && state.SlotTypes.TryGetValue(state.StreamIndex, out FrameType streamType))
+		{
 			_display.OnStreamStart(state.StreamIndex, streamType);
+		}
 
 		NotifySessionList();
 	}
@@ -445,16 +490,26 @@ state.StatsContextTokens, state.StatsCachedTokens);
 	private void DeleteSession(string sessionId)
 	{
 		if (string.IsNullOrEmpty(sessionId))
+		{
 			return;
+		}
+
 		if (!_sessions.ContainsKey(sessionId))
+		{
 			return;
+		}
 
 		if (!SessionTree.IsSubtreeIdle(sessionId, _busySessions))
+		{
 			return;
+		}
 
 		string rootId = SessionTree.GetRootSessionId(_sessions);
 		if (string.IsNullOrEmpty(rootId) || _wsClient == null)
+		{
 			return;
+		}
+
 		SendDeleteCommandAsync(rootId, sessionId);
 
 		if (string.Equals(sessionId, rootId, StringComparison.Ordinal))
@@ -466,7 +521,10 @@ state.StatsContextTokens, state.StatsCachedTokens);
 			SessionTree.RemoveSessionFromLists(rootPrefix, sessionId, _sessions, _busySessions, _sessionDisplayNames);
 			string remaining = SessionTree.GetRootSessionId(_sessions);
 			if (!string.IsNullOrEmpty(remaining))
+			{
 				UpdateDisplayAfterDelete(rootWasActive, remaining);
+			}
+
 			return;
 		}
 
@@ -486,9 +544,13 @@ state.StatsContextTokens, state.StatsCachedTokens);
 	private void UpdateDisplayAfterDelete(bool wasActiveInSubtree, string rootId)
 	{
 		if (wasActiveInSubtree)
+		{
 			SwitchActiveSession(rootId);
+		}
 		else
+		{
 			NotifySessionList();
+		}
 	}
 
 	// Pushes the current session list and counts to the display.
@@ -521,7 +583,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		// a rejected /config command would otherwise render into the transcript hidden behind
 		// the modal, leaving the picker waiting forever with no visible reason.
 		if (type == FrameType.Error)
+		{
 			_display.OnConfigError(content);
+		}
 
 		// Global frames that don't route to a specific session model.
 		switch (type)
@@ -626,7 +690,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				{
 					SessionState st = EnsureSession(sessionId);
 					if (Enum.TryParse<SessionStatus>(content, out SessionStatus parsed))
+					{
 						st.Status = parsed;
+					}
 				}
 				NotifySessionList();
 				return;
@@ -671,14 +737,20 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				// Record the turn start on the first Busy of a turn so the duration reflects the
 				// session's own working time, not when the user switched to view it.
 				if (!_busySessions.Contains(effectiveId))
+				{
 					session.BusyStartTick = Environment.TickCount64;
+				}
+
 				_busySessions.Add(effectiveId);
 				// Status is the agent's to report (SessionStatus frames), not inferred from busyness:
 				// a busy session may be Working (owes its caller a reply) or plain Ongoing chat.
 				// The separator busy animation reflects the viewed session only; the F10 overlay
 				// indicators show every session's state independently via NotifySessionList.
 				if (isActive)
+				{
 					_display.SetAgentBusy(true, session.BusyStartTick);
+				}
+
 				NotifySessionList();
 				break;
 
@@ -686,13 +758,18 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				_busySessions.Remove(effectiveId);
 				session.BusyStartTick = 0;
 				if (isActive)
+				{
 					_display.SetAgentBusy(false, 0);
+				}
 				// Content "subagent" marks a sub-session completion; it gets its own sound.
 				Platform.Current.PlaySound(content == "subagent" ? _subagentSounds : _idleSounds);
 				NotifySessionList();
 				// Unattended, the run is over when nothing is working any more.
 				if (_unattended && _busySessions.Count == 0)
+				{
 					RequestGracefulExit();
+				}
+
 				break;
 
 			case FrameType.StreamStart:
@@ -702,17 +779,25 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				session.SlotTypes[session.StreamIndex] = startType;
 				session.Model.Update(session.StreamIndex, startType, "");
 				if (isActive)
+				{
 					_display.OnStreamStart(session.StreamIndex, startType);
+				}
+
 				break;
 
 			case FrameType.StreamChunk:
 				if (session.StreamIndex < 0)
+				{
 					break;
+				}
 				// Appended, never re-sent whole: rebuilding the full text per token copied the message on every
 				// chunk, and past ~85 KB each copy landed on the large-object heap.
 				session.Model.Append(session.StreamIndex, content);
 				if (isActive)
+				{
 					_display.OnStreamChunk(content);
+				}
+
 				break;
 
 			case FrameType.StreamEnd:
@@ -722,14 +807,22 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					// A finished host command's live block goes away: its tool call above now holds the
 					// output, under the same HOST: header. Hidden the way a paired ToolResponse slot is.
 					if (endType == FrameType.Host)
+					{
 						session.Model.Update(endSlot, FrameType.Debug, string.Empty);
+					}
 					else
+					{
 						session.PendingCommit[endType] = endSlot;
+					}
+
 					session.StreamTagToSlot.Remove(content);
 				}
 				session.StreamIndex = -1;
 				if (isActive)
+				{
 					_display.OnStreamEnd();
+				}
+
 				break;
 
 			case FrameType.User:
@@ -772,7 +865,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					{
 						string announcedName = nameEl.GetString() ?? "";
 						if (!string.IsNullOrEmpty(announcedName) && !string.IsNullOrEmpty(effectiveId))
+						{
 							_sessionDisplayNames[effectiveId] = announcedName;
+						}
 					}
 				}
 				catch { }
@@ -783,7 +878,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				{
 					bool isDirectChild = string.Equals(SessionTree.GetParentId(effectiveId), _activeSessionId, StringComparison.Ordinal);
 					if (isDirectChild && !_busySessions.Contains(_activeSessionId))
+					{
 						SwitchActiveSession(effectiveId);
+					}
 				}
 				break;
 
@@ -883,7 +980,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		{
 			string error = SessionStore.DeleteDir(_session);
 			if (error.Length > 0)
+			{
 				_log.Error($"Could not remove the finished session's folder {_session.Dir}: {error}");
+			}
 		}
 
 		_cts?.Dispose();
@@ -892,7 +991,13 @@ state.StatsContextTokens, state.StatsCachedTokens);
 	// Whether the container goes on exit: after /finish, and always for a bare session. A bare session works on
 	// the folder in place, so its container holds nothing of value (installed packages, /tmp); its conversations
 	// and logs live in the session's own folder on the host and stay, and the next launch makes a fresh container.
-	private bool RemoveContainer => _sessionFinished || (_session != null && _session.IsBare);
+	private bool RemoveContainer
+	{
+		get
+		{
+			return _sessionFinished || (_session != null && _session.IsBare);
+		}
+	}
 
 	// Stops the container (removing it after /finish or for a bare session), then disposes the launcher. Run
 	// detached from the exit path so a slow or stuck container cannot hold up closing Beast; errors are

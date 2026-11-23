@@ -81,10 +81,15 @@ public static class MediaIntake
 		{
 			int start = text.IndexOf(open, scan, StringComparison.Ordinal);
 			if (start < 0)
+			{
 				break;
+			}
+
 			int end = text.IndexOf(close, start + open.Length, StringComparison.Ordinal);
 			if (end < 0)
+			{
 				break;
+			}
 
 			if (stagedPaths != null)
 			{
@@ -103,7 +108,9 @@ public static class MediaIntake
 
 			// The spaces that surrounded the marker would otherwise collapse into a doubled gap.
 			while (scan < text.Length && text[scan] == ' ' && clean.Length > 0 && clean[clean.Length - 1] == ' ')
+			{
 				scan++;
+			}
 		}
 		clean.Append(text, scan, text.Length - scan);
 		return clean.ToString().Trim();
@@ -134,7 +141,9 @@ public static class MediaIntake
 		{
 			string? staged = SafeStagedPath(stagedName);
 			if (staged != null && File.Exists(staged))
+			{
 				File.Delete(staged);
+			}
 		}
 		catch (Exception)
 		{
@@ -157,19 +166,27 @@ public static class MediaIntake
 		// A path-like name is treated exactly like a missing file: the client only ever sends bare
 		// names, so anything else is a hand-typed /attach trying to read outside the staging folder.
 		if (staged == null || !File.Exists(staged))
+		{
 			return ($"[attachment {display} could not be read: the staged copy is missing]", null, string.Empty, MediaKind.Unknown);
+		}
 
 		long bytes                        = new FileInfo(staged).Length;
 		(MediaKind kind, string mimeType) = MediaKinds.Classify(originalPath.Length > 0 ? originalPath : stagedName);
 
 		if (kind == MediaKind.Text)
+		{
 			return (await InlineTextAsync(staged, display, ct), null, string.Empty, MediaKind.Text);
+		}
 
 		if (kind == MediaKind.Unknown)
+		{
 			return ($"[attachment {display}: {bytes} bytes of an unrecognized type — no model can read it directly]", null, string.Empty, MediaKind.Unknown);
+		}
 
 		if (bytes > MaxAttachmentBytes)
+		{
 			return ($"[attachment {display} is {bytes / (1024 * 1024)}MB, over the {MaxAttachmentBytes / (1024 * 1024)}MB limit — not sent]", null, string.Empty, kind);
+		}
 
 		// The session's own model gets first refusal: attaching beats describing whenever it works.
 		LlmModel? current = registry.GetModel(session.Model);
@@ -208,7 +225,10 @@ public static class MediaIntake
 			{
 				int n = await reader.ReadAsync(buffer.AsMemory(read, buffer.Length - read), ct);
 				if (n == 0)
+				{
 					break;
+				}
+
 				read += n;
 			}
 		}
@@ -219,7 +239,10 @@ public static class MediaIntake
 		sb.Append("[attached ").Append(display).Append(clipped ? " — truncated]" : "]").Append('\n');
 		sb.Append(content);
 		if (clipped)
+		{
 			sb.Append("\n[…truncated; read the original file for the rest]");
+		}
+
 		return sb.ToString();
 	}
 

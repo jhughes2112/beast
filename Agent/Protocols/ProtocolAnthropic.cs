@@ -90,7 +90,9 @@ public class ProtocolAnthropic
 	private static bool RejectsThinking(string responseBody)
 	{
 		if (!responseBody.Contains("thinking", StringComparison.OrdinalIgnoreCase))
+		{
 			return false;
+		}
 
 		return responseBody.Contains("unsupported", StringComparison.OrdinalIgnoreCase)
 			|| responseBody.Contains("not supported",    StringComparison.OrdinalIgnoreCase)
@@ -132,9 +134,14 @@ public class ProtocolAnthropic
 			else if (msg is AssistantMessage am)
 			{
 				if (!string.IsNullOrEmpty(am.Text))
+				{
 					AppendContent("assistant", TextBlock(am.Text));
+				}
+
 				foreach (SemanticToolCall tc in am.ToolCalls)
+				{
 					AppendContent("assistant", ToolUseBlock(tc.Id, tc.Name, tc.ArgumentsJson));
+				}
 				// thinking is dropped - unsigned thinking cannot be replayed to Anthropic
 			}
 		}
@@ -164,10 +171,14 @@ public class ProtocolAnthropic
 		// dropped image legitimately has no words — the media carries the turn on its own.
 		bool hasMedia = attachments != null && attachments.Count > 0;
 		if (!hasMedia || !string.IsNullOrEmpty(text))
+		{
 			AppendContent("user", TextBlock(text));
+		}
 
 		if (attachments == null)
+		{
 			return;
+		}
 
 		foreach (MediaAttachment att in attachments)
 		{
@@ -221,10 +232,14 @@ public class ProtocolAnthropic
 		else
 		{
 			if (!string.IsNullOrEmpty(text))
+			{
 				AppendContent("assistant", TextBlock(text));
+			}
 
 			foreach (SemanticToolCall tc in toolCalls)
+			{
 				AppendContent("assistant", ToolUseBlock(tc.Id, tc.Name, tc.ArgumentsJson));
+			}
 		}
 	}
 
@@ -256,7 +271,9 @@ public class ProtocolAnthropic
 			// protocols. Prefer the caller's computed budget, otherwise the model's declared limit.
 			int maxTokens = maxCompletionTokens > 0 ? maxCompletionTokens.Value : model.Config.MaxOutputTokens;
 			if (maxTokens <= 0)
+			{
 				maxTokens = 8192;
+			}
 
 			// Extra attempts exist only to re-send after learning something about this model: that it
 			// wants the adaptive thinking shape, that it has no thinking at all, or that the request
@@ -269,7 +286,10 @@ public class ProtocolAnthropic
 				body["stream"]    = true;
 				string? mediaNote = _media.TakeNote();
 				if (mediaNote != null)
+				{
 					logger.Note(mediaNote);
+				}
+
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				// Fresh deadline per attempt; ReadStreamAsync re-arms it as events arrive.
@@ -331,12 +351,16 @@ public class ProtocolAnthropic
 						}
 
 						if (resend)
+						{
 							continue;
+						}
 					}
 
 					// Too many images, or too many bytes of them: the same history with less media will go.
 					if (_media.LearnFromRefusal(model, statusCode, responseBody, _onCapabilityLearned, logger))
+					{
 						continue;
+					}
 
 					if (ProtocolHelpers.IsPermanentClientError(statusCode))
 					{
@@ -356,7 +380,10 @@ public class ProtocolAnthropic
 		{
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return timeout;
+			}
+
 			throw;
 		}
 		catch (HttpRequestException ex)
@@ -421,18 +448,25 @@ public class ProtocolAnthropic
 			{
 				string? line = await reader.ReadLineAsync(cancellationToken);
 				if (line == null)
+				{
 					break;
+				}
 
 				requestCts.CancelAfter(idleTimeout);
 
 				string? data = ProtocolHelpers.SseData(line);
 				if (data == null)
+				{
 					continue;
+				}
 
 				JsonNode? evt  = JsonNode.Parse(data);
 				string?   type = evt?["type"]?.GetValue<string>();
 				if (type == null)
+				{
 					continue;
+				}
+
 				sawEvent = true;
 
 				if (type == "message_start")
@@ -444,11 +478,19 @@ public class ProtocolAnthropic
 					int       reportedWrite = usage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
 					int       reportedRead  = usage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
 					if (reportedInput > 0)
+					{
 						freshInputTokens = reportedInput;
+					}
+
 					if (reportedWrite > 0)
+					{
 						cacheCreationTokens = reportedWrite;
+					}
+
 					if (reportedRead > 0)
+					{
 						cacheReadTokens = reportedRead;
+					}
 				}
 				else if (type == "content_block_start")
 				{
@@ -461,7 +503,9 @@ public class ProtocolAnthropic
 				{
 					int index = evt!["index"]?.GetValue<int>() ?? 0;
 					if (!blocks.TryGetValue(index, out BlockBuilder? block))
+					{
 						continue;
+					}
 
 					JsonNode? delta     = evt["delta"];
 					string?   deltaType = delta?["type"]?.GetValue<string>();
@@ -480,7 +524,10 @@ public class ProtocolAnthropic
 							if (!assistantOpen)
 							{
 								if (openStreamTag != null)
+								{
 									bundle.Transport?.OnStreamEnd(openStreamTag);
+								}
+
 								bundle.Transport?.OnStreamStart(StreamTag.Assistant);
 								openStreamTag = StreamTag.Assistant;
 							}
@@ -495,7 +542,10 @@ public class ProtocolAnthropic
 						if (openStreamTag != StreamTag.Thinking)
 						{
 							if (openStreamTag != null)
+							{
 								bundle.Transport?.OnStreamEnd(openStreamTag);
+							}
+
 							bundle.Transport?.OnStreamStart(StreamTag.Thinking);
 							openStreamTag = StreamTag.Thinking;
 						}
@@ -516,23 +566,36 @@ public class ProtocolAnthropic
 				{
 					string? reason = evt!["delta"]?["stop_reason"]?.GetValue<string>();
 					if (reason != null)
+					{
 						stopReason = reason;
+					}
 					// message_delta carries the turn's final usage, which on current models restates
 					// the input side as well as the output. Every count it reports is taken, so a
 					// stream whose message_start usage was thin still commits fully measured.
 					JsonNode? deltaUsage = evt["usage"];
 					int       reported   = deltaUsage?["output_tokens"]?.GetValue<int>() ?? 0;
 					if (reported > 0)
+					{
 						outputTokens = reported;
+					}
+
 					int deltaInput = deltaUsage?["input_tokens"]?.GetValue<int>() ?? 0;
 					if (deltaInput > 0)
+					{
 						freshInputTokens = deltaInput;
+					}
+
 					int deltaWrite = deltaUsage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
 					if (deltaWrite > 0)
+					{
 						cacheCreationTokens = deltaWrite;
+					}
+
 					int deltaRead = deltaUsage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
 					if (deltaRead > 0)
+					{
 						cacheReadTokens = deltaRead;
+					}
 				}
 				else if (type == "error")
 				{
@@ -579,7 +642,9 @@ public class ProtocolAnthropic
 		finally
 		{
 			if (openStreamTag != null)
+			{
 				bundle.Transport?.OnStreamEnd(openStreamTag);
+			}
 		}
 
 		if (!sawEvent)
@@ -706,7 +771,10 @@ public class ProtocolAnthropic
 		{
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return TracerResult.Failed(timeout.ErrorMessage);
+			}
+
 			throw;
 		}
 		catch (Exception ex)
@@ -720,7 +788,9 @@ public class ProtocolAnthropic
 		{
 			JsonNode? root = JsonNode.Parse(responseBody);
 			if (root == null)
+			{
 				return TracerResult.Failed("Empty response from count_tokens API");
+			}
 
 			// count_tokens reports the TOTAL prompt size in input_tokens; no cache split exists here.
 			int inputTokens = root["input_tokens"]?.GetValue<int>() ?? 0;
@@ -769,7 +839,10 @@ public class ProtocolAnthropic
 		{
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return TracerResult.Failed(timeout.ErrorMessage);
+			}
+
 			throw;
 		}
 		catch (Exception ex)
@@ -784,7 +857,9 @@ public class ProtocolAnthropic
 			JsonNode? root      = JsonNode.Parse(responseBody);
 			JsonNode? usageNode = root?["usage"];
 			if (usageNode == null)
+			{
 				return TracerResult.Failed("No usage info in tracer response");
+			}
 
 			// Anthropic's input_tokens EXCLUDES cache reads/writes; TracerResult.InputTokens is
 			// defined as the TOTAL prompt size, so fold the cache components in here.
@@ -831,7 +906,9 @@ public class ProtocolAnthropic
 			body["max_tokens"] = maxTokens;
 			ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
 			if (model.Config.TopK.HasValue)
+			{
 				body["top_k"] = model.Config.TopK.Value;
+			}
 
 			// Caching is OPT-IN on this API: without this field nothing is cached and every turn pays
 			// full input price for the entire conversation again. The top-level form is the automatic
@@ -874,9 +951,15 @@ public class ProtocolAnthropic
 				JsonObject t = new JsonObject();
 				t["name"]    = td.Function.Name;
 				if (!string.IsNullOrEmpty(td.Function.Description))
+				{
 					t["description"] = td.Function.Description;
+				}
+
 				if (td.Function.Parameters != null)
+				{
 					t["input_schema"] = td.Function.Parameters.DeepClone();
+				}
+
 				toolsArr.Add((JsonNode)t);
 			}
 			body["tools"] = toolsArr;
@@ -937,9 +1020,15 @@ public class ProtocolAnthropic
 		foreach ((string name, JsonNode? value) in extraPayload)
 		{
 			if (name == "stream" || name == "max_tokens")
+			{
 				continue;
+			}
+
 			if (!withThinking && name == "thinking")
+			{
 				continue;
+			}
+
 			body[name] = value?.DeepClone();
 		}
 
@@ -955,7 +1044,9 @@ public class ProtocolAnthropic
 		foreach (JsonNode? node in _native)
 		{
 			if (node is not JsonObject msg)
+			{
 				continue;
+			}
 
 			string role = msg["role"]?.GetValue<string>() ?? "user";
 			if (messages.Count > 0)
@@ -967,7 +1058,9 @@ public class ProtocolAnthropic
 					foreach (JsonNode? block in (JsonArray)msg["content"]!)
 					{
 						if (block != null)
+						{
 							lastContent.Add(block.DeepClone());
+						}
 					}
 					continue;
 				}
@@ -987,11 +1080,17 @@ public class ProtocolAnthropic
 		for (int i = 0; i < longest && changed == int.MaxValue; i++)
 		{
 			if (i >= before.Count)
+			{
 				changed = now[i].Message;
+			}
 			else if (i >= now.Count)
+			{
 				changed = before[i].Message;
+			}
 			else if (before[i] != now[i])
+			{
 				changed = Math.Min(before[i].Message, now[i].Message);
+			}
 		}
 		return changed;
 	}
@@ -1007,15 +1106,22 @@ public class ProtocolAnthropic
 		foreach (JsonNode? node in _native)
 		{
 			if (node is not JsonObject msg)
+			{
 				continue;
+			}
 
 			string role = msg["role"]?.GetValue<string>() ?? "user";
 			if (role != last)
+			{
 				index++;
+			}
+
 			last = role;
 
 			if (index <= message || role != "assistant")
+			{
 				continue;
+			}
 
 			JsonArray content = (JsonArray)msg["content"]!;
 			for (int i = content.Count - 1; i >= 0; i--)

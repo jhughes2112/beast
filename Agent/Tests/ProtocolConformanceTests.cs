@@ -23,11 +23,23 @@ public static class ProtocolConformanceTests
 
 		// Messages and ChatCompletions send the whole history on every request; Responses chains from
 		// its server-side history and sends only what is new.
-		public bool ResendsHistory => Protocol != DetectedProtocol.Responses;
+		public bool ResendsHistory
+		{
+			get
+			{
+				return Protocol != DetectedProtocol.Responses;
+			}
+		}
 
 		// Only ChatCompletions replaces media once it is answered and superseded. Messages keeps it,
 		// because rewriting it would invalidate the thinking signed after it.
-		public bool ElidesAnswered => Protocol == DetectedProtocol.ChatCompletions;
+		public bool ElidesAnswered
+		{
+			get
+			{
+				return Protocol == DetectedProtocol.ChatCompletions;
+			}
+		}
 
 		public Api(string name, DetectedProtocol protocol, string endpoint)
 		{
@@ -104,9 +116,14 @@ public static class ProtocolConformanceTests
 				await TestMediaBytesRefusalAsync(ctx, server, api, folder, cts.Token);
 				await TestWrongModelIsNotTrimmedAsync(ctx, server, api, folder, cts.Token);
 				if (api.Protocol != DetectedProtocol.Anthropic)
+				{
 					await TestImageCountRefusalAsync(ctx, server, api, folder, true, cts.Token);
+				}
+
 				if (api.Protocol == DetectedProtocol.Responses)
+				{
 					await TestCountRouteProbedOnceAsync(ctx, server, api, cts.Token);
+				}
 			}
 		}
 		finally
@@ -136,7 +153,9 @@ public static class ProtocolConformanceTests
 		server.Enqueue(FakeReply.Say("answer"));
 		await StepAsync(unset, ct);
 		foreach (string name in all)
+		{
 			ctx.Assert(server.Requests()[0].Body[name] == null, $"{api.Name} Sampling: unset {name} is not sent");
+		}
 
 		ModelConfig config = new ModelConfig
 		{
@@ -231,12 +250,17 @@ public static class ProtocolConformanceTests
 		List<string> metaPaths = server.CountRequests();
 		ctx.AssertEqual(4, metaPaths.Count, $"{api.Name} CountRoute: one 404 on OpenAI's route, then one count per instance");
 		if (metaPaths.Count == 4)
+		{
 			ctx.Assert(metaPaths[0].EndsWith("/input_tokens/count", StringComparison.Ordinal), $"{api.Name} CountRoute: OpenAI's spelling is tried first");
+		}
 
 		server.Reset();
 		EndpointFacts none = new EndpointFacts();
 		for (int instance = 0; instance < 3; instance++)
+		{
 			await CountOnFreshInstanceAsync(model, none, logger, ct);
+		}
+
 		ctx.AssertEqual(2, server.CountRequests().Count, $"{api.Name} CountRoute: an endpoint with no count route is probed once, then skipped");
 	}
 
@@ -470,7 +494,9 @@ public static class ProtocolConformanceTests
 		ctx.AssertEqual(2, sent[3].VisibleMediaCount, $"{api.Name} MediaAcrossTools: answered but not superseded, both stay in view");
 		ctx.Assert(!sent[3].Body.ToJsonString().Contains(AnsweredMarker, StringComparison.Ordinal), $"{api.Name} MediaAcrossTools: no removal note until newer media arrives");
 		if (!api.ResendsHistory)
+		{
 			ctx.AssertEqual(1, sent[2].MediaCount, $"{api.Name} MediaAcrossTools: chaining sends only the new image");
+		}
 	}
 
 	// Once the model has answered an image and inspects a newer one, ChatCompletions replaces the older
@@ -555,11 +581,17 @@ public static class ProtocolConformanceTests
 
 		rig = Build(server, api);
 		for (int i = 0; i < 3; i++)
+		{
 			server.Enqueue(FakeReply.Call($"s{i}", "inspect_media", Args(paths[i])));
+		}
+
 		server.Enqueue(FakeReply.Say("seen"));
 		rig.Session.Bundle.OnUserMessage("look at them one by one");
 		for (int i = 0; i < 4; i++)
+		{
 			await StepAsync(rig, ct);
+		}
+
 		CheckPixels(ctx, $"{api.Name} Pixels(solo)", WireImages(server.Requests()), paths, backgrounds, patches);
 	}
 
@@ -576,7 +608,10 @@ public static class ProtocolConformanceTests
 
 			HashSet<int> colors = new HashSet<int>();
 			for (int p = 0; p + 2 < rgb.Length; p += 3)
+			{
 				colors.Add((rgb[p] << 16) | (rgb[p + 1] << 8) | rgb[p + 2]);
+			}
+
 			ctx.AssertEqual(2, colors.Count, $"{label}: image {i + 1} holds only its background and patch colors");
 			ctx.AssertEqual(    Pack(patches[i]),   PixelAt(rgb, width, 0, 0), $"{label}: image {i + 1} patch pixel");
 			ctx.AssertEqual(Pack(backgrounds[i]),  PixelAt(rgb, width, 12, 8), $"{label}: image {i + 1} background pixel");
@@ -590,11 +625,16 @@ public static class ProtocolConformanceTests
 	{
 		List<string> seen = new List<string>();
 		foreach (FakeRequest request in requests)
+		{
 			CollectImageData(request.Body["messages"] ?? request.Body["input"], seen);
+		}
 
 		List<byte[]> images = new List<byte[]>();
 		foreach (string data in seen)
+		{
 			images.Add(Convert.FromBase64String(data));
+		}
+
 		return images;
 	}
 
@@ -603,30 +643,42 @@ public static class ProtocolConformanceTests
 		if (node is JsonArray array)
 		{
 			foreach (JsonNode? child in array)
+			{
 				CollectImageData(child, seen);
+			}
 		}
 		else if (node is JsonObject obj)
 		{
 			string  type = obj["type"] is JsonValue v && v.TryGetValue<string>(out string? s) ? s : string.Empty;
 			string? data = null;
 			if (type == "image")
+			{
 				data = obj["source"]?["data"]?.GetValue<string>();
+			}
 			else if (type == "image_url")
+			{
 				data = obj["image_url"] is JsonObject inner ? inner["url"]?.GetValue<string>() : obj["image_url"]?.GetValue<string>();
+			}
 			else if (type == "input_image")
+			{
 				data = obj["image_url"]?.GetValue<string>();
+			}
 
 			if (data != null)
 			{
 				int    comma   = data.IndexOf("base64,", StringComparison.Ordinal);
 				string payload = comma >= 0 ? data.Substring(comma + "base64,".Length) : data;
 				if (!seen.Contains(payload))
+				{
 					seen.Add(payload);
+				}
 			}
 			else
 			{
 				foreach ((string _, JsonNode? child) in obj)
+				{
 					CollectImageData(child, seen);
+				}
 			}
 		}
 	}
@@ -668,7 +720,10 @@ public static class ProtocolConformanceTests
 		using (MemoryStream packed = new MemoryStream())
 		{
 			using (ZLibStream zlib = new ZLibStream(packed, CompressionLevel.Optimal, true))
+			{
 				zlib.Write(raw, 0, raw.Length);
+			}
+
 			compressed = packed.ToArray();
 		}
 
@@ -684,7 +739,10 @@ public static class ProtocolConformanceTests
 	{
 		byte[] typed = new byte[4 + data.Length];
 		for (int i = 0; i < 4; i++)
+		{
 			typed[i] = (byte)type[i];
+		}
+
 		Array.Copy(data, 0, typed, 4, data.Length);
 
 		uint crc = 0xFFFFFFFF;
@@ -692,7 +750,9 @@ public static class ProtocolConformanceTests
 		{
 			crc ^= b;
 			for (int bit = 0; bit < 8; bit++)
+			{
 				crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
+			}
 		}
 		crc ^= 0xFFFFFFFF;
 
@@ -739,12 +799,18 @@ public static class ProtocolConformanceTests
 		idat.Position          = 0;
 		using MemoryStream raw = new MemoryStream();
 		using (ZLibStream zlib = new ZLibStream(idat, CompressionMode.Decompress))
+		{
 			zlib.CopyTo(raw);
+		}
+
 		byte[] rows = raw.ToArray();
 
 		byte[] rgb = new byte[width * height * 3];
 		for (int y = 0; y < height; y++)
+		{
 			Array.Copy(rows, y * (1 + width * 3) + 1, rgb, y * width * 3, width * 3);
+		}
+
 		return (width, height, rgb);
 	}
 
@@ -755,7 +821,10 @@ public static class ProtocolConformanceTests
 		byte[] magic = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
 		Array.Copy(magic, bytes, magic.Length);
 		for (int i = magic.Length; i < bytes.Length; i++)
+		{
 			bytes[i] = letter;
+		}
+
 		return bytes;
 	}
 
@@ -802,13 +871,19 @@ public static class ProtocolConformanceTests
 		Rig    rig   = Build(server, api);
 		server.Limit(2, 0, noStreaming);
 		for (int i = 0; i < 3; i++)
+		{
 			server.Enqueue(FakeReply.Call($"c{i}", "inspect_media", Args(Png(folder, $"n{i}.png", 64))));
+		}
+
 		server.Enqueue(FakeReply.Say("saw them"));
 		rig.Session.Bundle.OnUserMessage("look at all three");
 
 		ProtocolResult last = ProtocolResult.Failed("not run");
 		for (int i = 0; i < 4; i++)
+		{
 			last = await StepAsync(rig, ct);
+		}
+
 		ctx.AssertEqual(ProtocolCallOutcome.Success, last.Outcome, $"{api.Name} {label}: the turn completes");
 		ctx.AssertEqual("saw them", last.Payload?.AssistantText ?? string.Empty, $"{api.Name} {label}: with the model's answer");
 
@@ -835,13 +910,19 @@ public static class ProtocolConformanceTests
 		Rig rig = Build(server, api);
 		server.Limit(0, 700 * 1024, false);
 		for (int i = 0; i < 3; i++)
+		{
 			server.Enqueue(FakeReply.Call($"c{i}", "inspect_media", Args(Png(folder, $"big{i}.png", 300 * 1024))));
+		}
+
 		server.Enqueue(FakeReply.Say("saw them"));
 		rig.Session.Bundle.OnUserMessage("look at the big ones");
 
 		ProtocolResult last = ProtocolResult.Failed("not run");
 		for (int i = 0; i < 4; i++)
+		{
 			last = await StepAsync(rig, ct);
+		}
+
 		ctx.AssertEqual(ProtocolCallOutcome.Success, last.Outcome, $"{api.Name} BytesRefusal: the turn completes");
 
 		List<FakeRequest> sent = server.Requests();
@@ -917,7 +998,9 @@ public static class ProtocolConformanceTests
 		ModelCapabilitySink sink    = (id, effort, summaries, retainReasoning, maxImages) =>
 		{
 			if (maxImages.HasValue)
+			{
 				learned.Add(maxImages.Value);
+			}
 		};
 		LlmService service = new LlmService(model, api.Protocol, new ModelAvailability(), new EndpointFacts(), new List<string> { config.Id }, sink);
 
@@ -940,7 +1023,9 @@ public static class ProtocolConformanceTests
 			rig.Session.CommitAssistantTurn(result.Payload!);
 			bool hasCalls = await ToolDispatch.DispatchAsync(result.Payload!, rig.Tools, rig.Session, rig.Transport, ct);
 			if (hasCalls)
+			{
 				rig.Session.CommitToolResults(result.Payload!);
+			}
 		}
 		return result;
 	}
@@ -978,7 +1063,10 @@ public static class ProtocolConformanceTests
 			{
 				List<string> paths = new List<string>();
 				foreach (JsonNode? path in (JsonArray)args["file_paths"]!)
+				{
 					paths.Add(path!.GetValue<string>());
+				}
+
 				return await inspector.InspectAsync(id, paths, 0, string.Empty, false, null, registry, session, transport, maxOutput, ct);
 			}
 		};
@@ -998,7 +1086,10 @@ public static class ProtocolConformanceTests
 		byte[] magic = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
 		Array.Copy(magic, bytes, magic.Length);
 		for (int i = magic.Length; i < size; i++)
+		{
 			bytes[i] = (byte)(i * 31);
+		}
+
 		return bytes;
 	}
 
@@ -1017,7 +1108,9 @@ public static class ProtocolConformanceTests
 		foreach (FakeRequest request in requests)
 		{
 			if (found == null && request.StatusSent == status && request.MediaCount > 0)
+			{
 				found = request;
+			}
 		}
 		return found;
 	}

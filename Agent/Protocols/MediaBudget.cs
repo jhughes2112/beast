@@ -55,7 +55,13 @@ public class MediaBudget
 	// history has just changed.
 	private List<(int Message, bool Answered)> _replaced = new List<(int Message, bool Answered)>();
 
-	public IReadOnlyList<(int Message, bool Answered)> Replaced => _replaced;
+	public IReadOnlyList<(int Message, bool Answered)> Replaced
+	{
+		get
+		{
+			return _replaced;
+		}
+	}
 
 	// Removes answered media from an outgoing message array — a per-request clone — when elideAnswered
 	// is set, then keeps only the newest remaining items within the cap, replacing each removed part
@@ -98,7 +104,9 @@ public class MediaBudget
 			{
 				Collect(messages[i], found);
 				while (foundAt.Count < found.Count)
+				{
 					foundAt.Add(i);
+				}
 			}
 		}
 
@@ -139,7 +147,9 @@ public class MediaBudget
 			List<(JsonArray Parent, JsonObject Part)> media = new List<(JsonArray Parent, JsonObject Part)>();
 			Collect(messages[i], media);
 			if (media.Count > 0)
+			{
 				newest = i;
+			}
 		}
 		return newest;
 	}
@@ -177,7 +187,9 @@ public class MediaBudget
 				// A number the provider stated is a fact about the model worth keeping; a cap reached by
 				// dropping items one at a time may only reflect this request's bytes.
 				if (stated > 0)
+				{
 					sink?.Invoke(model.ConfigId, null, null, null, stated);
+				}
 			}
 		}
 		return retry;
@@ -187,7 +199,10 @@ public class MediaBudget
 	{
 		int limit = configMaxImages;
 		if (_learnedMaxItems > 0 && (limit == 0 || _learnedMaxItems < limit))
+		{
 			limit = _learnedMaxItems;
+		}
+
 		return limit;
 	}
 
@@ -221,7 +236,9 @@ public class MediaBudget
 		{
 			int atMost = lower.IndexOf("at most ", StringComparison.Ordinal);
 			if (atMost >= 0 && lower.IndexOf("image", atMost, Math.Min(40, lower.Length - atMost), StringComparison.Ordinal) >= 0)
+			{
 				result = FirstIntegerWithin(lower, atMost, 20);
+			}
 		}
 		return result;
 	}
@@ -233,19 +250,28 @@ public class MediaBudget
 		int end   = Math.Min(text.Length, start + window);
 		int quote = text.IndexOf('"', start, end - start);
 		if (quote >= 0)
+		{
 			end = quote;
+		}
 
 		int digits = start;
 		while (digits < end && !char.IsDigit(text[digits]))
+		{
 			digits++;
+		}
 
 		int stop = digits;
 		while (stop < end && char.IsDigit(text[stop]))
+		{
 			stop++;
+		}
 
 		int value = 0;
 		if (stop > digits)
+		{
 			int.TryParse(text.AsSpan(digits, stop - digits), out value);
+		}
+
 		return value;
 	}
 
@@ -262,9 +288,13 @@ public class MediaBudget
 		{
 			JsonNode? content = item["content"];
 			if (content is JsonValue text && text.TryGetValue<string>(out string? s))
+			{
 				output = s.Length > 0;
+			}
 			else if (content is JsonArray blocks)
+			{
 				output = HasOutputBlock(blocks);
+			}
 
 			output = output || item["reasoning_content"] != null || item["reasoning"] != null || item["reasoning_details"] != null;
 		}
@@ -277,13 +307,19 @@ public class MediaBudget
 		foreach (JsonNode? block in blocks)
 		{
 			if (block is not JsonObject obj)
+			{
 				continue;
+			}
 
 			string type = PartType(obj);
 			if (type == "thinking" || type == "redacted_thinking")
+			{
 				output = true;
+			}
 			else if ((type == "text" || type == "output_text") && obj["text"] is JsonValue t && t.TryGetValue<string>(out string? s) && s.Length > 0)
+			{
 				output = true;
+			}
 		}
 		return output;
 	}
@@ -302,7 +338,10 @@ public class MediaBudget
 	{
 		string type = string.Empty;
 		if (part["type"] is JsonValue value && value.TryGetValue<string>(out string? s))
+		{
 			type = s;
+		}
+
 		return type;
 	}
 
@@ -314,9 +353,13 @@ public class MediaBudget
 			foreach (JsonNode? child in array)
 			{
 				if (child is JsonObject obj && IsMediaPart(obj))
+				{
 					found.Add((array, obj));
+				}
 				else
+				{
 					Collect(child, found);
+				}
 			}
 		}
 		else if (node is JsonObject obj)
@@ -327,7 +370,9 @@ public class MediaBudget
 			if (type != "tool_use" && type != "function_call")
 			{
 				foreach ((string _, JsonNode? child) in obj)
+				{
 					Collect(child, found);
+				}
 			}
 		}
 	}

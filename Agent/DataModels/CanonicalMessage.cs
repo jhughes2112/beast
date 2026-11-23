@@ -123,7 +123,9 @@ public sealed class ToolResultMessage : CanonicalMessage
 		Media      = media;
 		ExitCode   = exitCode;
 		if (media == null && mediaPath != null && mediaMimeType != null)
+		{
 			Media = new List<MediaFile> { new MediaFile(mediaPath, mediaMimeType) };
+		}
 	}
 
 	public ToolResultMessage(string toolCallId, string content, IReadOnlyList<MediaFile>? media, int? exitCode)

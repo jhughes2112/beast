@@ -14,7 +14,9 @@ public static class WorktreeBootstrap
 	public static async Task<(bool ok, string detail)> EnsureAsync(string branch, CancellationToken ct)
 	{
 		if (string.IsNullOrEmpty(branch) || !Directory.Exists("/git"))
+		{
 			return (true, string.Empty);
+		}
 
 		// /workspace already a checkout -> repair the gitdir pointers (idempotent). Otherwise add the
 		// worktree: attach to the branch if it exists, else create it. A stale registration for the path
@@ -44,7 +46,10 @@ public static class WorktreeBootstrap
 		ToolResult result = await ShellTools.AgentBashAsync("worktree_bootstrap", script, null, ct);
 		string     detail = result.StdErr;
 		if (!string.IsNullOrEmpty(result.StdOut))
+		{
 			detail = string.IsNullOrEmpty(detail) ? result.StdOut : detail + "\n" + result.StdOut;
+		}
+
 		return (result.ExitCode == 0, detail);
 	}
 }

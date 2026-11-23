@@ -63,7 +63,9 @@ public sealed class CompactionLog
 		foreach (char c in text)
 		{
 			if (c == '\n')
+			{
 				lines++;
+			}
 		}
 		return lines;
 	}

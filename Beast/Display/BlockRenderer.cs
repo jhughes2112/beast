@@ -33,7 +33,9 @@ internal static class BlockRenderer
 		}
 		// Its finished record keeps the yellow HOST: header, unless it failed.
 		if (isToolCall && !headerError && msg.Content.StartsWith("host_command(", StringComparison.Ordinal))
+		{
 			headerFg = DisplayScreen.Palette.HostFg;
+		}
 
 		string prefix  = PrefixTextForType(msg.Type);
 		string summary = isToolCall
@@ -60,7 +62,9 @@ internal static class BlockRenderer
 		string fileLang   = string.Empty;
 		if (!isError && (toolName == "read_file" || toolName == "write_file"
 					  || toolName == "edit_file_replace" || toolName == "edit_file_insert"))
+		{
 			fileLang = MarkdownAnsi.GuessLang(ExtractStringArg(msg.Content, "file_path"));
+		}
 
 		// Row 0 is the header; it is filled in once the expanded rows are known, since whether it carries an
 		// ellipsis depends on whether expanding reveals more.
@@ -74,13 +78,17 @@ internal static class BlockRenderer
 			{
 				int start = Math.Max(0, respLines.Length - 5);
 				for (int i = start; i < respLines.Length; i++)
+				{
 					collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), "bash", respBgAnsi));
+				}
 			}
 			else if (toolName == "read_file")
 			{
 				int end = Math.Min(respLines.Length, 5);
 				for (int i = 0; i < end; i++)
+				{
 					collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLines[i]), fileLang, respBgAnsi));
+				}
 			}
 		}
 		if (isToolCall && toolName == "write_file")
@@ -91,7 +99,9 @@ internal static class BlockRenderer
 				string[] wlines = writeContent.Replace("\r\n", "\n").Split('\n');
 				int      end    = Math.Min(wlines.Length, 5);
 				for (int i = 0; i < end; i++)
+				{
 					collapsedLines.Add("  " + MarkdownAnsi.SyntaxHighlight(ExpandTabs(wlines[i]), fileLang, respBgAnsi));
+				}
 			}
 		}
 
@@ -103,7 +113,9 @@ internal static class BlockRenderer
 			if (!string.IsNullOrEmpty(goal))
 			{
 				foreach (string gline in goal.Replace("\r\n", "\n").Split('\n'))
+				{
 					collapsedLines.Add("  " + ExpandTabs(gline));
+				}
 			}
 		}
 
@@ -117,9 +129,13 @@ internal static class BlockRenderer
 		// Row index where the stderr block begins (-1 when there is none). Those rows are painted red.
 		int errorStart = -1;
 		if (isToolCall)
+		{
 			ansiLines = RenderToolCallRows(msg, w, out responseStart, out errorStart);
+		}
 		else
+		{
 			ansiLines = RenderMessageRows(msg, w);
+		}
 
 		collapsedLines[0] = HeaderRow(headerIndent, prefix, summary, availW, ansiLines.Count > collapsedLines.Count);
 
@@ -142,10 +158,14 @@ internal static class BlockRenderer
 		{
 			int vl = AnsiString.VisibleLength(ansiLines[r]);
 			if (vl > contentW)
+			{
 				contentW = vl;
+			}
 		}
 		if (contentW > MaxBlockWidth)
+		{
 			contentW = MaxBlockWidth;
+		}
 
 		int    expandedRows = Math.Max(1, ansiLines.Count);
 		Screen expanded     = new Screen(contentW, expandedRows + spacer, rowBg);
@@ -160,13 +180,22 @@ internal static class BlockRenderer
 			Rgb  rowFg = r == 0 ? headerFg : fg;
 			Rgb? rowBaseBg;
 			if (r == 0)
+			{
 				rowBaseBg = headerBg;
+			}
 			else if (errorStart >= 0 && r >= errorStart)
+			{
 				rowBaseBg = errorBaseBg;
+			}
 			else if (responseStart >= 0 && r >= responseStart)
+			{
 				rowBaseBg = responseBaseBg;
+			}
 			else
+			{
 				rowBaseBg = bg;
+			}
+
 			(int endCx, Rgb? eFg, Rgb? eBg) = AnsiToScreen.WriteLine(expanded, 0, r, ansiLines[r], rowFg, rowBaseBg);
 			AnsiToScreen.PadRowBackground(expanded, endCx, r, eFg, eBg);
 		}
@@ -181,18 +210,29 @@ internal static class BlockRenderer
 		return new BlockLayer(msg.Index, collapsed, expanded, isExpanded: !msg.Collapsed);
 	}
 
-	internal static string ExpandTabs(string text) => text.Replace("\t", "    ");
+	internal static string ExpandTabs(string text)
+	{
+		return text.Replace("\t", "    ");
+	}
 
 	private static void StampRightOnRow(Screen s, int row, string text, Rgb fg, Rgb? bg)
 	{
 		if (row < 0 || row >= s.H)
+		{
 			return;
+		}
+
 		int len = text.Length;
 		if (len + 1 > s.W)
+		{
 			return;
+		}
+
 		int startCol = s.W - len;
 		for (int i = 0; i < len; i++)
+		{
 			s.Set(startCol + i, row, new Cell(text[i], fg, bg, CellStyle.None));
+		}
 	}
 
 	// The style every cell of a block carries on top of its own: Thinking reads as an aside, in italics.
@@ -211,7 +251,10 @@ internal static class BlockRenderer
 	internal static (Rgb Fg, Rgb? Bg) ColorsForType(FrameType type, bool isError)
 	{
 		if (isError)
+		{
 			return (DisplayScreen.Palette.ToolCallErrFg, DisplayScreen.Palette.ToolCallErrBg);
+		}
+
 		switch (type)
 		{
 			case FrameType.Output:
@@ -289,7 +332,9 @@ internal static class BlockRenderer
 			first                     = false;
 			List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
 			foreach (string wl in wrappedLines)
+			{
 				result.Add(indent + wl);
+			}
 		}
 
 		return result;
@@ -350,7 +395,9 @@ internal static class BlockRenderer
 			}
 			List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
 			foreach (string wrapped in wrappedLines)
+			{
 				result.Add(wrapped);
+			}
 		}
 	}
 
@@ -380,7 +427,9 @@ internal static class BlockRenderer
 		string name     = paren >= 0 ? content.Substring(0, paren).Trim() : content;
 		string argsJson = paren >= 0 ? content.Substring(paren + 1) : string.Empty;
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+		{
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
+		}
 
 		// The header stays a single truncated line even when expanded — wrapping the summary across several
 		// rows reads worse than a clean one-line header with the body opened beneath it.
@@ -415,7 +464,9 @@ internal static class BlockRenderer
 				foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
 				{
 					if (summaryProps.Contains(prop.Name))
+					{
 						continue;
+					}
 
 					string val = prop.Value.ValueKind == JsonValueKind.String
 						? prop.Value.GetString() ?? string.Empty
@@ -428,20 +479,30 @@ internal static class BlockRenderer
 					// blocks and long paragraphs are interpreted and width-wrapped, rather than dumped raw
 					// (raw over-width lines desync the terminal columns around the rendered content).
 					if (IsProseArg(name, prop.Name))
+					{
 						blockProps.Add((prop.Name, val, 0));
+					}
 					else if (prop.Name.Equals("content", StringComparison.OrdinalIgnoreCase))
+					{
 						blockProps.Add((prop.Name, val, 1));
+					}
 					else if (val.IndexOf('\n') >= 0)
+					{
 						blockProps.Add((prop.Name, val, 2));
+					}
 					else
+					{
 						inlineProps.Add($"{prop.Name} {val}");
+					}
 				}
 
 				// Short scalar arguments first, word-wrapped, so the most scannable parameters lead.
 				if (inlineProps.Count > 0)
 				{
 					foreach (string wrapped in AnsiString.WordWrap("  " + string.Join("  ", inlineProps), w))
+					{
 						result.Add(wrapped);
+					}
 				}
 
 				// Then the heavier block arguments, shortest first so the bulkiest content sinks last.
@@ -464,7 +525,9 @@ internal static class BlockRenderer
 									continue;
 								}
 								foreach (string wrapped in AnsiString.WordWrapIndented(mdLine.Text, w))
+								{
 									result.Add(wrapped);
+								}
 							}
 						}
 						else
@@ -472,14 +535,20 @@ internal static class BlockRenderer
 							// Not markdown: keep the source newlines (a subagent's citation list), but still
 							// word-wrap each line to the viewport so long prose paragraphs don't run off-screen.
 							foreach (string valLine in bp.Val.Split('\n'))
+							{
 								foreach (string wrapped in AnsiString.WordWrapIndented(ExpandTabs(valLine), w))
+								{
 									result.Add(wrapped);
+								}
+							}
 						}
 					}
 					else if (bp.Kind == 1)
 					{
 						foreach (string valLine in bp.Val.Split('\n'))
+						{
 							result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(valLine), fileLang, respBodyBgAnsi));
+						}
 					}
 					else
 					{
@@ -495,7 +564,9 @@ internal static class BlockRenderer
 			catch
 			{
 				foreach (string rawLine in argsJson.Split('\n'))
+				{
 					result.Add(rawLine);
+				}
 			}
 		}
 
@@ -507,7 +578,9 @@ internal static class BlockRenderer
 			if (command.IndexOf('\n') >= 0)
 			{
 				foreach (string cmdLine in command.Replace("\r\n", "\n").Split('\n'))
+				{
 					result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(cmdLine), "bash", respBodyBgAnsi));
+				}
 			}
 		}
 
@@ -517,7 +590,9 @@ internal static class BlockRenderer
 		if (!suppressPairedResponse && !string.IsNullOrEmpty(msg.PairedResponseContent))
 		{
 			if (responseStart < 0)
+			{
 				responseStart = result.Count;
+			}
 			// stdout renders on the normal body background whatever the exit code — its red counterpart is
 			// the stderr block below, so the two stay visually distinct.
 			RespMode mode = ResponseModeFor(name, ExtractStringArg(msg.Content, "file_path"), msg.PairedResponseContent!);
@@ -527,17 +602,27 @@ internal static class BlockRenderer
 		if (!string.IsNullOrEmpty(msg.PairedResponseError))
 		{
 			if (responseStart < 0)
+			{
 				responseStart = result.Count;
+			}
+
 			errorStart = result.Count;
 			foreach (string errLine in msg.PairedResponseError.Split('\n'))
+			{
 				result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(errLine), fileLang, DisplayScreen.Palette.ErrBodyBgAnsi));
+			}
 		}
 
 		for (int i = bodyStart; i < result.Count; i++)
+		{
 			result[i] = "  " + result[i];
+		}
 
 		if (result.Count == 0)
+		{
 			result.Add(name);
+		}
+
 		return result;
 	}
 
@@ -560,11 +645,16 @@ internal static class BlockRenderer
 			case "edit_file_replace":
 			case "edit_file_insert":
 				if (MarkdownAnsi.IsMarkdownFile(filePath))
+				{
 					return RespMode.Markdown;
+				}
 				// A known code extension stays on the code path; only when the extension is unknown do we
 				// fall back to sniffing the body, so a stray '#' comment in a .cs file can't flip it.
 				if (string.IsNullOrEmpty(MarkdownAnsi.GuessLang(filePath)) && MarkdownAnsi.LooksLikeMarkdown(content))
+				{
 					return RespMode.Markdown;
+				}
+
 				return RespMode.Code;
 			case "ls":
 				return RespMode.Code;
@@ -592,7 +682,9 @@ internal static class BlockRenderer
 					continue;
 				}
 				foreach (string wrapped in AnsiString.WordWrapIndented(mdLine.Text, w))
+				{
 					result.Add(wrapped);
+				}
 			}
 		}
 		else if (mode == RespMode.EditDiff)
@@ -604,14 +696,20 @@ internal static class BlockRenderer
 			// Keep the source newlines, but word-wrap each line: plain text is neither code nor a table, so it
 			// should reflow to the viewport rather than run off the right edge.
 			foreach (string respLine in content.Replace("\r\n", "\n").Split('\n'))
+			{
 				foreach (string wrapped in AnsiString.WordWrapIndented(ExpandTabs(respLine), w))
+				{
 					result.Add(wrapped);
+				}
+			}
 		}
 		else
 		{
 			string lang = mode == RespMode.Bash ? "bash" : fileLang;
 			foreach (string respLine in content.Replace("\r\n", "\n").Split('\n'))
+			{
 				result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(respLine), lang, bgAnsi));
+			}
 		}
 	}
 
@@ -667,11 +765,17 @@ internal static class BlockRenderer
 				// Gather the removed run, then the added run that follows it.
 				int delStart = idx;
 				while (idx < n && markers[idx] == '-')
+				{
 					idx++;
+				}
+
 				int delCount = idx - delStart;
 				int addStart = idx;
 				while (idx < n && markers[idx] == '+')
+				{
 					idx++;
+				}
+
 				int addCount = idx - addStart;
 
 				bool pair = delCount > 0 && delCount == addCount;
@@ -697,12 +801,16 @@ internal static class BlockRenderer
 		string hiAnsi   = isAdd ? DisplayScreen.Palette.DiffAddHiAnsi : DisplayScreen.Palette.DiffDelHiAnsi;
 
 		if (counterpart == null)
+		{
 			return baseAnsi + gutter + body;
+		}
 
 		int cp = CommonPrefixLength(body, counterpart);
 		int cs = CommonSuffixLength(body, counterpart, cp);
 		if (cp + cs >= body.Length)
+		{
 			return baseAnsi + gutter + body;
+		}
 
 		string head = body.Substring( 0,                    cp);
 		string mid  = body.Substring(cp, body.Length - cs - cp);
@@ -715,7 +823,10 @@ internal static class BlockRenderer
 		int max = Math.Min(a.Length, b.Length);
 		int i   = 0;
 		while (i < max && a[i] == b[i])
+		{
 			i++;
+		}
+
 		return i;
 	}
 
@@ -724,7 +835,10 @@ internal static class BlockRenderer
 		int max = Math.Min(a.Length, b.Length) - prefix;
 		int i   = 0;
 		while (i < max && a[a.Length - 1 - i] == b[b.Length - 1 - i])
+		{
 			i++;
+		}
+
 		return i;
 	}
 
@@ -733,25 +847,42 @@ internal static class BlockRenderer
 	private static bool IsProseArg(string toolName, string propName)
 	{
 		if (toolName == "return_to_caller" && propName.Equals("output", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
+
 		if (toolName == "finish_review" && propName.Equals("comments", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
 		// task_complete's single argument is the whole review/integration summary the caller receives — it
 		// is the message itself, so render it as markdown prose rather than a labelled "results …" property.
 		if (toolName == "task_complete" && propName.Equals("results_of_review_work", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
+
 		if (toolName == "state_transition" && propName.Equals("context", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
 		// The delegation tools' prompt is a natural-language briefing — render it as prose, not as a labelled
 		// "prompt <value>" property, so the expanded block reads as the instruction itself.
 		if ((toolName == "assign_work" || toolName == "review_work") && propName.Equals("prompt", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
 		// The prompt is the body of the call — render it as prose itself, not as a labelled "prompt <value>" property.
 		if (toolName == "file_subagent" && propName.Equals("prompt", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
 		// stop_work's summary is free-form user text that should render as markdown.
 		if (toolName == "stop_work" && propName.Equals("summary", StringComparison.OrdinalIgnoreCase))
+		{
 			return true;
+		}
+
 		return false;
 	}
 
@@ -800,12 +931,16 @@ internal static class BlockRenderer
 	{
 		int paren = content.IndexOf('(');
 		if (paren < 0)
+		{
 			return content.Replace('\n', ' ');
+		}
 
 		string name     = content.Substring(0, paren).Trim();
 		string argsJson = content.Substring(paren + 1);
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+		{
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
+		}
 
 		JsonElement root   = default;
 		bool        parsed = false;
@@ -825,16 +960,27 @@ internal static class BlockRenderer
 		string Get(string key)
 		{
 			if (!parsed)
+			{
 				return string.Empty;
+			}
+
 			if (!root.TryGetProperty(key, out JsonElement el))
+			{
 				return string.Empty;
+			}
 			// Schema args can be typed (numbers, bools) not just strings, so read the raw
 			// text for anything that is not a string rather than forcing GetString(), which
 			// throws on a Number/Boolean element.
 			if (el.ValueKind == JsonValueKind.String)
+			{
 				return el.GetString() ?? string.Empty;
+			}
+
 			if (el.ValueKind == JsonValueKind.Null || el.ValueKind == JsonValueKind.Undefined)
+			{
 				return string.Empty;
+			}
+
 			return el.GetRawText();
 		}
 
@@ -863,7 +1009,9 @@ internal static class BlockRenderer
 		// ANSI styling so color does not bleed into the rest of the row.
 		int firstNewline = summary.IndexOf('\n');
 		if (firstNewline >= 0)
+		{
 			summary = summary.Substring(0, firstNewline) + DisplayScreen.Palette.ResetAnsi;
+		}
 
 		return summary;
 	}
@@ -871,13 +1019,24 @@ internal static class BlockRenderer
 	private static int CountLines(string? text)
 	{
 		if (string.IsNullOrEmpty(text))
+		{
 			return 0;
+		}
+
 		int count = 1;
 		for (int i = 0; i < text.Length; i++)
+		{
 			if (text[i] == '\n')
+			{
 				count++;
+			}
+		}
+
 		if (text[text.Length - 1] == '\n')
+		{
 			count--;
+		}
+
 		return Math.Max(1, count);
 	}
 
@@ -885,15 +1044,23 @@ internal static class BlockRenderer
 	{
 		int paren = content.IndexOf('(');
 		if (paren < 0)
+		{
 			return string.Empty;
+		}
+
 		string argsJson = content.Substring(paren + 1);
 		if (argsJson.Length > 0 && argsJson[argsJson.Length - 1] == ')')
+		{
 			argsJson = argsJson.Substring(0, argsJson.Length - 1);
+		}
+
 		try
 		{
 			using JsonDocument doc = JsonDocument.Parse(argsJson);
 			if (doc.RootElement.TryGetProperty(argName, out JsonElement el) && el.ValueKind == JsonValueKind.String)
+			{
 				return el.GetString() ?? string.Empty;
+			}
 		}
 		catch { }
 		return string.Empty;
@@ -908,7 +1075,10 @@ internal static class BlockRenderer
 	private static string BuildPathSummary(string label, string path, int respLineCount)
 	{
 		if (string.IsNullOrEmpty(path))
+		{
 			return label;
+		}
+
 		string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
 		return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}{tail}";
 	}
@@ -916,7 +1086,10 @@ internal static class BlockRenderer
 	private static string BuildWriteFileSummary(string label, string path, int writeLineCount)
 	{
 		if (string.IsNullOrEmpty(path))
+		{
 			return label;
+		}
+
 		string tail = writeLineCount > 0 ? $" ({writeLineCount} lines)" : string.Empty;
 		return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}{tail}";
 	}
@@ -924,7 +1097,10 @@ internal static class BlockRenderer
 	private static string BuildReadFileSummary(string label, string path, string offset, string lines, int respLineCount)
 	{
 		if (string.IsNullOrEmpty(path))
+		{
 			return label;
+		}
+
 		string tail = respLineCount > 0 ? $" ({respLineCount} lines)" : string.Empty;
 		if (!string.IsNullOrEmpty(offset) && !string.IsNullOrEmpty(lines))
 		{
@@ -934,7 +1110,10 @@ internal static class BlockRenderer
 			return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}  [{offset}-{end}]{tail}";
 		}
 		if (!string.IsNullOrEmpty(offset))
+		{
 			return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}  [from {offset}]{tail}";
+		}
+
 		return $"{label} {DisplayScreen.Palette.FileNameAnsi}{path}{DisplayScreen.Palette.ResetAnsi}{tail}";
 	}
 
@@ -947,22 +1126,33 @@ internal static class BlockRenderer
 			foreach (JsonElement item in list.EnumerateArray())
 			{
 				if (item.ValueKind == JsonValueKind.String)
+				{
 					paths.Add(item.GetString() ?? string.Empty);
+				}
 			}
 		}
 
 		string summary = label;
 		if (paths.Count > 0)
+		{
 			summary = $"{label} {DisplayScreen.Palette.FileNameAnsi}{string.Join(", ", paths)}{DisplayScreen.Palette.ResetAnsi}";
+		}
+
 		if (!string.IsNullOrEmpty(maxDimension) && maxDimension != "0")
+		{
 			summary = $"{summary}  [max {maxDimension} px]";
+		}
+
 		return summary;
 	}
 
 	private static string BuildRunCommandSummary(string label, string command)
 	{
 		if (string.IsNullOrEmpty(command))
+		{
 			return "$";
+		}
+
 		int    nl    = command.IndexOf('\n');
 		string first = nl >= 0 ? command.Substring(0, nl).TrimEnd() : command;
 		return $"$ {first}";
@@ -978,14 +1168,19 @@ internal static class BlockRenderer
 	private static string BuildGenericSummary(string label, JsonElement root, bool parsed)
 	{
 		if (!parsed)
+		{
 			return label;
+		}
+
 		foreach (JsonProperty prop in root.EnumerateObject())
 		{
 			if (prop.Value.ValueKind == JsonValueKind.String)
 			{
 				string val = prop.Value.GetString() ?? string.Empty;
 				if (!string.IsNullOrEmpty(val))
+				{
 					return $"{label} {DisplayScreen.Palette.FileNameAnsi}{val}{DisplayScreen.Palette.ResetAnsi}";
+				}
 			}
 		}
 		return label;

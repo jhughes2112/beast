@@ -28,7 +28,9 @@ internal static class ReasoningSummarizer
 		Dictionary<string, string> summaries = new Dictionary<string, string>(StringComparer.Ordinal);
 		List<string>               traces    = MechanicalCompaction.StaleTraces(history, kMinChars);
 		if (traces.Count > 0)
+		{
 			transport.Status(session.Id, $"[Compaction] Summarizing {traces.Count} reasoning trace(s).");
+		}
 
 		foreach (string thinking in traces)
 		{
@@ -39,7 +41,9 @@ internal static class ReasoningSummarizer
 				{
 					string? summary = await SummarizeAsync(session, service, thinking, roleService, registry, ct);
 					if (!string.IsNullOrWhiteSpace(summary))
+					{
 						summaries[thinking] = summary.Trim();
+					}
 				}
 			}
 			catch (Exception ex) when (ex is not OperationCanceledException)
@@ -75,7 +79,10 @@ internal static class ReasoningSummarizer
 		{
 			// A failed summary says nothing about the model the conversation depends on.
 			if (result.Outcome == ProtocolCallOutcome.Failed)
+			{
 				registry.ResetAvailability(service.Model.ConfigId);
+			}
+
 			session.QueryLog.Note($"Reasoning summary failed on {service.Model.Config.Name}: {result.ErrorMessage}");
 		}
 		return summary;

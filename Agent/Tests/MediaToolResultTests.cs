@@ -216,7 +216,9 @@ public static class MediaToolResultTests
 		foreach (JsonNode? msg in messages)
 		{
 			if (msg!["content"] is JsonArray parts && parts[1]!["type"]!.GetValue<string>() == "image_url")
+			{
 				images++;
+			}
 		}
 		return images;
 	}
@@ -460,7 +462,9 @@ public static class MediaToolResultTests
 		JsonArray parts = new JsonArray();
 		parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = "done" });
 		if (withImage)
+		{
 			parts.Add((JsonNode)new JsonObject { ["type"] = "image", ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = "image/png", ["data"] = "AAAA" } });
+		}
 
 		JsonObject result = new JsonObject { ["type"] = "tool_result", ["tool_use_id"] = toolId, ["content"] = parts };
 		return new JsonObject { ["role"] = "user", ["content"] = new JsonArray(result) };
@@ -470,7 +474,10 @@ public static class MediaToolResultTests
 	{
 		int count = 0;
 		for (int at = text.IndexOf(value, StringComparison.Ordinal); at >= 0; at = text.IndexOf(value, at + value.Length, StringComparison.Ordinal))
+		{
 			count++;
+		}
+
 		return count;
 	}
 

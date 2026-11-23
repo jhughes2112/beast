@@ -35,7 +35,9 @@ public class LlmModel
 		List<string> options = Config.ReasoningEfforts ?? new List<string>();
 		string       least   = Config.ThinkingRequired && options.Count > 0 ? options[0] : ReasoningEffort.Off;
 		if (string.Equals(Config.ReasoningEffort, least, StringComparison.OrdinalIgnoreCase))
+		{
 			return this;
+		}
 
 		ModelConfig quiet     = CopyConfig();
 		quiet.ReasoningEffort = least;

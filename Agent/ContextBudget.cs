@@ -53,7 +53,13 @@ public class ContextBudget
 	}
 
 	// Returns the pending tool-response reservation (for pessimistic estimation before tracer call).
-	public int PendingReserve => _pendingReserve;
+	public int PendingReserve
+	{
+		get
+		{
+			return _pendingReserve;
+		}
+	}
 
 	// Seeds the per-request window and limits and the authoritative starting size. The pending
 	// reservation is deliberately NOT cleared: this runs before EVERY provider call, including the
@@ -149,14 +155,22 @@ public class ContextBudget
 		long room = RoomToCompactionLine();
 		long want;
 		if (_measured > 0)
+		{
 			want = Math.Max(0, _windowSize - _measured - _pendingReserve - kWindowEdgeMargin);
+		}
 		else if (room <= 0)
+		{
 			want = 0;
+		}
 		else
+		{
 			want = Math.Min(OutputAllowance, room);
+		}
 
 		if (_maxOutputTokens > 0 && want > _maxOutputTokens)
+		{
 			want = _maxOutputTokens;
+		}
 
 		return (int)want;
 	}
@@ -181,9 +195,14 @@ public class ContextBudget
 	{
 		long margin;
 		if (measuredContextSize > 0)
+		{
 			margin = Math.Max(1024, measuredContextSize / 10);
+		}
 		else
+		{
 			margin = windowSize / 4;
+		}
+
 		return margin;
 	}
 
@@ -199,7 +218,10 @@ public class ContextBudget
 		{
 			int allowance = _maxOutputTokens > 0 ? _maxOutputTokens : kDefaultOutputBudget;
 			if (_outputCap > 0 && _outputCap < allowance)
+			{
 				allowance = _outputCap;
+			}
+
 			return allowance;
 		}
 	}
@@ -211,7 +233,9 @@ public class ContextBudget
 	public void ChargeToolResults(int tokens)
 	{
 		if (tokens > 0)
+		{
 			_pendingReserve += tokens;
+		}
 	}
 
 	// A provider response reported the new context size, which already includes every tool output

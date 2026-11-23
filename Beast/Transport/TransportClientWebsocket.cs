@@ -8,10 +8,10 @@ using System.Threading.Tasks;
 // Connects to ws://localhost:port/ and exchanges plain text messages.
 public class TransportClientWebsocket : ITransportClient, IDisposable
 {
-	private readonly string _url;
-	private readonly ClientLog _log;
-	private ClientWebSocket? _ws;
-	private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
+	private readonly string           _url;
+	private readonly ClientLog        _log;
+	private          ClientWebSocket? _ws;
+	private readonly SemaphoreSlim    _writeLock = new SemaphoreSlim(1, 1);
 
 	public TransportClientWebsocket(string url, ClientLog log)
 	{
@@ -32,7 +32,10 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
 	public async Task SendAsync(string text, CancellationToken cancellationToken)
 	{
 		if (_ws == null || _ws.State != WebSocketState.Open)
+		{
 			return;
+		}
+
 		byte[] bytes = Encoding.UTF8.GetBytes(text);
 		await _writeLock.WaitAsync(cancellationToken);
 		try
@@ -49,7 +52,10 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
 	public async Task<string?> ReceiveAsync(CancellationToken cancellationToken)
 	{
 		if (_ws == null || _ws.State != WebSocketState.Open)
+		{
 			return null;
+		}
+
 		byte[] buf = new byte[65536];
 		System.Collections.Generic.List<byte> msg = new System.Collections.Generic.List<byte>(65536);
 		try
@@ -58,10 +64,15 @@ public class TransportClientWebsocket : ITransportClient, IDisposable
 			{
 				WebSocketReceiveResult result = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), cancellationToken);
 				if (result.MessageType == WebSocketMessageType.Close)
+				{
 					return null;
+				}
+
 				msg.AddRange(new ArraySegment<byte>(buf, 0, result.Count));
 				if (result.EndOfMessage)
+				{
 					return Encoding.UTF8.GetString(msg.ToArray());
+				}
 			}
 		}
 		catch (OperationCanceledException)

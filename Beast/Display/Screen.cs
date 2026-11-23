@@ -15,8 +15,21 @@ public readonly struct Rgb
 		B = b;
 	}
 
-	public static Rgb Black => new Rgb(  0,   0,   0);
-	public static Rgb White => new Rgb(255, 255, 255);
+	public static Rgb Black
+	{
+		get
+		{
+			return new Rgb(0, 0, 0);
+		}
+	}
+
+	public static Rgb White
+	{
+		get
+		{
+			return new Rgb(255, 255, 255);
+		}
+	}
 
 	// Per-channel multiply by [0..1+] factor, saturating at 255.
 	public Rgb Scale(float factor)
@@ -25,17 +38,32 @@ public readonly struct Rgb
 		int g = (int)(G * factor);
 		int b = (int)(B * factor);
 		if (r < 0)
+		{
 			r = 0;
+		}
 		else if (r > 255)
+		{
 			r = 255;
+		}
+
 		if (g < 0)
+		{
 			g = 0;
+		}
 		else if (g > 255)
+		{
 			g = 255;
+		}
+
 		if (b < 0)
+		{
 			b = 0;
+		}
 		else if (b > 255)
+		{
 			b = 255;
+		}
+
 		return new Rgb((byte)r, (byte)g, (byte)b);
 	}
 
@@ -43,9 +71,15 @@ public readonly struct Rgb
 	public Rgb Lerp(Rgb other, float amount)
 	{
 		if (amount <= 0f)
+		{
 			return this;
+		}
+
 		if (amount >= 1f)
+		{
 			return other;
+		}
+
 		float inv = 1f - amount;
 		return new Rgb(
 			(byte)(R * inv + other.R * amount),
@@ -85,7 +119,13 @@ public readonly struct Cell
 	}
 
 	// A fully transparent cell — leaves the destination unchanged during a Normal blit.
-	public static Cell Transparent => new Cell('\0', null, null, CellStyle.None);
+	public static Cell Transparent
+	{
+		get
+		{
+			return new Cell('\0', null, null, CellStyle.None);
+		}
+	}
 
 	// A blank cell with the given background, foreground space char.
 	public static Cell Blank(Rgb? fg, Rgb? bg)
@@ -130,7 +170,10 @@ public readonly struct Rect
 		int x2 = (X + W) < (other.X + other.W) ? (X + W) : (other.X + other.W);
 		int y2 = (Y + H) < (other.Y + other.H) ? (Y + H) : (other.Y + other.H);
 		if (x2 <= x1 || y2 <= y1)
+		{
 			return new Rect(0, 0, 0, 0);
+		}
+
 		return new Rect(x1, y1, x2 - x1, y2 - y1);
 	}
 }
@@ -166,16 +209,24 @@ public sealed class Screen
 	public Screen(int w, int h, Cell fill)
 	{
 		if (w < 0)
+		{
 			w = 0;
+		}
+
 		if (h < 0)
+		{
 			h = 0;
+		}
+
 		_w     = w;
 		_h     = h;
 		_cells = new Cell[w * h];
 		if (w > 0 && h > 0)
 		{
 			for (int i = 0; i < _cells.Length; i++)
+			{
 				_cells[i] = fill;
+			}
 		}
 	}
 
@@ -188,17 +239,25 @@ public sealed class Screen
 		if (w == _w && w * h <= _cells.Length)
 		{
 			for (int i = _h * w; i < h * w; i++)
+			{
 				_cells[i] = fill;
+			}
 		}
 		else
 		{
 			Cell[] cells = new Cell[Math.Max(w * h, w * h * 3 / 2)];
 			for (int i = 0; i < cells.Length; i++)
+			{
 				cells[i] = fill;
+			}
+
 			int keepW = Math.Min(w, _w);
 			int keepH = Math.Min(h, _h);
 			for (int y = 0; y < keepH; y++)
+			{
 				Array.Copy(_cells, y * _w, cells, y * w, keepW);
+			}
+
 			_cells = cells;
 		}
 		_w = w;
@@ -208,14 +267,20 @@ public sealed class Screen
 	public Cell Get(int x, int y)
 	{
 		if (x < 0 || y < 0 || x >= W || y >= H)
+		{
 			return Cell.Transparent;
+		}
+
 		return _cells[y * W + x];
 	}
 
 	public void Set(int x, int y, Cell cell)
 	{
 		if (x < 0 || y < 0 || x >= W || y >= H)
+		{
 			return;
+		}
+
 		_cells[y * W + x] = cell;
 	}
 
@@ -232,7 +297,9 @@ public sealed class Screen
 		{
 			int rowBase = y * W;
 			for (int x = clipped.X; x < clipped.Right; x++)
+			{
 				_cells[rowBase + x] = cell;
+			}
 		}
 	}
 
@@ -241,7 +308,10 @@ public sealed class Screen
 	public int WriteText(int x, int y, string text, Rgb? fg, Rgb? bg, CellStyle style)
 	{
 		if (y < 0 || y >= H)
+		{
 			return x;
+		}
+
 		int rowBase = y * W;
 		int cx      = x;
 		foreach (char c in text)
@@ -250,14 +320,21 @@ public sealed class Screen
 			char glyph = char.IsSurrogate(c) ? '?' : c;
 			int  width = CharWidth.Of(glyph);
 			if (width == 0)
+			{
 				continue; // zero-width combining mark: consumes no column
+			}
+
 			if (cx >= W)
+			{
 				break;
+			}
 			// A wide glyph at the right edge has no room for its second column; pad with a space instead.
 			if (width == 2 && cx == W - 1)
 			{ glyph = ' '; width = 1; }
 			if (cx >= 0)
+			{
 				_cells[rowBase + cx] = new Cell(glyph, fg, bg, style);
+			}
 			// A wide glyph reserves the next cell too; the ANSI writer skips it to preserve its width.
 			cx += width;
 		}
@@ -285,12 +362,16 @@ public sealed class Screen
 	{
 		Rect sr = srcRect.HasValue ? srcRect.Value.Intersect(src.Bounds) : src.Bounds;
 		if (sr.W == 0 || sr.H == 0)
+		{
 			return;
+		}
 
 		// Destination rectangle in this screen's coordinates.
 		Rect dr = new Rect(dstX, dstY, sr.W, sr.H).Intersect(Bounds);
 		if (dr.W == 0 || dr.H == 0)
+		{
 			return;
+		}
 
 		int srcOffsetX = sr.X + (dr.X - dstX);
 		int srcOffsetY = sr.Y + (dr.Y - dstY);
@@ -313,10 +394,14 @@ public sealed class Screen
 		// Replace is fully opaque: copy the source verbatim (style and all) so nothing from the
 		// destination — including underline/italic — survives under the overlay.
 		if (mode == BlendMode.Replace)
+		{
 			return new Cell(src.Ch == '\0' ? ' ' : src.Ch, src.Fg, src.Bg, src.Style);
+		}
 
 		if (src.IsTransparent)
+		{
 			return dst;
+		}
 
 		char      outCh    = src.Ch != '\0' ? src.Ch : dst.Ch;
 		CellStyle outStyle = src.Style != CellStyle.None ? src.Style : dst.Style;
@@ -340,9 +425,15 @@ public sealed class Screen
 	private static Rgb? BlendChannel(Rgb? dst, Rgb? src, BlendMode mode)
 	{
 		if (!src.HasValue)
+		{
 			return dst;
+		}
+
 		if (!dst.HasValue)
+		{
 			return src;
+		}
+
 		Rgb d = dst.Value;
 		Rgb s = src.Value;
 		switch (mode)
@@ -360,13 +451,22 @@ public sealed class Screen
 			case BlendMode.Add:
 				int r = d.R + s.R;
 				if (r > 255)
+				{
 					r = 255;
+				}
+
 				int g = d.G + s.G;
 				if (g > 255)
+				{
 					g = 255;
+				}
+
 				int b = d.B + s.B;
 				if (b > 255)
+				{
 					b = 255;
+				}
+
 				return new Rgb((byte)r, (byte)g, (byte)b);
 			default:
 				return src;

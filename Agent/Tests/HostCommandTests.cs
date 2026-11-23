@@ -39,12 +39,21 @@ public static class HostCommandTests
 
 			// No role's own prompt says anything about seeded runs: that is added only while one is under way.
 			foreach (string name in new[] { "Default", "Developer", "Reviewer", FileSubagent.RoleName, "WebSearch", "MediaReader", ReasoningSummarizer.RoleName })
+			{
 				ctx.Assert(!noHost.GetRole(name)!.SystemPrompt.Contains("seeded", StringComparison.OrdinalIgnoreCase), $"Seeded run: {name}'s own prompt leaves it out");
+			}
+
 			foreach (string name in new[] { "Default", "Developer", "Reviewer" })
+			{
 				ctx.Assert(noHost.GetRole(name)!.Tools.Contains("browser_screenshot"), $"Screenshot: {name} has the tool");
+			}
 
 			Session seededSession = new Session(new BeastSession("s", "s", "m", "r", string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true), "Be helpful.", transport, false);
-			string  SystemText() => seededSession.Bundle.Canonical.Messages[0] is SystemMessage message ? message.Text : string.Empty;
+			string  SystemText()
+			{
+				return seededSession.Bundle.Canonical.Messages[0] is SystemMessage message ? message.Text : string.Empty;
+			}
+
 			seededSession.SetSeededRun(false);
 			ctx.AssertEqual("Be helpful.", SystemText(), "Seeded run: without a seed the prompt is untouched");
 			seededSession.SetSeededRun(true);
@@ -148,7 +157,9 @@ public static class HostCommandTests
 		foreach ((FrameType Type, string Text) frame in transport.Snapshot())
 		{
 			if (frame.Type == FrameType.Config && KindOf(frame.Text) == kind)
+			{
 				count++;
+			}
 		}
 		return count;
 	}
@@ -165,12 +176,17 @@ public static class HostCommandTests
 				if (id.Length == 0 && frame.Type == FrameType.Config && KindOf(frame.Text) == kind)
 				{
 					if (seen == skip)
+					{
 						id = JsonNode.Parse(frame.Text)?["id"]?.GetValue<string>() ?? string.Empty;
+					}
+
 					seen++;
 				}
 			}
 			if (id.Length == 0)
+			{
 				await Task.Delay(10, ct);
+			}
 		}
 		return id;
 	}
@@ -189,7 +205,10 @@ public static class HostCommandTests
 		foreach ((FrameType Type, string Text) frame in transport.Snapshot())
 		{
 			if (done)
+			{
 				continue;
+			}
+
 			if (frame.Type == FrameType.StreamStart && frame.Text == StreamTag.Host)
 			{
 				open = true;

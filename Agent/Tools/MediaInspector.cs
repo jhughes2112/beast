@@ -59,9 +59,14 @@ public class MediaInspector
 		CancellationToken     ct)
 	{
 		if (filePaths.Count == 0)
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: file_paths must name at least one file", 1, 0);
+		}
+
 		if (maxDimension < 0)
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: max_dimension must be a positive number of pixels", 1, 0);
+		}
 
 		// Every file must resolve before any is sent: a comparison missing one side is not the one asked for.
 		List<Item> items = new List<Item>();
@@ -69,7 +74,10 @@ public class MediaInspector
 		{
 			(Item? item, string error) = await ResolveAsync(filePath, maxDimension, ct);
 			if (item == null)
+			{
 				return new ToolResult(toolCallId, string.Empty, error, 1, 0);
+			}
+
 			items.Add(item);
 		}
 
@@ -80,13 +88,18 @@ public class MediaInspector
 		{
 			string? sizeNote = LargeNote(item);
 			if (sizeNote != null && session.MarkLargeMediaSeen(item.SendPath))
+			{
 				sizeNotes.Add(sizeNote);
+			}
 		}
 		if (sizeNotes.Count > 0)
 		{
 			string notes = string.Join("\n", sizeNotes);
 			if (items.Count > 1)
+			{
 				notes = $"{notes}\nNothing was sent for any of the {items.Count} files.";
+			}
+
 			return new ToolResult(toolCallId, notes, string.Empty, 0, ToolDispatch.EstimateTokens(notes));
 		}
 
@@ -95,7 +108,10 @@ public class MediaInspector
 		foreach (Item item in items)
 		{
 			if (!kinds.Contains(item.Kind))
+			{
 				kinds.Add(item.Kind);
+			}
+
 			files.Add(new MediaFile(item.SendPath, item.MimeType));
 		}
 
@@ -119,7 +135,9 @@ public class MediaInspector
 
 		// The subagent path is the only one that needs the MediaReader role.
 		if (mediaRole == null)
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: no MediaReader role is configured, so the files cannot be handed to a subagent. Add the role in roles.json, or switch to a model that accepts this input with /model.", 1, 0);
+		}
 
 		// Candidates come from the MediaReader role's own list, in its order — the user arranges
 		// that order in /role, and it beats any cheapest-first guess. One reader sees every file,
@@ -128,10 +146,14 @@ public class MediaInspector
 		foreach (LlmModel model in MediaKinds.CapableModels(registry, kinds[0], mediaRole.Models))
 		{
 			if (SupportsAll(model.Config, kinds))
+			{
 				capable.Add(model);
+			}
 		}
 		if (capable.Count == 0)
+		{
 			return new ToolResult(toolCallId, string.Empty, $"Error: no model in the MediaReader role declares {Modalities(kinds)} input. Enable one with /config (its modalities are discovered or set there).", 1, 0);
+		}
 
 		return await InspectWithModelsAsync(toolCallId, files, goal, mediaRole, capable, registry, session, transport, maxOutputTokens, ct);
 	}
@@ -141,31 +163,46 @@ public class MediaInspector
 	private static async Task<(Item? Item, string Error)> ResolveAsync(string filePath, int maxDimension, CancellationToken ct)
 	{
 		if (string.IsNullOrWhiteSpace(filePath))
+		{
 			return (null, "Error: file_paths cannot contain an empty path");
+		}
 
 		// The resolved path, symlinks followed, is the one read. Dropped attachments in the agent's state
 		// folder are the one place outside the model's reach it may look, since it is told it can look again.
 		(string? confined, string denied) = Sandbox.Confine(filePath, false, true);
 		if (confined == null)
+		{
 			return (null, denied);
+		}
+
 		if (!File.Exists(confined))
+		{
 			return (null, $"Error: File not found: {filePath}");
+		}
 
 		(MediaKind kind, string mimeType) = MediaKinds.Classify(filePath);
 		if (kind == MediaKind.Text || kind == MediaKind.Unknown)
+		{
 			return (null, $"Error: '{Path.GetExtension(filePath)}' ({filePath}) is not media this tool can interpret. Images, audio, and video only — use read_file for text.");
+		}
 
 		long fileBytes = new FileInfo(confined).Length;
 		if (fileBytes > MaxFileBytes)
+		{
 			return (null, $"Error: {filePath} is {fileBytes / (1024 * 1024)}MB; the limit is {MaxFileBytes / (1024 * 1024)}MB.");
+		}
 
 		MediaProbe probe = await MediaProbe.ProbeAsync(confined, ct);
 		if (kind != MediaKind.Image || maxDimension == 0 || (probe.Width <= maxDimension && probe.Height <= maxDimension))
+		{
 			return (new Item(filePath, confined, kind, mimeType, fileBytes, probe, string.Empty), string.Empty);
+		}
 
 		(string? scaled, string scaledMime, string error) = await DownscaleAsync(confined, maxDimension, ct);
 		if (scaled == null)
+		{
 			return (null, $"Error: {filePath} could not be downscaled to {maxDimension} px: {error}");
+		}
 
 		MediaProbe scaledProbe = await MediaProbe.ProbeAsync(scaled, ct);
 		return (new Item(filePath, scaled, kind, scaledMime, new FileInfo(scaled).Length, scaledProbe, $"{probe.Width}x{probe.Height}"), string.Empty);
@@ -189,7 +226,10 @@ public class MediaInspector
 			byte[] buffer = new byte[81920];
 			int    read;
 			while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+			{
 				hash.AppendData(buffer, 0, read);
+			}
+
 			hash.AppendData(Encoding.UTF8.GetBytes($"|{ScaleFlags}"));
 			identity = hash.GetHashAndReset();
 		}
@@ -209,7 +249,10 @@ public class MediaInspector
 				CreateNoWindow         = true
 			};
 			foreach (string arg in new string[] { "-v", "error", "-y", "-i", source, "-vf", $"scale={maxDimension}:{maxDimension}:force_original_aspect_ratio=decrease:flags={ScaleFlags}", "-frames:v", "1" })
+			{
 				psi.ArgumentList.Add(arg);
+			}
+
 			if (jpeg)
 			{
 				psi.ArgumentList.Add("-q:v");
@@ -244,7 +287,10 @@ public class MediaInspector
 	{
 		bool all = true;
 		foreach (MediaKind kind in kinds)
+		{
 			all = all && MediaKinds.Supports(config, kind);
+		}
+
 		return all;
 	}
 
@@ -253,7 +299,10 @@ public class MediaInspector
 	{
 		List<string> names = new List<string>();
 		foreach (MediaKind kind in kinds)
+		{
 			names.Add($"'{MediaKinds.Modality(kind)}'");
+		}
+
 		return string.Join(" and ", names);
 	}
 
@@ -280,9 +329,14 @@ public class MediaInspector
 
 		string facts;
 		if (kind == MediaKind.Image)
+		{
 			facts = probe.Width > 0 ? $"{probe.Width}x{probe.Height} px, {size}" : size;
+		}
 		else
+		{
 			facts = probe.DurationSeconds > 0 ? $"{probe.DurationSeconds:F0} s, {size}" : size;
+		}
+
 		return facts;
 	}
 
@@ -355,7 +409,9 @@ public class MediaInspector
 		{
 			LlmService? service = registry.CreateServiceById(model.ConfigId, 0, registry.SeedOf(session));
 			if (service == null)
+			{
 				continue;
+			}
 
 			// Throwaway stage session reusing the caller's ID: nothing is announced or saved, and
 			// cost rolls up to the real session.

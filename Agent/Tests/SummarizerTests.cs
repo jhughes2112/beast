@@ -78,7 +78,10 @@ public static class SummarizerTests
 	{
 		int total = 0;
 		foreach (string block in blocks)
+		{
 			total += block.Length;
+		}
+
 		return total;
 	}
 

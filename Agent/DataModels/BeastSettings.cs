@@ -481,7 +481,9 @@ public class JsonObjectListConverter : JsonConverter<List<JsonObject>>
 			foreach (JsonNode? item in array)
 			{
 				if (item is JsonObject obj)
+				{
 					result.Add((JsonObject)obj.DeepClone());
+				}
 			}
 		}
 		else if (node is JsonObject single)

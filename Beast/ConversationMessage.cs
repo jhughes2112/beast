@@ -75,9 +75,21 @@ public class DisplayMessage
 
 	// Moves on whenever the text is replaced rather than appended to, so a renderer that has consumed the
 	// text so far can tell growth from a rewrite without comparing it.
-	public int Generation => _generation;
+	public int Generation
+	{
+		get
+		{
+			return _generation;
+		}
+	}
 
-	public int Length => _text.Length;
+	public int Length
+	{
+		get
+		{
+			return _text.Length;
+		}
+	}
 
 	public void Append(string chunk)
 	{
@@ -86,10 +98,16 @@ public class DisplayMessage
 	}
 
 	// The text from start to the end: what arrived since a reader last consumed start characters.
-	public string Since(int start) => _text.ToString(start, _text.Length - start);
+	public string Since(int start)
+	{
+		return _text.ToString(start, _text.Length - start);
+	}
 
 	// Up to count characters from the start of the text.
-	public string Head(int count) => _text.ToString(0, Math.Min(count, _text.Length));
+	public string Head(int count)
+	{
+		return _text.ToString(0, Math.Min(count, _text.Length));
+	}
 
 	// When this is a ToolCall slot, holds the paired ToolResponse stdout (or null if not yet received).
 	public string? PairedResponseContent { get; set; }
@@ -124,11 +142,21 @@ public class ConversationModel
 	// Fired on every Update() or ToggleCollapsed() call. Argument is the affected message.
 	public event System.Action<DisplayMessage>? MessageUpdated;
 
-	public IReadOnlyList<DisplayMessage> Messages => _messages;
+	public IReadOnlyList<DisplayMessage> Messages
+	{
+		get
+		{
+			return _messages;
+		}
+	}
 
 	public CollapseMode Mode
 	{
-		get => _mode;
+		get
+		{
+			return _mode;
+		}
+
 		set
 		{
 			_mode = value;
@@ -197,9 +225,14 @@ public class ConversationModel
 		if (type == FrameType.ToolCall)
 		{
 			if (isNew)
+			{
 				msg.ToolCallStartedUtc = DateTime.UtcNow;
+			}
+
 			if (!string.IsNullOrEmpty(callId))
+			{
 				_pendingToolCallById[callId] = index;
+			}
 		}
 		else if (type == FrameType.ToolResponse)
 		{
@@ -217,7 +250,10 @@ public class ConversationModel
 				callMsg.PairedResponseError   = stdErr;
 				callMsg.PairedResponseIsError = exitCode != 0;
 				if (callMsg.ToolCallStartedUtc != default)
+				{
 					callMsg.ToolDuration = DateTime.UtcNow - callMsg.ToolCallStartedUtc;
+				}
+
 				MessageUpdated?.Invoke(callMsg);
 			}
 			// Mark this slot as hidden (reuse Debug type which is hidden in all non-verbose modes).
@@ -239,12 +275,18 @@ public class ConversationModel
 	public void ToggleCollapsed(int index)
 	{
 		if (index < 0 || index >= _messages.Count)
+		{
 			return;
+		}
+
 		DisplayMessage msg = _messages[index];
 		// Output (assistant) and User blocks are never shown collapsed regardless of mode, so a click
 		// on them is a no-op rather than a state flip the user can't visually unwind.
 		if (msg.Type == FrameType.Output || msg.Type == FrameType.User)
+		{
 			return;
+		}
+
 		msg.Collapsed = !msg.Collapsed;
 		MessageUpdated?.Invoke(msg);
 	}
@@ -253,17 +295,23 @@ public class ConversationModel
 	public static bool ShouldHide(FrameType type, CollapseMode mode)
 	{
 		if (mode == CollapseMode.Verbose)
+		{
 			return false;
+		}
 
 		// Debug is always hidden in non-verbose modes.
 		if (type == FrameType.Debug)
+		{
 			return true;
+		}
 
 		// Quiet: hide everything except Output, User, and the error/alert blocks — a
 		// human-actionable Alert must never be hidden by a display mode. A command running on the
 		// user's own machine always shows too.
 		if (mode == CollapseMode.Quiet)
+		{
 			return type != FrameType.Output && type != FrameType.User && type != FrameType.Error && type != FrameType.Alert && type != FrameType.Host;
+		}
 
 		return false;
 	}
@@ -271,16 +319,22 @@ public class ConversationModel
 	private static bool ShouldCollapse(FrameType type, CollapseMode mode)
 	{
 		if (mode == CollapseMode.Verbose)
+		{
 			return false;
+		}
 
 		// Output, User, and Alerts are never collapsed in any mode — an Alert exists precisely
 		// to stay in the user's face until the underlying problem is fixed. Neither is a live host command.
 		if (type == FrameType.Output || type == FrameType.User || type == FrameType.Alert || type == FrameType.Host)
+		{
 			return false;
+		}
 
 		// Minimized: Tool/ToolCall/ToolResponse/Thinking/System shown collapsed.
 		if (mode == CollapseMode.Minimized)
+		{
 			return type == FrameType.Thinking || type == FrameType.Tool || type == FrameType.ToolCall || type == FrameType.ToolResponse || type == FrameType.System;
+		}
 
 		// Quiet: collapse everything not already hidden.
 		return true;

@@ -69,6 +69,7 @@ public static class ModelCatalogTests
 		TestNormalizeRequestEndpoint(ctx);
 		TestClaudeCodeEndpoint(ctx);
 		TestChatGptSubscription(ctx);
+		TestAntigravityEndpoint(ctx);
 		TestParseEntryShapes(ctx);
 		TestEnabledModelsChanged(ctx);
 		TestLmStudioEnrichment(ctx);
@@ -116,7 +117,9 @@ public static class ModelCatalogTests
 		finally
 		{
 			if (System.IO.File.Exists(victim))
+			{
 				System.IO.File.Delete(victim);
+			}
 		}
 	}
 
@@ -366,7 +369,9 @@ public static class ModelCatalogTests
 
 		ctx.Assert(session.HasPending, "Flush: text with media waiting stays queued for the drain");
 		foreach (CanonicalMessage msg in session.Bundle.Canonical.Messages)
+		{
 			ctx.Assert(!(msg is UserMessage), "Flush: no message is committed while its media is unresolved");
+		}
 
 		// Once the drain has taken the attachments, the flush behaves normally again.
 		ctx.AssertEqual(1, session.TakePendingAttachments().Count, "Flush: the drain takes the staged files");
@@ -577,6 +582,46 @@ public static class ModelCatalogTests
 		string bare = ClaudeCode.DescribeLimit(refusal, null, now);
 		ctx.AssertContains(bare, "Resets in 1h 4m (22:34 UTC)", "ClaudeCode: with no window usage seen, the refusal's reset stands in");
 		ctx.Assert(!ClaudeCode.LimitResetsAt(null, latest).HasValue, "ClaudeCode: a warning that refused nothing sets no retry time");
+	}
+
+	// The Google subscription: its marker URL survives normalization, and a session/new reply (trimmed
+	// from a real one) becomes one model per picker entry, each with the thinking levels its ids come in.
+	private static void TestAntigravityEndpoint(TestContext ctx)
+	{
+		ctx.Assert(Antigravity.IsEndpoint(Antigravity.EndpointUrl), "Antigravity: the marker URL is recognized");
+		ctx.Assert(!Antigravity.IsEndpoint("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"), "Antigravity: the API endpoint is not the subscription");
+		ctx.AssertEqual(Antigravity.EndpointUrl, ModelCatalog.NormalizeRequestEndpoint(Antigravity.EndpointUrl), "Antigravity: normalization leaves the marker alone");
+		ctx.AssertEqual("gemini-4-neon", Antigravity.CliModel("antigravity/gemini-4-neon"), "Antigravity: the CLI's model name drops the prefix");
+
+		JsonObject session = JsonNode.Parse("""
+			{"sessionId":"d752c0e9","models":{"availableModels":[
+				{"modelId":"gemini-4-neon-high","name":"Gemini 4 Neon (High)"},{"modelId":"gemini-4-neon-xhigh","name":"Gemini 4 Neon (XHigh)"},
+				{"modelId":"gemini-4-neon-medium","name":"Gemini 4 Neon (Medium)"},{"modelId":"gemini-4-neon-low","name":"Gemini 4 Neon (Low)"},
+				{"modelId":"gemini-pro-orchestrator-neon","name":"Orchestrator (Neon)"},
+				{"modelId":"gpt-oss-120b-medium","name":"GPT-OSS 120B (Medium)"}],"currentModelId":"gemini-4-neon-high"},
+			 "configOptions":[
+				{"id":"model","name":"Model","type":"select","currentValue":"gemini-4-neon","options":[
+					{"value":"gemini-4-neon","name":"Gemini 4 Neon"},{"value":"gemini-pro-orchestrator-neon","name":"Orchestrator (Neon)"},
+					{"value":"gpt-oss-120b-medium","name":"GPT-OSS 120B (Medium)"}]},
+				{"id":"thought_level","name":"Thinking Level","type":"select","currentValue":"high","options":[{"value":"low","name":"Low"}]}]}
+			""")!.AsObject();
+		List<DiscoveredModel> catalog = Antigravity.ParseCatalog(session);
+		ctx.AssertEqual(3, catalog.Count, "Antigravity: one entry per model of the picker, not per thinking level");
+		if (catalog.Count == 3)
+		{
+			ctx.AssertEqual("antigravity/gemini-4-neon", catalog[0].Id, "Antigravity: ids carry the subscription prefix");
+			ctx.AssertEqual("Gemini 4 Neon (subscription)", catalog[0].Name, "Antigravity: named for the model");
+			ctx.AssertEqual("low,medium,high,xhigh", string.Join(",", catalog[0].Efforts!), "Antigravity: the levels a model's ids come in, lowest first");
+			ctx.Assert(catalog[0].ThinkingRequired, "Antigravity: a model with levels has no id without one");
+			ctx.AssertEqual(0, catalog[1].Efforts!.Count, "Antigravity: a model whose name only extends another's has no levels");
+			ctx.AssertEqual(0, catalog[2].Efforts!.Count, "Antigravity: a model with a single id has no level to choose");
+			ctx.AssertEqual(0m, catalog[2].CostInput, "Antigravity: costs nothing per token");
+		}
+		ctx.AssertEqual(0, Antigravity.ParseCatalog(new JsonObject()).Count, "Antigravity: a reply without a model picker lists nothing");
+
+		ctx.AssertEqual("1//abc", Antigravity.ReadRefreshToken("{\"token\":{\"access_token\":\"ya29\",\"refresh_token\":\"1//abc\"},\"auth_method\":\"consumer\"}"),
+			"Antigravity: the refresh token is read from the CLI's token file");
+		ctx.AssertEqual("", Antigravity.ReadRefreshToken("not json"), "Antigravity: an unreadable token file yields no token");
 	}
 
 	// The ChatGPT subscription: its endpoint is recognized and left as configured, the backend's
@@ -792,7 +837,10 @@ public static class ModelCatalogTests
 		{
 			return (DiscoveredModel)Reflect.Static(typeof(ModelCatalog), "ParseEntry", new[] { typeof(JsonNode), typeof(bool) }, new object[] { JsonNode.Parse(json)!, anthropic })!;
 		}
-		string Words(DiscoveredModel model) => string.Join(",", model.Efforts ?? new List<string>());
+		string Words(DiscoveredModel model)
+		{
+			return string.Join(",", model.Efforts ?? new List<string>());
+		}
 
 		DiscoveredModel claude = Parse("""
 			{"id":"claude-opus-5-5","capabilities":{

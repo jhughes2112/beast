@@ -23,7 +23,10 @@ public static class ToolDispatch
 	public static int EstimateTokens(string text)
 	{
 		if (string.IsNullOrEmpty(text))
+		{
 			return 1;
+		}
+
 		return Math.Max(1, (text.Length + CharsPerToken - 1) / CharsPerToken);
 	}
 
@@ -41,7 +44,9 @@ public static class ToolDispatch
 	{
 		string content = raw.StdOut;
 		if (!string.IsNullOrEmpty(raw.StdErr))
+		{
 			content = content + "\nstderr: " + raw.StdErr;
+		}
 
 		int estimated = EstimateTokens(content);
 		int cap       = maxOutputTokens > 0 ? Math.Min(maxOutputTokens, MaxRawOutputTokens) : MaxRawOutputTokens;
@@ -84,13 +89,17 @@ public static class ToolDispatch
 	public static async Task<bool> DispatchAsync(ProtocolCallPayload payload, Tool[] tools, Session session, ITransportServer transport, CancellationToken ct, bool seeded = false)
 	{
 		if (payload.ToolCalls.Count == 0)
+		{
 			return false;
+		}
 
 		// Build the lookup once and reuse across both FixToolCalls and ExecuteToolAsync so each call
 		// resolves in O(1) instead of rescanning the tool array.
 		Dictionary<string, Tool> toolLookup = new Dictionary<string, Tool>(tools.Length);
 		foreach (Tool t in tools)
+		{
 			toolLookup[t.Definition.Function.Name] = t;
+		}
 
 		List<SemanticToolCall> toolCalls = new List<SemanticToolCall>(payload.ToolCalls);
 
@@ -164,7 +173,10 @@ public static class ToolDispatch
 		// measurement; a raw handler's output carries its own estimate.
 		int roundTokens = 0;
 		foreach (ToolResult settled in payload.ToolResults)
+		{
 			roundTokens += settled.MeasuredOutputTokens;
+		}
+
 		session.Budget.ChargeToolResults(roundTokens);
 		session.SendStats();
 
@@ -172,7 +184,9 @@ public static class ToolDispatch
 		// propagates — after all siblings are settled — so the caller's cancellation guard parks/unwinds
 		// exactly as before; a per-tool failure never gets that far.
 		if (cancelled)
+		{
 			throw new OperationCanceledException(ct);
+		}
 
 		return true;
 	}

@@ -50,7 +50,9 @@ public static class DecisionClient
 		{
 			JsonObject criteria = new JsonObject();
 			foreach ((string option, DecisionOption meaning) in question.Options)
+			{
 				criteria[option] = meaning.Description;
+			}
 
 			asked[key] = new JsonObject
 			{
@@ -81,14 +83,19 @@ public static class DecisionClient
 			using HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, model.Endpoint);
 			req.Content                  = new StringContent(BuildRequest(model.Config.Id, state, questions).ToJsonString(), Encoding.UTF8, "application/json");
 			if (!string.IsNullOrEmpty(model.ApiKey))
+			{
 				req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {model.ApiKey}");
+			}
+
 			foreach (JsonObject headers in model.Headers)
 			{
 				foreach ((string name, JsonNode? value) in headers)
 				{
 					string? text = value?.ToString();
 					if (!string.IsNullOrEmpty(text))
+					{
 						req.Headers.TryAddWithoutValidation(name, text);
+					}
 				}
 			}
 
@@ -102,7 +109,9 @@ public static class DecisionClient
 			{
 				answers = JsonNode.Parse(body)?["answers"] as JsonObject;
 				if (answers == null)
+				{
 					error = $"no answers in the response: {Clip(body)}";
+				}
 			}
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -39,9 +39,15 @@ public static class ConfigOverlayTests
 			overlay.OnConfigFrame("{\"kind\":\"catalog\",\"baseUrl\":\"http://x/v1\",\"models\":[" + modelJson + "]}");
 			Press(overlay, ConsoleKey.Enter);
 			for (int i = 0; i < 5; i++)
+			{
 				Press(overlay, ConsoleKey.DownArrow);
+			}
+
 			for (int i = 0; i < presses; i++)
+			{
 				Press(overlay, ConsoleKey.Enter);
+			}
+
 			LeavePassing(overlay, sent);
 			Press(overlay, ConsoleKey.Escape);
 			return SavedEntry(sent, "m")?["reasoningEffort"]?.GetValue<string>() ?? string.Empty;
@@ -147,7 +153,9 @@ public static class ConfigOverlayTests
 		foreach (string command in sent)
 		{
 			if (command.StartsWith(Prefix, StringComparison.Ordinal))
+			{
 				last = JsonNode.Parse(command.Substring(Prefix.Length));
+			}
 		}
 		return last;
 	}
@@ -158,7 +166,9 @@ public static class ConfigOverlayTests
 		foreach (string command in sent)
 		{
 			if (command.StartsWith("/config-test ", StringComparison.Ordinal))
+			{
 				count++;
+			}
 		}
 		return count;
 	}
@@ -172,7 +182,10 @@ public static class ConfigOverlayTests
 
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 10; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "NaN");
 		Press(overlay,  ConsoleKey.Enter);
@@ -202,7 +215,10 @@ public static class ConfigOverlayTests
 		overlay.OnConfigFrame(Catalog.Replace("\"modalities\":[\"text\"]}", "\"modalities\":[\"text\"],\"configured\":true,\"override\":{\"temperature\":0.7,\"topP\":0.9}}", StringComparison.Ordinal));
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 10; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Delete);
 		LeavePassing(overlay, sent);
 		Press(overlay, ConsoleKey.Escape);
@@ -220,7 +236,10 @@ public static class ConfigOverlayTests
 
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 9; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "abc");
 		Press(overlay,  ConsoleKey.Enter);
@@ -239,7 +258,10 @@ public static class ConfigOverlayTests
 		overlay.OnConfigFrame(Catalog.Replace("\"modalities\":[\"text\"]}", "\"modalities\":[\"text\"],\"configured\":true,\"override\":{\"seed\":7}}", StringComparison.Ordinal));
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 9; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Delete);
 		LeavePassing(overlay, sent);
 		Press(overlay, ConsoleKey.Escape);
@@ -254,7 +276,10 @@ public static class ConfigOverlayTests
 		overlay.OnConfigFrame(Catalog.Replace("\"baseUrl\":\"http://x/v1\",", "\"baseUrl\":\"http://x/v1\",\"seedSupported\":false,", StringComparison.Ordinal));
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 9; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "5");
 		Press(overlay,  ConsoleKey.Enter);
@@ -323,7 +348,10 @@ public static class ConfigOverlayTests
 
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 7; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Enter);
 		LeavePassing(overlay, sent);
 		Press(overlay, ConsoleKey.Escape);
@@ -369,7 +397,10 @@ public static class ConfigOverlayTests
 
 		Press(overlay, ConsoleKey.Enter);
 		for (int i = 0; i < 8; i++)
+		{
 			Press(overlay, ConsoleKey.DownArrow);
+		}
+
 		Press(overlay, ConsoleKey.Enter);
 		Type(overlay, "900");
 		Press(overlay, ConsoleKey.Enter);
@@ -399,7 +430,9 @@ public static class ConfigOverlayTests
 	private static void Type(ConfigOverlay overlay, string text)
 	{
 		foreach (char c in text)
+		{
 			overlay.HandleKey(new ConsoleKeyInfo(c, ConsoleKey.NoName, false, false, false));
+		}
 	}
 
 	// The model's entry in the apply that was sent; null when no apply went out or it left the model out.
@@ -415,7 +448,9 @@ public static class ConfigOverlayTests
 				foreach (JsonNode? model in models ?? new JsonArray())
 				{
 					if (model?["id"]?.GetValue<string>() == id)
+					{
 						entry = model.AsObject();
+					}
 				}
 			}
 		}

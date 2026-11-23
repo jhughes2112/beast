@@ -56,17 +56,30 @@ public static class MediaKinds
 		string extension = System.IO.Path.GetExtension(path);
 
 		if (kImage.TryGetValue(extension, out string? imageMime))
+		{
 			return (MediaKind.Image, imageMime);
+		}
+
 		if (kAudio.TryGetValue(extension, out string? audioMime))
+		{
 			return (MediaKind.Audio, audioMime);
+		}
+
 		if (kVideo.TryGetValue(extension, out string? videoMime))
+		{
 			return (MediaKind.Video, videoMime);
+		}
+
 		if (kText.Contains(extension))
+		{
 			return (MediaKind.Text, string.Empty);
+		}
 
 		// An extensionless file (Dockerfile, Makefile, LICENSE) is far more often text than binary.
 		if (extension.Length == 0)
+		{
 			return (MediaKind.Text, string.Empty);
+		}
 
 		return (MediaKind.Unknown, string.Empty);
 	}
@@ -116,12 +129,16 @@ public static class MediaKinds
 	{
 		string modality = Modality(kind);
 		if (modality.Length == 0)
+		{
 			return false;
+		}
 
 		foreach (string input in config.Input)
 		{
 			if (string.Equals(input, modality, StringComparison.OrdinalIgnoreCase))
+			{
 				return true;
+			}
 		}
 		return false;
 	}
@@ -138,7 +155,9 @@ public static class MediaKinds
 		{
 			LlmModel? model = registry.GetModel(modelId);
 			if (model != null && Supports(model.Config, kind) && OutputModality.Produces(model.Config.Output, OutputModality.Text))
+			{
 				capable.Add(model);
+			}
 		}
 		return capable;
 	}

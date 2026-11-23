@@ -19,8 +19,21 @@ public static class GitTools
 	private static bool   _commitAvailable = false;
 	private static string _commitDetail    = "commit_and_rebase has not been probed.";
 
-	public static bool   CommitAvailable => _commitAvailable;
-	public static string CommitDetail    => _commitDetail;
+	public static bool CommitAvailable
+	{
+		get
+		{
+			return _commitAvailable;
+		}
+	}
+
+	public static string CommitDetail
+	{
+		get
+		{
+			return _commitDetail;
+		}
+	}
 
 	// Runs the two preconditions as the agent (the repo is root's). `git var GIT_COMMITTER_IDENT` is git's
 	// own identity resolution: it fails exactly when a commit would fail with "Author identity unknown".
@@ -124,11 +137,17 @@ public static class GitTools
 
 		StringBuilder sb = new StringBuilder();
 		if (!string.IsNullOrEmpty(result.StdOut))
+		{
 			sb.Append(result.StdOut);
+		}
+
 		if (!string.IsNullOrEmpty(result.StdErr))
 		{
 			if (sb.Length > 0)
+			{
 				sb.Append('\n');
+			}
+
 			sb.Append(result.StdErr);
 		}
 
@@ -136,7 +155,10 @@ public static class GitTools
 		if (!ok)
 		{
 			if (sb.Length > 0)
+			{
 				sb.Append('\n');
+			}
+
 			sb.Append($"[commit_and_rebase failed: git exited {result.ExitCode}]");
 		}
 

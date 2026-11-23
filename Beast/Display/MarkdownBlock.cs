@@ -113,7 +113,9 @@ internal sealed class MarkdownBlock
 		AppendRows(openLines);
 		// A message that renders nothing still shows one row, carrying its prefix.
 		if (_rows.Count == 0)
+		{
 			_rows.Add(_indent + _prefix);
+		}
 
 		WriteRows(firstDirtyRow);
 	}
@@ -126,7 +128,9 @@ internal sealed class MarkdownBlock
 		for (int i = 0; i < blocks.Count; i++)
 		{
 			if (blocks[i].Start >= 0)
+			{
 				openIndex = i;
+			}
 		}
 		return openIndex;
 	}
@@ -137,7 +141,10 @@ internal sealed class MarkdownBlock
 	{
 		int start = offset;
 		while (start > 0 && text[start - 1] != '\n')
+		{
 			start--;
+		}
+
 		return start;
 	}
 
@@ -147,7 +154,9 @@ internal sealed class MarkdownBlock
 		List<string> wrapped = new List<string>();
 		BlockRenderer.AppendMarkdownRows(lines, _rows.Count == 0 ? _prefix : "", _wordWrap, _wrapW, wrapped);
 		foreach (string row in wrapped)
+		{
 			_rows.Add(_indent + row);
+		}
 	}
 
 	// Sizes the Screen to the rows — as wide as the widest row, never narrower than the viewport — and
@@ -159,15 +168,21 @@ internal sealed class MarkdownBlock
 		{
 			int len = AnsiString.VisibleLength(_rows[r]);
 			if (r < _closedRows)
+			{
 				_closedWidth = Math.Max(_closedWidth, len);
+			}
 			else
+			{
 				openWidth = Math.Max(openWidth, len);
+			}
 		}
 
 		int w = Math.Min(BlockRenderer.MaxBlockWidth, Math.Max(_width, Math.Max(_closedWidth, openWidth)));
 		_expanded.Resize(w, _rows.Count, _fill);
 		for (int r = firstDirtyRow; r < _rows.Count; r++)
+		{
 			BlockRenderer.WriteBlockRow(_expanded, r, _rows[r], _type);
+		}
 	}
 
 	// The width the collapsed header has for its summary.

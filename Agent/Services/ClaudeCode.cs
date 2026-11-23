@@ -73,11 +73,20 @@ public static class ClaudeCode
 			CreateNoWindow         = true
 		};
 		foreach (string arg in args)
+		{
 			psi.ArgumentList.Add(arg);
+		}
+
 		foreach (string name in kShadowingVariables)
+		{
 			psi.Environment.Remove(name);
+		}
+
 		if (token.Length > 0)
+		{
 			psi.Environment["CLAUDE_CODE_OAUTH_TOKEN"] = token;
+		}
+
 		return psi;
 	}
 
@@ -95,7 +104,9 @@ public static class ClaudeCode
 		{
 			string update = await EnsureUpdatedAsync(ct);
 			if (update.Length > 0)
+			{
 				Console.Error.WriteLine($"[ClaudeCode] {update}");
+			}
 
 			List<string> args = new List<string>
 			{
@@ -142,7 +153,9 @@ public static class ClaudeCode
 
 			JsonArray? listed = message?["response"]?["response"]?["models"] as JsonArray;
 			if (message?["type"]?.ToString() != "control_response" || listed == null)
+			{
 				continue;
+			}
 
 			foreach (JsonNode? entry in listed)
 			{
@@ -151,7 +164,9 @@ public static class ClaudeCode
 
 				// "default" is a pointer at another entry, named for the pointer, not the model.
 				if (version.Length == 0 || value == "default" || !seen.Add(version))
+				{
 					continue;
+				}
 
 				DiscoveredModel model = new DiscoveredModel
 				{
@@ -166,7 +181,10 @@ public static class ClaudeCode
 				// Its effort options as the CLI lists them per model (supportsEffort, supportedEffortLevels),
 				// else the levels the CLI's --effort takes.
 				if (entry != null)
+				{
 					ModelCatalog.ReadReasoning(entry, model);
+				}
+
 				model.Efforts ??= ReasoningEffort.ClaudeCodeWords();
 				models.Add(model);
 			}
@@ -190,11 +208,17 @@ public static class ClaudeCode
 					(bool started, int exitCode, string stdout, string stderr) = await RunAsync(new List<string> { "update" }, string.Empty, string.Empty, kUpdateTimeout, ct);
 					_updated = true;
 					if (!started)
+					{
 						status = "Claude Code is not installed in this image.";
+					}
 					else if (exitCode == 0)
+					{
 						status = LastLine(stdout);
+					}
 					else
+					{
 						status = $"claude update failed (exit {exitCode}): {LastLine(stderr.Length > 0 ? stderr : stdout)}";
+					}
 				}
 			}
 			finally
@@ -230,9 +254,13 @@ public static class ClaudeCode
 			};
 			(bool started, int exitCode, string stdout, string stderr) = await RunAsync(args, token, string.Empty, kProbeTimeout, ct);
 			if (!started)
+			{
 				error = "The Claude Code CLI (claude) was not found.";
+			}
 			else
+			{
 				error = ParseProbeResult(stdout, exitCode, stderr);
+			}
 		}
 		return error;
 	}
@@ -287,7 +315,10 @@ public static class ClaudeCode
 		{
 			// -p reads a prompt (or stream-json messages) from stdin; closing it says there is no more.
 			if (stdin.Length > 0)
+			{
 				await process.StandardInput.WriteLineAsync(stdin.AsMemory(), ct);
+			}
+
 			process.StandardInput.Close();
 
 			using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -344,14 +375,21 @@ public static class ClaudeCode
 
 		DateTimeOffset? reset = ResetsAt(limit, "resetsAt");
 		if (windows == 0 && reset.HasValue)
+		{
 			text.Append($" Resets {ProtocolHelpers.DescribeReset(reset.Value, now)}.");
+		}
 
 		string overage = ReadText(limit, "overageStatus");
 		string reason  = ReadText(limit, "overageDisabledReason");
 		if (overage == "rejected" || reason.Length > 0)
+		{
 			text.Append($" Usage credits unavailable{(reason.Length > 0 ? $" ({reason.Replace('_', ' ')})" : "")}.");
+		}
 		else if (overage.Length > 0)
+		{
 			text.Append(" Usage credits available.");
+		}
+
 		return text.ToString();
 	}
 
@@ -360,7 +398,10 @@ public static class ClaudeCode
 	{
 		DateTimeOffset? reset = ResetsAt(refusal, "resetsAt");
 		if (!reset.HasValue && ReadText(latest, "status") == "rejected")
+		{
 			reset = ResetsAt(latest, "resetsAt");
+		}
+
 		return reset;
 	}
 
@@ -368,19 +409,34 @@ public static class ClaudeCode
 	{
 		string name;
 		if (rateLimitType == "five_hour")
+		{
 			name = "5-hour limit";
+		}
 		else if (rateLimitType == "seven_day")
+		{
 			name = "weekly limit";
+		}
 		else if (rateLimitType == "seven_day_opus")
+		{
 			name = "weekly Opus limit";
+		}
 		else if (rateLimitType == "seven_day_sonnet")
+		{
 			name = "weekly Sonnet limit";
+		}
 		else if (rateLimitType == "seven_day_overage_included")
+		{
 			name = "weekly limit including usage credits";
+		}
 		else if (rateLimitType == "overage")
+		{
 			name = "usage-credit spend cap";
+		}
 		else
+		{
 			name = rateLimitType.Replace('_', ' ');
+		}
+
 		return name;
 	}
 
@@ -388,7 +444,10 @@ public static class ClaudeCode
 	{
 		DateTimeOffset? reset = null;
 		if (node?[key] is JsonValue value && value.TryGetValue(out long epoch) && epoch > 0)
+		{
 			reset = DateTimeOffset.FromUnixTimeSeconds(epoch);
+		}
+
 		return reset;
 	}
 

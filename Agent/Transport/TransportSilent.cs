@@ -31,7 +31,13 @@ public class TransportSilent : ITransportServer
 	public void StreamChunk       (string sessionId,   string chunk)             { }
 	public void StreamEnd         (string sessionId,     string tag)             { }
 
-	public Task<string?> ReadAsync(CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+	public Task<string?> ReadAsync(CancellationToken cancellationToken)
+	{
+		return Task.FromResult<string?>(null);
+	}
 
-	public Task<string?> TryReadAsync(int timeoutMs, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+	public Task<string?> TryReadAsync(int timeoutMs, CancellationToken cancellationToken)
+	{
+		return Task.FromResult<string?>(null);
+	}
 }

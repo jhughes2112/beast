@@ -88,37 +88,147 @@ public class Session
 
 	// Expose raw data only for persistence (SessionService.Save). All other access goes through
 	// the typed properties and methods below.
-	public BeastSession Data => _data;
+	public BeastSession Data
+	{
+		get
+		{
+			return _data;
+		}
+	}
 
-	public string          Id             => _data.Id;
-	public string          DisplayName    => _data.DisplayName;
-	public string          Model          => _data.Model;
-	public int             ContextWindow  => _data.ContextWindow;
-	public string          Role           => _data.Role;
-	public bool            Ephemeral      => _data.Ephemeral;
-	public bool            IsSubagent     => _isSubagent;
-	public bool            IsEmpty        => string.IsNullOrEmpty(_data.DisplayName);
-	public int             ContextLength  => _data.CurrentContextSize;
-	public TokenUsageInfo? LastTokenUsage => _data.LastTokenUsage;
-	public decimal         TotalCost      => _data.TotalCost;
-	public long            WorkedMs
+	public string Id
+	{
+		get
+		{
+			return _data.Id;
+		}
+	}
+
+	public string DisplayName
+	{
+		get
+		{
+			return _data.DisplayName;
+		}
+	}
+
+	public string Model
+	{
+		get
+		{
+			return _data.Model;
+		}
+	}
+
+	public int ContextWindow
+	{
+		get
+		{
+			return _data.ContextWindow;
+		}
+	}
+
+	public string Role
+	{
+		get
+		{
+			return _data.Role;
+		}
+	}
+
+	public bool Ephemeral
+	{
+		get
+		{
+			return _data.Ephemeral;
+		}
+	}
+
+	public bool IsSubagent
+	{
+		get
+		{
+			return _isSubagent;
+		}
+	}
+
+	public bool IsEmpty
+	{
+		get
+		{
+			return string.IsNullOrEmpty(_data.DisplayName);
+		}
+	}
+
+	public int ContextLength
+	{
+		get
+		{
+			return _data.CurrentContextSize;
+		}
+	}
+
+	public TokenUsageInfo? LastTokenUsage
+	{
+		get
+		{
+			return _data.LastTokenUsage;
+		}
+	}
+
+	public decimal TotalCost
+	{
+		get
+		{
+			return _data.TotalCost;
+		}
+	}
+
+	public long WorkedMs
 	{
 		get
 		{
 			lock (_costLock)
+			{
 				return _data.WorkedMs;
+			}
 		}
 	}
-	public int CumulativeInputTokens  => _data.CumulativeInputTokens;
-	public int CumulativeOutputTokens => _data.CumulativeOutputTokens;
+	public int CumulativeInputTokens
+	{
+		get
+		{
+			return _data.CumulativeInputTokens;
+		}
+	}
+
+	public int CumulativeOutputTokens
+	{
+		get
+		{
+			return _data.CumulativeOutputTokens;
+		}
+	}
 
 	// Central token accounting for the context window. LlmService configures it at turn start and
 	// queries it for completion sizing and tool-response reservations.
-	public ContextBudget Budget => _budget;
+	public ContextBudget Budget
+	{
+		get
+		{
+			return _budget;
+		}
+	}
 
 	// The status the client should display: a session that has not terminated but still owes its
 	// caller a reply reads as Working, distinct from a free-floating Ongoing conversation.
-	private SessionStatus EffectiveStatus => _status == SessionStatus.Ongoing && OwesReply ? SessionStatus.Working : _status;
+	private SessionStatus EffectiveStatus
+	{
+		get
+		{
+			return _status == SessionStatus.Ongoing && OwesReply ? SessionStatus.Working : _status;
+		}
+	}
 
 	// Sends current session stats and termination status to the client.
 	//
@@ -144,7 +254,10 @@ public class Session
 	{
 		string json = System.Text.Json.JsonSerializer.Serialize(candidates, BeastJson.Compact.ListString);
 		if (string.Equals(json, _completionsJson, StringComparison.Ordinal))
+		{
 			return;
+		}
+
 		_completionsJson = json;
 		_transport.Completions(_data.Id, json);
 	}
@@ -162,9 +275,15 @@ public class Session
 		// owned by ReplayToTransport (called on every display path), so emitting at construction too would
 		// show the prompt twice on a fresh conversation. The active protocol rehydrates it from canonical.
 		if (!string.IsNullOrEmpty(systemPrompt))
+		{
 			_bundle.Canonical.OnSystemMessage(systemPrompt);
+		}
+
 		if (Enum.TryParse(data.TerminalStatus, out SessionStatus persisted))
+		{
 			_status = persisted;
+		}
+
 		ProtocolChatCompletions.SkipXmlCallIdsIn(data.Messages);
 	}
 
@@ -190,7 +309,10 @@ public class Session
 		{
 			// Seed from the persisted counter so a reloaded session continues past any IDs already issued.
 			if (_data.ChildCounter > _childCounter)
+			{
 				_childCounter = _data.ChildCounter;
+			}
+
 			n                  = ++_childCounter;
 			_data.ChildCounter = n;
 		}
@@ -205,13 +327,25 @@ public class Session
 	// handler has exited — with a fresh handler when new input arrives for it.
 	private int _handlerAttached;
 
-	public bool TryAttachHandler() => Interlocked.CompareExchange(ref _handlerAttached, 1, 0) == 0;
+	public bool TryAttachHandler()
+	{
+		return Interlocked.CompareExchange(ref _handlerAttached, 1, 0) == 0;
+	}
 
-	public void DetachHandler() => Interlocked.Exchange(ref _handlerAttached, 0);
+	public void DetachHandler()
+	{
+		Interlocked.Exchange(ref _handlerAttached, 0);
+	}
 
 	// True while a handler is driving this session. The quiesce path polls this after MarkDeleted
 	// to know the handler has actually unwound (its finally detaches) before touching the disk.
-	public bool HasAttachedHandler => _handlerAttached != 0;
+	public bool HasAttachedHandler
+	{
+		get
+		{
+			return _handlerAttached != 0;
+		}
+	}
 
 	// ---- Busy/Idle signaling ----
 
@@ -222,7 +356,9 @@ public class Session
 	public void SendBusy()
 	{
 		if (Interlocked.Increment(ref _busyCount) == 1)
+		{
 			_transport.Busy(_data.Id);
+		}
 	}
 
 	public void SendIdle()
@@ -238,7 +374,9 @@ public class Session
 	{
 		InferDisplayName();
 		if (string.IsNullOrEmpty(_data.DisplayName))
+		{
 			return;
+		}
 		// Hand-built node instead of an anonymous type: anonymous types have no source-generated
 		// metadata and would need the reflection serializer, which Native AOT does not have.
 		JsonObject announce = new JsonObject();
@@ -267,7 +405,13 @@ public class Session
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
-	public SessionStatus Status => _status;
+	public SessionStatus Status
+	{
+		get
+		{
+			return _status;
+		}
+	}
 
 	// Names a still-nameless root from its first user message and announces it immediately, so the
 	// client shows the name from the first turn rather than the raw session ID for its whole duration
@@ -277,7 +421,10 @@ public class Session
 	public void EnsureNamedAndAnnounce()
 	{
 		if (!string.IsNullOrEmpty(_data.DisplayName))
+		{
 			return;
+		}
+
 		FlushPendingMessages();
 		AnnounceToClient();
 	}
@@ -286,7 +433,13 @@ public class Session
 
 	// True while a delegation loop is active (assign_work called, stop_work not yet). Read by the runner to
 	// decide whether to re-prompt with the end-of-turn prompt and whether to expose stop_work.
-	public bool WorkInProgress => _workInProgress;
+	public bool WorkInProgress
+	{
+		get
+		{
+			return _workInProgress;
+		}
+	}
 
 	// True when this session is a prompt the CALLER built and can rebuild differently — a summarizer
 	// stage, a media probe — rather than a conversation someone is having. Such a prompt is cheap to
@@ -294,54 +447,102 @@ public class Session
 	// Deliberately NOT the same thing as Ephemeral: that only means "not saved to disk", which is
 	// true of every session in a current-folder launch, including the real ones doing the work.
 	// Conflating them cut a working Developer session down to a single retry.
-	public bool IsStagePrompt => _isStagePrompt;
+	public bool IsStagePrompt
+	{
+		get
+		{
+			return _isStagePrompt;
+		}
+	}
 
 	private bool _isStagePrompt;
 
 	// Marks this session as a caller-built stage prompt. Set at construction by the summarizer and
 	// the media inspector; never set on a session a user or subagent converses in.
-	public void MarkStagePrompt() => _isStagePrompt = true;
+	public void MarkStagePrompt()
+	{
+		_isStagePrompt = true;
+	}
 
 	// True when this session was produced by compaction and has not yet completed a turn of its own
 	// (ContextLength stays 0 until a provider response measures it). Compacting such a session cannot
 	// help: its history is whatever compaction just decided was small enough, so summarizing it again
 	// yields another session of the same shape, and the loop repeats forever. Seen in the field as
 	// eleven successors in nine minutes, each one dying on its very first request.
-	public bool IsUncompactableSuccessor => _bornOfCompaction && _data.CurrentContextSize == 0;
+	public bool IsUncompactableSuccessor
+	{
+		get
+		{
+			return _bornOfCompaction && _data.CurrentContextSize == 0;
+		}
+	}
 
 	private bool _bornOfCompaction;
 
 	// Marks this session as the product of a compaction. Set by SessionHandler on every successor.
-	public void MarkCompactionSuccessor() => _bornOfCompaction = true;
+	public void MarkCompactionSuccessor()
+	{
+		_bornOfCompaction = true;
+	}
 
 	// Enters the delegation loop. Called from the assign_work tool handler.
-	public void BeginWork() => _workInProgress = true;
+	public void BeginWork()
+	{
+		_workInProgress = true;
+	}
 
 	// Leaves the delegation loop. Called from the stop_work tool handler.
-	public void EndWork() => _workInProgress = false;
+	public void EndWork()
+	{
+		_workInProgress = false;
+	}
 
 	// ---- Reply obligation ----
 
 	// The terminator tool this session must call to answer the caller that spawned it; empty when
 	// no caller is waiting. Lives on the persisted data so it survives a save/load cycle and can
 	// be handed to a compaction successor.
-	public string TerminatorName => _data.TerminatorName;
+	public string TerminatorName
+	{
+		get
+		{
+			return _data.TerminatorName;
+		}
+	}
 
 	// Working-turn budget before wind-down forces the terminator; a turn is one model response. 0 =
 	// unlimited. Part of the reply obligation: set at spawn, handed to a compaction successor,
 	// cleared with the reply.
-	public int MaxWorkTurns => _data.MaxWorkTurns;
+	public int MaxWorkTurns
+	{
+		get
+		{
+			return _data.MaxWorkTurns;
+		}
+	}
 
-	public void SetMaxWorkTurns(int maxWorkTurns) => _data.MaxWorkTurns = maxWorkTurns;
+	public void SetMaxWorkTurns(int maxWorkTurns)
+	{
+		_data.MaxWorkTurns = maxWorkTurns;
+	}
 
 	// The role a Summarizer job was made with, which no lookup by name could produce: its caller chose the
 	// prompt and tools. Runtime-only: a restored job comes back as the entry in roles.json with its name.
 	public Role? CallRole { get; private set; }
 
-	public void SetCallRole(Role? role) => CallRole = role;
+	public void SetCallRole(Role? role)
+	{
+		CallRole = role;
+	}
 
 	// True while this session may still respond to its caller as a tool.
-	public bool OwesReply => !string.IsNullOrEmpty(_data.TerminatorName);
+	public bool OwesReply
+	{
+		get
+		{
+			return !string.IsNullOrEmpty(_data.TerminatorName);
+		}
+	}
 
 	// Ends this session's ability to respond as a tool: called once the reply (or failure report)
 	// has been delivered, or when compaction hands the obligation to a successor. The session
@@ -363,7 +564,13 @@ public class Session
 	// Set by the orchestrator's /reload command to signal the handler to re-fetch its role and
 	// recreate its LlmService on the next loop iteration. The handler checks this at the top of
 	// its loop and clears it after processing.
-	public bool NeedsRefresh => _needsRefresh;
+	public bool NeedsRefresh
+	{
+		get
+		{
+			return _needsRefresh;
+		}
+	}
 
 	// Signals the handler to re-fetch the session's role and recreate its LlmService on the next
 	// loop iteration. Also wakes the handler if it is idling on the input wait.
@@ -374,10 +581,16 @@ public class Session
 	}
 
 	// Clears the refresh flag after the handler has processed it.
-	public void ClearRefresh() => _needsRefresh = false;
+	public void ClearRefresh()
+	{
+		_needsRefresh = false;
+	}
 
 	// Signals the bundle that the active protocol should be discarded on next turn.
-	public void InvalidateProtocol() => _bundle.InvalidateProtocol();
+	public void InvalidateProtocol()
+	{
+		_bundle.InvalidateProtocol();
+	}
 
 	// Commits the full assistant turn from a successful ProtocolCallPayload to both canonical
 	// storage and the active protocol's native state. Handles the assistant message (text,
@@ -399,7 +612,10 @@ public class Session
 	public void DeliverLateToolResult(string toolName, string content)
 	{
 		if (string.IsNullOrWhiteSpace(content))
+		{
 			return;
+		}
+
 		AddUserMessage($"[late result of the interrupted {toolName} call]\n{content}");
 	}
 
@@ -421,7 +637,9 @@ public class Session
 	public void RecordCost(decimal cost)
 	{
 		lock (_costLock)
+		{
 			_data.TotalCost += cost;
+		}
 	}
 
 	// Rolls the spend this session has not yet reported up into its parent and returns how much that
@@ -446,7 +664,9 @@ public class Session
 		string current = _bundle.Canonical.Messages.Count > 0 && _bundle.Canonical.Messages[0] is SystemMessage system ? system.Text : string.Empty;
 		bool   hasNote = current.EndsWith(RoleService.SeededRunNote, StringComparison.Ordinal);
 		if (seeded != hasNote)
+		{
 			_bundle.OnSystemPromptChanged(seeded ? current + RoleService.SeededRunNote : current.Substring(0, current.Length - RoleService.SeededRunNote.Length));
+		}
 	}
 
 	// Adds working time to the session total: what LlmService measures of a model call, what a tool call's
@@ -454,7 +674,9 @@ public class Session
 	public void RecordWork(long ms)
 	{
 		lock (_costLock)
+		{
 			_data.WorkedMs += ms;
+		}
 	}
 
 	// As ReportCostTo, for working time.
@@ -502,9 +724,18 @@ public class Session
 
 	// ---- Attention / input ----
 
-	public bool NeedsAttention() => !_pending.IsEmpty || (!_interruptedAndWaiting && !_paused && (_sendRequested || NeedsLlmAttention()));
+	public bool NeedsAttention()
+	{
+		return !_pending.IsEmpty || (!_interruptedAndWaiting && !_paused && (_sendRequested || NeedsLlmAttention()));
+	}
 
-	public bool Paused => _paused;
+	public bool Paused
+	{
+		get
+		{
+			return _paused;
+		}
+	}
 
 	// Handler thread, draining /resume. True when the conversation has something to send to the model.
 	public bool RequestSend()
@@ -556,15 +787,22 @@ public class Session
 	{
 		SetPaused(true);
 		foreach (Session child in _children.Values)
+		{
 			child.PauseIfActive();
+		}
 	}
 
 	private void PauseIfActive()
 	{
 		if (Volatile.Read(ref _busyCount) > 0 || !_pending.IsEmpty)
+		{
 			SetPaused(true);
+		}
+
 		foreach (Session child in _children.Values)
+		{
 			child.PauseIfActive();
+		}
 	}
 
 	// Sends the conversation as it stands, including one parked by /cancel, a failed model or a restart.
@@ -573,12 +811,17 @@ public class Session
 	public void Resume()
 	{
 		if (!_compactedAway)
+		{
 			_interruptedAndWaiting = false;
+		}
+
 		SetPaused(false);
 		_pending.Enqueue("/resume");
 		Signal();
 		foreach (Session child in _children.Values)
+		{
 			child.ResumeIfPaused();
+		}
 	}
 
 	private void ResumeIfPaused()
@@ -589,7 +832,9 @@ public class Session
 			Signal();
 		}
 		foreach (Session child in _children.Values)
+		{
 			child.ResumeIfPaused();
+		}
 	}
 
 	// Drops the flag without waking anything, for a compaction predecessor handing its pause on.
@@ -618,18 +863,33 @@ public class Session
 		_transport.Config(_data.Id, state.ToJsonString());
 	}
 
-	public string? GetLastAssistantText() => _bundle.GetLastAssistantText();
+	public string? GetLastAssistantText()
+	{
+		return _bundle.GetLastAssistantText();
+	}
 
 	// True while any line remains queued. The handler ends the turn cluster when this is set so the
 	// boundary drain applies the queued input in arrival order.
-	public bool HasPending => !_pending.IsEmpty;
+	public bool HasPending
+	{
+		get
+		{
+			return !_pending.IsEmpty;
+		}
+	}
 
 	// Dequeues the next pending line in arrival order (plain text or slash command), or returns false
 	// when the queue is empty. The boundary drain uses this to process everything that is waiting.
-	public bool TryDequeuePending(out string? line) => _pending.TryDequeue(out line);
+	public bool TryDequeuePending(out string? line)
+	{
+		return _pending.TryDequeue(out line);
+	}
 
 	// Returns a snapshot of everything currently in the pending queue without consuming any items.
-	public string[] PeekAllPending() => _pending.ToArray();
+	public string[] PeekAllPending()
+	{
+		return _pending.ToArray();
+	}
 
 	public void AddChild(Session child)
 	{
@@ -637,7 +897,9 @@ public class Session
 
 		// A subagent started by the last tool round of a paused parent waits with it.
 		if (_paused)
+		{
 			child.Pause();
+		}
 	}
 
 	// Routes incoming text to the correct session by ID.
@@ -681,9 +943,14 @@ public class Session
 			return;
 		}
 		if (!targetId.StartsWith(_data.Id + "_", StringComparison.Ordinal))
+		{
 			return;
+		}
+
 		foreach (Session child in _children.Values)
+		{
 			child.Deliver(targetId, text);
+		}
 	}
 
 	// Enqueues plain user text, clears the interrupted-wait state, and wakes the idle loop.
@@ -714,7 +981,10 @@ public class Session
 
 	// Returns a task that completes when input or a command arrives, or when ct is cancelled.
 	// Used by SessionRunner to break out of the inter-turn delay early.
-	public Task WaitForInputAsync(CancellationToken ct) => _inputSignal.WaitAsync(ct);
+	public Task WaitForInputAsync(CancellationToken ct)
+	{
+		return _inputSignal.WaitAsync(ct);
+	}
 
 	// Files the client staged for the next user message, held here rather than on the handler so
 	// EVERY consumer of the pending queue can see them. When they lived on the handler this flush
@@ -731,7 +1001,9 @@ public class Session
 	public bool MarkLargeMediaSeen(string fullPath)
 	{
 		lock (_largeMediaSeen)
+		{
 			return _largeMediaSeen.Add(fullPath);
+		}
 	}
 
 	public bool HasPendingAttachments
@@ -739,14 +1011,18 @@ public class Session
 		get
 		{
 			lock (_pendingAttachments)
+			{
 				return _pendingAttachments.Count > 0;
+			}
 		}
 	}
 
 	public void AddPendingAttachment(string entry)
 	{
 		lock (_pendingAttachments)
+		{
 			_pendingAttachments.Add(entry);
+		}
 	}
 
 	// Hands over the staged files and clears them, so they can only ever be applied to one message.
@@ -768,13 +1044,18 @@ public class Session
 		while (_pending.TryPeek(out string? line))
 		{
 			if (line!.StartsWith("/", StringComparison.Ordinal))
+			{
 				break;
+			}
 
 			// Media is waiting for this line. Only the handler's drain can resolve it (reading the
 			// staged file, checking the model's modalities), so leave the text queued for it rather
 			// than committing a message whose image would then attach itself to the next one.
 			if (HasPendingAttachments)
+			{
 				break;
+			}
+
 			_pending.TryDequeue(out string? _);
 			_bundle.OnUserMessage(line);
 		}
@@ -793,24 +1074,36 @@ public class Session
 			if (msg is UserMessage um)
 			{
 				if (toClient)
+				{
 					_bundle.OnUserMessage(um.Text);
+				}
 				else
+				{
 					_bundle.Canonical.OnUserMessage(um.Text);
+				}
 			}
 			else if (msg is AssistantMessage am)
 			{
 				if (toClient)
+				{
 					_bundle.OnAssistantTurn(am.Text, am.Thinking, am.ToolCalls);
+				}
 				else
+				{
 					_bundle.Canonical.OnAssistantTurn(am.Text, am.Thinking, am.ToolCalls);
+				}
 			}
 			else if (msg is ToolResultMessage tr)
 			{
 				ToolResult replayed = new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0, tr.Media ?? new List<MediaFile>());
 				if (toClient)
+				{
 					_bundle.OnToolResult(replayed);
+				}
 				else
+				{
 					_bundle.Canonical.OnToolResult(replayed);
+				}
 			}
 		}
 	}
@@ -824,28 +1117,41 @@ public class Session
 			if (msg is SystemMessage sm)
 			{
 				if (!string.IsNullOrEmpty(sm.Text))
+				{
 					_transport.System(id, sm.Text);
+				}
 			}
 			else if (msg is UserMessage um)
 			{
 				if (!string.IsNullOrEmpty(um.Text))
+				{
 					_transport.User(id, um.Text);
+				}
 			}
 			else if (msg is AssistantMessage am)
 			{
 				if (!string.IsNullOrWhiteSpace(am.Thinking))
+				{
 					_transport.Thinking(id, am.Thinking);
+				}
 				// Skip whitespace-only assistant text so replaying history never reproduces a blank output
 				// block for a turn that was really just thinking plus a tool call.
 				if (!string.IsNullOrWhiteSpace(am.Text))
+				{
 					_transport.Output(id, am.Text);
+				}
+
 				foreach (SemanticToolCall tc in am.ToolCalls)
+				{
 					_transport.ToolCallWithId(id, tc.Id, tc.Name + "(" + tc.ArgumentsJson + ")");
+				}
 			}
 			else if (msg is ToolResultMessage tr)
 			{
 				if (!string.IsNullOrEmpty(tr.Content))
+				{
 					_transport.ToolResponseWithId(id, new ToolResult(tr.ToolCallId, tr.Content, string.Empty, 0, 0));
+				}
 			}
 		}
 	}
@@ -853,7 +1159,13 @@ public class Session
 	// ---- Turn lifecycle ----
 
 	// The conversation bundle — passed to LlmService by SessionRunner so it can read/write history.
-	public ListenerBundle Bundle => _bundle;
+	public ListenerBundle Bundle
+	{
+		get
+		{
+			return _bundle;
+		}
+	}
 
 	// The message that started this session, for a job whose tool needs what it was seeded with. Empty when
 	// compaction has dropped it.
@@ -877,14 +1189,19 @@ public class Session
 	public bool InferDisplayName()
 	{
 		if (!string.IsNullOrEmpty(_data.DisplayName))
+		{
 			return false;
+		}
+
 		foreach (CanonicalMessage msg in _data.Messages)
 		{
 			if (msg is UserMessage um && !string.IsNullOrWhiteSpace(um.Text))
 			{
 				string name = um.Text.Trim();
 				if (name.Length > 50)
+				{
 					name = name.Substring(0, 50);
+				}
 				// Prefix the role so the session tree reads "{Role} {first message}" (e.g. "Task Add dark mode").
 				_data.DisplayName = string.IsNullOrEmpty(_data.Role) ? name : $"{_data.Role} {name}";
 				return true;
@@ -904,7 +1221,10 @@ public class Session
 		FlushPendingMessages();
 		CancellationTokenSource fresh = new CancellationTokenSource();
 		lock (_ctsLock)
+		{
 			_turnCts = fresh;
+		}
+
 		return fresh.Token;
 	}
 
@@ -919,7 +1239,9 @@ public class Session
 		foreach (CanonicalMessage msg in _data.Messages)
 		{
 			if (msg is ToolResultMessage tr)
+			{
 				satisfiedIds.Add(tr.ToolCallId);
+			}
 		}
 
 		// Collect first: OnToolResult appends to the list being scanned.
@@ -931,13 +1253,17 @@ public class Session
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
 					if (!satisfiedIds.Contains(tc.Id))
+					{
 						danglingIds.Add(tc.Id);
+					}
 				}
 			}
 		}
 
 		foreach (string id in danglingIds)
+		{
 			_bundle.OnToolResult(new ToolResult(id, string.Empty, "[interrupted by user]", 1, 0));
+		}
 	}
 
 	// Cleans up after a turn. If interrupted, sets the wait state so NeedsAttention() stays
@@ -954,7 +1280,9 @@ public class Session
 		}
 		finished?.Dispose();
 		if (interrupted)
+		{
 			_interruptedAndWaiting = true;
+		}
 	}
 
 	// Creates an independent ephemeral copy of this session from this exact point in history.
@@ -1018,7 +1346,9 @@ public class Session
 	public void SetDispatchScope(CancellationTokenSource? cts)
 	{
 		lock (_ctsLock)
+		{
 			_dispatchCts = cts;
+		}
 	}
 
 	// Marks the turn interrupted so the loop idles until new user text arrives. Used when a /cancel lands
@@ -1033,7 +1363,13 @@ public class Session
 	// delete-session just removed.
 	private volatile bool _deleted;
 
-	public bool Deleted => _deleted;
+	public bool Deleted
+	{
+		get
+		{
+			return _deleted;
+		}
+	}
 
 	// Marks the session deleted and wakes whatever its handler is doing — an in-flight turn is
 	// interrupted, and the input wait is released — so the handler observes the flag and exits.
@@ -1050,17 +1386,23 @@ public class Session
 	{
 		IReadOnlyList<CanonicalMessage> messages = _data.Messages;
 		if (messages.Count == 0)
+		{
 			return false;
+		}
 
 		if (messages[messages.Count - 1] is UserMessage)
+		{
 			return true;
+		}
 
 		// Collect all tool result IDs present.
 		System.Collections.Generic.HashSet<string> satisfiedIds = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is ToolResultMessage tr)
+			{
 				satisfiedIds.Add(tr.ToolCallId);
+			}
 		}
 
 		// Check if any assistant tool call lacks a result.
@@ -1071,7 +1413,9 @@ public class Session
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
 					if (!satisfiedIds.Contains(tc.Id))
+					{
 						return true;
+					}
 				}
 			}
 		}

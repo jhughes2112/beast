@@ -85,7 +85,9 @@ public static class PauseAndTrialTests
 		foreach ((FrameType type, string text) in transport.Snapshot())
 		{
 			if (type == FrameType.Config && text.Contains("session-state", StringComparison.Ordinal))
+			{
 				frames++;
+			}
 		}
 		ctx.AssertEqual(6, frames, "Pause: the client hears each change of state");
 		busy.SendIdle();
@@ -119,7 +121,9 @@ public static class PauseAndTrialTests
 		server.OnRequest(count =>
 		{
 			if (count == 2)
+			{
 				rig.Session.Deliver(rig.Session.Id, "/pause");
+			}
 		});
 
 		rig.Session.Deliver(rig.Session.Id, "go");
@@ -200,7 +204,9 @@ public static class PauseAndTrialTests
 		foreach ((FrameType type, string text) in transport.Snapshot())
 		{
 			if (type == FrameType.Config && text.Contains("session-state", StringComparison.Ordinal))
+			{
 				last = text;
+			}
 		}
 		return last;
 	}
@@ -257,7 +263,10 @@ public static class PauseAndTrialTests
 		// A real provider refuses every form of the request, so the script does too: the protocol's own
 		// fallbacks (such as retrying without streaming) must not read as the model having answered.
 		for (int i = 0; i < 8; i++)
+		{
 			server.Enqueue(FakeReply.Error(400, "{\"error\":{\"message\":\"temperature must be below 2\"}}"));
+		}
+
 		(LlmService? failing, string _) = registry.CreateTrialService(server.ChatEndpoint, "fake-key", candidate);
 		string refused                  = await ModelTrial.RunAsync(failing!, "trial-session", ct);
 		ctx.Assert(refused.Contains("temperature must be below 2", StringComparison.Ordinal), $"Trial: the provider's refusal comes back ({refused}, after {server.Requests().Count} requests)");
@@ -325,7 +334,9 @@ public static class PauseAndTrialTests
 			ctx.Assert(await WaitForAsync(() => AssistantCount(full.Session) == want, ct), $"Summary: the big conversation reaches turn {i}");
 		}
 		for (int i = 0; i < 8; i++)
+		{
 			server.Enqueue(FakeReply.Say("A summary of everything."));
+		}
 
 		// The rig measures every prompt at 100 tokens, so this window leaves the mechanical pass unable to reach
 		// half of it: the big user message stays verbatim.
@@ -378,7 +389,10 @@ public static class PauseAndTrialTests
 		string       file  = Path.Combine(folder, "notes.txt");
 		List<string> lines = new List<string>();
 		for (int i = 1; i <= 400; i++)
+		{
 			lines.Add($"line {i} says {i * 7}");
+		}
+
 		File.WriteAllText(file, string.Join("\n", lines) + "\n");
 		Role            job   = roles.GetRole(FileSubagent.RoleName)!;
 		SpawnSummarizer spawn = (name, display, system, user, tools, turns, token) => orchestrator.RunSummarizerAsync(parent, name, display, system, user, tools, turns, token);
@@ -429,7 +443,9 @@ public static class PauseAndTrialTests
 		}
 		ctx.Assert(RoleService.IsListed(roles.Roles["MediaReader"]), "Summarizer: MediaReader keeps its own list");
 		foreach (string retired in new string[] { "Explorer", "WebFetch", "WebFetchSummary" })
+		{
 			ctx.Assert(roles.GetRole(retired) == null, $"Summarizer: the retired {retired} role is gone");
+		}
 
 		Role fileJob = roles.GetRole(FileSubagent.RoleName)!;
 		ctx.AssertEqual(6, fileJob.MaxTurns, "Summarizer: FileSubagent gets 6 turns");
@@ -543,14 +559,25 @@ public static class PauseAndTrialTests
 		ctx.Assert(plainTop != null && registry.CreateFallbackService(plainTop, 0, false) != null, "Unseeded run: the same list falls back");
 
 		// A seed only counts on a protocol that has one.
-		LlmModel Seeded(string endpoint) => new LlmModel("m", endpoint, "k", new List<JsonObject>(), new List<JsonObject>(), new ModelConfig { Id = "m", Name = "m", ContextWindow = 1000, MaxOutputTokens = 100, Seed = 3 });
+		LlmModel Seeded(string endpoint)
+		{
+			return new LlmModel("m", endpoint, "k", new List<JsonObject>(), new List<JsonObject>(), new ModelConfig { Id = "m", Name = "m", ContextWindow = 1000, MaxOutputTokens = 100, Seed = 3 });
+		}
+
 		foreach ((DetectedProtocol protocol, bool takes) in new[] { (DetectedProtocol.ChatCompletions, true), (DetectedProtocol.Anthropic, false), (DetectedProtocol.Responses, false), (DetectedProtocol.ClaudeDashP, false) })
+		{
 			ctx.AssertEqual(takes, Service(Seeded("http://x/v1/y"), protocol, new ModelAvailability()).Seeded, $"Seeded run: a seed on {protocol} {(takes ? "counts" : "does not count")}");
+		}
+
 		ctx.Assert(ProtocolProxy.EndpointTakesSeed(ModelCatalog.NormalizeRequestEndpoint("http://x/v1")) && !ProtocolProxy.EndpointTakesSeed("https://x/v1/messages") && !ProtocolProxy.EndpointTakesSeed("https://x/v1/responses"), "Seeded run: the config page can tell which endpoints take a seed");
 
 		// Hiding host_command leaves everything else in order.
-		Tool   Named(string name) => new Tool { Definition = new ToolDefinition { Type = "function", Function = new FunctionDefinition { Name = name, Description = name, Parameters = new JsonObject() } } };
-		Tool[] kept                = (Tool[])Reflect.Static(typeof(SessionHandler), "WithoutHostCommand", new Type[] { typeof(Tool[]) }, new object[] { new Tool[] { Named("bash"), Named("host_command"), Named("ls") } })!;
+		Tool Named(string name)
+		{
+			return new Tool { Definition = new ToolDefinition { Type = "function", Function = new FunctionDefinition { Name = name, Description = name, Parameters = new JsonObject() } } };
+		}
+
+		Tool[] kept = (Tool[])Reflect.Static(typeof(SessionHandler), "WithoutHostCommand", new Type[] { typeof(Tool[]) }, new object[] { new Tool[] { Named("bash"), Named("host_command"), Named("ls") } })!;
 		ctx.AssertEqual("bash,ls", string.Join(",", Array.ConvertAll(kept, t => t.Definition.Function.Name)), "Seeded run: host_command is not offered");
 
 		// Root IDs count up, and hold nothing that reads as a child.
@@ -596,15 +623,24 @@ public static class PauseAndTrialTests
 
 		server.Reset();
 		for (int i = 0; i < 12; i++)
+		{
 			server.Enqueue(FakeReply.Error(429, "{\"error\":{\"message\":\"slow down\"}}"));
+		}
+
 		for (int i = 0; i < 7; i++)
+		{
 			server.Enqueue(FakeReply.Error(500, "{\"error\":{\"message\":\"boom\"}}"));
+		}
+
 		server.Enqueue(FakeReply.Say("still here"));
 		ctx.AssertEqual(ProtocolCallOutcome.Success, await RunAsync(7), "Seeded run: a seeded model waits through rate limits and server errors");
 
 		server.Reset();
 		for (int i = 0; i < 7; i++)
+		{
 			server.Enqueue(FakeReply.Error(500, "{\"error\":{\"message\":\"boom\"}}"));
+		}
+
 		ctx.Assert(await RunAsync(null) != ProtocolCallOutcome.Success, "Unseeded run: the same errors end the call");
 	}
 
@@ -615,7 +651,9 @@ public static class PauseAndTrialTests
 		if (tools != null)
 		{
 			foreach (JsonNode? tool in tools)
+			{
 				names.Add(tool?["function"]?["name"]?.GetValue<string>() ?? string.Empty);
+			}
 		}
 		return names;
 	}
@@ -624,7 +662,10 @@ public static class PauseAndTrialTests
 	{
 		bool found = false;
 		foreach ((FrameType _, string sent) in transport.Snapshot())
+		{
 			found = found || sent.Contains(text, StringComparison.Ordinal);
+		}
+
 		return found;
 	}
 
@@ -638,7 +679,10 @@ public static class PauseAndTrialTests
 		bool              found    = false;
 		List<FakeRequest> requests = server.Requests();
 		for (int i = from; i < requests.Count; i++)
+		{
 			found = found || requests[i].Body.ToJsonString().Contains(text, StringComparison.Ordinal);
+		}
+
 		return found;
 	}
 
@@ -648,7 +692,9 @@ public static class PauseAndTrialTests
 		foreach (FakeRequest request in server.Requests())
 		{
 			if (request.Body.ToJsonString().Contains(text, StringComparison.Ordinal))
+			{
 				last = request.Body;
+			}
 		}
 		return last;
 	}
@@ -659,7 +705,9 @@ public static class PauseAndTrialTests
 		foreach (CanonicalMessage message in session.Data.Messages)
 		{
 			if (message is AssistantMessage)
+			{
 				count++;
+			}
 		}
 		return count;
 	}
@@ -693,7 +741,9 @@ public static class PauseAndTrialTests
 		foreach ((FrameType type, string text) in transport.Snapshot())
 		{
 			if (type == FrameType.Status && text.Contains(needle, StringComparison.Ordinal))
+			{
 				seen = true;
+			}
 		}
 		return seen;
 	}

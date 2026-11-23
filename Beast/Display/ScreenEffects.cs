@@ -25,7 +25,7 @@ public sealed class BrightnessEffect : IScreenEffect
 		{
 			for (int x = r.X; x < r.Right; x++)
 			{
-				Cell c = target.Get(x, y);
+				Cell c  = target.Get(x, y);
 				Rgb? fg = c.Fg.HasValue ? c.Fg.Value.Scale(Factor) : c.Fg;
 				Rgb? bg = c.Bg.HasValue ? c.Bg.Value.Scale(Factor) : c.Bg;
 				target.Set(x, y, new Cell(c.Ch, fg, bg, c.Style));
@@ -54,7 +54,7 @@ public sealed class ChannelBrightnessEffect : IScreenEffect
 		{
 			for (int x = r.X; x < r.Right; x++)
 			{
-				Cell c = target.Get(x, y);
+				Cell c  = target.Get(x, y);
 				Rgb? fg = c.Fg.HasValue ? c.Fg.Value.Scale(FgFactor) : c.Fg;
 				Rgb? bg = c.Bg.HasValue ? c.Bg.Value.Scale(BgFactor) : c.Bg;
 				target.Set(x, y, new Cell(c.Ch, fg, bg, c.Style));
@@ -66,12 +66,12 @@ public sealed class ChannelBrightnessEffect : IScreenEffect
 // Lerps Fg/Bg toward Color by Amount [0..1].
 public sealed class TintEffect : IScreenEffect
 {
-	public Rgb Color { get; }
+	public Rgb   Color  { get; }
 	public float Amount { get; }
 
 	public TintEffect(Rgb color, float amount)
 	{
-		Color = color;
+		Color  = color;
 		Amount = amount;
 	}
 
@@ -82,7 +82,7 @@ public sealed class TintEffect : IScreenEffect
 		{
 			for (int x = r.X; x < r.Right; x++)
 			{
-				Cell c = target.Get(x, y);
+				Cell c  = target.Get(x, y);
 				Rgb? fg = c.Fg.HasValue ? c.Fg.Value.Lerp(Color, Amount) : c.Fg;
 				Rgb? bg = c.Bg.HasValue ? c.Bg.Value.Lerp(Color, Amount) : c.Bg;
 				target.Set(x, y, new Cell(c.Ch, fg, bg, c.Style));
@@ -100,7 +100,7 @@ public sealed class InvertEffect : IScreenEffect
 		{
 			for (int x = r.X; x < r.Right; x++)
 			{
-				Cell c = target.Get(x, y);
+				Cell c  = target.Get(x, y);
 				Rgb? fg = c.Fg.HasValue ? c.Fg.Value.Invert() : c.Fg;
 				Rgb? bg = c.Bg.HasValue ? c.Bg.Value.Invert() : c.Bg;
 				target.Set(x, y, new Cell(c.Ch, fg, bg, c.Style));
@@ -114,12 +114,12 @@ public sealed class InvertEffect : IScreenEffect
 // (multiplicative brightness cannot brighten a true-black cell).
 public sealed class BackgroundTintEffect : IScreenEffect
 {
-	public Rgb Color { get; }
+	public Rgb   Color  { get; }
 	public float Amount { get; }
 
 	public BackgroundTintEffect(Rgb color, float amount)
 	{
-		Color = color;
+		Color  = color;
 		Amount = amount;
 	}
 
@@ -130,9 +130,9 @@ public sealed class BackgroundTintEffect : IScreenEffect
 		{
 			for (int x = r.X; x < r.Right; x++)
 			{
-				Cell c = target.Get(x, y);
-				Rgb bgBase = c.Bg.HasValue ? c.Bg.Value : Rgb.Black;
-				Rgb bg = bgBase.Lerp(Color, Amount);
+				Cell c      = target.Get(x, y);
+				Rgb  bgBase = c.Bg.HasValue ? c.Bg.Value : Rgb.Black;
+				Rgb  bg     = bgBase.Lerp(Color, Amount);
 				target.Set(x, y, new Cell(c.Ch, c.Fg, bg, c.Style));
 			}
 		}
@@ -145,36 +145,40 @@ public sealed class BackgroundTintEffect : IScreenEffect
 // Non-destructive: characters and style are untouched.
 public sealed class CursorGlowEffect : IScreenEffect
 {
-	public int CenterX { get; }
-	public int CenterY { get; }
-	public float Radius { get; }
+	public int   CenterX  { get; }
+	public int   CenterY  { get; }
+	public float Radius   { get; }
 	public float Strength { get; }
 
 	public CursorGlowEffect(int centerX, int centerY, float radius, float strength)
 	{
-		CenterX = centerX;
-		CenterY = centerY;
-		Radius = radius;
+		CenterX  = centerX;
+		CenterY  = centerY;
+		Radius   = radius;
 		Strength = strength;
 	}
 
 	public void Apply(Screen target, Rect rect)
 	{
 		if (Radius <= 0f || Strength <= 0f)
+		{
 			return;
+		}
 
-		Rect r = rect.Intersect(target.Bounds);
+		Rect  r    = rect.Intersect(target.Bounds);
 		float invR = 1f / Radius;
 
 		for (int y = r.Y; y < r.Bottom; y++)
 		{
 			for (int x = r.X; x < r.Right; x++)
 			{
-				float dx = x - CenterX;
-				float dy = (y - CenterY) * 2f;
+				float dx   = x - CenterX;
+				float dy   = (y - CenterY) * 2f;
 				float dist = (float)Math.Sqrt(dx * dx + dy * dy);
 				if (dist >= Radius)
+				{
 					continue;
+				}
 
 				float t = 1f - dist * invR;
 				// Smooth falloff (cubic) so the glow center is brightest and the edge fades cleanly.
@@ -182,12 +186,12 @@ public sealed class CursorGlowEffect : IScreenEffect
 				float amount  = Strength * falloff;
 				float factor  = 1f + amount;
 
-				Cell c = target.Get(x, y);
-				Rgb? fg = c.Fg.HasValue ? c.Fg.Value.Scale(factor) : c.Fg;
+				Cell c      = target.Get(x, y);
+				Rgb? fg     = c.Fg.HasValue ? c.Fg.Value.Scale(factor) : c.Fg;
 				Rgb  bgBase = c.Bg.HasValue ? c.Bg.Value : Rgb.Black;
 				// Lerp bg toward white so the glow is visible even on true-black backgrounds where
 				// multiplicative scaling has no effect.
-				Rgb  bg = bgBase.Scale(factor).Lerp(Rgb.White, amount * 0.25f);
+				Rgb bg = bgBase.Scale(factor).Lerp(Rgb.White, amount * 0.25f);
 				target.Set(x, y, new Cell(c.Ch, fg, bg, c.Style));
 			}
 		}

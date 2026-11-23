@@ -91,7 +91,9 @@ public static class ToolSandboxTests
 		void Note(string text)
 		{
 			lock (events)
+			{
 				events.Add(text);
+			}
 		}
 		Tool Step(string name, bool fails)
 		{
@@ -104,7 +106,10 @@ public static class ToolSandboxTests
 					await Task.Delay(200, toolCt);
 					Note(name + "-");
 					if (fails)
+					{
 						throw new InvalidOperationException("boom");
+					}
+
 					return new ToolResult(id, "done", string.Empty, 0, 1);
 				}
 			};
@@ -116,7 +121,10 @@ public static class ToolSandboxTests
 		{
 			List<SemanticToolCall> calls = new List<SemanticToolCall>();
 			foreach (string name in new[] { "a", "b", "c" })
+			{
 				calls.Add(new SemanticToolCall { Id = name, Name = name, ArgumentsJson = "{}" });
+			}
+
 			return new ProtocolCallPayload(string.Empty, string.Empty, calls, new List<ToolResult>(), "tool_calls", new TokenUsageInfo(), 0m);
 		}
 
@@ -146,11 +154,22 @@ public static class ToolSandboxTests
 	// Where fetch_url saves a page: numbered folders in call order, whatever the page says, that the shell can write in.
 	private static async Task FetchFoldersAsync(TestContext ctx, CancellationToken ct)
 	{
-		string Reserve() => (string)Reflect.Static(typeof(WebFetch), "ReserveFolder", Type.EmptyTypes, Array.Empty<object>())!;
-		int Number(string folder) => int.Parse(Path.GetFileName(folder).Substring("fetch_".Length));
-		string Save(string folder, string page) => (string)Reflect.Static(typeof(WebFetch), "SaveFiles",
-			new Type[] { typeof(string), typeof(string), typeof(string), typeof(byte[]), typeof(string) },
-			new object[] { folder, "http://example.test/page", "text/html", System.Text.Encoding.UTF8.GetBytes(page), null! })!;
+		string Reserve()
+		{
+			return (string)Reflect.Static(typeof(WebFetch), "ReserveFolder", Type.EmptyTypes, Array.Empty<object>())!;
+		}
+
+		int Number(string folder)
+		{
+			return int.Parse(Path.GetFileName(folder).Substring("fetch_".Length));
+		}
+
+		string Save(string folder, string page)
+		{
+			return (string)Reflect.Static(typeof(WebFetch), "SaveFiles",
+					new Type[] { typeof(string), typeof(string), typeof(string), typeof(byte[]), typeof(string) },
+					new object[] { folder, "http://example.test/page", "text/html", System.Text.Encoding.UTF8.GetBytes(page), null! })!;
+		}
 
 		// Numbers already on disk are skipped, so an earlier run's folders would leave gaps.
 		await ShellTools.AgentBashAsync("fetch_clear", "rm -rf /tmp/work/fetch_*", null, ct);
@@ -438,7 +457,10 @@ public static class ToolSandboxTests
 		ctx.Assert(first.ExitCode == 0 && firstHash.Length > 0 && first.StdOut.Contains("30 steps of 16.7 ms, page time 501 ms", StringComparison.Ordinal), $"Screenshot: it captures the page and says how much time passed — {first.StdOut} {first.StdErr}");
 		bool same = true;
 		for (int i = 0; i < 5; i++)
+		{
 			same = same && (await Shot($"again{i}", "30", "16.7")).Hash == firstHash;
+		}
+
 		ctx.Assert(same, "Screenshot: the same steps give the same bytes, CSS animation, timers, clocks and random numbers included");
 		ctx.Assert((await Shot("later", "31", "16.7")).Hash != firstHash, "Screenshot: one more step is another moment");
 		ctx.Assert((await Shot("longer", "30", "16.8")).Hash != firstHash, "Screenshot: a longer step is another moment");
@@ -551,13 +573,19 @@ public static class ToolSandboxTests
 
 		ProtocolResult last = ProtocolResult.Failed("not run");
 		for (int i = 0; i < 16 && last.Payload?.AssistantText != "all done"; i++)
+		{
 			last = await StepAsync(rig, ct);
+		}
+
 		ctx.AssertEqual("all done", last.Payload?.AssistantText ?? last.ErrorMessage ?? string.Empty, "Tools: the scripted session runs to the end");
 
 		Dictionary<string, string> results = Results(rig.Session);
 
 		if (sandboxed)
+		{
 			ctx.Assert(Get(results, "c1").Contains(Sandbox.ShellUser, StringComparison.Ordinal), $"Tools: bash runs as the shell user — {Get(results, "c1")}");
+		}
+
 		ctx.Assert(!Get(results, "c2").Contains("Error", StringComparison.Ordinal), $"Tools: write_file overwrites a file the shell made — {Get(results, "c2")}");
 		ctx.Assert(!Get(results, "c3").Contains("Error", StringComparison.Ordinal), $"Tools: edit_file edits it — {Get(results, "c3")}");
 		ctx.Assert(Get(results, "c4").Contains("edited by write_file", StringComparison.Ordinal) && Get(results, "c4").Contains("appended", StringComparison.Ordinal),
@@ -591,9 +619,13 @@ public static class ToolSandboxTests
 				$"Tools: the taken folder is read-only for the shell and the link is gone — {after14}");
 
 			if (Sandbox.FileClockAvailable)
+			{
 				await FileClockAsync(ctx, root, ct);
+			}
 			else
+			{
 				ctx.Log("    SKIP: no clockfs or fuse device, so the counted clock is untested");
+			}
 		}
 
 		// The date is the constant, not the calendar: a run started on any day counts from the same midnight.
@@ -641,7 +673,10 @@ public static class ToolSandboxTests
 		SettingsService                settings = new SettingsService();
 		Dictionary<string, ToolConfig> defaults = ToolService.Defaults();
 		foreach (string name in ToolNames)
+		{
 			settings.Tools[name] = defaults[name];
+		}
+
 		Role   role  = new Role("ToolTester", "drives the tools", RoleKind.Subagent, new List<string> { config.Id }, new List<string>(ToolNames), "test", string.Empty, string.Empty);
 		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, false, null, null, null, null, null, null);
 		return new Rig(session, service, tools, transport);
@@ -655,7 +690,9 @@ public static class ToolSandboxTests
 			rig.Session.CommitAssistantTurn(result.Payload!);
 			bool hasCalls = await ToolDispatch.DispatchAsync(result.Payload!, rig.Tools, rig.Session, rig.Transport, ct);
 			if (hasCalls)
+			{
 				rig.Session.CommitToolResults(result.Payload!);
+			}
 		}
 		return result;
 	}
@@ -664,7 +701,10 @@ public static class ToolSandboxTests
 	{
 		JsonObject obj = new JsonObject();
 		foreach ((string name, string value) in args)
+		{
 			obj[name] = value;
+		}
+
 		return obj.ToJsonString();
 	}
 
@@ -674,7 +714,9 @@ public static class ToolSandboxTests
 		foreach (CanonicalMessage message in session.Data.Messages)
 		{
 			if (message is ToolResultMessage tr)
+			{
 				results[tr.ToolCallId] = tr.Content;
+			}
 		}
 		return results;
 	}

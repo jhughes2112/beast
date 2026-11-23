@@ -120,7 +120,10 @@ public static class TitleBarTests
 	{
 		string text = string.Empty;
 		for (int x = 1; x < panel.W; x++)
+		{
 			text += panel.Get(x, panel.H - 1).Ch;
+		}
+
 		return text;
 	}
 

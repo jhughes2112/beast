@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 
 
@@ -51,6 +52,10 @@ internal class ConfigOverlay
 	// Ordered by likelihood of being the one the user came for: the everyday picks first, then
 	// the remaining local servers, then the rest roughly by popularity.
 	private const string kChatGptSubscriptionUrl = "https://chatgpt.com/backend-api/codex/responses";
+	private const string kGoogleSubscriptionUrl  = "antigravity://subscription";
+
+	// The only address a sign-in link from the agent may open in the host's browser.
+	private const string kGoogleSignInPrefix = "https://accounts.google.com/";
 
 	private static readonly (string Name, string Url)[] kPresets =
 	{
@@ -63,6 +68,9 @@ internal class ConfigOverlay
 		// A ChatGPT plan signed in with a device code (no key to paste); served by the Codex backend.
 		// The agent shows the sign-in URL and code in the loading screen.
 		("OpenAI Subscription",                         kChatGptSubscriptionUrl),
+		// Not an HTTP endpoint: the agent drives a Google AI subscription through the Antigravity CLI.
+		// Signed in with Google in the host's browser; the code it ends on is pasted back here.
+		("Google Subscription",                          kGoogleSubscriptionUrl),
 		("OpenRouter",          "https://openrouter.ai/api/v1/chat/completions"),
 		("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
 		("xAI (Grok)",        "https://api.x.ai/v1/chat/completions"),
@@ -151,21 +159,74 @@ internal class ConfigOverlay
 		public bool Missing;
 
 		// Effective values: override beats discovered.
-		public int           Window     => OvrWindow > 0 ? OvrWindow : DiscWindow;
-		public decimal       CostIn     => OvrCostIn >= 0 ? OvrCostIn : DiscCostIn;
-		public decimal       CostOut    => OvrCostOut >= 0 ? OvrCostOut : DiscCostOut;
-		public List<string>? Modalities => OvrModalities ?? DiscModalities;
+		public int Window
+		{
+			get
+			{
+				return OvrWindow > 0 ? OvrWindow : DiscWindow;
+			}
+		}
+
+		public decimal CostIn
+		{
+			get
+			{
+				return OvrCostIn >= 0 ? OvrCostIn : DiscCostIn;
+			}
+		}
+
+		public decimal CostOut
+		{
+			get
+			{
+				return OvrCostOut >= 0 ? OvrCostOut : DiscCostOut;
+			}
+		}
+
+		public List<string>? Modalities
+		{
+			get
+			{
+				return OvrModalities ?? DiscModalities;
+			}
+		}
 
 		// Whether the user has set anything an apply would write for this row.
-		public bool HasOverrides => OvrWindow > 0 || OvrMaxOut > 0 || OvrCostIn >= 0 || OvrCostOut >= 0 || OvrModalities != null
+		public bool HasOverrides
+		{
+			get
+			{
+				return OvrWindow > 0 || OvrMaxOut > 0 || OvrCostIn >= 0 || OvrCostOut >= 0 || OvrModalities != null
 			|| OvrEffort.Length > 0 || !OvrRetainReasoning || !OvrSummaries || OvrMaxImages > 0
 			|| OvrTimeout > 0 || OvrSeed.HasValue || OvrSampling.Count > 0 || OvrExtras.Length > 0 || OvrHeaders.Length > 0;
+			}
+		}
 
 		// Unknown means neither discovered nor overridden — the fields that MUST be supplied
 		// before the model can be enabled.
-		public bool UnknownWindow     => Window <= 0;
-		public bool UnknownCost       => CostIn < 0 || CostOut < 0;
-		public bool UnknownModalities => Modalities == null;
+		public bool UnknownWindow
+		{
+			get
+			{
+				return Window <= 0;
+			}
+		}
+
+		public bool UnknownCost
+		{
+			get
+			{
+				return CostIn < 0 || CostOut < 0;
+			}
+		}
+
+		public bool UnknownModalities
+		{
+			get
+			{
+				return Modalities == null;
+			}
+		}
 	}
 
 	private          Mode _mode = Mode.Closed;
@@ -179,6 +240,8 @@ internal class ConfigOverlay
 	private SearchRow? _searchModelRow;
 	private string     _baseUrl = string.Empty;
 	private string     _apiKey  = string.Empty;
+	// The Google sign-in link the agent is waiting on; shown beside the code prompt until the code is sent.
+	private string _signInUrl = string.Empty;
 	// Shared text-entry buffer for the AddUrl/AddKey/Details modes.
 	private          string         _entry   = string.Empty;
 	private          string         _status  = string.Empty;
@@ -218,7 +281,13 @@ internal class ConfigOverlay
 		_sendCommand = sendCommand;
 	}
 
-	public bool IsOpen => _mode != Mode.Closed;
+	public bool IsOpen
+	{
+		get
+		{
+			return _mode != Mode.Closed;
+		}
+	}
 
 	public void Open()
 	{
@@ -243,7 +312,9 @@ internal class ConfigOverlay
 	public bool OnConfigFrame(string json)
 	{
 		if (_mode == Mode.Closed)
+		{
 			return false;
+		}
 
 		try
 		{
@@ -258,7 +329,10 @@ internal class ConfigOverlay
 					foreach (JsonNode? e in list)
 					{
 						if (e == null)
+						{
 							continue;
+						}
+
 						_endpoints.Add((
 							e["baseUrl"]?.GetValue<string>() ?? string.Empty,
 							e["source"]?.GetValue<string>() ?? "auto",
@@ -273,7 +347,10 @@ internal class ConfigOverlay
 					foreach (JsonNode? entry in searchList)
 					{
 						if (entry == null)
+						{
 							continue;
+						}
+
 						_search.Add(new SearchRow
 						{
 							Id         = entry["id"]?.GetValue<string>() ?? string.Empty,
@@ -292,14 +369,31 @@ internal class ConfigOverlay
 				// Only clear the loading placeholder — a "Saved …" notice from an apply that
 				// triggered this refresh stays visible on the endpoint screen.
 				if (_status.StartsWith("Loading endpoints", StringComparison.Ordinal))
+				{
 					_status = string.Empty;
+				}
 			}
 			else if (kind == "progress")
 			{
 				// A step the user must act on while the catalog loads — the ChatGPT sign-in URL and
 				// code — shown in the modal itself rather than left to the status bar.
 				if (_mode == Mode.Loading)
+				{
 					_status = root?["text"]?.GetValue<string>() ?? string.Empty;
+				}
+			}
+			else if (kind == "signin")
+			{
+				// The Google subscription needs signing in: open the agent's link here on the host, and
+				// ask for the authorization code the browser ends on. Entering it re-requests the
+				// catalog with the code as the key, which is what completes the sign-in.
+				if (_mode == Mode.Loading)
+				{
+					_signInUrl = root?["url"]?.GetValue<string>() ?? string.Empty;
+					OpenSignInPage(_signInUrl);
+					_entry = string.Empty;
+					_mode  = Mode.AddKey;
+				}
 			}
 			else if (kind == "catalog")
 			{
@@ -307,7 +401,17 @@ internal class ConfigOverlay
 				// for host.docker.internal (or back) — so apply persists the working URL.
 				string effective = root?["baseUrl"]?.GetValue<string>() ?? string.Empty;
 				if (effective.Length > 0)
+				{
 					_baseUrl = effective;
+				}
+
+				// What was typed for the Google subscription was a one-time sign-in code, not a key: the
+				// agent has already stored the sign-in, and an apply must not overwrite it with the code.
+				if (_baseUrl == kGoogleSubscriptionUrl)
+				{
+					_apiKey    = string.Empty;
+					_signInUrl = string.Empty;
+				}
 
 				string error   = root?["error"]?.GetValue<string>() ?? string.Empty;
 				_seedSupported = root?["seedSupported"]?.GetValue<bool>() ?? true;
@@ -322,7 +426,10 @@ internal class ConfigOverlay
 					foreach (JsonNode? m in list)
 					{
 						if (m == null)
+						{
 							continue;
+						}
+
 						ModelRow row = new ModelRow
 						{
 							Id                   = m["id"]?.GetValue<string>() ?? string.Empty,
@@ -364,7 +471,9 @@ internal class ConfigOverlay
 							{
 								decimal? sampling = over[key]?.GetValue<decimal>();
 								if (sampling.HasValue)
+								{
 									row.OvrSampling[key] = sampling.Value;
+								}
 							}
 							row.OvrExtras  = ReadObjects(over["extras"]);
 							row.OvrHeaders = ReadObjects(over["headers"]);
@@ -394,7 +503,9 @@ internal class ConfigOverlay
 			else if (kind == "test-result")
 			{
 				if (_mode == Mode.Testing && root?["id"]?.GetValue<int>() == _testId && _detailRow != null)
+				{
 					OnTestResult(_detailRow, root?["error"]?.GetValue<string>() ?? string.Empty);
+				}
 			}
 			else if (kind == "applied")
 			{
@@ -429,7 +540,10 @@ internal class ConfigOverlay
 	{
 		string normalized = string.Empty;
 		if (node != null)
+		{
 			TryNormalizeObjects(node.ToJsonString(), out normalized);
+		}
+
 		return normalized;
 	}
 
@@ -438,13 +552,18 @@ internal class ConfigOverlay
 		// Type-checked rather than AsArray(), which throws on any other shape.
 		JsonArray? array = node as JsonArray;
 		if (array == null)
+		{
 			return null;
+		}
+
 		List<string> values = new List<string>();
 		foreach (JsonNode? item in array)
 		{
 			string? v = item?.GetValue<string>();
 			if (!string.IsNullOrEmpty(v))
+			{
 				values.Add(v);
+			}
 		}
 		return values;
 	}
@@ -455,14 +574,24 @@ internal class ConfigOverlay
 	public bool ShowAgentError(string text)
 	{
 		if (_mode == Mode.Closed)
+		{
 			return false;
+		}
+
 		_status = text;
 		if (_mode == Mode.Loading)
+		{
 			_mode = Mode.Endpoints;
+		}
 		else if (_mode == Mode.Applying)
+		{
 			_mode = Mode.Models;
+		}
 		else if (_mode == Mode.Testing)
+		{
 			_mode = Mode.Details;
+		}
+
 		return true;
 	}
 
@@ -473,7 +602,9 @@ internal class ConfigOverlay
 	public bool HandlePaste(string text)
 	{
 		if (_mode == Mode.Closed)
+		{
 			return false;
+		}
 
 		string clean = text.Replace("\r", string.Empty).Replace("\n", string.Empty).Trim();
 		if (clean.Length > 0)
@@ -513,7 +644,10 @@ internal class ConfigOverlay
 			case Mode.Loading:
 			case Mode.Applying:
 				if (key.Key == ConsoleKey.Escape)
+				{
 					_mode = Mode.Endpoints;
+				}
+
 				break;
 			case Mode.Testing:
 				if (key.Key == ConsoleKey.Escape && _detailRow != null)
@@ -544,20 +678,33 @@ internal class ConfigOverlay
 		_homeRows.Add((HomeRowKind.HallMonitor, 0));
 		_homeRows.Add((HomeRowKind.Spacer, 0));
 		for (int i = 0; i < _endpoints.Count; i++)
+		{
 			_homeRows.Add((HomeRowKind.Endpoint, i));
+		}
+
 		_homeRows.Add((HomeRowKind.AddEndpoint, 0));
 
 		_homeRows.Add((HomeRowKind.Spacer, 0));
 		_homeRows.Add((HomeRowKind.SearchHeader, 0));
 		for (int i = 0; i < _search.Count; i++)
+		{
 			_homeRows.Add((HomeRowKind.Search, i));
+		}
 
 		if (_homeSelected >= _homeRows.Count)
+		{
 			_homeSelected = _homeRows.Count - 1;
+		}
+
 		if (_homeSelected < 0)
+		{
 			_homeSelected = 0;
+		}
+
 		if (_homeRows.Count > 0 && !IsSelectable(_homeRows[_homeSelected].Kind))
+		{
 			MoveHome(1);
+		}
 	}
 
 	// The section header and the blank separator are decoration, never selection targets.
@@ -574,7 +721,10 @@ internal class ConfigOverlay
 		{
 			next += step;
 			if (next < 0 || next >= _homeRows.Count)
+			{
 				return;
+			}
+
 			if (IsSelectable(_homeRows[next].Kind))
 			{
 				_homeSelected = next;
@@ -588,7 +738,10 @@ internal class ConfigOverlay
 		if (_homeRows.Count == 0)
 		{
 			if (key.Key == ConsoleKey.Escape)
+			{
 				Close();
+			}
+
 			return;
 		}
 
@@ -628,7 +781,9 @@ internal class ConfigOverlay
 			for (int i = 0; i < kUnsureChoices.Length; i++)
 			{
 				if (kUnsureChoices[i].Value == _hallMonitorUnsure)
+				{
 					current = i;
+				}
 			}
 			_hallMonitorUnsure = kUnsureChoices[(current + 1) % kUnsureChoices.Length].Value;
 			_sendCommand($"/config-hallmonitor {_hallMonitorUnsure}");
@@ -643,9 +798,15 @@ internal class ConfigOverlay
 				SearchRow provider = _search[index];
 				provider.Enabled   = !provider.Enabled;
 				if (provider.Enabled)
+				{
 					provider.Configured = true;
+				}
+
 				if (provider.Enabled && !provider.HasKey)
+				{
 					_status = $"{provider.Name} needs an endpoint at {provider.Domain} carrying an API key.";
+				}
+
 				ApplySearch();
 			}
 		}
@@ -730,7 +891,9 @@ internal class ConfigOverlay
 		else if (key.Key == ConsoleKey.Backspace)
 		{
 			if (_entry.Length > 0)
+			{
 				_entry = _entry.Substring(0, _entry.Length - 1);
+			}
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
@@ -758,7 +921,10 @@ internal class ConfigOverlay
 		foreach (SearchRow row in _search)
 		{
 			if (!row.Configured)
+			{
 				continue;
+			}
+
 			providers.Add((JsonNode)new JsonObject
 			{
 				["provider"] = row.Id,
@@ -778,12 +944,16 @@ internal class ConfigOverlay
 		else if (key.Key == ConsoleKey.UpArrow)
 		{
 			if (_presetSelected > 0)
+			{
 				_presetSelected--;
+			}
 		}
 		else if (key.Key == ConsoleKey.DownArrow)
 		{
 			if (_presetSelected < kPresets.Length - 1)
+			{
 				_presetSelected++;
+			}
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
@@ -799,6 +969,14 @@ internal class ConfigOverlay
 				_apiKey  = string.Empty;
 				RequestCatalog();
 				_status = "Signing in to ChatGPT…";
+			}
+			else if (kPresets[_presetSelected].Url == kGoogleSubscriptionUrl)
+			{
+				// No key to ask for up front: the agent answers with a sign-in link when it needs one.
+				_baseUrl = kGoogleSubscriptionUrl;
+				_apiKey  = string.Empty;
+				RequestCatalog();
+				_status = "Checking the Google sign-in…";
 			}
 			else
 			{
@@ -818,7 +996,9 @@ internal class ConfigOverlay
 		else if (key.Key == ConsoleKey.Backspace)
 		{
 			if (_entry.Length > 0)
+			{
 				_entry = _entry.Substring(0, _entry.Length - 1);
+			}
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
@@ -862,12 +1042,16 @@ internal class ConfigOverlay
 		else if (key.Key == ConsoleKey.UpArrow)
 		{
 			if (_modelSelected > 0)
+			{
 				_modelSelected--;
+			}
 		}
 		else if (key.Key == ConsoleKey.DownArrow)
 		{
 			if (_modelSelected < _visible.Count - 1)
+			{
 				_modelSelected++;
+			}
 		}
 		else if (key.Key == ConsoleKey.Spacebar || key.KeyChar == ' ')
 		{
@@ -906,14 +1090,18 @@ internal class ConfigOverlay
 			// the catalog — so a dead model can always be cleared out (and, on apply, swept from
 			// the role orderings by the agent).
 			if (_modelSelected >= 0 && _modelSelected < _visible.Count)
+			{
 				ForgetModel(_visible[_modelSelected]);
+			}
 		}
 		else if (key.Key == ConsoleKey.Enter)
 		{
 			// Enter on a row edits its values — every overridable field, prefilled with the
 			// current override (blank = auto-discover).
 			if (_modelSelected >= 0 && _modelSelected < _visible.Count)
+			{
 				OpenEditor(_models[_visible[_modelSelected]], enableOnFinish: false);
+			}
 		}
 		else if (key.Key == ConsoleKey.Backspace)
 		{
@@ -961,7 +1149,9 @@ internal class ConfigOverlay
 			_models.RemoveAt(modelIdx);
 			RebuildVisible();
 			if (_modelSelected >= _visible.Count)
+			{
 				_modelSelected = Math.Max(0, _visible.Count - 1);
+			}
 		}
 	}
 
@@ -1025,7 +1215,9 @@ internal class ConfigOverlay
 			else if (key.Key == ConsoleKey.Backspace)
 			{
 				if (_entry.Length > 0)
+				{
 					_entry = _entry.Substring(0, _entry.Length - 1);
+				}
 			}
 			else if (key.Key == ConsoleKey.Enter)
 			{
@@ -1051,12 +1243,16 @@ internal class ConfigOverlay
 		else if (key.Key == ConsoleKey.UpArrow)
 		{
 			if (_detailIndex > 0)
+			{
 				_detailIndex--;
+			}
 		}
 		else if (key.Key == ConsoleKey.DownArrow)
 		{
 			if (_detailIndex < kDetailFields.Length - 1)
+			{
 				_detailIndex++;
+			}
 		}
 		else if (key.Key == ConsoleKey.Delete)
 		{
@@ -1140,7 +1336,9 @@ internal class ConfigOverlay
 		string now     = OverridesJson(row);
 		bool   missing = false;
 		foreach (string field in kDetailFields)
+		{
 			missing = missing || DetailRequired(field, row);
+		}
 
 		if (now == _detailBaseline || now == _detailRefused || (_detailEnableOnFinish && missing))
 		{
@@ -1170,7 +1368,9 @@ internal class ConfigOverlay
 		{
 			FinishDetails(row);
 			if (_status.Length == 0)
+			{
 				_status = $"{row.Id} answered the test.";
+			}
 		}
 		else
 		{
@@ -1199,7 +1399,9 @@ internal class ConfigOverlay
 			foreach (string field in kDetailFields)
 			{
 				if (DetailRequired(field, row))
+				{
 					missing.Add(DetailName(field));
+				}
 			}
 
 			if (missing.Count == 0)
@@ -1242,7 +1444,9 @@ internal class ConfigOverlay
 	private static string DetailName(string field)
 	{
 		if (kSampling.TryGetValue(field, out (string Label, string Help) sampling))
+		{
 			return sampling.Label;
+		}
 
 		switch (field)
 		{
@@ -1277,7 +1481,9 @@ internal class ConfigOverlay
 	private static string DetailValue(string field, ModelRow row)
 	{
 		if (kSampling.ContainsKey(field))
+		{
 			return row.OvrSampling.TryGetValue(field, out decimal sampling) ? sampling.ToString(System.Globalization.CultureInfo.InvariantCulture) : "provider default";
+		}
 
 		switch (field)
 		{
@@ -1321,7 +1527,9 @@ internal class ConfigOverlay
 	private static string DetailHelp(string field)
 	{
 		if (kSampling.TryGetValue(field, out (string Label, string Help) sampling))
+		{
 			return sampling.Help;
+		}
 
 		switch (field)
 		{
@@ -1362,7 +1570,9 @@ internal class ConfigOverlay
 	private static string DetailPrefill(string field, ModelRow row)
 	{
 		if (kSampling.ContainsKey(field))
+		{
 			return row.OvrSampling.TryGetValue(field, out decimal sampling) ? sampling.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+		}
 
 		switch (field)
 		{
@@ -1445,49 +1655,75 @@ internal class ConfigOverlay
 		{
 			ok = int.TryParse(value, out int number) && number > 0;
 			if (ok && field == "window")
+			{
 				row.OvrWindow = number;
+			}
 			else if (ok && field == "maxOut")
+			{
 				row.OvrMaxOut = number;
+			}
 			else if (ok)
+			{
 				row.OvrTimeout = number;
+			}
 			else
+			{
 				error = "Enter a whole number greater than zero.";
+			}
 		}
 		else if (field == "seed")
 		{
 			long seed = 0;
 			ok        = _seedSupported && long.TryParse(value, out seed);
 			if (ok)
+			{
 				row.OvrSeed = seed;
+			}
 			else
+			{
 				error = _seedSupported ? "Enter a whole number, or leave it blank to send no seed." : "This endpoint's protocol has no seed. Only Chat Completions endpoints take one.";
+			}
 		}
 		else if (field == "topK")
 		{
 			ok = int.TryParse(value, out int topK) && topK > 0;
 			if (ok)
+			{
 				row.OvrSampling[field] = topK;
+			}
 			else
+			{
 				error = "Enter a whole number greater than zero, or leave it blank for the provider's default.";
+			}
 		}
 		else if (kSampling.ContainsKey(field))
 		{
 			// decimal, not double: it has no NaN or Infinity, which JSON could not carry to the agent.
 			ok = decimal.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal sampling);
 			if (ok)
+			{
 				row.OvrSampling[field] = sampling;
+			}
 			else
+			{
 				error = "Enter a number, or leave it blank for the provider's default.";
+			}
 		}
 		else if (field == "costIn" || field == "costOut")
 		{
 			ok = decimal.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal cost) && cost >= 0;
 			if (ok && field == "costIn")
+			{
 				row.OvrCostIn = cost;
+			}
 			else if (ok)
+			{
 				row.OvrCostOut = cost;
+			}
 			else
+			{
 				error = "Enter a price in dollars per million tokens, e.g. 3 or 0.15.";
+			}
 		}
 		else if (field == "modalities")
 		{
@@ -1496,23 +1732,35 @@ internal class ConfigOverlay
 			{
 				string trimmed = part.Trim().ToLowerInvariant();
 				if (trimmed.Length > 0)
+				{
 					modalities.Add(trimmed);
+				}
 			}
 			ok = modalities.Count > 0;
 			if (ok)
+			{
 				row.OvrModalities = modalities;
+			}
 			else
+			{
 				error = "Enter at least one of text,image,audio,video,file.";
+			}
 		}
 		else if (field == "extras" || field == "headers")
 		{
 			ok = TryNormalizeObjects(value, out string normalized);
 			if (ok && field == "extras")
+			{
 				row.OvrExtras = normalized;
+			}
 			else if (ok)
+			{
 				row.OvrHeaders = normalized;
+			}
 			else
+			{
 				error = "That is not a JSON object. Example: {\"key\": \"value\"}";
+			}
 		}
 		else
 		{
@@ -1520,7 +1768,10 @@ internal class ConfigOverlay
 		}
 
 		if (ok)
+		{
 			NoteEdited(row);
+		}
+
 		return ok;
 	}
 
@@ -1547,18 +1798,38 @@ internal class ConfigOverlay
 				foreach (JsonNode? item in list)
 				{
 					if (item is not JsonObject)
+					{
 						ok = false;
+					}
 				}
 			}
 
 			if (ok && array != null)
+			{
 				normalized = array.ToJsonString();
+			}
 		}
 		catch (System.Text.Json.JsonException)
 		{
 			ok = false;
 		}
 		return ok;
+	}
+
+	// Opens the agent's Google sign-in link in the host's default browser. Only a Google accounts
+	// address is opened; the link is also shown on screen, so a failure here loses nothing.
+	private static void OpenSignInPage(string url)
+	{
+		if (url.StartsWith(kGoogleSignInPrefix, StringComparison.Ordinal))
+		{
+			try
+			{
+				using Process? browser = Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+			}
+			catch (Exception)
+			{
+			}
+		}
 	}
 
 	private void RequestCatalog()
@@ -1578,9 +1849,15 @@ internal class ConfigOverlay
 	{
 		JsonObject entry = new JsonObject { ["id"] = row.Id, ["enabled"] = row.Enabled };
 		if (row.OvrWindow > 0)
+		{
 			entry["contextWindow"] = row.OvrWindow;
+		}
+
 		if (row.OvrMaxOut > 0)
+		{
 			entry["maxOutputTokens"] = row.OvrMaxOut;
+		}
+
 		if (row.OvrCostIn >= 0 || row.OvrCostOut >= 0)
 		{
 			// A half-overridden pair is completed from discovery so the persisted cost object
@@ -1595,29 +1872,58 @@ internal class ConfigOverlay
 		{
 			JsonArray modalities = new JsonArray();
 			foreach (string m in row.OvrModalities)
+			{
 				modalities.Add(m);
+			}
+
 			entry["modalities"] = modalities;
 		}
 		if (!string.IsNullOrEmpty(row.OvrEffort))
+		{
 			entry["reasoningEffort"] = row.OvrEffort;
+		}
 		// These two are written only when OFF: on is the default for both, and the agent writes them
 		// off itself when an endpoint refuses them mid-run.
 		if (!row.OvrRetainReasoning)
+		{
 			entry["retainReasoning"] = false;
+		}
+
 		if (!row.OvrSummaries)
+		{
 			entry["reasoningSummaries"] = false;
+		}
+
 		if (row.OvrMaxImages > 0)
+		{
 			entry["maxImages"] = row.OvrMaxImages;
+		}
+
 		if (row.OvrTimeout > 0)
+		{
 			entry["requestTimeoutSeconds"] = row.OvrTimeout;
+		}
+
 		if (row.OvrSeed.HasValue)
+		{
 			entry["seed"] = row.OvrSeed.Value;
+		}
+
 		foreach ((string key, decimal sampling) in row.OvrSampling)
+		{
 			entry[key] = sampling;
+		}
+
 		if (row.OvrExtras.Length > 0)
+		{
 			entry["extras"] = JsonNode.Parse(row.OvrExtras);
+		}
+
 		if (row.OvrHeaders.Length > 0)
+		{
 			entry["headers"] = JsonNode.Parse(row.OvrHeaders);
+		}
+
 		return entry;
 	}
 
@@ -1630,7 +1936,9 @@ internal class ConfigOverlay
 		foreach (ModelRow row in _models)
 		{
 			if (!row.Enabled && !row.Configured)
+			{
 				continue;
+			}
 
 			models.Add(BuildEntry(row));
 		}
@@ -1657,7 +1965,10 @@ internal class ConfigOverlay
 			if (_filter.Length > 0
 				&& !row.Id.Contains(_filter, StringComparison.OrdinalIgnoreCase)
 				&& !row.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase))
+			{
 				continue;
+			}
+
 			_visible.Add(i);
 		}
 		_visible.Sort((a, b) =>
@@ -1665,14 +1976,21 @@ internal class ConfigOverlay
 			ModelRow ra = _models[a];
 			ModelRow rb = _models[b];
 			if (ra.Enabled != rb.Enabled)
+			{
 				return ra.Enabled ? -1 : 1;
+			}
 			// Configured-but-disabled models sit just under the enabled group — they are "yours".
 			if (ra.Configured != rb.Configured)
+			{
 				return ra.Configured ? -1 : 1;
+			}
 			// Newest first — the latest models are almost always the ones being reached for.
 			// Unknown release dates (0) fall to an alphabetical tail below all dated models.
 			if (ra.Created != rb.Created)
+			{
 				return rb.Created.CompareTo(ra.Created);
+			}
+
 			return string.Compare(ra.Id, rb.Id, StringComparison.OrdinalIgnoreCase);
 		});
 	}
@@ -1707,15 +2025,22 @@ internal class ConfigOverlay
 
 				int visRows = bh - 4;
 				if (_homeSelected < _homeScroll)
+				{
 					_homeScroll = _homeSelected;
+				}
+
 				if (_homeSelected >= _homeScroll + visRows)
+				{
 					_homeScroll = _homeSelected - visRows + 1;
+				}
 
 				for (int r = 0; r < visRows; r++)
 				{
 					int idx = _homeScroll + r;
 					if (idx >= _homeRows.Count)
+					{
 						break;
+					}
 
 					(HomeRowKind kind, int index) = _homeRows[idx];
 					int  row                      = r + 3;
@@ -1723,7 +2048,9 @@ internal class ConfigOverlay
 					Rgb  rowBg                    = sel ? selBg : bg;
 
 					if (kind == HomeRowKind.Spacer)
+					{
 						continue;
+					}
 
 					if (kind == HomeRowKind.SearchHeader)
 					{
@@ -1734,7 +2061,10 @@ internal class ConfigOverlay
 					Rgb rowFg = kind == HomeRowKind.AddEndpoint ? onFg : textFg;
 					// An endpoint contributing no models is dimmed: nothing depends on it.
 					if (kind == HomeRowKind.Endpoint && (_endpoints[index].Source == "manual" || _endpoints[index].EnabledCount == 0))
+					{
 						rowFg = dimFg;
+					}
+
 					s.Fill(new Rect(1, row, bw - 2, 1), new Cell(' ', rowFg, rowBg, CellStyle.None));
 
 					string line;
@@ -1744,7 +2074,9 @@ internal class ConfigOverlay
 						foreach ((string value, string choice) in kUnsureChoices)
 						{
 							if (value == _hallMonitorUnsure)
+							{
 								label = choice;
+							}
 						}
 						line  = $"HallMonitor, when unsure about a host command: {label}   (space changes it)";
 						rowFg = _hallMonitorUnsure == "beUnsafe" ? unknownFg : textFg;
@@ -1789,15 +2121,23 @@ internal class ConfigOverlay
 
 				int visRows = bh - 4;
 				if (_presetSelected < _presetScroll)
+				{
 					_presetScroll = _presetSelected;
+				}
+
 				if (_presetSelected >= _presetScroll + visRows)
+				{
 					_presetScroll = _presetSelected - visRows + 1;
+				}
 
 				for (int r = 0; r < visRows; r++)
 				{
 					int idx = _presetScroll + r;
 					if (idx >= kPresets.Length)
+					{
 						break;
+					}
+
 					bool sel   = idx == _presetSelected;
 					Rgb  rowBg = sel ? selBg : bg;
 					Rgb  rowFg = idx == 0 ? onFg : textFg;
@@ -1807,7 +2147,9 @@ internal class ConfigOverlay
 					string name = kPresets[idx].Name.Length > nameWidth ? kPresets[idx].Name.Substring(0, nameWidth) : kPresets[idx].Name.PadRight(nameWidth);
 					AnsiToScreen.WriteLine(s, 2, r + 3, name, rowFg, rowBg);
 					if (kPresets[idx].Url.Length > 0)
+					{
 						AnsiToScreen.WriteLine(s, 2 + nameWidth + 1, r + 3, PopupFrame.Fit(kPresets[idx].Url, innerW - nameWidth - 1), dimFg, rowBg);
+					}
 				}
 				break;
 			}
@@ -1816,15 +2158,38 @@ internal class ConfigOverlay
 			{
 				string label;
 				if (_mode == Mode.AddUrl)
+				{
 					label = "Endpoint URL (base or full, e.g. http://host:8080/v1):";
+				}
 				else if (_baseUrl.StartsWith("claude-code://", StringComparison.OrdinalIgnoreCase))
+				{
 					label = "Long-lived OAuth token (run `claude setup-token` on the host and paste what it prints):";
+				}
+				else if (_baseUrl == kGoogleSubscriptionUrl)
+				{
+					label = "Sign in with Google in the browser, then paste the authorization code it ends on:";
+				}
 				else
+				{
 					label = $"API key for {_baseUrl} (blank for none):";
+				}
+
 				AnsiToScreen.WriteLine(s, 2, 2, label, textFg, bg);
 				string shown = _mode == Mode.AddKey && _entry.Length > 0 ? new string('•', _entry.Length) : _entry;
-				AnsiToScreen.WriteLine(s, 2,      4, PopupFrame.Fit("> " + shown + "▏", innerW), titleFg, bg);
-				AnsiToScreen.WriteLine(s, 2, bh - 2,                "Enter continue · Esc back",   dimFg, bg);
+				AnsiToScreen.WriteLine(s, 2, 4, PopupFrame.Fit("> " + shown + "▏", innerW), titleFg, bg);
+
+				// The link itself, wrapped, for a browser that did not open or lives on another machine.
+				if (_mode == Mode.AddKey && _baseUrl == kGoogleSubscriptionUrl && _signInUrl.Length > 0)
+				{
+					AnsiToScreen.WriteLine(s, 2, 6, "If no browser opened, open this link:", dimFg, bg);
+					int row = 7;
+					for (int at = 0; at < _signInUrl.Length && row < bh - 3; at += innerW)
+					{
+						AnsiToScreen.WriteLine(s, 2, row, _signInUrl.Substring(at, Math.Min(innerW, _signInUrl.Length - at)), dimFg, bg);
+						row++;
+					}
+				}
+				AnsiToScreen.WriteLine(s, 2, bh - 2, "Enter continue · Esc back", dimFg, bg);
 				break;
 			}
 			case Mode.Loading:
@@ -1843,15 +2208,23 @@ internal class ConfigOverlay
 
 				int visRows = bh - 5;
 				if (_modelSelected < _modelScroll)
+				{
 					_modelScroll = _modelSelected;
+				}
+
 				if (_modelSelected >= _modelScroll + visRows)
+				{
 					_modelScroll = _modelSelected - visRows + 1;
+				}
 
 				for (int r = 0; r < visRows; r++)
 				{
 					int idx = _modelScroll + r;
 					if (idx >= _visible.Count)
+					{
 						break;
+					}
+
 					ModelRow row   = _models[_visible[idx]];
 					bool     sel   = idx == _modelSelected;
 					Rgb      rowBg = sel ? selBg : bg;
@@ -1874,9 +2247,13 @@ internal class ConfigOverlay
 					string line    = $"{mark} {PopupFrame.Fit(row.Id, idWidth).PadRight(idWidth)} {right}";
 					AnsiToScreen.WriteLine(s, 2, r + 3, PopupFrame.Fit(line, innerW), rowFg, rowBg);
 					if (sel && row.Missing)
+					{
 						AnsiToScreen.WriteLine(s, 2, bh - 2, "No longer in the endpoint's catalog — space or Del removes it from your list.", unknownFg, bg);
+					}
 					else if (sel && (row.UnknownWindow || row.UnknownCost || row.UnknownModalities) && !row.Enabled)
+					{
 						AnsiToScreen.WriteLine(s, 2, bh - 2, "Some fields are unknown — enabling will ask for them.", unknownFg, bg);
+					}
 				}
 				break;
 			}
@@ -1889,20 +2266,29 @@ internal class ConfigOverlay
 					// A failed test's reason sits above the help line, taking its rows from the list.
 					List<string> errorLines = WrapDetailError(innerW);
 					for (int e = 0; e < errorLines.Count; e++)
+					{
 						AnsiToScreen.WriteLine(s, 2, bh - 3 - errorLines.Count + e, errorLines[e], unknownFg, bg);
+					}
 
 					int visRows = Math.Max(1, bh - 6 - errorLines.Count);
 					if (_detailIndex < _detailScroll)
+					{
 						_detailScroll = _detailIndex;
+					}
+
 					if (_detailIndex >= _detailScroll + visRows)
+					{
 						_detailScroll = _detailIndex - visRows + 1;
+					}
 
 					const int labelWidth = 34;
 					for (int r = 0; r < visRows; r++)
 					{
 						int idx = _detailScroll + r;
 						if (idx >= kDetailFields.Length)
+						{
 							break;
+						}
 
 						string field    = kDetailFields[idx];
 						bool   sel      = idx == _detailIndex;
@@ -1930,7 +2316,9 @@ internal class ConfigOverlay
 		}
 
 		if (_status.Length > 0 && _mode != Mode.Loading && _mode != Mode.Testing && _mode != Mode.Applying)
+		{
 			AnsiToScreen.WriteLine(s, 2, bh - 2, PopupFrame.Fit(_status, innerW), statusFg, bg);
+		}
 
 		return s;
 	}
@@ -1957,7 +2345,9 @@ internal class ConfigOverlay
 		foreach (ModelRow row in _models)
 		{
 			if (row.Enabled)
+			{
 				count++;
+			}
 		}
 		return count;
 	}
@@ -2013,19 +2403,31 @@ internal class ConfigOverlay
 						break;
 					case "embeddings":
 						if (tag != 'D')
+						{
 							tag = 'E';
+						}
+
 						break;
 					case "text":
 						if (tag == '?')
+						{
 							tag = 'T';
+						}
+
 						break;
 					case "image":
 						if (tag == '?')
+						{
 							tag = 'I';
+						}
+
 						break;
 					case "audio":
 						if (tag == '?')
+						{
 							tag = 'A';
+						}
+
 						break;
 				}
 			}
@@ -2037,10 +2439,16 @@ internal class ConfigOverlay
 	private static string FormatAge(long createdEpochSeconds)
 	{
 		if (createdEpochSeconds <= 0)
+		{
 			return string.Empty;
+		}
+
 		long days = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - createdEpochSeconds) / 86400;
 		if (days < 0)
+		{
 			days = 0;
+		}
+
 		return $"{days}d";
 	}
 

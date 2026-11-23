@@ -66,11 +66,18 @@ public class HallMonitorVerdict
 	{
 		HallMonitorAction action = HallMonitorAction.Refuse;
 		if (Judgment == HallMonitorJudgment.Allow)
+		{
 			action = HallMonitorAction.Run;
+		}
 		else if (Judgment == HallMonitorJudgment.Unsure && policy == UnsurePolicy.Ask)
+		{
 			action = HallMonitorAction.AskHuman;
+		}
 		else if (Judgment == HallMonitorJudgment.Unsure && policy == UnsurePolicy.BeUnsafe)
+		{
 			action = HallMonitorAction.Run;
+		}
+
 		return action;
 	}
 }
@@ -173,7 +180,10 @@ public class HallMonitor
 	public bool RecordHumanAnswer(string command, HumanAnswer answer)
 	{
 		if (answer == HumanAnswer.Always || answer == HumanAnswer.Never)
+		{
 			_memory.Remember(command, answer == HumanAnswer.Always);
+		}
+
 		return answer == HumanAnswer.Always || answer == HumanAnswer.Yes;
 	}
 
@@ -186,7 +196,9 @@ public class HallMonitor
 		if (role != null)
 		{
 			foreach (LlmModel model in _registry.ModelsForRole(role))
+			{
 				_calibration.EnsureCalibrated(model);
+			}
 		}
 	}
 
@@ -204,9 +216,13 @@ public class HallMonitor
 		string              problem                     = role == null ? $"no {RoleName} role is defined" : string.Empty;
 
 		if (known.Never.Contains(exact))
+		{
 			verdict = new HallMonitorVerdict(HallMonitorJudgment.Block, 1, "you answered Never for this exact command", string.Empty);
+		}
 		else if (known.Always.Contains(exact))
+		{
 			verdict = new HallMonitorVerdict(HallMonitorJudgment.Allow, 0, string.Empty, string.Empty);
+		}
 
 		if (verdict == null && role != null)
 		{
@@ -243,9 +259,11 @@ public class HallMonitor
 			}
 
 			if (verdict == null)
+			{
 				problem = failures.Count == 0
 					? $"no decision model is enabled for the {RoleName} role"
 					: $"no decision model could judge the command ({string.Join("; ", failures)})";
+			}
 		}
 
 		if (verdict == null)
@@ -265,7 +283,10 @@ public class HallMonitor
 	{
 		StringBuilder state = new StringBuilder();
 		if (context.Length > 0)
+		{
 			state.Append(context).Append("\n\n");
+		}
+
 		AppendList(state, "Commands this person has said may ALWAYS run:", always);
 		AppendList(state, "Commands this person has said must NEVER run:",  never);
 		state.Append(Framing).Append('\n').Append(command);
@@ -278,7 +299,10 @@ public class HallMonitor
 		{
 			state.Append(heading).Append('\n');
 			foreach (string command in commands)
+			{
 				state.Append("- ").Append(command.Replace("\n", "\n  ")).Append('\n');
+			}
+
 			state.Append('\n');
 		}
 	}
@@ -316,7 +340,9 @@ public class HallMonitor
 			{
 				strongest = Math.Max(strongest, p);
 				if (picked.Flag)
+				{
 					concerns.Add(key);
+				}
 			}
 		}
 
@@ -347,9 +373,12 @@ public class HallMonitor
 	{
 		string reason = string.Empty;
 		if (judgment != HallMonitorJudgment.Allow)
+		{
 			reason = concerns.Count > 0
 				? $"{string.Join(", ", concerns)}: {Questions[concerns[0]].Options["yes"].Description}"
 				: $"not confident it is safe (score {score:0.00})";
+		}
+
 		return reason;
 	}
 
@@ -373,7 +402,9 @@ public class HallMonitor
 				double value = probabilities[option] is JsonValue v && v.TryGetValue(out double d) ? d : 0;
 				total       += value;
 				if (meaning.Flag)
+				{
 					flagged += value;
+				}
 			}
 			p = total > 0 ? flagged / total : 0.5;
 		}

@@ -67,7 +67,13 @@ public class FakeLlm
 	// against it — "no further requests arrived" is the only honest way to assert a loop ended.
 	private int _requestsServed;
 
-	public int RequestsServed => Volatile.Read(ref _requestsServed);
+	public int RequestsServed
+	{
+		get
+		{
+			return Volatile.Read(ref _requestsServed);
+		}
+	}
 
 	// Opt-in capture of the request bodies actually received. Off by default because the soak moves
 	// millions of tokens through here and keeping them all would dwarf the test process. Turned on
@@ -103,9 +109,29 @@ public class FakeLlm
 	private readonly HttpListener _listener = new HttpListener();
 	private readonly int          _port;
 
-	public int    Port         => _port;
-	public string BaseUrl      => $"http://localhost:{_port}/v1";
-	public string ChatEndpoint => $"http://localhost:{_port}/v1/chat/completions";
+	public int Port
+	{
+		get
+		{
+			return _port;
+		}
+	}
+
+	public string BaseUrl
+	{
+		get
+		{
+			return $"http://localhost:{_port}/v1";
+		}
+	}
+
+	public string ChatEndpoint
+	{
+		get
+		{
+			return $"http://localhost:{_port}/v1/chat/completions";
+		}
+	}
 
 	public FakeLlm(int port)
 	{
@@ -136,7 +162,9 @@ public class FakeLlm
 		{
 			FakeLlm candidate = new FakeLlm(20000 + Random.Shared.Next(20000));
 			if (candidate.TryStart())
+			{
 				server = candidate;
+			}
 		}
 		return server;
 	}
@@ -201,7 +229,9 @@ public class FakeLlm
 	{
 		string bodyText;
 		using (StreamReader reader = new StreamReader(context.Request.InputStream, Encoding.UTF8))
+		{
 			bodyText = await reader.ReadToEndAsync(ct);
+		}
 
 		JsonNode? body = null;
 		try
@@ -222,7 +252,9 @@ public class FakeLlm
 		lock (_recordGate)
 		{
 			if (_recording)
+			{
 				_recorded.Add(bodyText);
+			}
 		}
 
 		// A conversation carrying the sentinel gets the account rejection a provider sends when the
@@ -248,9 +280,14 @@ public class FakeLlm
 
 		int maxTokens = ReadInt(body, "max_completion_tokens");
 		if (maxTokens <= 0)
+		{
 			maxTokens = ReadInt(body, "max_tokens");
+		}
+
 		if (maxTokens <= 0)
+		{
 			maxTokens = 4096;
+		}
 
 		// llama-server charges the RESERVATION, not just the prompt: it refuses when prompt plus
 		// max_tokens overruns -c, even though the prompt on its own fits with room to spare. A caller
@@ -318,9 +355,13 @@ public class FakeLlm
 		Turn turn   = BuildTurn(body, maxTokens);
 		bool stream = body["stream"]?.GetValue<bool?>() ?? false;
 		if (stream)
+		{
 			await WriteSseAsync(context.Response, turn, promptTokens, !string.Equals(requestedModel, LateUsageModelId, StringComparison.Ordinal), ct);
+		}
 		else
+		{
 			await WriteCompletionAsync(context.Response, turn, promptTokens, ct);
+		}
 	}
 
 	// One generated response: what the "model" decided to say, think, and call this turn.
@@ -337,7 +378,10 @@ public class FakeLlm
 			{
 				int chars = Reasoning.Length + Text.Length;
 				foreach ((string _, string _, string args) in Calls)
+				{
 					chars += args.Length;
+				}
+
 				return chars / 4 + 1;
 			}
 		}
@@ -367,7 +411,9 @@ public class FakeLlm
 					JsonNode? fn   = entry?["function"];
 					string?   name = fn?["name"]?.GetValue<string>();
 					if (!string.IsNullOrEmpty(name))
+					{
 						tools.Add((name!, fn!["parameters"] as JsonObject));
+					}
 				}
 			}
 
@@ -408,7 +454,9 @@ public class FakeLlm
 				int length = Math.Min(100 + Random.Shared.Next(1400), charBudget);
 				turn.Text  = RandomText(length);
 				if (length >= charBudget)
+				{
 					turn.FinishReason = "length";
+				}
 			}
 		}
 		return turn;
@@ -444,14 +492,18 @@ public class FakeLlm
 				foreach (JsonNode? name in requiredArr)
 				{
 					if (name != null)
+					{
 						required.Add(name.ToString());
+					}
 				}
 			}
 
 			foreach ((string name, JsonNode? prop) in properties)
 			{
 				if (!required.Contains(name) && Random.Shared.Next(100) >= 30)
+				{
 					continue;
+				}
 
 				string type = prop?["type"]?.GetValue<string>() ?? "string";
 				if (type == "integer" || type == "number")
@@ -531,10 +583,14 @@ public class FakeLlm
 		}
 
 		foreach (string slice in Slices(turn.Reasoning))
+		{
 			await WriteChunkAsync(writer, Chunk(new JsonObject { ["reasoning_content"] = slice }, null), ct);
+		}
 
 		foreach (string slice in Slices(turn.Text))
+		{
 			await WriteChunkAsync(writer, Chunk(new JsonObject { ["content"] = slice }, null), ct);
+		}
 
 		for (int i = 0; i < turn.Calls.Count; i++)
 		{
@@ -584,7 +640,10 @@ public class FakeLlm
 	{
 		JsonObject message = new JsonObject { ["role"] = "assistant", ["content"] = turn.Text };
 		if (turn.Reasoning.Length > 0)
+		{
 			message["reasoning_content"] = turn.Reasoning;
+		}
+
 		if (turn.Calls.Count > 0)
 		{
 			JsonArray calls = new JsonArray();
@@ -627,7 +686,10 @@ public class FakeLlm
 		int       value = 0;
 		JsonNode? node  = body[name];
 		if (node != null && int.TryParse(node.ToString(), out int parsed))
+		{
 			value = parsed;
+		}
+
 		return value;
 	}
 
@@ -636,7 +698,10 @@ public class FakeLlm
 	{
 		List<string> slices = new List<string>();
 		for (int i = 0; i < text.Length; i += 80)
+		{
 			slices.Add(text.Substring(i, Math.Min(80, text.Length - i)));
+		}
+
 		return slices;
 	}
 
@@ -644,7 +709,10 @@ public class FakeLlm
 	{
 		JsonObject choice = new JsonObject { ["index"] = 0, ["delta"] = delta };
 		if (finishReason != null)
+		{
 			choice["finish_reason"] = finishReason;
+		}
+
 		JsonObject chunk = new JsonObject
 		{
 			["id"]      = "chatcmpl-fake",
@@ -685,7 +753,10 @@ public class FakeLlm
 			foreach (JsonNode? msg in messages)
 			{
 				if (msg == null)
+				{
 					continue;
+				}
+
 				chars += 16;
 
 				JsonNode? content = msg["content"];
@@ -696,7 +767,9 @@ public class FakeLlm
 				else if (content is JsonArray parts)
 				{
 					foreach (JsonNode? part in parts)
+					{
 						chars += part?["text"]?.ToString().Length ?? 0;
+					}
 				}
 
 				chars += msg["reasoning_content"]?.ToString().Length ?? 0;
@@ -715,7 +788,9 @@ public class FakeLlm
 
 		JsonArray? tools = body["tools"]?.AsArray();
 		if (tools != null)
+		{
 			chars += tools.ToJsonString().Length;
+		}
 
 		return chars / 4;
 	}
@@ -732,10 +807,15 @@ public class FakeLlm
 		while (sb.Length < length)
 		{
 			if (sb.Length > 0)
+			{
 				sb.Append(Random.Shared.Next(12) == 0 ? ".\n" : " ");
+			}
+
 			sb.Append(kWords[Random.Shared.Next(kWords.Length)]);
 			if (Random.Shared.Next(6) == 0)
+			{
 				sb.Append('-').Append(Random.Shared.Next(10000));
+			}
 		}
 		return sb.ToString(0, Math.Min(sb.Length, length));
 	}

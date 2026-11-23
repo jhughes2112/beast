@@ -124,7 +124,10 @@ public static class DecisionRoleTests
 	{
 		Dictionary<string, LlmModel> byId = new Dictionary<string, LlmModel>(StringComparer.OrdinalIgnoreCase);
 		foreach (LlmModel model in models)
+		{
 			byId[model.ConfigId] = model;
+		}
+
 		LlmRegistry registry = new LlmRegistry();
 		registry.RestoreModels(byId);
 		return registry;
@@ -274,7 +277,10 @@ public static class DecisionRoleTests
 	{
 		int dangerous = 0;
 		foreach ((string _, bool isDangerous) in HallMonitorCalibration.Commands)
+		{
 			dangerous += isDangerous ? 1 : 0;
+		}
+
 		ctx.AssertEqual(594, HallMonitorCalibration.Commands.Count, "Calibration set: 594 commands are built in");
 		ctx.AssertEqual(234, dangerous, "Calibration set: 234 of them dangerous");
 		ctx.AssertEqual(16, HallMonitorCalibration.Fingerprint.Length, "Calibration set: fingerprinted");
@@ -324,7 +330,9 @@ public static class DecisionRoleTests
 	{
 		Dictionary<string, bool> labels = new Dictionary<string, bool>(StringComparer.Ordinal);
 		foreach ((string command, bool dangerous) in HallMonitorCalibration.Commands)
+		{
 			labels[command] = dangerous;
+		}
 
 		HttpListener? listener = null;
 		int           port     = 0;
@@ -343,9 +351,13 @@ public static class DecisionRoleTests
 			}
 		}
 		if (listener == null)
+		{
 			ctx.Log("  SKIP: automatic calibration (no local port for the fake decision model)");
+		}
 		else
+		{
 			await RunAutomaticCalibrationAsync(ctx, listener, port, labels);
+		}
 	}
 
 	private static async Task RunAutomaticCalibrationAsync(TestContext ctx, HttpListener listener, int port, Dictionary<string, bool> labels)
@@ -369,12 +381,14 @@ public static class DecisionRoleTests
 			foreach ((string command, bool _) in HallMonitorCalibration.Commands)
 			{
 				if (builtIn.Length == 0 && command != "ls -la" && command != "rm -rf ~/")
+				{
 					builtIn = command;
+				}
 			}
 			File.WriteAllText(memoryPath, new JsonObject { ["always"] = new JsonArray("npm run beast-lint-check", builtIn), ["never"] = new JsonArray("sudo rm -rf /srv/data") }.ToJsonString());
 
 			DecisionMemory         memory      = new DecisionMemory(memoryPath);
-			HallMonitorCalibration calibration = new HallMonitorCalibration(calibrationPath, memory, s => { lock (statuses) statuses.Add(s); }, cts.Token);
+			HallMonitorCalibration calibration = new HallMonitorCalibration(calibrationPath, memory, s => { lock (statuses) { statuses.Add(s); } }, cts.Token);
 			HallMonitor            monitor     = new HallMonitor(roles, RegistryWith(decider), memory, calibration);
 
 			List<(string Command, bool Dangerous)> set = calibration.CalibrationSet();
@@ -389,7 +403,9 @@ public static class DecisionRoleTests
 			{
 				await Task.Delay(100, cts.Token);
 				lock (statuses)
+				{
 					finished = statuses.Count > 0 && statuses[statuses.Count - 1].State != "running";
+				}
 			}
 
 			CalibrationResult? result = new HallMonitorCalibration(calibrationPath, memory, _ => { }, cts.Token).ResultFor(decider);
@@ -434,7 +450,9 @@ public static class DecisionRoleTests
 			HttpListenerContext context = await listener.GetContextAsync();
 			string              body;
 			using (StreamReader reader = new StreamReader(context.Request.InputStream, Encoding.UTF8))
+			{
 				body = await reader.ReadToEndAsync(ct);
+			}
 
 			string state     = JsonNode.Parse(body)?["state"]?.GetValue<string>() ?? string.Empty;
 			string command   = state.Substring(state.LastIndexOf('\n') + 1);

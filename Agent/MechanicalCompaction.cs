@@ -99,7 +99,9 @@ public static class MechanicalCompaction
 			long fixedChars = toolChars + SystemPromptChars(messages);
 			long projected  = measuredTokens * (kept + fixedChars) / (total + fixedChars);
 			if (projected * 100 <= (long)windowTokens * kTargetWindowPercent)
+			{
 				result = rebuilt;
+			}
 		}
 		else if (total > 0 && kept * 2 <= total)
 		{
@@ -134,7 +136,9 @@ public static class MechanicalCompaction
 				if (msg is AssistantMessage am)
 				{
 					foreach (SemanticToolCall tc in am.ToolCalls)
+					{
 						callsById[tc.Id] = tc;
+					}
 				}
 				else if (msg is ToolResultMessage tr)
 				{
@@ -165,7 +169,9 @@ public static class MechanicalCompaction
 					// system's whip messages carry nothing once their turn is past. Everything the
 					// user actually typed stays verbatim.
 					if (!um.Text.StartsWith(LedgerMarker, StringComparison.Ordinal) && !Nudges.IsNudge(um.Text, endOfTurnPrompt))
+					{
 						rebuilt.Add(um);
+					}
 				}
 				else if (msg is AssistantMessage am)
 				{
@@ -179,9 +185,13 @@ public static class MechanicalCompaction
 							calls.Add(new SemanticToolCall { Id = tc.Id, Name = MemoryToolName, ArgumentsJson = MemoryArguments(tc, callResult) });
 						}
 						else if (tc.ArgumentsJson.Length >= kMinArgsChars && tc.ArgumentsJson.Length >= threshold)
+						{
 							calls.Add(new SemanticToolCall { Id = tc.Id, Name = tc.Name, ArgumentsJson = ElideArguments(tc.ArgumentsJson) });
+						}
 						else
+						{
 							calls.Add(tc);
+						}
 					}
 					rebuilt.Add(new AssistantMessage(am.Text, ElideThinking(am.Thinking, log, reasoningSummaries), calls));
 				}
@@ -192,13 +202,21 @@ public static class MechanicalCompaction
 					// can ask for it again.
 					bool bulky = tr.Content.Length >= kMinResultChars && tr.Content.Length >= threshold;
 					if (recorded.Contains(tr.ToolCallId) && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? recordedCall))
+					{
 						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, MemoryResult(recordedCall!, tr, log), null, tr.ExitCode));
+					}
 					else if (tr.Media != null && tr.Media.Count > 0 && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? mediaCall))
+					{
 						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, $"[elided media {MediaPaths(tr.Media)}: {mediaCall!.Name}({ArgSummary(mediaCall.ArgumentsJson)})]"));
+					}
 					else if (bulky && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? call))
+					{
 						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, ResultNote(call!, tr.Content.Length)));
+					}
 					else
+					{
 						rebuilt.Add(tr);
+					}
 				}
 			}
 		}
@@ -209,7 +227,9 @@ public static class MechanicalCompaction
 			foreach (CanonicalMessage msg in messages)
 			{
 				if (!(msg is SystemMessage))
+				{
 					rebuilt.Add(msg);
+				}
 			}
 		}
 
@@ -232,7 +252,9 @@ public static class MechanicalCompaction
 			if (msg is AssistantMessage am)
 			{
 				foreach (SemanticToolCall tc in am.ToolCalls)
+				{
 					found = found || string.Equals(tc.Name, MemoryToolName, StringComparison.Ordinal);
+				}
 			}
 		}
 		return found;
@@ -247,7 +269,9 @@ public static class MechanicalCompaction
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is ToolResultMessage tr && tr.ExitCode.HasValue && tr.ExitCode.Value != 0)
+			{
 				failed.Add(tr.ToolCallId);
+			}
 		}
 
 		List<string>    order = new List<string>();
@@ -260,14 +284,19 @@ public static class MechanicalCompaction
 				{
 					string path = ChangedPath(tc);
 					if (path.Length > 0 && !failed.Contains(tc.Id) && seen.Add(path))
+					{
 						order.Add(path);
+					}
 				}
 			}
 		}
 
 		string ledger = string.Empty;
 		if (order.Count > 0)
+		{
 			ledger = $"{LedgerMarker}\nFiles this conversation has created or modified:\n{string.Join("\n", order)}";
+		}
+
 		return ledger;
 	}
 
@@ -283,7 +312,9 @@ public static class MechanicalCompaction
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is ToolResultMessage tr)
+			{
 				satisfied.Add(tr.ToolCallId);
+			}
 		}
 
 		int split = messages.Count;
@@ -307,9 +338,13 @@ public static class MechanicalCompaction
 		for (int i = 0; i < messages.Count; i++)
 		{
 			if (i < split)
+			{
 				settled.Add(messages[i]);
+			}
 			else
+			{
 				pending.Add(messages[i]);
+			}
 		}
 		return (settled, pending);
 	}
@@ -325,7 +360,9 @@ public static class MechanicalCompaction
 		foreach (CanonicalMessage msg in pending)
 		{
 			if (msg is ToolResultMessage tr)
+			{
 				satisfied.Add(tr.ToolCallId);
+			}
 		}
 
 		List<CanonicalMessage> closers = new List<CanonicalMessage>();
@@ -336,7 +373,9 @@ public static class MechanicalCompaction
 				foreach (SemanticToolCall call in am.ToolCalls)
 				{
 					if (satisfied.Add(call.Id))
+					{
 						closers.Add(new ToolResultMessage(call.Id, $"[no result: the {call.Name} call was still open when the conversation was compacted — call it again if you still need it]"));
+					}
 				}
 			}
 		}
@@ -394,7 +433,9 @@ public static class MechanicalCompaction
 		JsonObject memory = new JsonObject { ["tool"] = call.Name };
 		string     why    = WhyOf(call);
 		if (why.Length > 0)
+		{
 			memory[WhyArgument] = why;
+		}
 
 		JsonObject? args = ParseArguments(call.ArgumentsJson);
 		if (args != null)
@@ -403,16 +444,24 @@ public static class MechanicalCompaction
 			{
 				string text = value?.ToString() ?? string.Empty;
 				if (IsFileCall(call) && (key == "content" || key == "old_text" || key == "new_text"))
+				{
 					continue;
+				}
+
 				bool verbatim = text.Length <= kMaxVerbatimArgChars || key == "file_path";
 				if (!string.Equals(key, WhyArgument, StringComparison.Ordinal) && text.Length > 0)
+				{
 					memory[key] = verbatim ? value!.DeepClone() : kElidedArg;
+				}
 			}
 		}
 
 		string edited = EditedLines(call, result);
 		if (edited.Length > 0)
+		{
 			memory["lines"] = edited;
+		}
+
 		return memory.ToJsonString();
 	}
 
@@ -422,7 +471,10 @@ public static class MechanicalCompaction
 	{
 		(string text, bool cut, string heading, string body) = BuildMemoryResult(call, result, log);
 		if (cut)
+		{
 			log.Add(heading, body);
+		}
+
 		return text;
 	}
 
@@ -437,11 +489,20 @@ public static class MechanicalCompaction
 
 		List<string> lines = new List<string>();
 		if (result.ExitCode.HasValue)
+		{
 			lines.Add($"exit {result.ExitCode.Value}");
+		}
+
 		if (keepOutput && result.Content.Length > 0)
+		{
 			lines.Add(result.Content);
+		}
+
 		if (cut)
+		{
 			lines.Add(pointer);
+		}
+
 		return (string.Join("\n", lines), cut, heading, body);
 	}
 
@@ -453,7 +514,9 @@ public static class MechanicalCompaction
 		if (args != null)
 		{
 			foreach ((string key, JsonNode? value) in args)
+			{
 				sb.Append(key).Append(":\n").Append(value?.ToString() ?? string.Empty).Append('\n');
+			}
 		}
 		sb.Append(ExitLine(result)).Append("output:\n").Append(result.Content);
 		return sb.ToString();
@@ -536,7 +599,9 @@ public static class MechanicalCompaction
 		{
 			if (messages[i] is AssistantMessage am && am.Thinking.Length >= minChars
 				&& !am.Thinking.Contains(kReasoningMarker, StringComparison.Ordinal) && seen.Add(am.Thinking))
+			{
 				traces.Add(am.Thinking);
+			}
 		}
 		return traces;
 	}
@@ -577,7 +642,10 @@ public static class MechanicalCompaction
 	{
 		List<string> paths = new List<string>();
 		foreach (MediaFile file in media)
+		{
 			paths.Add(file.Path);
+		}
+
 		return string.Join(", ", paths);
 	}
 
@@ -596,12 +664,20 @@ public static class MechanicalCompaction
 				{
 					string text = value?.ToString() ?? "null";
 					if (text.Length > 60)
+					{
 						text = text.Substring(0, 60) + "…";
+					}
+
 					if (sb.Length > 0)
+					{
 						sb.Append(", ");
+					}
+
 					sb.Append(key).Append(": ").Append(text);
 					if (sb.Length > 160)
+					{
 						break;
+					}
 				}
 			}
 			summary = sb.ToString();
@@ -624,7 +700,9 @@ public static class MechanicalCompaction
 		{
 			JsonNode? node = JsonNode.Parse(argsJson);
 			if (node is JsonObject obj && obj.TryGetPropertyValue("file_path", out JsonNode? pathNode) && pathNode != null)
+			{
 				stub["file_path"] = pathNode.ToString();
+			}
 		}
 		catch (System.Text.Json.JsonException)
 		{
@@ -683,7 +761,9 @@ public static class MechanicalCompaction
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is SystemMessage system)
+			{
 				total += system.Text.Length;
+			}
 		}
 		return total;
 	}
@@ -703,9 +783,14 @@ public static class MechanicalCompaction
 			{
 				total += am.Text.Length;
 				if (includeThinking)
+				{
 					total += am.Thinking.Length;
+				}
+
 				foreach (SemanticToolCall tc in am.ToolCalls)
+				{
 					total += tc.ArgumentsJson.Length;
+				}
 			}
 			else if (msg is ToolResultMessage tr)
 			{
@@ -726,7 +811,9 @@ public static class MechanicalCompaction
 			string tool    = string.Equals(call.Name, MemoryToolName, StringComparison.Ordinal) && args.TryGetPropertyValue("tool", out JsonNode? toolNode) && toolNode != null ? toolNode.ToString() : call.Name;
 			bool   changes = string.Equals(     tool,   "write_file", StringComparison.Ordinal) || string.Equals(tool, "edit_file", StringComparison.Ordinal);
 			if (changes && args.TryGetPropertyValue("file_path", out JsonNode? pathNode) && pathNode != null)
+			{
 				path = pathNode.ToString();
+			}
 		}
 		return path;
 	}

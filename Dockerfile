@@ -234,6 +234,12 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && ln -s /root/.local/bin/claude /usr/local/bin/claude
 
+# Antigravity CLI — how the agent drives a Google AI subscription ("agy acp"), for its antigravity://
+# endpoint. Installed like Claude Code: a native build under /root/.local, out of the shell user's
+# reach, linked onto the agent's PATH. It keeps itself up to date in the background as it runs.
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
+    && ln -s /root/.local/bin/agy /usr/local/bin/agy
+
 # The unprivileged user every model-driven process runs as (bash, readonly_bash, ls). The agent stays
 # root: it reads the API keys under /root (0700, so this user cannot), keeps its own state (conversations,
 # logs, staged attachments) under /root/.beast-state, runs commit_and_rebase, and owns the repository's

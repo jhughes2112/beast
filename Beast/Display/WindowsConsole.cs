@@ -98,15 +98,22 @@ internal static class WindowsConsole
 	internal static void EnableVirtualTerminal()
 	{
 		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
 			return;
+		}
 
 		IntPtr hOut = GetStdHandle(StdOutputHandle);
 		IntPtr hIn  = GetStdHandle(StdInputHandle);
 
 		if (!GetConsoleMode(hOut, out uint outMode))
+		{
 			return;
+		}
+
 		if (!GetConsoleMode(hIn, out uint inMode))
+		{
 			return;
+		}
 
 		if (!_saved)
 		{
@@ -129,17 +136,27 @@ internal static class WindowsConsole
 	internal static void ReapplyModes()
 	{
 		if (!_saved)
+		{
 			return;
+		}
+
 		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
 			return;
+		}
 
 		IntPtr hOut = GetStdHandle(StdOutputHandle);
 		IntPtr hIn  = GetStdHandle(StdInputHandle);
 
 		if (!GetConsoleMode(hOut, out uint outMode))
+		{
 			return;
+		}
+
 		if (!GetConsoleMode(hIn, out uint inMode))
+		{
 			return;
+		}
 
 		SetConsoleMode(hOut, outMode | EnableVirtualTerminalProcessing);
 		SetConsoleMode(hIn, (inMode | EnableExtendedFlags | EnableVirtualTerminalInput) & ~(DisableQuickEditMode | EnableProcessedInput));
@@ -157,20 +174,30 @@ internal static class WindowsConsole
 		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 		{
 			for (int i = 0; i < timeoutMs && !Console.KeyAvailable; i++)
+			{
 				Thread.Sleep(1);
+			}
+
 			if (!Console.KeyAvailable)
+			{
 				return null;
+			}
+
 			ConsoleKeyInfo k = Console.ReadKey(true);
 			return new ConsoleInputEvent { Type = InputEventType.Key, Key = k };
 		}
 
 		IntPtr hIn = GetStdHandle(StdInputHandle);
 		if (WaitForSingleObject(hIn, (uint)timeoutMs) != WAIT_OBJECT_0)
+		{
 			return null;
+		}
 
 		INPUT_RECORD[] buf = new INPUT_RECORD[1];
 		if (!ReadConsoleInputW(hIn, buf, 1, out uint read) || read == 0)
+		{
 			return null;
+		}
 
 		INPUT_RECORD rec = buf[0];
 
@@ -178,7 +205,9 @@ internal static class WindowsConsole
 		{
 			KEY_EVENT_RECORD k = rec.KeyEvent;
 			if (k.bKeyDown == 0)
+			{
 				return null;
+			}
 
 			// With VT input enabled the terminal no longer hands us cooked virtual-key records for
 			// navigation, function, or Alt-modified keys. Everything beginning with ESC is a VT sequence:
@@ -195,7 +224,9 @@ internal static class WindowsConsole
 
 				ConsoleInputEvent? vt = TryReadEscapeSequence(hIn);
 				if (vt != null)
+				{
 					return vt;
+				}
 
 				// Nothing followed the ESC: it is a real Escape press.
 				return new ConsoleInputEvent { Type = InputEventType.Key, Key = new ConsoleKeyInfo('\x1b', ConsoleKey.Escape, false, false, false) };
@@ -211,7 +242,9 @@ internal static class WindowsConsole
 			// Printable characters and keys that already carry a virtual key code fall through unchanged.
 			ConsoleInputEvent? ctl = VtKeys.TranslateControlChar(k.UnicodeChar, shift, alt, ctrl);
 			if (ctl != null)
+			{
 				return ctl;
+			}
 
 			ConsoleKey     ck = (ConsoleKey)k.wVirtualKeyCode;
 			ConsoleKeyInfo ki = new ConsoleKeyInfo(k.UnicodeChar, ck, shift, alt, ctrl);
@@ -256,17 +289,27 @@ internal static class WindowsConsole
 	{
 		INPUT_RECORD[] peek = new INPUT_RECORD[marker.Length];
 		if (!PeekConsoleInputW(hIn, peek, (uint)marker.Length, out uint peeked) || peeked < marker.Length)
+		{
 			return false;
+		}
 
 		for (int i = 0; i < marker.Length; i++)
 		{
 			if (peek[i].EventType != KEY_EVENT_TYPE)
+			{
 				return false;
+			}
+
 			KEY_EVENT_RECORD k = peek[i].KeyEvent;
 			if (k.bKeyDown == 0)
+			{
 				return false;
+			}
+
 			if (k.UnicodeChar != marker[i])
+			{
 				return false;
+			}
 		}
 		return true;
 	}
@@ -299,19 +342,31 @@ internal static class WindowsConsole
 				// No more data arrived; treat the paste as complete to avoid hanging on a missing
 				// terminator (e.g. a host that dropped the closing marker).
 				if (!PeekHasInput(hIn))
+				{
 					break;
+				}
 			}
 
 			if (!ReadConsoleInputW(hIn, one, 1, out uint read) || read == 0)
+			{
 				break;
+			}
+
 			if (one[0].EventType != KEY_EVENT_TYPE)
+			{
 				continue;
+			}
 
 			KEY_EVENT_RECORD k = one[0].KeyEvent;
 			if (k.bKeyDown == 0)
+			{
 				continue;
+			}
+
 			if (k.UnicodeChar == '\0')
+			{
 				continue;
+			}
 
 			VtKeys.AppendPasteChar(sb, k.UnicodeChar);
 		}
@@ -334,12 +389,19 @@ internal static class WindowsConsole
 	{
 		char intro = PeekCharAt(hIn, 0);
 		if (intro == '\0')
+		{
 			return null;
+		}
 
 		if (intro == '[')
+		{
 			return TryReadCsi(hIn);
+		}
+
 		if (intro == 'O')
+		{
 			return TryReadSs3(hIn);
+		}
 
 		// ESC followed by any other char is Alt + that key. Decode the char the same way a standalone
 		// key record would be, then force the Alt modifier on.
@@ -352,7 +414,9 @@ internal static class WindowsConsole
 		char       final = PeekCharAt(hIn, 1);
 		ConsoleKey key   = VtKeys.FinalToKey(final);
 		if (key == (ConsoleKey)0)
+		{
 			return null;
+		}
 
 		DrainChars(hIn, 2);
 		return VtKeys.KeyEvent('\0', key, false, false, false);
@@ -369,9 +433,14 @@ internal static class WindowsConsole
 		//   SGR (1006):  ESC [ < Cb ; Cx ; Cy M|m
 		//   Normal/X10:  ESC [ M Cb Cx Cy   (three raw bytes after M)
 		if (first == '<')
+		{
 			return ConsumeSgrMouse(hIn);
+		}
+
 		if (first == 'M')
+		{
 			return ConsumeNormalMouse(hIn);
+		}
 
 		StringBuilder param = new StringBuilder();
 		int           idx   = 1;
@@ -382,7 +451,10 @@ internal static class WindowsConsole
 		{
 			char c = PeekCharAt(hIn, idx);
 			if (c == '\0')
+			{
 				return null; // sequence not fully present yet — leave it, treat ESC as Escape
+			}
+
 			if (c >= '@' && c <= '~' && !(c >= '0' && c <= '9') && c != ';')
 			{
 				final = c;
@@ -393,11 +465,15 @@ internal static class WindowsConsole
 		}
 
 		if (final == '\0')
+		{
 			return null;
+		}
 
 		ConsoleInputEvent? ev = VtKeys.CsiToEvent(param.ToString(), final);
 		if (ev == null)
+		{
 			return null;
+		}
 
 		DrainChars(hIn, idx + 1); // params plus the final byte (idx is the final's offset)
 		return ev;
@@ -417,7 +493,10 @@ internal static class WindowsConsole
 		{
 			char c = PeekCharAt(hIn, idx);
 			if (c == '\0')
+			{
 				return null; // not fully present yet
+			}
+
 			if (c == 'M' || c == 'm')
 			{
 				terminator = c;
@@ -428,7 +507,9 @@ internal static class WindowsConsole
 		}
 
 		if (terminator == '\0')
+		{
 			return null;
+		}
 
 		DrainChars(hIn, idx + 1); // '[' '<' params and the M/m terminator
 
@@ -444,7 +525,9 @@ internal static class WindowsConsole
 		char b2 = PeekCharAt(hIn, 3);
 		char b3 = PeekCharAt(hIn, 4);
 		if (b1 == '\0' || b2 == '\0' || b3 == '\0')
+		{
 			return null; // not fully present yet
+		}
 
 		DrainChars(hIn, 5); // '[' 'M' and the three encoded bytes
 		return VtKeys.DecodeX10Mouse(b1, b2, b3);
@@ -463,12 +546,21 @@ internal static class WindowsConsole
 	{
 		INPUT_RECORD[] peek = new INPUT_RECORD[offset + 1];
 		if (!PeekConsoleInputW(hIn, peek, (uint)(offset + 1), out uint peeked) || peeked <= offset)
+		{
 			return '\0';
+		}
+
 		if (peek[offset].EventType != KEY_EVENT_TYPE)
+		{
 			return '\0';
+		}
+
 		KEY_EVENT_RECORD k = peek[offset].KeyEvent;
 		if (k.bKeyDown == 0)
+		{
 			return '\0';
+		}
+
 		return k.UnicodeChar;
 	}
 
@@ -485,7 +577,9 @@ internal static class WindowsConsole
 		IntPtr         hIn = GetStdHandle(StdInputHandle);
 		INPUT_RECORD[] buf = new INPUT_RECORD[maxFlush];
 		while (PeekConsoleInputW(hIn, buf, maxFlush, out uint peeked) && peeked > 0)
+		{
 			ReadConsoleInputW(hIn, buf, peeked, out _);
+		}
 	}
 
 	// Reads one CPR response (ESC [ <row> ; <col> R) from the console input buffer and returns its
@@ -501,13 +595,20 @@ internal static class WindowsConsole
 		{
 			uint result = WaitForSingleObject(hIn, (uint)Math.Max(1, deadline - Environment.TickCount64));
 			if (result != WAIT_OBJECT_0)
+			{
 				break; // timeout
+			}
 
 			INPUT_RECORD[] buf = new INPUT_RECORD[1];
 			if (!ReadConsoleInputW(hIn, buf, 1, out uint read) || read == 0)
+			{
 				continue;
+			}
+
 			if (buf[0].EventType != KEY_EVENT_TYPE || buf[0].KeyEvent.bKeyDown == 0)
+			{
 				continue;
+			}
 
 			char ch = buf[0].KeyEvent.UnicodeChar;
 			if (ch == 'R')
@@ -526,9 +627,14 @@ internal static class WindowsConsole
 	internal static void Restore()
 	{
 		if (!_saved)
+		{
 			return;
+		}
+
 		if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+		{
 			return;
+		}
 
 		Console.Out.Write(DisableBracketedPaste);
 		Console.Out.Flush();

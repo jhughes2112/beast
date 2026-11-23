@@ -22,7 +22,13 @@ public class SettingsService
 
 	public BeastSettings Settings { get; private set; }
 
-	public Dictionary<string, ToolConfig> Tools => _toolService.Tools;
+	public Dictionary<string, ToolConfig> Tools
+	{
+		get
+		{
+			return _toolService.Tools;
+		}
+	}
 
 	public SettingsService()
 	{
@@ -34,9 +40,15 @@ public class SettingsService
 
 	// Reload rollback support: settings are published by reference, so the orchestrator snapshots
 	// them before a /reload and restores them if a later stage of the reload fails.
-	public BeastSettings SnapshotSettings() => Settings;
+	public BeastSettings SnapshotSettings()
+	{
+		return Settings;
+	}
 
-	public void RestoreSettings(BeastSettings settings) => Settings = settings;
+	public void RestoreSettings(BeastSettings settings)
+	{
+		Settings = settings;
+	}
 
 	public void LoadSettings()
 	{
@@ -60,13 +72,17 @@ public class SettingsService
 	private BeastSettings? LoadSettingsFromFile(string path)
 	{
 		if (!File.Exists(path))
+		{
 			return null;
+		}
 
 		try
 		{
 			string json = File.ReadAllText(path);
 			if (string.IsNullOrWhiteSpace(json))
+			{
 				return null;
+			}
 
 			BeastSettings? result = JsonSerializer.Deserialize(json, BeastJson.Config.BeastSettings);
 			return result; // may be null if JSON was empty or only null
@@ -123,7 +139,9 @@ public class SettingsService
 		if (remove)
 		{
 			if (existing >= 0)
+			{
 				home.Auto.RemoveAt(existing);
+			}
 		}
 		else
 		{
@@ -138,9 +156,13 @@ public class SettingsService
 			}
 
 			if (existing >= 0)
+			{
 				home.Auto[existing] = entry;
+			}
 			else
+			{
 				home.Auto.Add(entry);
+			}
 		}
 
 		WriteSettings(_homeDirSettingsPath, home);
@@ -175,7 +197,7 @@ public class SettingsService
 
 	// Persists a rotated token pair for an OAuth endpoint, creating its entry (with no models yet)
 	// when a fresh sign-in arrives before /config has saved the endpoint.
-	public void SaveAutoEndpointTokens(string baseUrl, Func<string, bool> isEndpoint, string apiKey, string accessToken)
+	public void SaveAutoEndpointTokens(string baseUrl, Func<string, bool> isEndpoint, string apiKey, string? accessToken)
 	{
 		lock (_writeGate)
 		{
@@ -220,13 +242,25 @@ public class SettingsService
 				foreach (AutoModelConfig model in auto.Models)
 				{
 					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					{
 						continue;
+					}
+
 					if (effort != null)
+					{
 						model.ReasoningEffort = effort;
+					}
+
 					if (summaries.HasValue)
+					{
 						model.ReasoningSummaries = summaries.Value;
+					}
+
 					if (retainReasoning.HasValue)
+					{
 						model.RetainReasoning = retainReasoning.Value;
+					}
+
 					found = true;
 				}
 			}
@@ -236,13 +270,25 @@ public class SettingsService
 				foreach (ModelConfig model in provider.Models)
 				{
 					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					{
 						continue;
+					}
+
 					if (effort != null)
+					{
 						model.ReasoningEffort = effort;
+					}
+
 					if (summaries.HasValue)
+					{
 						model.ReasoningSummaries = summaries.Value;
+					}
+
 					if (retainReasoning.HasValue)
+					{
 						model.RetainReasoning = retainReasoning.Value;
+					}
+
 					found = true;
 				}
 			}
@@ -270,7 +316,10 @@ public class SettingsService
 				foreach (AutoModelConfig model in auto.Models)
 				{
 					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					{
 						continue;
+					}
+
 					model.MaxImages = maxImages;
 					found           = true;
 				}
@@ -281,7 +330,10 @@ public class SettingsService
 				foreach (ModelConfig model in provider.Models)
 				{
 					if (!string.Equals(model.Id, modelId, StringComparison.OrdinalIgnoreCase))
+					{
 						continue;
+					}
+
 					model.MaxImages = maxImages;
 					found           = true;
 				}
@@ -306,14 +358,19 @@ public class SettingsService
 			BeastSettings home = LoadSettingsFromFile(_homeDirSettingsPath) ?? CreateDefaultHomeSettings();
 
 			if (home.WebSearch == null)
+			{
 				home.WebSearch = new WebSearchConfig();
+			}
+
 			home.WebSearch.Providers = providers;
 
 			// The legacy single-provider block is superseded the moment the new list is written; leave
 			// its key in place (it is still a valid OpenRouter key source) but stop it from acting as
 			// an implicit second OpenRouter entry.
 			if (home.WebSearch.Openrouter != null)
+			{
 				home.WebSearch.Openrouter.Enabled = false;
+			}
 
 			WriteSettings(_homeDirSettingsPath, home);
 			LoadSettings();
@@ -331,7 +388,9 @@ public class SettingsService
 			for (int i = 0; i < home.Auto.Count; i++)
 			{
 				if (from < 0 && string.Equals(home.Auto[i].BaseUrl, baseUrl, StringComparison.OrdinalIgnoreCase))
+				{
 					from = i;
+				}
 			}
 			int to = from + Math.Sign(delta);
 			if (from >= 0 && to >= 0 && to < home.Auto.Count)

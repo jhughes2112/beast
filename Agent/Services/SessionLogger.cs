@@ -10,7 +10,13 @@ using System.Text;
 // of unexplained repeats.
 public class SessionLogger
 {
-	private static string LogsDir => AgentState.LogsDir;
+	private static string LogsDir
+	{
+		get
+		{
+			return AgentState.LogsDir;
+		}
+	}
 
 	private readonly        string _path;
 	private static readonly object _fileLock = new object();
@@ -58,9 +64,15 @@ public class SessionLogger
 				sb.AppendLine($"context:  {_contextTokens} / {_windowTokens} tokens ({percent}%)");
 			}
 			if (_pendingTokens > 0)
+			{
 				sb.AppendLine($"pending:  {_pendingTokens} (tool output not yet measured by the provider)");
+			}
+
 			if (_maxOutputTokens > 0)
+			{
 				sb.AppendLine($"max_out:  {_maxOutputTokens}");
+			}
+
 			sb.AppendLine();
 			sb.AppendLine(json);
 			sb.AppendLine();
@@ -86,11 +98,17 @@ public class SessionLogger
 		sb.AppendLine($"protocol:   {handler.GetDetectedProtocol()}");
 		sb.AppendLine($"failure:    {failureType}");
 		if (statusCode.HasValue)
+		{
 			sb.AppendLine($"http_code:  {statusCode.Value}");
+		}
+
 		sb.AppendLine($"error:      {message}");
 		sb.AppendLine($"retry:      {retryCount}/{maxRetries}");
 		if (retryAfter.HasValue)
+		{
 			sb.AppendLine($"retry_after: {retryAfter.Value:u} (in {(retryAfter.Value - DateTimeOffset.UtcNow).TotalSeconds:F1}s)");
+		}
+
 		sb.AppendLine($"fallback:   {(willFallback ? "YES" : "NO")}");
 		sb.AppendLine();
 
@@ -165,7 +183,10 @@ public class SessionLogger
 		sb.AppendLine($"protocol:   {protocol}");
 		sb.AppendLine($"failure:    {failureType}");
 		if (statusCode.HasValue)
+		{
 			sb.AppendLine($"http_code:  {statusCode.Value}");
+		}
+
 		sb.AppendLine($"error:      {message}");
 		if (!string.IsNullOrEmpty(body))
 		{
@@ -194,7 +215,10 @@ public class SessionLogger
 			sb.AppendLine($"time:     {DateTimeOffset.UtcNow:u}");
 			sb.AppendLine($"outcome:  {outcome}");
 			if (httpStatus.HasValue && httpStatus.Value > 0)
+			{
 				sb.AppendLine($"http:     {httpStatus.Value}");
+			}
+
 			if (!string.IsNullOrEmpty(error))
 			{
 				string trimmed = error!.Length > 2000 ? error.Substring(0, 2000) + "... [truncated]" : error;

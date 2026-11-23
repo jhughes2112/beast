@@ -12,14 +12,38 @@ public static class AgentState
 {
 	private static string _root = string.Empty;
 
-	public static string Root => _root.Length > 0 ? _root : Path.Combine(Environment.CurrentDirectory, ".beast");
+	public static string Root
+	{
+		get
+		{
+			return _root.Length > 0 ? _root : Path.Combine(Environment.CurrentDirectory, ".beast");
+		}
+	}
 
-	public static string SessionsDir => Path.Combine(Root, "sessions");
+	public static string SessionsDir
+	{
+		get
+		{
+			return Path.Combine(Root, "sessions");
+		}
+	}
 
-	public static string LogsDir => Path.Combine(Root, "logs");
+	public static string LogsDir
+	{
+		get
+		{
+			return Path.Combine(Root, "logs");
+		}
+	}
 
 	// What compaction took out of each conversation. The one part of the state folder the model may read.
-	public static string CompactionLogsDir => Path.Combine(Root, "compaction");
+	public static string CompactionLogsDir
+	{
+		get
+		{
+			return Path.Combine(Root, "compaction");
+		}
+	}
 
 	public static void Initialize(string root)
 	{

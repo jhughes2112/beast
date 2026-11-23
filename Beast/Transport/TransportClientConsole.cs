@@ -7,9 +7,21 @@ using System.Threading.Tasks;
 // Used for running Beast-side tests locally before the agent container is involved.
 public class TransportClientConsole : ITransportServer
 {
-	public void Output            (string sessionId, string text) => Console.WriteLine(text);
-	public void Error             (string sessionId, string text) => Console.WriteLine($"[error] {text}");
-	public void Alert             (string sessionId, string text) => Console.WriteLine($"[ALERT] {text}");
+	public void Output(string sessionId, string text)
+	{
+		Console.WriteLine(text);
+	}
+
+	public void Error(string sessionId, string text)
+	{
+		Console.WriteLine($"[error] {text}");
+	}
+
+	public void Alert(string sessionId, string text)
+	{
+		Console.WriteLine($"[ALERT] {text}");
+	}
+
 	public void Status            (string sessionId, string text) { }
 	public void Thinking          (string sessionId, string text) { }
 	public void System            (string sessionId, string text) { }

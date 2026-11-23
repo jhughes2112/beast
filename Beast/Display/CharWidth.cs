@@ -47,13 +47,25 @@ public static class CharWidth
 	public static int Of(char c)
 	{
 		if (c < 0x0080)
+		{
 			return 1; // ASCII fast path: always single-width, never probed
+		}
+
 		if (_overrides.TryGetValue(c, out int width))
+		{
 			return width;
+		}
+
 		if (IsZeroWidth(c))
+		{
 			return 0;
+		}
+
 		if (IsWide(c))
+		{
 			return 2;
+		}
+
 		return 1;
 	}
 
@@ -72,7 +84,9 @@ public static class CharWidth
 
 		int[] canary = ProbeBatch(new int[] { 'x' }, deadline);
 		if (canary.Length != 1 || canary[0] != 1)
+		{
 			return;
+		}
 
 		// The trouble blocks: miscellaneous technical (⌚ ⏰ …), geometric shapes (◽ ▶ …), miscellaneous
 		// symbols and dingbats (☑ ⚠ ✓ ✅ …), supplemental arrows/symbols (⬆ ⭐ ⭕ …), plus ⧉ (the copy
@@ -90,16 +104,22 @@ public static class CharWidth
 			int   count = Math.Min(ProbeBatchSize, codepoints.Count - done);
 			int[] batch = new int[count];
 			for (int i = 0; i < count; i++)
+			{
 				batch[i] = codepoints[done + i];
+			}
 
 			int[] widths = ProbeBatch(batch, deadline);
 			for (int i = 0; i < widths.Length; i++)
 			{
 				if (widths[i] >= 0 && widths[i] <= 2)
+				{
 					_overrides[batch[i]] = widths[i];
+				}
 			}
 			if (widths.Length < count)
+			{
 				break; // a response timed out — the stream is unreliable, keep what we have
+			}
 
 			done += count;
 		}
@@ -112,7 +132,9 @@ public static class CharWidth
 	private static void AddRange(List<int> codepoints, int lo, int hi)
 	{
 		for (int cp = lo; cp <= hi; cp++)
+		{
 			codepoints.Add(cp);
+		}
 	}
 
 	// Probes one batch: for each codepoint, park at column 1 of the scratch row, erase it, print the
@@ -126,7 +148,10 @@ public static class CharWidth
 		{
 			StringBuilder query = new StringBuilder(codepoints.Length * 16);
 			foreach (int cp in codepoints)
+			{
 				query.Append("\x1b[9999;1H\x1b[K").Append((char)cp).Append("\x1b[6n");
+			}
+
 			Console.Out.Write(query);
 			Console.Out.Flush();
 
@@ -134,7 +159,10 @@ public static class CharWidth
 			{
 				int col = Platform.Current.ReadCursorColumn(Math.Min(deadline, Environment.TickCount64 + CprTimeoutMs));
 				if (col < 1)
+				{
 					break;
+				}
+
 				widths.Add(col - 1);
 			}
 		}

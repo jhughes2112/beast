@@ -19,11 +19,24 @@ public class ModelAvailability
 
 	public DateTimeOffset AvailableAt
 	{
-		get => new DateTimeOffset(Interlocked.Read(ref _availableAtUtcTicks), TimeSpan.Zero);
-		set => Interlocked.Exchange(ref _availableAtUtcTicks, value.UtcTicks);
+		get
+		{
+			return new DateTimeOffset(Interlocked.Read(ref _availableAtUtcTicks), TimeSpan.Zero);
+		}
+
+		set
+		{
+			Interlocked.Exchange(ref _availableAtUtcTicks, value.UtcTicks);
+		}
 	}
 
-	public bool IsDown => Interlocked.Read(ref _availableAtUtcTicks) == DateTimeOffset.MaxValue.UtcTicks;
+	public bool IsDown
+	{
+		get
+		{
+			return Interlocked.Read(ref _availableAtUtcTicks) == DateTimeOffset.MaxValue.UtcTicks;
+		}
+	}
 
 	// Moves the backoff deadline forward to `until` unless it is already later.
 	public void ExtendBackoff(DateTimeOffset until)
@@ -33,9 +46,14 @@ public class ModelAvailability
 		{
 			long current = Interlocked.Read(ref _availableAtUtcTicks);
 			if (current >= target)
+			{
 				return;
+			}
+
 			if (Interlocked.CompareExchange(ref _availableAtUtcTicks, target, current) == current)
+			{
 				return;
+			}
 		}
 	}
 }
@@ -51,7 +69,13 @@ public class EndpointFacts
 
 	private string _responsesCountRoute = string.Empty;
 
-	public string ResponsesCountRoute => Volatile.Read(ref _responsesCountRoute);
+	public string ResponsesCountRoute
+	{
+		get
+		{
+			return Volatile.Read(ref _responsesCountRoute);
+		}
+	}
 
 	public void RecordResponsesCountRoute(string route)
 	{
@@ -113,14 +137,24 @@ public class LlmRegistry
 	public bool UpdateModelReasoning(string configId, string? effort, bool? summaries, bool? retainReasoning)
 	{
 		if (!_models.TryGetValue(configId, out LlmModel? model))
+		{
 			return false;
+		}
 
 		if (effort != null)
+		{
 			model.Config.ReasoningEffort = effort;
+		}
+
 		if (summaries.HasValue)
+		{
 			model.Config.ReasoningSummaries = summaries.Value;
+		}
+
 		if (retainReasoning.HasValue)
+		{
 			model.Config.RetainReasoning = retainReasoning.Value;
+		}
 
 		return _settings != null && _settings.SaveModelReasoning(configId, effort, summaries, retainReasoning);
 	}
@@ -133,7 +167,9 @@ public class LlmRegistry
 	{
 		bool saved = true;
 		if (effort != null || summaries.HasValue || retainReasoning.HasValue)
+		{
 			saved = UpdateModelReasoning(configId, effort, summaries, retainReasoning);
+		}
 
 		if (maxImages.HasValue && _models.TryGetValue(configId, out LlmModel? model))
 		{
@@ -142,7 +178,9 @@ public class LlmRegistry
 		}
 
 		if (!saved)
+		{
 			Console.Error.WriteLine($"[LlmRegistry] '{configId}': model capability learned at runtime could not be saved; it applies for this run only.");
+		}
 	}
 
 	// Last successfully fetched catalog per auto endpoint (keyed by configured baseUrl). Never
@@ -168,7 +206,9 @@ public class LlmRegistry
 			foreach (ModelConfig modelConfig in provider.Models)
 			{
 				if (!modelConfig.Enabled)
+				{
 					continue;
+				}
 
 				// Settled here, once: its options (stated in settings, else its protocol's words) and its
 				// setting as none or one of them, so no reader downstream has to know what blank meant.
@@ -196,7 +236,9 @@ public class LlmRegistry
 		foreach (AutoProviderConfig provider in settings.Settings.Auto)
 		{
 			if (string.IsNullOrWhiteSpace(provider.BaseUrl) || provider.Models.Count == 0)
+			{
 				continue;
+			}
 
 			(List<DiscoveredModel> discovered, string error) = await ModelCatalog.FetchAsync(provider.BaseUrl, provider.ApiKey, ct);
 			if (error.Length == 0 && discovered.Count > 0)
@@ -220,7 +262,9 @@ public class LlmRegistry
 			{
 				// A disabled entry keeps its overrides on disk but registers nothing.
 				if (!enabled.Enabled)
+				{
 					continue;
+				}
 
 				DiscoveredModel? found = null;
 				foreach (DiscoveredModel d in discovered)
@@ -240,7 +284,9 @@ public class LlmRegistry
 
 				// Manual providers win an id collision: they are the deliberate, fully-specified tier.
 				if (updated.ContainsKey(enabled.Id))
+				{
 					continue;
+				}
 
 				// A decisions-only model shares the endpoint's api root but answers on /systemone, not chat.
 				ModelConfig config   = BuildModelConfig(enabled, found);
@@ -265,7 +311,9 @@ public class LlmRegistry
 		foreach (DiscoveredModel d in CachedCatalog(baseUrl) ?? new List<DiscoveredModel>())
 		{
 			if (string.Equals(d.Id, candidate.Id, StringComparison.OrdinalIgnoreCase))
+			{
 				found = d;
+			}
 		}
 
 		LlmService? service = null;
@@ -355,7 +403,10 @@ public class LlmRegistry
 	{
 		List<(string Id, List<string> Outputs)> all = new List<(string Id, List<string> Outputs)>();
 		foreach ((string id, LlmModel model) in _models)
+		{
 			all.Add((id, model.Config.Output));
+		}
+
 		roles.ExpandModelWildcards(all);
 	}
 
@@ -375,7 +426,13 @@ public class LlmRegistry
 
 	// True when at least one model is registered (manual or auto). Read at startup to decide
 	// whether to prompt the client's /config picker — with zero models nothing can run.
-	public bool HasModels => _models.Count > 0;
+	public bool HasModels
+	{
+		get
+		{
+			return _models.Count > 0;
+		}
+	}
 
 	// The last-known catalog for an endpoint, or null when it has never been fetched this run.
 	public List<DiscoveredModel>? CachedCatalog(string baseUrl)
@@ -396,13 +453,21 @@ public class LlmRegistry
 		{
 			// A decisions-only endpoint speaks no chat protocol; there is nothing to detect.
 			if (OutputModality.DecisionsOnly(model.Config.Output))
+			{
 				continue;
+			}
 
 			string ep = model.Endpoint;
 			if (_probeCache.ContainsKey(ep))
+			{
 				continue;
+			}
+
 			if (!unprobed.ContainsKey(ep))
+			{
 				unprobed[ep] = (model.ApiKey, new List<string>());
+			}
+
 			unprobed[ep].modelIds.Add(modelId);
 		}
 
@@ -430,7 +495,9 @@ public class LlmRegistry
 				foreach (string modelId in modelIds)
 				{
 					if (updated.TryGetValue(modelId, out LlmModel? old))
+					{
 						updated[modelId] = new LlmModel(old.ConfigId, effectiveEndpoint, old.ApiKey, old.Extras, old.Headers, old.Config);
+					}
 				}
 				_models = updated;
 			}
@@ -449,17 +516,23 @@ public class LlmRegistry
 	public LlmService? CreateService(Role? role, string preferredModelId, int minContextRequired, bool withoutReasoning, long? conferredSeed = null)
 	{
 		if (role == null)
+		{
 			return null;
+		}
 
 		LlmModel? model = PickModel(role, preferredModelId, minContextRequired);
 		if (model == null)
+		{
 			return null;
+		}
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
 		model = WithConferredSeed(model, protocol, conferredSeed);
 		if (withoutReasoning || role.NoReasoning)
+		{
 			model = model.WithoutReasoning();
+		}
 		// The fallback list is the role's list narrowed to models that serve it, so falling back can
 		// never land on a model of the wrong kind.
 		return new LlmService(model, protocol, GetOrCreateAvailability(model.ConfigId), GetOrCreateEndpointFacts(model.Endpoint), ModelIdsServing(role), ApplyLearnedCapability);
@@ -474,7 +547,9 @@ public class LlmRegistry
 			DetectedProtocol protocol = DetectedProtocol.Unknown;
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
 			if (ProtocolProxy.TakesSeed(protocol))
+			{
 				seed = model.Config.Seed;
+			}
 		}
 		return seed ?? session.Data.ConferredSeed;
 	}
@@ -497,7 +572,9 @@ public class LlmRegistry
 	public LlmService? CreateFallbackService(LlmService current, int minContextRequired, bool withoutReasoning)
 	{
 		if (current.Seeded)
+		{
 			return null;
+		}
 
 		IReadOnlyList<string> modelIds = current.RoleModelIds;
 		DateTimeOffset        now      = DateTimeOffset.UtcNow;
@@ -516,16 +593,27 @@ public class LlmRegistry
 		{
 			string modelId = modelIds[i];
 			if (!_models.TryGetValue(modelId, out LlmModel? model))
+			{
 				continue;
+			}
+
 			if (_availability.TryGetValue(modelId, out ModelAvailability? avail) && (avail.IsDown || avail.AvailableAt > now))
+			{
 				continue;
+			}
+
 			if (model.Config.ContextWindow <= minContextRequired)
+			{
 				continue;
+			}
 
 			DetectedProtocol protocol = DetectedProtocol.Unknown;
 			_probeCache.TryGetValue(model.Endpoint, out protocol);
 			if (withoutReasoning)
+			{
 				model = model.WithoutReasoning();
+			}
+
 			return new LlmService(model, protocol, GetOrCreateAvailability(modelId), GetOrCreateEndpointFacts(model.Endpoint), modelIds, ApplyLearnedCapability);
 		}
 
@@ -538,13 +626,20 @@ public class LlmRegistry
 	public LlmService? CreateServiceById(string modelId, int minContextRequired, long? conferredSeed = null)
 	{
 		if (!_models.TryGetValue(modelId, out LlmModel? model))
+		{
 			return null;
+		}
+
 		if (model.Config.ContextWindow <= minContextRequired)
+		{
 			return null;
+		}
 
 		ModelAvailability avail = GetOrCreateAvailability(modelId);
 		if (avail.IsDown)
+		{
 			return null;
+		}
 
 		DetectedProtocol protocol = DetectedProtocol.Unknown;
 		_probeCache.TryGetValue(model.Endpoint, out protocol);
@@ -589,7 +684,9 @@ public class LlmRegistry
 		foreach (string configId in role.Models)
 		{
 			if (!_models.TryGetValue(configId, out LlmModel? model) || ServesRole(model, role))
+			{
 				ids.Add(configId);
+			}
 		}
 		return ids;
 	}
@@ -604,11 +701,17 @@ public class LlmRegistry
 		foreach (string configId in role.Models)
 		{
 			if (!_models.TryGetValue(configId, out LlmModel? model) || !ServesRole(model, role))
+			{
 				continue;
+			}
+
 			if (_availability.TryGetValue(configId, out ModelAvailability? avail))
 			{
 				if (avail.IsDown)
+				{
 					continue;
+				}
+
 				if (avail.AvailableAt > now)
 				{
 					backingOff.Add(model);
@@ -631,16 +734,30 @@ public class LlmRegistry
 		foreach (string cid in role.Models)
 		{
 			if (!_models.TryGetValue(cid, out LlmModel? model) || !ServesRole(model, role))
+			{
 				continue;
+			}
+
 			if (!_availability.TryGetValue(cid, out ModelAvailability? avail))
+			{
 				return 0;
+			}
+
 			if (avail.IsDown)
+			{
 				continue;
+			}
+
 			long wait = (long)(avail.AvailableAt - now).TotalMilliseconds;
 			if (wait <= 0)
+			{
 				return 0;
+			}
+
 			if (wait < best)
+			{
 				best = wait;
+			}
 		}
 		return best;
 	}
@@ -676,7 +793,9 @@ public class LlmRegistry
 	private LlmModel? PickModel(Role? role, string preferredModelId, int minContextRequired)
 	{
 		if (role == null)
+		{
 			return null;
+		}
 
 		// Try the preferred model first if it is in the role's list and not permanently down. A
 		// temporary backoff does NOT disqualify it: an explicitly chosen model waits out its rate
@@ -698,7 +817,9 @@ public class LlmRegistry
 			{
 				bool down = _availability.TryGetValue(preferredModelId, out ModelAvailability? pa) && pa.IsDown;
 				if (!down && preferred.Config.ContextWindow > minContextRequired)
+				{
 					return preferred;
+				}
 			}
 		}
 
@@ -722,9 +843,14 @@ public class LlmRegistry
 			{
 				bool serviceable = true;
 				if (_availability.TryGetValue(stickyModel.ConfigId, out ModelAvailability? sa))
+				{
 					serviceable = !sa.IsDown && sa.AvailableAt <= now;
+				}
+
 				if (serviceable)
+				{
 					return stickyModel;
+				}
 			}
 		}
 
@@ -738,13 +864,22 @@ public class LlmRegistry
 		foreach (string modelId in role.Models)
 		{
 			if (!_models.TryGetValue(modelId, out LlmModel? model) || !ServesRole(model, role))
+			{
 				continue;
+			}
+
 			if (model.Config.ContextWindow <= minContextRequired)
+			{
 				continue;
+			}
+
 			if (_availability.TryGetValue(modelId, out ModelAvailability? ma))
 			{
 				if (ma.IsDown)
+				{
 					continue;
+				}
+
 				if (ma.AvailableAt > now)
 				{
 					if (ma.AvailableAt < backingOffAt)
@@ -800,8 +935,13 @@ public class LlmRegistry
 	// Reload rollback support: models are published by reference, so the orchestrator snapshots
 	// before a /reload and restores if a later stage of the reload fails — keeping "the previous
 	// config was kept" true across the whole reload, not per component.
-	public Dictionary<string, LlmModel> SnapshotModels() => _models;
+	public Dictionary<string, LlmModel> SnapshotModels()
+	{
+		return _models;
+	}
 
-	public void RestoreModels(Dictionary<string, LlmModel> models) => _models = models;
-
+	public void RestoreModels(Dictionary<string, LlmModel> models)
+	{
+		_models = models;
+	}
 }

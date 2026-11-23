@@ -97,11 +97,16 @@ public sealed class StackLayout
 	public int? SlotAtRow(int row)
 	{
 		if (row < 0 || row >= _totalRows)
+		{
 			return null;
+		}
+
 		foreach (BlockPlacement p in _placements)
 		{
 			if (row >= p.Top && row < p.Bottom)
+			{
 				return p.SlotIndex;
+			}
 		}
 		return null;
 	}
@@ -111,7 +116,9 @@ public sealed class StackLayout
 		foreach (BlockPlacement p in _placements)
 		{
 			if (p.SlotIndex == slotIndex)
+			{
 				return p;
+			}
 		}
 		return null;
 	}
@@ -123,7 +130,9 @@ public sealed class StackLayout
 		for (int i = 0; i < _placements.Count; i++)
 		{
 			if (_placements[i].SlotIndex == slotIndex)
+			{
 				return _blocks[i].Current.W;
+			}
 		}
 		return 0;
 	}
@@ -138,7 +147,9 @@ public sealed class StackLayout
 	{
 		Screen viewport = new Screen(Width, viewportHeight, background);
 		if (viewportHeight <= 0)
+		{
 			return viewport;
+		}
 
 		int viewBottom = viewTop + viewportHeight;
 
@@ -146,9 +157,14 @@ public sealed class StackLayout
 		{
 			BlockPlacement p = _placements[i];
 			if (p.Bottom <= viewTop)
+			{
 				continue; // entirely above the window
+			}
+
 			if (p.Top >= viewBottom)
+			{
 				break; // entirely below; placements are top-ascending, so done
+			}
 
 			// Intersect the block with the window, then map to block-local (srcY) and viewport (dstY) rows.
 			int srcTop    = p.Top > viewTop ? p.Top : viewTop;

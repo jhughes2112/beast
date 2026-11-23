@@ -28,10 +28,14 @@ public class WebFetch
 	public static async Task<ToolResult> FetchAsync(string toolCallId, string url, CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(url))
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: URL cannot be empty.", 1, 0);
+		}
 
 		if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: not an http or https URL: " + url, 1, 0);
+		}
 
 		string directory = ReserveFolder();
 		try
@@ -42,12 +46,16 @@ public class WebFetch
 			// Read only the headers first so the size can be checked before any body is pulled.
 			using HttpResponseMessage response = await SharedHttpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 			if (!response.IsSuccessStatusCode)
+			{
 				return new ToolResult(toolCallId, string.Empty, $"Error: HTTP {(int)response.StatusCode} {response.ReasonPhrase} from {url}", 1, 0);
+			}
 
 			long? declared               = response.Content.Headers.ContentLength;
 			(byte[]? bytes, bool tooBig) = declared > MaxDownloadBytes ? (null, true) : await ReadCappedAsync(response, cts.Token);
 			if (tooBig)
+			{
 				return new ToolResult(toolCallId, string.Empty, $"Error: {url} is over {MaxDownloadBytes / (1024 * 1024)} MB, so it was not downloaded.", 1, 0);
+			}
 
 			// The server's Content-Disposition filename, when present, is the resource's real name.
 			string? contentType   = response.Content.Headers.ContentType?.MediaType;
@@ -101,7 +109,10 @@ public class WebFetch
 	private static void GiveToShellUser(string directory)
 	{
 		foreach (string file in Directory.GetFiles(directory))
+		{
 			Sandbox.GiveToShellUser(file);
+		}
+
 		Sandbox.GiveToShellUser(directory);
 	}
 
@@ -146,16 +157,27 @@ public class WebFetch
 		foreach (byte b in text)
 		{
 			if (b == (byte)'\n')
+			{
 				count++;
+			}
 		}
 		if (text.Length > 0 && text[^1] != (byte)'\n')
+		{
 			count++;
+		}
+
 		return count;
 	}
 
-	private static string Count(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
+	private static string Count(long value)
+	{
+		return value.ToString("N0", CultureInfo.InvariantCulture);
+	}
 
-	private static string Quote(string path) => "'" + path.Replace("'", "'\\''") + "'";
+	private static string Quote(string path)
+	{
+		return "'" + path.Replace("'", "'\\''") + "'";
+	}
 
 	// A one-line reason for a failed fetch. The full exception carries a dozen frames of HttpClient
 	// plumbing that say nothing about why the URL failed — a DNS miss or a refused connection reads
@@ -165,10 +187,15 @@ public class WebFetch
 	{
 		Exception innermost = ex;
 		while (innermost.InnerException != null)
+		{
 			innermost = innermost.InnerException;
+		}
 
 		if (ReferenceEquals(innermost, ex) || string.Equals(innermost.Message, ex.Message, StringComparison.Ordinal))
+		{
 			return ex.Message;
+		}
+
 		return $"{ex.Message} ({innermost.Message})";
 	}
 
@@ -186,7 +213,10 @@ public class WebFetch
 		{
 			total += read;
 			if (total > MaxDownloadBytes)
+			{
 				return (null, true);
+			}
+
 			buffer.Write(chunk, 0, read);
 		}
 
@@ -222,7 +252,10 @@ public class WebFetch
 	private static void PrepareFolder(string directory)
 	{
 		if (IsFileOrLink(kScratchFolder))
+		{
 			File.Delete(kScratchFolder);
+		}
+
 		if (!Directory.Exists(kScratchFolder))
 		{
 			Directory.CreateDirectory(kScratchFolder);
@@ -230,9 +263,14 @@ public class WebFetch
 		}
 
 		if (IsFileOrLink(directory))
+		{
 			File.Delete(directory);
+		}
 		else if (Directory.Exists(directory))
+		{
 			Directory.Delete(directory, true);
+		}
+
 		Directory.CreateDirectory(directory);
 	}
 
@@ -244,51 +282,95 @@ public class WebFetch
 		{
 			string lowered = contentType.ToLowerInvariant();
 			if (lowered.Contains("html"))
+			{
 				return "html";
+			}
+
 			if (lowered.Contains("pdf"))
+			{
 				return "pdf";
+			}
+
 			if (lowered.Contains("json"))
+			{
 				return "json";
+			}
+
 			if (lowered.Contains("xml"))
+			{
 				return "xml";
+			}
+
 			if (lowered.Contains("text/"))
+			{
 				return "text";
+			}
 		}
 
 		string path  = url;
 		int    query = path.IndexOf('?');
 		if (query >= 0)
+		{
 			path = path.Substring(0, query);
+		}
+
 		string extension = Path.GetExtension(path).ToLowerInvariant();
 		if (extension == ".html" || extension == ".htm")
+		{
 			return "html";
+		}
+
 		if (extension == ".pdf")
+		{
 			return "pdf";
+		}
+
 		if (extension == ".json")
+		{
 			return "json";
+		}
+
 		if (extension == ".xml")
+		{
 			return "xml";
+		}
+
 		if (extension == ".txt" || extension == ".md" || extension == ".csv")
+		{
 			return "text";
+		}
 
 		// A PDF always begins with the "%PDF-" magic regardless of declared type or extension.
 		if (bytes.Length >= 5 && bytes[0] == '%' && bytes[1] == 'P' && bytes[2] == 'D' && bytes[3] == 'F' && bytes[4] == '-')
+		{
 			return "pdf";
+		}
 
 		// A NUL byte in the leading window means the payload is not text (archive, image, office doc):
 		// it must be classified as binary so it gets `file`'s description and a note to extract it rather than
 		// being read as text. Checked before the text sniff, which would otherwise misread it.
 		if (LooksBinary(bytes))
+		{
 			return "binary";
+		}
 
 		// Sniff the leading non-whitespace characters of the decoded text.
 		string head = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, 512)).TrimStart();
 		if (head.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) || head.StartsWith("<html", StringComparison.OrdinalIgnoreCase))
+		{
 			return "html";
+		}
+
 		if (head.StartsWith("{") || head.StartsWith("["))
+		{
 			return "json";
+		}
+
 		if (head.StartsWith("<"))
+		{
 			return "xml";
+		}
+
 		return "text";
 	}
 
@@ -300,7 +382,9 @@ public class WebFetch
 		for (int i = 0; i < n; i++)
 		{
 			if (bytes[i] == 0)
+			{
 				return true;
+			}
 		}
 		return false;
 	}
@@ -319,18 +403,25 @@ public class WebFetch
 		foreach (char c in candidate)
 		{
 			if (char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_')
+			{
 				cleaned.Append(c);
+			}
 		}
 
 		string name = cleaned.ToString().Trim('.');
 
 		// A real filename that already has its own extension is kept exactly as fetched.
 		if (name.Length > 0 && name.IndexOf('.') >= 0)
+		{
 			return name;
+		}
 
 		// No usable name or extension: synthesize one from the classification (binary gets a neutral .bin).
 		if (name.Length == 0)
+		{
 			name = "raw";
+		}
+
 		string extension = classification == "binary" ? "bin" : ExtensionFor(classification);
 		return name + "." + extension;
 	}
@@ -342,14 +433,22 @@ public class WebFetch
 		string path  = url;
 		int    query = path.IndexOf('?');
 		if (query >= 0)
+		{
 			path = path.Substring(0, query);
+		}
+
 		int fragment = path.IndexOf('#');
 		if (fragment >= 0)
+		{
 			path = path.Substring(0, fragment);
+		}
 
 		int slash = path.LastIndexOf('/');
 		if (slash >= 0 && slash < path.Length - 1)
+		{
 			return path.Substring(slash + 1);
+		}
+
 		return string.Empty;
 	}
 
@@ -359,15 +458,26 @@ public class WebFetch
 	{
 		string extension;
 		if (classification == "html")
+		{
 			extension = "html";
+		}
 		else if (classification == "pdf")
+		{
 			extension = "pdf";
+		}
 		else if (classification == "json")
+		{
 			extension = "json";
+		}
 		else if (classification == "xml")
+		{
 			extension = "xml";
+		}
 		else
+		{
 			extension = "txt";
+		}
+
 		return extension;
 	}
 
@@ -377,7 +487,9 @@ public class WebFetch
 	private static string StripHtmlTags(string html)
 	{
 		if (string.IsNullOrEmpty(html))
+		{
 			return string.Empty;
+		}
 
 		StringBuilder sb = new StringBuilder(html.Length);
 		int           i  = 0;
@@ -399,7 +511,10 @@ public class WebFetch
 
 				int close = html.IndexOf('>', i);
 				if (close < 0)
+				{
 					break;
+				}
+
 				i = close + 1;
 				// A tag boundary separates text runs, so emit a space to keep words apart.
 				sb.Append(' ');
@@ -420,7 +535,9 @@ public class WebFetch
 	private static string BuildHtmlStructure(string html)
 	{
 		if (string.IsNullOrEmpty(html))
+		{
 			return string.Empty;
+		}
 
 		StringBuilder sb = new StringBuilder();
 		int           i  = 0;
@@ -442,7 +559,10 @@ public class WebFetch
 
 				int close = html.IndexOf('>', i);
 				if (close < 0)
+				{
 					break;
+				}
+
 				sb.Append(html, i, close - i + 1);
 				sb.Append('\n');
 				i = close + 1;
@@ -461,17 +581,24 @@ public class WebFetch
 	private static bool StartsWithTag(string html, int start, string tagName)
 	{
 		if (start + tagName.Length > html.Length)
+		{
 			return false;
+		}
 
 		for (int i = 0; i < tagName.Length; i++)
 		{
 			if (char.ToLowerInvariant(html[start + i]) != tagName[i])
+			{
 				return false;
+			}
 		}
 
 		int after = start + tagName.Length;
 		if (after >= html.Length)
+		{
 			return true;
+		}
+
 		char c = html[after];
 		return char.IsWhiteSpace(c) || c == '>' || c == '/';
 	}
@@ -483,11 +610,16 @@ public class WebFetch
 		string closeTag   = "</" + tagName;
 		int    closeIndex = html.IndexOf(closeTag, openIndex, StringComparison.OrdinalIgnoreCase);
 		if (closeIndex < 0)
+		{
 			return html.Length;
+		}
 
 		int gt = html.IndexOf('>', closeIndex);
 		if (gt < 0)
+		{
 			return html.Length;
+		}
+
 		return gt + 1;
 	}
 
@@ -505,7 +637,10 @@ public class WebFetch
 			else
 			{
 				if (pendingSpace && sb.Length > 0)
+				{
 					sb.Append(' ');
+				}
+
 				pendingSpace = false;
 				sb.Append(c);
 			}
@@ -521,7 +656,9 @@ public class WebFetch
 	private static string WrapAtWhitespace(string text)
 	{
 		if (string.IsNullOrEmpty(text))
+		{
 			return text;
+		}
 
 		StringBuilder sb    = new StringBuilder(text.Length + text.Length / MaxLineLength + 1);
 		int           start = 0;
@@ -547,7 +684,9 @@ public class WebFetch
 			}
 
 			if (breakAt <= start)
+			{
 				breakAt = limit;
+			}
 
 			sb.Append(text, start, breakAt - start);
 			sb.Append('\n');

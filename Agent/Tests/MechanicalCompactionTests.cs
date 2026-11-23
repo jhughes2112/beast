@@ -358,7 +358,9 @@ public static class MechanicalCompactionTests
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is ToolResultMessage tr)
+			{
 				satisfied.Add(tr.ToolCallId);
+			}
 		}
 
 		int open = 0;
@@ -369,7 +371,9 @@ public static class MechanicalCompactionTests
 				foreach (SemanticToolCall call in am.ToolCalls)
 				{
 					if (!satisfied.Contains(call.Id))
+					{
 						open++;
+					}
 				}
 			}
 		}
@@ -406,9 +410,13 @@ public static class MechanicalCompactionTests
 			if (msg is ToolResultMessage tr)
 			{
 				if (tr.ToolCallId == "id1")
+				{
 					big = tr;
+				}
 				else if (tr.ToolCallId == "id2")
+				{
 					small = tr;
+				}
 			}
 		}
 		ctx.AssertNotNull(big, "TryBuild: elided result still present (pairing intact)");
@@ -704,11 +712,15 @@ public static class MechanicalCompactionTests
 				{
 					ccIds.Add(call!["id"]!.GetValue<string>());
 					if (call["function"]!["arguments"]!.GetValue<string>().Contains("write_file", StringComparison.Ordinal))
+					{
 						ccArgs = call["function"]!["arguments"]!.GetValue<string>();
+					}
 				}
 			}
 			if (node?["role"]?.GetValue<string>() == "tool")
+			{
 				ctx.Assert(ccIds.Contains(node["tool_call_id"]!.GetValue<string>()), "Rehydrate CC: tool result answers a preceding call");
+			}
 		}
 		ctx.AssertNotNull(                 ccArgs, "Rehydrate CC: elided call present on the wire");
 		ctx.AssertNotNull(JsonNode.Parse(ccArgs!), "Rehydrate CC: elided arguments are valid JSON");
@@ -735,7 +747,9 @@ public static class MechanicalCompactionTests
 				{
 					useIds.Add(block["id"]!.GetValue<string>());
 					if (block["input"]!.ToJsonString().Contains("write_file", StringComparison.Ordinal))
+					{
 						elided = block["input"] as JsonObject;
+					}
 				}
 				else if (type == "tool_result")
 				{
@@ -784,9 +798,14 @@ public static class MechanicalCompactionTests
 		foreach (CanonicalMessage msg in loaded.Messages)
 		{
 			if (msg is ToolResultMessage tr && tr.Content.Contains("tool call is in file ", StringComparison.Ordinal))
+			{
 				noteSurvived = true;
+			}
+
 			if (msg is UserMessage um && um.Text.StartsWith(MechanicalCompaction.LedgerMarker, StringComparison.Ordinal))
+			{
 				ledgerSurvived = true;
+			}
 		}
 		ctx.Assert(  noteSurvived, "PersistRoundTrip: elision note survives save/load");
 		ctx.Assert(ledgerSurvived, "PersistRoundTrip: ledger message survives save/load");

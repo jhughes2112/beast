@@ -60,6 +60,16 @@ public class Program
 			return ctx.Failed > 0 ? 1 : 0;
 		}
 
+		// --test-antigravity: the same live checks for the Google subscription's protocol and CLI.
+		if (args.Length > 0 && args[0] == "--test-antigravity")
+		{
+			TestContext ctx = new TestContext(new TransportConsoleDebug());
+			Sandbox.Initialize(Environment.CurrentDirectory);
+			await AntigravityLiveTests.TestAsync(ctx);
+			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
+			return ctx.Failed > 0 ? 1 : 0;
+		}
+
 		// --test-hallmonitor-learning [modelId ...]: a live experiment on how much a person's Always/Never commands
 		// improve a decision model's judgment. Kept out of --test because it sends thousands of requests.
 		if (args.Length > 0 && args[0] == "--test-hallmonitor-learning")
@@ -67,7 +77,10 @@ public class Program
 			TestContext  ctx      = new TestContext(new TransportConsoleDebug());
 			List<string> modelIds = new List<string>();
 			for (int i = 1; i < args.Length; i++)
+			{
 				modelIds.Add(args[i]);
+			}
+
 			await HallMonitorLearningLiveTests.TestAsync(ctx, modelIds);
 			Console.WriteLine($"=== Tests complete: {ctx.Passed} passed, {ctx.Failed} failed ===");
 			return ctx.Failed > 0 ? 1 : 0;
@@ -80,7 +93,9 @@ public class Program
 		// The session's own folder for conversations, logs and staged attachments (see AgentState); a run without it uses .beast here.
 		string stateDir = ArgValue(args, "--state-dir");
 		if (stateDir.Length > 0)
+		{
 			AgentState.Initialize(stateDir);
+		}
 		// No worktree branch means a current-folder launch: no git worktree is set up, but the session is saved and
 		// resumed like any other, in its state folder. Only a run with no /workspace at all (a native debugger
 		// run) keeps its session in memory, since there is nowhere to save it.
@@ -152,7 +167,9 @@ public class Program
 		for (int i = 0; i < args.Length - 1; i++)
 		{
 			if (args[i] == flag)
+			{
 				return args[i + 1];
+			}
 		}
 		return string.Empty;
 	}

@@ -24,8 +24,21 @@ public class ListenerBundle
 		_transport = transport;
 	}
 
-	public CanonicalConversation Canonical => _canonical;
-	public ListenerTransport?    Transport => _transport;
+	public CanonicalConversation Canonical
+	{
+		get
+		{
+			return _canonical;
+		}
+	}
+
+	public ListenerTransport? Transport
+	{
+		get
+		{
+			return _transport;
+		}
+	}
 
 	// Called by ProtocolProxy at the start of ExecuteAsync so the bundle routes fan-out
 	// events to the correct protocol instance for the duration of the session.
@@ -101,7 +114,9 @@ public class ListenerBundle
 		for (int i = messages.Count - 1; i >= 0; i--)
 		{
 			if (messages[i] is AssistantMessage am)
+			{
 				return am.Text;
+			}
 		}
 		return null;
 	}

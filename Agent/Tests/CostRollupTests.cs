@@ -61,9 +61,15 @@ public static class CostRollupTests
 			{
 				await System.Threading.Tasks.Task.Delay(workMs, ct);
 				using (ToolClock.Wait())
+				{
 					await System.Threading.Tasks.Task.Delay(waitMs, ct);
+				}
+
 				if (subMs > 0)
+				{
 					ToolClock.Report(BuildSession("unused", new TestCaptureTransport()), subMs);
+				}
+
 				return new ToolResult(id, "done", string.Empty, 0, 1);
 			}
 		};

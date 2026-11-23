@@ -165,9 +165,29 @@ public class FakeProvider
 	private          string       _countRoute = string.Empty;
 	private readonly List<string> _countPaths = new List<string>();
 
-	public string ChatEndpoint      => $"http://localhost:{_port}/v1/chat/completions";
-	public string MessagesEndpoint  => $"http://localhost:{_port}/v1/messages";
-	public string ResponsesEndpoint => $"http://localhost:{_port}/v1/responses";
+	public string ChatEndpoint
+	{
+		get
+		{
+			return $"http://localhost:{_port}/v1/chat/completions";
+		}
+	}
+
+	public string MessagesEndpoint
+	{
+		get
+		{
+			return $"http://localhost:{_port}/v1/messages";
+		}
+	}
+
+	public string ResponsesEndpoint
+	{
+		get
+		{
+			return $"http://localhost:{_port}/v1/responses";
+		}
+	}
 
 	private FakeProvider(int port)
 	{
@@ -200,7 +220,9 @@ public class FakeProvider
 	public void OnRequest(Action<int> hook)
 	{
 		lock (_gate)
+		{
 			_onRequest = hook;
+		}
 	}
 
 	// Clears the script, the log, the threads and every limit, ready for the next scenario.
@@ -223,19 +245,25 @@ public class FakeProvider
 	public void ServeCount(string route)
 	{
 		lock (_gate)
+		{
 			_countRoute = route;
+		}
 	}
 
 	public List<string> CountRequests()
 	{
 		lock (_gate)
+		{
 			return new List<string>(_countPaths);
+		}
 	}
 
 	public void Enqueue(FakeReply reply)
 	{
 		lock (_gate)
+		{
 			_script.Enqueue(reply);
+		}
 	}
 
 	public void Limit(int maxImages, long maxMediaBytes, bool rejectStreaming)
@@ -251,7 +279,9 @@ public class FakeProvider
 	public List<FakeRequest> Requests()
 	{
 		lock (_gate)
+		{
 			return new List<FakeRequest>(_requests);
+		}
 	}
 
 	public async Task RunAsync(CancellationToken ct)
@@ -301,11 +331,17 @@ public class FakeProvider
 			: string.Empty;
 
 		if (context.Request.HttpMethod == "POST" && path.Contains("/responses/input_tokens", StringComparison.OrdinalIgnoreCase))
+		{
 			await HandleCountAsync(context, path, ct);
+		}
 		else if (context.Request.HttpMethod == "POST" && api.Length > 0)
+		{
 			await HandleApiAsync(context, api, ct);
+		}
 		else
+		{
 			await WriteJsonAsync(context.Response, 404, "{\"error\":{\"message\":\"not found\"}}", ct);
+		}
 	}
 
 	// A count on the route this server serves answers a fixed figure; any other spelling is a 404.
@@ -318,16 +354,23 @@ public class FakeProvider
 			served = _countRoute.Length > 0 && path.EndsWith(_countRoute, StringComparison.OrdinalIgnoreCase);
 		}
 		if (served)
+		{
 			await WriteJsonAsync(context.Response, 200, "{\"object\":\"response.input_tokens\",\"input_tokens\":321}", ct);
+		}
 		else
+		{
 			await WriteJsonAsync(context.Response, 404, "{\"error\":{\"message\":\"not found\"}}", ct);
+		}
 	}
 
 	private async Task HandleApiAsync(HttpListenerContext context, string api, CancellationToken ct)
 	{
 		string bodyText;
 		using (StreamReader reader = new StreamReader(context.Request.InputStream, Encoding.UTF8))
+		{
 			bodyText = await reader.ReadToEndAsync(ct);
+		}
+
 		JsonNode body      = JsonNode.Parse(bodyText) ?? new JsonObject();
 		bool     streaming = body["stream"]?.GetValue<bool>() ?? false;
 
@@ -341,20 +384,31 @@ public class FakeProvider
 			// Server-side refusals come before the script, as a real provider rejects the request
 			// before any model sees it.
 			if (_rejectStreaming && streaming)
+			{
 				reply = FakeReply.Error(400, "{\"error\":{\"message\":\"stream is not supported by this server\"}}");
+			}
 			else if (_maxImages > 0 && media > _maxImages)
+			{
 				reply = FakeReply.Error(400, $"{{\"error\":{{\"message\":\"Too many images in request: > {_maxImages}\",\"code\":400,\"metadata\":{{\"provider_name\":null}}}}}}");
+			}
 			else if (_maxMediaBytes > 0 && mediaBytes > _maxMediaBytes)
+			{
 				reply = FakeReply.Error(413, $"{{\"error\":{{\"message\":\"Downloaded image content cannot exceed {_maxMediaBytes / 1024}KB\",\"code\":413,\"metadata\":{{\"provider_name\":null}}}}}}");
+			}
 			else
+			{
 				reply = _script.Count > 0 ? _script.Dequeue() : FakeReply.Say("ok");
+			}
 
 			visible = media;
 			if (api == "responses")
 			{
 				string? previous = body["previous_response_id"]?.GetValue<string>();
 				if (previous != null && _threadMedia.TryGetValue(previous, out int held))
+				{
 					visible += held;
+				}
+
 				if (reply.ErrorStatus == 0)
 				{
 					_nextId++;
@@ -367,13 +421,21 @@ public class FakeProvider
 		}
 
 		if (reply.ErrorStatus != 0)
+		{
 			await WriteJsonAsync(context.Response, reply.ErrorStatus, reply.ErrorBody, ct);
+		}
 		else if (api == "chat")
+		{
 			await WriteChatAsync(context.Response, reply, streaming, ct);
+		}
 		else if (api == "messages")
+		{
 			await WriteMessagesAsync(context.Response, reply, ct);
+		}
 		else
+		{
 			await WriteResponsesAsync(context.Response, reply, responseId, streaming, ct);
+		}
 	}
 
 	// Media parts anywhere in the payload, and their decoded size (three quarters of the base64).
@@ -386,7 +448,9 @@ public class FakeProvider
 		{
 			JsonNode? node = body[field];
 			if (node != null)
+			{
 				Walk(node, ref count, ref bytes);
+			}
 		}
 		return (count, bytes);
 	}
@@ -398,7 +462,9 @@ public class FakeProvider
 			foreach (JsonNode? child in array)
 			{
 				if (child != null)
+				{
 					Walk(child, ref count, ref bytes);
+				}
 			}
 		}
 		else if (node is JsonObject obj)
@@ -414,7 +480,9 @@ public class FakeProvider
 				foreach ((string _, JsonNode? child) in obj)
 				{
 					if (child != null)
+					{
 						Walk(child, ref count, ref bytes);
+					}
 				}
 			}
 		}
@@ -424,13 +492,24 @@ public class FakeProvider
 	{
 		long total = 0;
 		if (node is JsonValue value && value.TryGetValue<string>(out string? s))
+		{
 			total = s.Length;
+		}
 		else if (node is JsonArray array)
+		{
 			foreach (JsonNode? child in array)
+			{
 				total += StringChars(child);
+			}
+		}
 		else if (node is JsonObject obj)
+		{
 			foreach ((string _, JsonNode? child) in obj)
+			{
 				total += StringChars(child);
+			}
+		}
+
 		return total;
 	}
 
@@ -439,9 +518,13 @@ public class FakeProvider
 	private static async Task WriteChatAsync(HttpListenerResponse response, FakeReply reply, bool streaming, CancellationToken ct)
 	{
 		if (streaming)
+		{
 			await WriteChatSseAsync(response, reply, ct);
+		}
 		else
+		{
 			await WriteChatJsonAsync(response, reply, ct);
+		}
 	}
 
 	private static async Task WriteChatJsonAsync(HttpListenerResponse response, FakeReply reply, CancellationToken ct)
@@ -449,12 +532,18 @@ public class FakeProvider
 		string     finish  = reply.Calls.Count > 0 ? "tool_calls" : "stop";
 		JsonObject message = new JsonObject { ["role"] = "assistant", ["content"] = reply.Text };
 		if (reply.Thinking.Length > 0)
+		{
 			message["reasoning_content"] = reply.Thinking;
+		}
+
 		if (reply.Calls.Count > 0)
 		{
 			JsonArray calls = new JsonArray();
 			foreach ((string id, string name, string args) in reply.Calls)
+			{
 				calls.Add((JsonNode)new JsonObject { ["id"] = id, ["type"] = "function", ["function"] = new JsonObject { ["name"] = name, ["arguments"] = args } });
+			}
+
 			message["tool_calls"] = calls;
 		}
 		JsonObject completion = new JsonObject
@@ -471,14 +560,19 @@ public class FakeProvider
 	{
 		string finish = reply.FinishOverride.Length > 0 ? reply.FinishOverride : reply.Calls.Count > 0 ? "tool_calls" : "stop";
 		if (reply.QueueMs > 0 && !reply.KeepAlive)
+		{
 			await Task.Delay(reply.QueueMs, ct);
+		}
+
 		using StreamWriter writer = OpenSse(response, reply.CompactSse);
 		if (reply.KeepAlive)
 		{
 			await writer.WriteAsync(": waiting for this model to load\n\n");
 			await writer.FlushAsync(ct);
 			if (reply.QueueMs > 0)
+			{
 				await Task.Delay(reply.QueueMs, ct);
+			}
 		}
 		if (reply.StreamErrorJson.Length > 0)
 		{
@@ -488,11 +582,20 @@ public class FakeProvider
 		}
 		await DataAsync(writer, ChatChunk(new JsonObject { ["role"] = "assistant" }, null), ct);
 		if (reply.GenerateMs > 0)
+		{
 			await Task.Delay(reply.GenerateMs, ct);
+		}
+
 		if (reply.Thinking.Length > 0)
+		{
 			await DataAsync(writer, ChatChunk(new JsonObject { ["reasoning_content"] = reply.Thinking }, null), ct);
+		}
+
 		if (reply.Text.Length > 0)
+		{
 			await DataAsync(writer, ChatChunk(new JsonObject { ["content"] = reply.Text }, null), ct);
+		}
+
 		for (int i = 0; i < reply.Calls.Count; i++)
 		{
 			(string id, string name, string args) = reply.Calls[i];
@@ -515,7 +618,10 @@ public class FakeProvider
 	{
 		JsonObject choice = new JsonObject { ["index"] = 0, ["delta"] = delta };
 		if (finish != null)
+		{
 			choice["finish_reason"] = finish;
+		}
+
 		return new JsonObject { ["id"] = "chatcmpl-fake", ["object"] = "chat.completion.chunk", ["choices"] = new JsonArray(choice) }.ToJsonString();
 	}
 
@@ -573,11 +679,19 @@ public class FakeProvider
 	{
 		JsonArray output = new JsonArray();
 		if (reply.Thinking.Length > 0)
+		{
 			output.Add((JsonNode)new JsonObject { ["type"] = "reasoning", ["id"] = "rs_fake", ["summary"] = new JsonArray(new JsonObject { ["type"] = "summary_text", ["text"] = reply.Thinking }) });
+		}
+
 		if (reply.Text.Length > 0)
+		{
 			output.Add((JsonNode)new JsonObject { ["type"] = "message", ["id"] = "msg_fake", ["role"] = "assistant", ["content"] = new JsonArray(new JsonObject { ["type"] = "output_text", ["text"] = reply.Text }) });
+		}
+
 		foreach ((string id, string name, string args) in reply.Calls)
+		{
 			output.Add((JsonNode)new JsonObject { ["type"] = "function_call", ["id"] = $"fc_{id}", ["call_id"] = id, ["name"] = name, ["arguments"] = args });
+		}
 
 		JsonObject final = new JsonObject
 		{
@@ -589,9 +703,13 @@ public class FakeProvider
 		};
 
 		if (streaming)
+		{
 			await WriteResponsesSseAsync(response, reply, responseId, final, ct);
+		}
 		else
+		{
 			await WriteJsonAsync(response, 200, final.ToJsonString(), ct);
+		}
 	}
 
 	private static async Task WriteResponsesSseAsync(HttpListenerResponse response, FakeReply reply, string responseId, JsonObject final, CancellationToken ct)
@@ -600,9 +718,15 @@ public class FakeProvider
 		JsonObject created        = new JsonObject { ["id"] = responseId, ["object"] = "response", ["status"] = "in_progress", ["usage"] = new JsonObject { ["input_tokens"] = 100 } };
 		await DataAsync(writer, new JsonObject { ["type"] = "response.created", ["response"] = created }.ToJsonString(), ct);
 		if (reply.Thinking.Length > 0)
+		{
 			await DataAsync(writer, new JsonObject { ["type"] = "response.reasoning_summary_text.delta", ["delta"] = reply.Thinking }.ToJsonString(), ct);
+		}
+
 		if (reply.Text.Length > 0)
+		{
 			await DataAsync(writer, new JsonObject { ["type"] = "response.output_text.delta", ["delta"] = reply.Text }.ToJsonString(), ct);
+		}
+
 		await DataAsync(writer, new JsonObject { ["type"] = "response.completed", ["response"] = final }.ToJsonString(), ct);
 		await writer.FlushAsync(ct);
 	}

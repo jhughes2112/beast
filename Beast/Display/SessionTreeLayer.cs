@@ -33,7 +33,9 @@ internal static class SessionTreeLayer
 
 		// Left border column.
 		for (int r = 0; r < h; r++)
+		{
 			AnsiToScreen.WriteLine(s, 0, r, "│", borderFg, panelBg);
+		}
 
 		Rgb markFg = new Rgb(230,  90,  90); // marked for deletion
 
@@ -46,7 +48,9 @@ internal static class SessionTreeLayer
 		{
 			int idx = scroll + r;
 			if (idx >= sessions.Count)
+			{
 				break;
+			}
 
 			SessionDisplayInfo info     = sessions[idx];
 			bool               isSel    = idx == selected;
@@ -66,7 +70,9 @@ internal static class SessionTreeLayer
 				_                     => done ? doneFg : openFg
 			};
 			if (isActive)
+			{
 				nameFg = nameFg.Scale(1.35f);
+			}
 
 			// Fill row background starting after the border column.
 			s.Fill(new Rect(1, r + 1, panelW - 1, 1), new Cell(' ', nameFg, bg, CellStyle.None));
@@ -94,7 +100,9 @@ internal static class SessionTreeLayer
 		{
 			PlayAction action = ActionFor(sessions[selected]);
 			if (action != PlayAction.None)
+			{
 				AnsiToScreen.WriteLine(s, 1, h - 1, $" {(action == PlayAction.Pause ? "‖ Pause" : "▶ Play")}  (F9)", busyFg, selBg);
+			}
 		}
 
 		return s;
@@ -106,9 +114,14 @@ internal static class SessionTreeLayer
 	{
 		PlayAction action;
 		if (session.IsBusy)
+		{
 			action = session.Paused ? PlayAction.Play : PlayAction.Pause;
+		}
 		else
+		{
 			action = session.CanContinue ? PlayAction.Play : PlayAction.None;
+		}
+
 		return action;
 	}
 }

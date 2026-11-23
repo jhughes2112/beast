@@ -65,22 +65,32 @@ public static class HallMonitorLearningLiveTests
 			{
 				LlmModel? model = registry.GetModel(id);
 				if (model != null)
+				{
 					models.Add(model);
+				}
 				else
+				{
 					ctx.Log($"    SKIP: no model '{id}' is configured");
+				}
 			}
 		}
 		else
 		{
 			Role? role = roles.GetRole(HallMonitor.RoleName);
 			if (role != null)
+			{
 				models.AddRange(registry.ModelsForRole(role));
+			}
 		}
 		if (models.Count == 0)
+		{
 			ctx.Log("    SKIP: no decision model to test");
+		}
 
 		foreach (LlmModel model in models)
+		{
 			await RunModelAsync(ctx, model, cts.Token);
+		}
 	}
 
 	private static async Task RunModelAsync(TestContext ctx, LlmModel model, CancellationToken ct)
@@ -96,9 +106,13 @@ public static class HallMonitorLearningLiveTests
 		foreach (Scored s in baseline)
 		{
 			if (s.Dangerous)
+			{
 				dangerousOutliers.Add(s);
+			}
 			else
+			{
 				safeOutliers.Add(s);
+			}
 		}
 		safeOutliers.Sort((a, b) => b.Block.CompareTo(a.Block));
 		dangerousOutliers.Sort((a, b) => a.Allow.CompareTo(b.Allow));
@@ -107,9 +121,14 @@ public static class HallMonitorLearningLiveTests
 
 		HashSet<string> pool = new HashSet<string>(StringComparer.Ordinal);
 		foreach (Scored s in safeOutliers)
+		{
 			pool.Add(s.Command);
+		}
+
 		foreach (Scored s in dangerousOutliers)
+		{
 			pool.Add(s.Command);
+		}
 
 		List<(string Command, bool Dangerous)> heldOut = new List<(string Command, bool Dangerous)>();
 		List<Scored> baselineHeld = new List<Scored>();
@@ -124,9 +143,14 @@ public static class HallMonitorLearningLiveTests
 
 		ctx.Log($"    Outlier pool: {PoolPerSide} safe (block score {safeOutliers[0].Block:0.00} down to {safeOutliers[PoolPerSide - 1].Block:0.00}), {PoolPerSide} dangerous (allow score {dangerousOutliers[0].Allow:0.00} up to {dangerousOutliers[PoolPerSide - 1].Allow:0.00}); {heldOut.Count} held out.");
 		for (int i = 0; i < 5; i++)
+		{
 			ctx.Log($"      safe looked dangerous ({safeOutliers[i].Block:0.00}): {safeOutliers[i].Command}");
+		}
+
 		for (int i = 0; i < 5; i++)
+		{
 			ctx.Log($"      dangerous looked safe ({dangerousOutliers[i].Allow:0.00}): {dangerousOutliers[i].Command}");
+		}
 
 		// The same held-out commands and the same examples, without and then with the context.
 		await RunVariantAsync(ctx, model, "no context",   string.Empty, heldOut, baselineHeld, safeOutliers, dangerousOutliers, ct);
@@ -194,7 +218,10 @@ public static class HallMonitorLearningLiveTests
 	{
 		List<(double AllowScore, double BlockScore, bool Dangerous)> tuples = new List<(double AllowScore, double BlockScore, bool Dangerous)>();
 		foreach (Scored s in run)
+		{
 			tuples.Add((s.Allow, s.Block, s.Dangerous));
+		}
+
 		return tuples;
 	}
 
@@ -229,7 +256,9 @@ public static class HallMonitorLearningLiveTests
 				Console.Error.WriteLine($"[learning] {model.ConfigId} {label}: {error}");
 			}
 			if ((i + 1) % 100 == 0)
+			{
 				Console.Error.WriteLine($"[learning] {model.ConfigId} {label}: {i + 1}/{commands.Count} ({(DateTime.UtcNow - started).TotalSeconds:0}s)");
+			}
 		}
 		Console.Error.WriteLine($"[learning] {model.ConfigId} {label}: done in {(DateTime.UtcNow - started).TotalSeconds:0}s, {failed} failed");
 		return scored;

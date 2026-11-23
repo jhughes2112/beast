@@ -32,9 +32,14 @@ public class WebSearchTool
 		CancellationToken ct)
 	{
 		if (string.IsNullOrWhiteSpace(query))
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: Search query cannot be empty.", 1, 0);
+		}
+
 		if (string.IsNullOrWhiteSpace(goal))
+		{
 			return new ToolResult(toolCallId, string.Empty, "Error: Search goal cannot be empty.", 1, 0);
+		}
 
 		StringBuilder failures = new StringBuilder();
 		foreach ((WebSearchProvider provider, string apiKey, string model) in providers)
@@ -57,7 +62,9 @@ public class WebSearchTool
 
 			// The fee is spent whether or not the answer came back usable.
 			if (answer.Cost > 0m)
+			{
 				parent.RecordCost(answer.Cost);
+			}
 
 			if (answer.Ok)
 			{
@@ -77,7 +84,10 @@ public class WebSearchTool
 			}
 
 			if (failures.Length > 0)
+			{
 				failures.Append("; ");
+			}
+
 			failures.Append(answer.Error);
 		}
 

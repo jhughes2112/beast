@@ -26,7 +26,7 @@ using System.Threading.Tasks;
 // it is still only user text, otherwise a transcript of it. Usage comes from the model's own stream
 // events (the same counters the Messages API reports); cost is whatever the model's config prices,
 // which for a subscription is zero.
-public sealed class ProtocolClaudeDashP
+public sealed class ProtocolClaudeDashP : IMcpToolHost
 {
 	private const string kServerName = "beast";
 	private const string kToolPrefix = "mcp__beast__";
@@ -81,7 +81,9 @@ public sealed class ProtocolClaudeDashP
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is SystemMessage sm)
+			{
 				_system = sm.Text;
+			}
 		}
 	}
 
@@ -93,13 +95,17 @@ public sealed class ProtocolClaudeDashP
 	public void OnUserMessage(string text)
 	{
 		lock (_lock)
+		{
 			AddUserContent(_unsent, text, null);
+		}
 	}
 
 	public void OnUserMessage(string text, IReadOnlyList<MediaAttachment> attachments)
 	{
 		lock (_lock)
+		{
 			AddUserContent(_unsent, text, attachments);
+		}
 	}
 
 	// Claude Code already holds the turn it produced; there is nothing to mirror.
@@ -110,14 +116,18 @@ public sealed class ProtocolClaudeDashP
 	public void OnToolResult(ToolResult result)
 	{
 		lock (_lock)
+		{
 			_results[result.Id] = result;
+		}
 	}
 
 	// Ends the process for good. Called when the proxy discards this protocol.
 	public void Dispose()
 	{
 		lock (_lock)
+		{
 			StopLocked("protocol discarded");
+		}
 	}
 
 	public async Task<ProtocolResult> ExecuteAsync(LlmModel model, ListenerBundle bundle, List<ToolDefinition> tools, LiveUsageProgress onProgress, SessionLogger logger, CancellationToken cancellationToken)
@@ -137,23 +147,38 @@ public sealed class ProtocolClaudeDashP
 			{
 				string signature = ToolSignature(tools);
 				if (_process != null && (_process.HasExited || signature != _toolSignature))
+				{
 					StopLocked(_process.HasExited ? "process exited" : "tool set changed");
+				}
+
 				if (_process == null)
+				{
 					startError = StartLocked(model, tools, signature, bundle.Canonical.Messages, logger);
+				}
+
 				if (startError == null)
+				{
 					DeliverLocked(model, logger);
+				}
 			}
 
 			if (startError != null)
+			{
 				result = logger.ProtocolFailure(ProtocolResult.Failed(startError), model, DetectedProtocol.ClaudeDashP, "StartFailed", null, startError, null, null);
+			}
 			else
+			{
 				result = await ReadTurnAsync(model, bundle, onProgress, logger, cancellationToken);
+			}
 		}
 		catch (OperationCanceledException)
 		{
 			// An interrupted turn leaves Claude Code mid-flight; the next turn starts over from canonical.
 			lock (_lock)
+			{
 				StopLocked("turn interrupted");
+			}
+
 			throw;
 		}
 		finally
@@ -162,7 +187,9 @@ public sealed class ProtocolClaudeDashP
 			{
 				_executing = false;
 				if (_process != null)
+				{
 					_idleTimer = new Timer(_ => ReapIdle(), null, kIdleLifetime, Timeout.InfiniteTimeSpan);
+				}
 			}
 		}
 		return result;
@@ -214,7 +241,9 @@ public sealed class ProtocolClaudeDashP
 		foreach (CanonicalMessage msg in canonical)
 		{
 			if (msg is SystemMessage sm)
+			{
 				_system = sm.Text;
+			}
 		}
 		SeedFromCanonical(canonical, _unsent);
 
@@ -294,7 +323,9 @@ public sealed class ProtocolClaudeDashP
 			DeleteQuietly(_configPath);
 			DeleteQuietly(_promptPath);
 			if (error == null)
+			{
 				error = "The Claude Code CLI (claude) could not be started.";
+			}
 		}
 		return error;
 	}
@@ -309,7 +340,9 @@ public sealed class ProtocolClaudeDashP
 			try
 			{
 				if (!_process.HasExited)
+				{
 					_process.Kill(true);
+				}
 			}
 			catch (Exception)
 			{
@@ -331,7 +364,10 @@ public sealed class ProtocolClaudeDashP
 		_promptPath = string.Empty;
 
 		foreach ((string _, JsonObject _, TaskCompletionSource<JsonObject> reply) in _waiters)
-			reply.TrySetResult(TextReply($"[the {kServerName} session ended before this call was answered]", true));
+		{
+			reply.TrySetResult(McpBridge.TextReply($"[the {kServerName} session ended before this call was answered]", true));
+		}
+
 		_waiters.Clear();
 		ResetTurnStateLocked();
 		_awaitingResult = false;
@@ -344,7 +380,9 @@ public sealed class ProtocolClaudeDashP
 		lock (_lock)
 		{
 			if (!_executing && _process != null)
+			{
 				StopLocked($"idle for {kIdleLifetime.TotalMinutes:0} minutes");
+			}
 		}
 	}
 
@@ -356,7 +394,10 @@ public sealed class ProtocolClaudeDashP
 			{
 				string? line = await process.StandardOutput.ReadLineAsync();
 				if (line == null)
+				{
 					break;
+				}
+
 				JsonObject? evt = null;
 				try
 				{
@@ -367,7 +408,9 @@ public sealed class ProtocolClaudeDashP
 					RememberStderr(line);
 				}
 				if (evt != null)
+				{
 					events.Writer.TryWrite(evt);
+				}
 			}
 		}
 		catch (Exception ex)
@@ -385,7 +428,9 @@ public sealed class ProtocolClaudeDashP
 			{
 				_stderrTail.Enqueue(line);
 				while (_stderrTail.Count > 20)
+				{
 					_stderrTail.Dequeue();
+				}
 			}
 		}
 	}
@@ -393,7 +438,9 @@ public sealed class ProtocolClaudeDashP
 	private string StderrTail()
 	{
 		lock (_stderrTail)
+		{
 			return _stderrTail.Count > 0 ? string.Join("\n", _stderrTail) : "(no output)";
+		}
 	}
 
 	// ---- Sending ----
@@ -416,11 +463,16 @@ public sealed class ProtocolClaudeDashP
 		{
 			// Nothing new would leave the model with no turn to take; only a retry lands here.
 			if (_unsent.Count == 0)
+			{
 				AddUserContent(_unsent, "Continue.", null);
+			}
 
 			JsonArray content = new JsonArray();
 			foreach (JsonObject block in _unsent)
+			{
 				content.Add((JsonNode)block.DeepClone());
+			}
+
 			_unsent.Clear();
 
 			JsonObject line = new JsonObject
@@ -448,17 +500,20 @@ public sealed class ProtocolClaudeDashP
 				JsonObject        answer;
 				if (call == null)
 				{
-					answer = TextReply($"[{name} was not among the calls of this turn]", true);
+					answer = McpBridge.TextReply($"[{name} was not among the calls of this turn]", true);
 				}
 				else
 				{
 					_answered.Add(call.Id);
-					answer = _results.TryGetValue(call.Id, out ToolResult? result) ? ToolReply(result) : TextReply($"[the {name} call was not run]", true);
+					answer = _results.TryGetValue(call.Id, out ToolResult? result) ? McpBridge.ToolReply(result) : McpBridge.TextReply($"[the {name} call was not run]", true);
 					if (call.Id == lastId && _steering.Count > 0)
 					{
 						JsonArray content = (JsonArray)answer["content"]!;
 						foreach (JsonObject block in _steering)
+						{
 							content.Add((JsonNode)McpContent(block));
+						}
+
 						_steering.Clear();
 					}
 				}
@@ -476,9 +531,15 @@ public sealed class ProtocolClaudeDashP
 		foreach (SemanticToolCall call in _outstanding)
 		{
 			if (_answered.Contains(call.Id) || call.Name != name)
+			{
 				continue;
+			}
+
 			if (match == null)
+			{
 				match = call;
+			}
+
 			JsonNode? parsed = null;
 			try
 			{
@@ -522,7 +583,9 @@ public sealed class ProtocolClaudeDashP
 	{
 		ChannelReader<JsonObject> reader;
 		lock (_lock)
+		{
 			reader = _events!.Reader;
+		}
 
 		TimeSpan                     idleTimeout = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
 		SortedDictionary<int, Block> blocks      = new SortedDictionary<int, Block>();
@@ -547,12 +610,17 @@ public sealed class ProtocolClaudeDashP
 				try
 				{
 					if (await reader.WaitToReadAsync(idle.Token))
+					{
 						reader.TryRead(out evt);
+					}
 				}
 				catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
 				{
 					lock (_lock)
+					{
 						StopLocked("no output within the request timeout");
+					}
+
 					result = logger.ProtocolFailure(ProtocolResult.Transient($"Claude Code produced nothing for {idleTimeout.TotalSeconds:0}s", null),
 						model, DetectedProtocol.ClaudeDashP, "Timeout", null, "idle timeout", null, null);
 					break;
@@ -562,7 +630,10 @@ public sealed class ProtocolClaudeDashP
 				{
 					string tail = StderrTail();
 					lock (_lock)
+					{
 						StopLocked("process exited");
+					}
+
 					result = logger.ProtocolFailure(ProtocolResult.Transient($"Claude Code exited mid-turn: {tail}", null),
 						model, DetectedProtocol.ClaudeDashP, "ProcessExited", null, tail, null, null);
 					break;
@@ -578,7 +649,10 @@ public sealed class ProtocolClaudeDashP
 					{
 						// The model is answering again, so every held call of the previous turn has been answered.
 						lock (_lock)
+						{
 							ResetTurnStateLocked();
+						}
+
 						JsonNode? usage = inner["message"]?["usage"];
 						freshInput      = ReadInt(usage, "input_tokens",                freshInput);
 						cacheWrite      = ReadInt(usage, "cache_creation_input_tokens", cacheWrite);
@@ -605,7 +679,9 @@ public sealed class ProtocolClaudeDashP
 							block.Text.Append(text);
 							streamedChars += text.Length;
 							if (openTag == StreamTag.Assistant || !string.IsNullOrWhiteSpace(text))
+							{
 								openTag = StreamChunk(bundle, openTag, StreamTag.Assistant, text);
+							}
 						}
 						else if (deltaType == "thinking_delta")
 						{
@@ -660,7 +736,9 @@ public sealed class ProtocolClaudeDashP
 		finally
 		{
 			if (openTag != null)
+			{
 				bundle.Transport?.OnStreamEnd(openTag);
+			}
 		}
 
 		// The loop only ends once a result is set.
@@ -673,7 +751,10 @@ public sealed class ProtocolClaudeDashP
 		if (openTag != tag)
 		{
 			if (openTag != null)
+			{
 				bundle.Transport?.OnStreamEnd(openTag);
+			}
+
 			bundle.Transport?.OnStreamStart(tag);
 		}
 		bundle.Transport?.OnStreamChunk(tag, chunk);
@@ -707,7 +788,10 @@ public sealed class ProtocolClaudeDashP
 			// Copies: the payload's calls may be repaired in place before commit, but Claude Code
 			// will ask for them by the names and arguments the model actually used.
 			foreach (SemanticToolCall call in toolCalls)
+			{
 				_outstanding.Add(new SemanticToolCall { Id = call.Id, Name = call.Name, ArgumentsJson = call.ArgumentsJson });
+			}
+
 			_awaitingResult = toolCalls.Count == 0;
 		}
 
@@ -739,7 +823,9 @@ public sealed class ProtocolClaudeDashP
 		{
 			int status = evt["api_error_status"] is JsonValue code && code.TryGetValue(out int value) ? value : 0;
 			lock (_lock)
+			{
 				StopLocked($"turn ended without a message: {message}");
+			}
 
 			ProtocolResult failure;
 			string         kind;
@@ -792,7 +878,9 @@ public sealed class ProtocolClaudeDashP
 				foreach (JsonNode? server in servers)
 				{
 					if (server?["name"]?.ToString() == kServerName)
+					{
 						status = server["status"]?.ToString() ?? "unknown";
+					}
 				}
 			}
 			logger.Note($"[claude-code] session {evt["session_id"]} on {evt["model"]}; tool server {status}");
@@ -800,7 +888,10 @@ public sealed class ProtocolClaudeDashP
 			{
 				string message = $"Claude Code could not reach Beast's tool server (status: {status}).";
 				lock (_lock)
+				{
 					StopLocked(message);
+				}
+
 				result = logger.ProtocolFailure(ProtocolResult.Failed(message), model, DetectedProtocol.ClaudeDashP, "ToolServer", null, message, evt.ToJsonString(), null);
 			}
 		}
@@ -822,7 +913,9 @@ public sealed class ProtocolClaudeDashP
 		foreach (CanonicalMessage msg in canonical)
 		{
 			if (msg is AssistantMessage || msg is ToolResultMessage)
+			{
 				onlyUser = false;
+			}
 		}
 
 		if (onlyUser)
@@ -830,7 +923,9 @@ public sealed class ProtocolClaudeDashP
 			foreach (CanonicalMessage msg in canonical)
 			{
 				if (msg is UserMessage um)
+				{
 					AddUserContent(into, um.Text, um.Attachments);
+				}
 			}
 		}
 		else
@@ -843,15 +938,22 @@ public sealed class ProtocolClaudeDashP
 	private static void AddUserContent(List<JsonObject> into, string text, IReadOnlyList<MediaAttachment>? attachments)
 	{
 		if (!string.IsNullOrWhiteSpace(text))
+		{
 			into.Add(new JsonObject { ["type"] = "text", ["text"] = text });
+		}
+
 		if (attachments != null)
 		{
 			foreach (MediaAttachment att in attachments)
 			{
 				if (att.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+				{
 					into.Add(new JsonObject { ["type"] = "image", ["source"] = new JsonObject { ["type"] = "base64", ["media_type"] = att.MimeType, ["data"] = att.Base64Data } });
+				}
 				else
+				{
 					into.Add(new JsonObject { ["type"] = "text", ["text"] = $"[A {att.MimeType} attachment was supplied, but this provider does not accept that input type.]" });
+				}
 			}
 		}
 	}
@@ -861,37 +963,15 @@ public sealed class ProtocolClaudeDashP
 	{
 		JsonObject content;
 		if (block["type"]?.ToString() == "image")
+		{
 			content = new JsonObject { ["type"] = "image", ["data"] = block["source"]?["data"]?.ToString() ?? string.Empty, ["mimeType"] = block["source"]?["media_type"]?.ToString() ?? string.Empty };
-		else
-			content = new JsonObject { ["type"] = "text", ["text"] = $"[user message]\n{block["text"]}" };
-		return content;
-	}
-
-	// Beast's tool result as an MCP result: the same text every protocol sends, plus each image the
-	// result carries.
-	private static JsonObject ToolReply(ToolResult result)
-	{
-		string text = result.StdOut;
-		if (!string.IsNullOrEmpty(result.StdErr))
-			text = $"{text}\nstderr: {result.StdErr}";
-
-		JsonObject reply   = TextReply(text, false);
-		JsonArray  content = (JsonArray)reply["content"]!;
-		foreach (MediaFile file in result.Media)
-		{
-			if (file.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && File.Exists(file.Path))
-				content.Add((JsonNode)new JsonObject { ["type"] = "image", ["data"] = Convert.ToBase64String(File.ReadAllBytes(file.Path)), ["mimeType"] = file.MimeType });
 		}
-		return reply;
-	}
-
-	private static JsonObject TextReply(string text, bool isError)
-	{
-		return new JsonObject
+		else
 		{
-			["content"] = new JsonArray((JsonNode)new JsonObject { ["type"] = "text", ["text"] = text }),
-			["isError"] = isError
-		};
+			content = new JsonObject { ["type"] = "text", ["text"] = $"[user message]\n{block["text"]}" };
+		}
+
+		return content;
 	}
 
 	// ---- Helpers ----
@@ -900,7 +980,10 @@ public sealed class ProtocolClaudeDashP
 	{
 		StringBuilder sb = new StringBuilder();
 		foreach (ToolDefinition tool in tools)
+		{
 			sb.Append(tool.Function.Name).Append('\n');
+		}
+
 		return sb.ToString();
 	}
 
@@ -917,7 +1000,10 @@ public sealed class ProtocolClaudeDashP
 	{
 		int value = current;
 		if (node is JsonObject obj && obj[key] is JsonValue v && v.TryGetValue(out int reported) && reported > 0)
+		{
 			value = reported;
+		}
+
 		return value;
 	}
 
@@ -926,7 +1012,10 @@ public sealed class ProtocolClaudeDashP
 	{
 		FileStreamOptions options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
 		if (!OperatingSystem.IsWindows())
+		{
 			options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+		}
+
 		using StreamWriter writer = new StreamWriter(path, Encoding.UTF8, options);
 		writer.Write(text);
 	}
@@ -936,7 +1025,9 @@ public sealed class ProtocolClaudeDashP
 		try
 		{
 			if (path.Length > 0 && File.Exists(path))
+			{
 				File.Delete(path);
+			}
 		}
 		catch (Exception)
 		{

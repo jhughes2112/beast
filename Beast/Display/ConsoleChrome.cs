@@ -60,9 +60,14 @@ internal static class ConsoleChrome
 
 		string title;
 		if (name.Length > 0)
+		{
 			title = $"{Paw} Beast {sep} {name}";
+		}
 		else
+		{
 			title = busy || waiting ? $"{Paw} Beast {sep}" : $"{Paw} Beast";
+		}
+
 		return title;
 	}
 
@@ -94,7 +99,10 @@ internal static class ConsoleChrome
 	{
 		IntPtr hwnd = GetConsoleWindow();
 		if (hwnd == IntPtr.Zero)
+		{
 			return;
+		}
+
 		SendMessage(hwnd, WM_SETICON, IconSmall, hIcon);
 		SendMessage(hwnd, WM_SETICON,   IconBig, hIcon);
 	}
@@ -104,11 +112,15 @@ internal static class ConsoleChrome
 	private static void TryInitIcon()
 	{
 		if (_iconFrames != null)
+		{
 			return;
+		}
 		// IsWindowsVersionAtLeast (not just IsWindows) is what satisfies the platform analyzer for the
 		// System.Drawing calls below, which are annotated as requiring Windows 6.1+.
 		if (!OperatingSystem.IsWindowsVersionAtLeast(6, 1))
+		{
 			return;
+		}
 
 		try
 		{
@@ -123,11 +135,15 @@ internal static class ConsoleChrome
 				}
 			}
 			if (resName == null)
+			{
 				return;
+			}
 
 			using Stream? stream = asm.GetManifestResourceStream(resName);
 			if (stream == null)
+			{
 				return;
+			}
 
 			using Icon icon       = new Icon(stream);
 			using Bitmap upright  = icon.ToBitmap();

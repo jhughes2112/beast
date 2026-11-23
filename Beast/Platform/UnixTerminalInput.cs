@@ -82,7 +82,13 @@ internal sealed class UnixTerminalInput
 		}
 	}
 
-	private bool Available => _tcgetattr != null && _tcsetattr != null && _cfmakeraw != null && _poll != null && _read != null;
+	private bool Available
+	{
+		get
+		{
+			return _tcgetattr != null && _tcsetattr != null && _cfmakeraw != null && _poll != null && _read != null;
+		}
+	}
 
 	// The C library under a name this OS resolves: glibc and musl differ on Linux, libSystem on macOS.
 	private static IntPtr LoadLibc()
@@ -95,7 +101,9 @@ internal sealed class UnixTerminalInput
 		foreach (string name in candidates)
 		{
 			if (NativeLibrary.TryLoad(name, out handle))
+			{
 				break;
+			}
 		}
 		return handle;
 	}
@@ -104,7 +112,10 @@ internal sealed class UnixTerminalInput
 	{
 		T? fn = null;
 		if (NativeLibrary.TryGetExport(library, name, out IntPtr address))
+		{
 			fn = Marshal.GetDelegateForFunctionPointer<T>(address);
+		}
+
 		return fn;
 	}
 
@@ -113,12 +124,16 @@ internal sealed class UnixTerminalInput
 	internal void EnterRawMode()
 	{
 		if (!Available)
+		{
 			return;
+		}
 
 		if (!_saved)
 		{
 			if (_tcgetattr!(StdinFd, _original) != 0)
+			{
 				return;
+			}
 
 			Array.Copy(_original, _raw, TermiosBufferSize);
 			_cfmakeraw!(_raw);
@@ -159,17 +174,26 @@ internal sealed class UnixTerminalInput
 	private void ReassertRawMode()
 	{
 		if (!_rawActive)
+		{
 			return;
+		}
 
 		Array.Clear(_check);
 		if (_tcgetattr!(StdinFd, _check) != 0)
+		{
 			return;
+		}
 
 		bool same = true;
 		for (int i = 0; i < TermiosBufferSize && same; i++)
+		{
 			same = _check[i] == _raw[i];
+		}
+
 		if (!same)
+		{
 			_tcsetattr!(StdinFd, TcsaNow, _raw);
+		}
 	}
 
 	// Blocks up to timeoutMs for the next input event. Returns null on timeout, and for a recognized
@@ -177,22 +201,34 @@ internal sealed class UnixTerminalInput
 	internal ConsoleInputEvent? Read(int timeoutMs)
 	{
 		if (!Available)
+		{
 			return ReadKeyFallback(timeoutMs);
+		}
 
 		ReassertRawMode();
 		if (Count == 0 && !Fill(timeoutMs))
+		{
 			return null;
+		}
+
 		if (Count == 0)
+		{
 			return null;
+		}
 
 		char c = _pending[_head];
 		if (c == '\x1b')
+		{
 			return ReadEscape();
+		}
 
 		Drain(1);
 		ConsoleInputEvent? ctl = VtKeys.TranslateControlChar(c, false, false, false);
 		if (ctl != null)
+		{
 			return ctl;
+		}
+
 		return VtKeys.PrintableKey(c);
 	}
 
@@ -200,13 +236,25 @@ internal sealed class UnixTerminalInput
 	private static ConsoleInputEvent? ReadKeyFallback(int timeoutMs)
 	{
 		for (int i = 0; i < timeoutMs && !Console.KeyAvailable; i++)
+		{
 			Thread.Sleep(1);
+		}
+
 		if (!Console.KeyAvailable)
+		{
 			return null;
+		}
+
 		return new ConsoleInputEvent { Type = InputEventType.Key, Key = Console.ReadKey(true) };
 	}
 
-	private int Count => _pending.Count - _head;
+	private int Count
+	{
+		get
+		{
+			return _pending.Count - _head;
+		}
+	}
 
 	// Drops everything already read or waiting in the terminal, without blocking.
 	internal void DiscardPending()
@@ -268,9 +316,14 @@ internal sealed class UnixTerminalInput
 			return VtKeys.KeyEvent('\x1b', ConsoleKey.Escape, false, false, false);
 		}
 		if (intro == '[')
+		{
 			return ReadCsi();
+		}
+
 		if (intro == 'O')
+		{
 			return ReadSs3();
+		}
 
 		Drain(2);
 		return VtKeys.AltKey(intro);
@@ -282,9 +335,14 @@ internal sealed class UnixTerminalInput
 	{
 		char first = PeekAt(2, EscapeWaitMs);
 		if (first == '<')
+		{
 			return ReadSgrMouse();
+		}
+
 		if (first == 'M')
+		{
 			return ReadX10Mouse();
+		}
 
 		StringBuilder param = new StringBuilder();
 		int           idx   = 2;
@@ -294,9 +352,14 @@ internal sealed class UnixTerminalInput
 		{
 			char c = PeekAt(idx, EscapeWaitMs);
 			if (c == '\0')
+			{
 				break;
+			}
+
 			if (c >= '@' && c <= '~' && !(c >= '0' && c <= '9') && c != ';')
+			{
 				final = c;
+			}
 			else
 			{
 				param.Append(c);
@@ -326,9 +389,14 @@ internal sealed class UnixTerminalInput
 		{
 			char c = PeekAt(idx, EscapeWaitMs);
 			if (c == '\0')
+			{
 				break;
+			}
+
 			if (c == 'M' || c == 'm')
+			{
 				terminator = c;
+			}
 			else
 			{
 				body.Append(c);
@@ -375,7 +443,10 @@ internal sealed class UnixTerminalInput
 		Drain(3);
 		ConsoleKey key = VtKeys.FinalToKey(final);
 		if (key == (ConsoleKey)0)
+		{
 			return null;
+		}
+
 		return VtKeys.KeyEvent('\0', key, false, false, false);
 	}
 
@@ -414,7 +485,10 @@ internal sealed class UnixTerminalInput
 	{
 		bool match = true;
 		for (int i = 0; i < text.Length && match; i++)
+		{
 			match = PeekAt(offset + i, EscapeWaitMs) == text[i];
+		}
+
 		return match;
 	}
 
@@ -426,7 +500,9 @@ internal sealed class UnixTerminalInput
 		{
 			long remaining = deadline - Environment.TickCount64;
 			if (remaining <= 0 || !Fill((int)remaining))
+			{
 				break;
+			}
 		}
 		return Count > offset ? _pending[_head + offset] : '\0';
 	}
@@ -449,7 +525,9 @@ internal sealed class UnixTerminalInput
 		_pollFds[0] = new PollFd { Fd = StdinFd, Events = PollIn, Revents = 0 };
 		int ready   = _poll!(_pollFds, 1, timeoutMs);
 		if (ready <= 0 || (_pollFds[0].Revents & (PollIn | PollHup)) == 0)
+		{
 			return false;
+		}
 
 		nint read = _read!(StdinFd, _readBuffer, _readBuffer.Length);
 		if (read <= 0)
@@ -467,7 +545,10 @@ internal sealed class UnixTerminalInput
 
 		int chars = _utf8.GetChars(_readBuffer, 0, (int)read, _charBuffer, 0, false);
 		for (int i = 0; i < chars; i++)
+		{
 			_pending.Add(_charBuffer[i]);
+		}
+
 		return true;
 	}
 }

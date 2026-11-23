@@ -13,11 +13,15 @@ internal static class StatusBarLayer
 		int rightLen  = AnsiString.VisibleLength(right);
 
 		if (leftLen > 0)
+		{
 			AnsiToScreen.WriteLine(s, 0, 0, left, DisplayScreen.Palette.MedGrey, null);
+		}
 
 		int rightCol = w - rightLen;
 		if (rightLen > 0 && rightCol >= 0)
+		{
 			AnsiToScreen.WriteLine(s, rightCol, 0, right, DisplayScreen.Palette.MedGrey, null);
+		}
 
 		if (centerLen > 0)
 		{
@@ -25,11 +29,19 @@ internal static class StatusBarLayer
 			int minCol    = leftLen > 0 ? leftLen + 1 : 0;
 			int maxCol    = rightLen > 0 ? rightCol - 1 - centerLen : w - centerLen;
 			if (centerCol < minCol)
+			{
 				centerCol = minCol;
+			}
+
 			if (centerCol > maxCol)
+			{
 				centerCol = maxCol;
+			}
+
 			if (centerCol >= 0 && centerCol + centerLen <= w)
+			{
 				AnsiToScreen.WriteLine(s, centerCol, 0, center, DisplayScreen.Palette.MedGrey, null);
+			}
 		}
 
 		return s;

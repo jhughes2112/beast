@@ -36,9 +36,17 @@ file sealed class NullDisplay : IDisplay
 	public void SetAgentStateDir        (string stateDir)                        { }
 	public void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }
 	public void OnConfigError           (string text)                            { }
-	public bool IsAutoTrackSuppressed   () => false;
-	public Task RunAsync                (CancellationToken cancellationToken) => Task.CompletedTask;
-	public void RestoreTerminal         () { }
+	public bool IsAutoTrackSuppressed   ()
+	{
+		return false;
+	}
+
+	public Task RunAsync(CancellationToken cancellationToken)
+	{
+		return Task.CompletedTask;
+	}
+
+	public void RestoreTerminal() { }
 }
 
 
@@ -239,7 +247,10 @@ public static class TransportTests
 		{
 			// Output and User are never collapsed in any mode by design (ShouldCollapse enforces this).
 			if (msg.Type == FrameType.Output || msg.Type == FrameType.User)
+			{
 				continue;
+			}
+
 			ctx.Assert(msg.Collapsed, $"ConversationModel: quiet mode collapses {msg.Type}");
 		}
 	}
@@ -257,11 +268,17 @@ public static class TransportTests
 	{
 		object? sessions = Reflect.GetField(app, "_sessions");
 		if (sessions == null)
+		{
 			return null;
+		}
+
 		IDictionary dict  = (IDictionary)sessions;
 		object?     state = dict[sessionId];
 		if (state == null)
+		{
 			return null;
+		}
+
 		PropertyInfo? prop = state.GetType().GetProperty("Model");
 		return (ConversationModel?)prop?.GetValue(state);
 	}

@@ -25,7 +25,13 @@ public static class HostGit
 			StdErr   = stdErr;
 		}
 
-		public bool Ok => ExitCode == 0;
+		public bool Ok
+		{
+			get
+			{
+				return ExitCode == 0;
+			}
+		}
 	}
 
 	// What a worktree session holds that is not in the repository's checked-out branch, for deciding whether
@@ -43,8 +49,21 @@ public static class HostGit
 		public int    Added;
 		public int    Deleted;
 
-		public int  Uncommitted => Modified + Added + Deleted;
-		public bool Finishable  => Readable && Merged && Uncommitted == 0;
+		public int Uncommitted
+		{
+			get
+			{
+				return Modified + Added + Deleted;
+			}
+		}
+
+		public bool Finishable
+		{
+			get
+			{
+				return Readable && Merged && Uncommitted == 0;
+			}
+		}
 
 		// A few lines for a question about this worktree.
 		public List<string> Describe(string branch)
@@ -57,7 +76,10 @@ public static class HostGit
 			else
 			{
 				if (!Checkout)
+				{
 					lines.Add("The worktree was never checked out.");
+				}
+
 				lines.Add(Ahead == 0 ? $"Branch '{branch}' has no commits that '{Base}' lacks." : $"Branch '{branch}' has {Ahead} commit(s) not in '{Base}'{(DiffStat.Length > 0 ? ": " + DiffStat : string.Empty)}.");
 				lines.Add(Uncommitted == 0 ? "No uncommitted changes." : $"Uncommitted: {Modified} modified, {Added} new, {Deleted} deleted file(s).");
 			}
@@ -84,7 +106,10 @@ public static class HostGit
 				CreateNoWindow         = true
 			};
 			if (workDir != null)
+			{
 				psi.WorkingDirectory = workDir;
+			}
+
 			psi.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
 			psi.Environment["GIT_CONFIG_GLOBAL"]   = Path.Combine(Path.GetTempPath(), "beast-no-global-gitconfig");
 			psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
@@ -92,7 +117,9 @@ public static class HostGit
 			psi.ArgumentList.Add("safe.directory=*");
 			psi.ArgumentList.Add("--no-optional-locks");
 			foreach (string arg in args)
+			{
 				psi.ArgumentList.Add(arg);
+			}
 
 			using Process? proc = Process.Start(psi);
 			if (proc != null)
@@ -116,7 +143,10 @@ public static class HostGit
 		Result top  = Run(folder, new List<string> { "rev-parse", "--show-toplevel" });
 		string root = string.Empty;
 		if (top.Ok && top.StdOut.Length > 0)
+		{
 			root = SessionStore.NormalizeFolder(top.StdOut);
+		}
+
 		return root;
 	}
 
@@ -137,7 +167,9 @@ public static class HostGit
 				{
 					string name = line.Substring(Prefix.Length).Trim();
 					if (name.Length > 0 && name.IndexOfAny(new char[] { '/', '\\' }) < 0 && name != "." && name != "..")
+					{
 						admin = Path.Combine(session.Folder, ".git", "worktrees", name);
+					}
 				}
 			}
 		}
@@ -192,14 +224,23 @@ public static class HostGit
 					foreach (string line in porcelain.StdOut.Split('\n'))
 					{
 						if (line.Length < 2)
+						{
 							continue;
+						}
+
 						string code = line.Substring(0, 2);
 						if (code == "??" || code.Contains('A'))
+						{
 							status.Added++;
+						}
 						else if (code.Contains('D'))
+						{
 							status.Deleted++;
+						}
 						else
+						{
 							status.Modified++;
+						}
 					}
 				}
 			}
@@ -216,7 +257,9 @@ public static class HostGit
 		string error   = SessionStore.DeleteTree(session.WorktreePath);
 		string message = string.Empty;
 		if (error.Length == 0 && admin.Length > 0)
+		{
 			error = SessionStore.DeleteTree(admin);
+		}
 
 		if (error.Length == 0)
 		{

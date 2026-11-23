@@ -65,7 +65,10 @@ internal sealed class PlatformWindows : IPlatform
 	{
 		string soundFile = SoundCandidates.FirstExisting(candidates);
 		if (soundFile.Length == 0)
+		{
 			return;
+		}
+
 		try
 		{
 			PlayFile(soundFile);

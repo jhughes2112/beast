@@ -72,7 +72,10 @@ internal sealed class HostCommandRunner
 		{
 			List<string> names = new List<string>();
 			foreach (HostShell shell in _shells)
+			{
 				names.Add(shell.Name);
+			}
+
 			return string.Join(",", names);
 		}
 	}
@@ -106,9 +109,14 @@ internal sealed class HostCommandRunner
 	{
 		Process? process;
 		lock (_lock)
+		{
 			_running.TryGetValue(id, out process);
+		}
+
 		if (process != null)
+		{
 			Cancel(process);
+		}
 	}
 
 	private static void Cancel(Process process)
@@ -129,7 +137,9 @@ internal sealed class HostCommandRunner
 		foreach (HostShell shell in _shells)
 		{
 			if (found == null && string.Equals(shell.Name, name, StringComparison.Ordinal))
+			{
 				found = shell;
+			}
 		}
 		return found;
 	}
@@ -223,7 +233,9 @@ internal sealed class HostCommandRunner
 		using Process process = new Process { StartInfo = psi };
 		process.Start();
 		lock (_lock)
+		{
 			_running[id] = process;
+		}
 
 		int exitCode;
 		try
@@ -251,10 +263,14 @@ internal sealed class HostCommandRunner
 		finally
 		{
 			lock (_lock)
+			{
 				_running.Remove(id);
+			}
 			// Beast is closing: the command does not outlive it.
 			if (_lifetime.IsCancellationRequested)
+			{
 				Cancel(process);
+			}
 		}
 		return exitCode;
 	}
@@ -267,7 +283,10 @@ internal sealed class HostCommandRunner
 			{
 				string? line = await reader.ReadLineAsync(ct);
 				if (line == null)
+				{
 					break;
+				}
+
 				pending.Enqueue((isError, line.Length > MaxLineChars ? line.Substring(0, MaxLineChars) + " …[line cut]" : line));
 			}
 		}
@@ -296,12 +315,17 @@ internal sealed class HostCommandRunner
 				batch.Clear();
 			}
 			if (batch.Length > 0)
+			{
 				batch.Append('\n');
+			}
+
 			batch.Append(item.Line);
 			isError = item.IsError;
 		}
 		if (batch.Length > 0)
+		{
 			await SendBatchAsync(sessionId, id, isError, batch);
+		}
 	}
 
 	private Task SendBatchAsync(string sessionId, string id, bool isError, StringBuilder batch)
@@ -343,7 +367,9 @@ internal sealed class HostCommandRunner
 	private static void AddIf(List<HostShell> shells, string name, string path, ShellKind kind)
 	{
 		if (path.Length > 0)
+		{
 			shells.Add(new HostShell(name, path, kind));
+		}
 	}
 
 	private static string FirstExisting(List<string> candidates)
@@ -352,7 +378,9 @@ internal sealed class HostCommandRunner
 		foreach (string candidate in candidates)
 		{
 			if (found.Length == 0 && File.Exists(candidate))
+			{
 				found = candidate;
+			}
 		}
 		return found;
 	}
@@ -366,7 +394,9 @@ internal sealed class HostCommandRunner
 			try
 			{
 				if (Path.IsPathFullyQualified(dir))
+				{
 					candidates.Add(Path.Combine(dir, fileName));
+				}
 			}
 			catch (ArgumentException)
 			{
@@ -385,18 +415,24 @@ internal sealed class HostCommandRunner
 		{
 			string root = Environment.GetEnvironmentVariable(variable) ?? string.Empty;
 			if (root.Length > 0)
+			{
 				roots.Add(Path.Combine(root, "Git"));
+			}
 		}
 		roots.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Git"));
 		string gitExe = OnPath("git.exe");
 		if (gitExe.Length > 0)
+		{
 			roots.Add(Path.GetFullPath(Path.Combine(Path.GetDirectoryName(gitExe) ?? string.Empty, "..")));
+		}
 
 		string found = string.Empty;
 		foreach (string root in roots)
 		{
 			if (found.Length == 0 && File.Exists(Path.Combine(root, "bin", "bash.exe")))
+			{
 				found = root;
+			}
 		}
 		return found;
 	}

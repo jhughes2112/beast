@@ -10,9 +10,18 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Serves Beast's tools to Claude Code processes over MCP (the streamable-HTTP transport, answering
-// every request with a plain JSON body — no server-initiated stream). One listener for the whole
-// agent, bound to localhost; each Claude Code session gets its own route whose key is a random
+// A conversation whose tools the bridge serves: the subscription protocols that drive a vendor's CLI.
+public interface IMcpToolHost
+{
+	JsonArray McpToolList();
+
+	// Held until Beast has committed this call's result and asked for the next turn.
+	Task<JsonObject> CallToolAsync(string name, JsonObject arguments);
+}
+
+// Serves Beast's tools to the subscription CLIs (Claude Code, Antigravity) over MCP (the streamable-HTTP
+// transport, answering every request with a plain JSON body — no server-initiated stream). One listener
+// for the whole agent, bound to localhost; each CLI session gets its own route whose key is a random
 // secret. The key reaches the CLI only inside a root-only config file, never on a command line,
 // because the model's shell user can read every process's arguments and must not be able to call
 // another session's tools.
@@ -24,7 +33,7 @@ public sealed class McpBridge
 	private readonly HttpListener _listener;
 	private readonly int          _port;
 
-	private readonly ConcurrentDictionary<string, ProtocolClaudeDashP> _routes = new ConcurrentDictionary<string, ProtocolClaudeDashP>(StringComparer.Ordinal);
+	private readonly ConcurrentDictionary<string, IMcpToolHost> _routes = new ConcurrentDictionary<string, IMcpToolHost>(StringComparer.Ordinal);
 
 	private McpBridge(HttpListener listener, int port)
 	{
@@ -66,12 +75,15 @@ public sealed class McpBridge
 			}
 		}
 		if (bridge == null)
+		{
 			throw new InvalidOperationException("The MCP bridge could not bind a localhost port.");
+		}
+
 		return bridge;
 	}
 
 	// Returns the route URL for this session's tools; Unregister with the same URL when it ends.
-	public string Register(ProtocolClaudeDashP protocol)
+	public string Register(IMcpToolHost protocol)
 	{
 		string key   = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 		_routes[key] = protocol;
@@ -82,7 +94,9 @@ public sealed class McpBridge
 	{
 		int slash = url.LastIndexOf('/');
 		if (slash >= 0)
-			_routes.TryRemove(url.Substring(slash + 1), out ProtocolClaudeDashP? _);
+		{
+			_routes.TryRemove(url.Substring(slash + 1), out IMcpToolHost? _);
+		}
 	}
 
 	private async Task AcceptLoopAsync()
@@ -119,7 +133,7 @@ public sealed class McpBridge
 		string path = context.Request.Url?.AbsolutePath ?? string.Empty;
 		string key  = path.StartsWith("/mcp/", StringComparison.Ordinal) ? path.Substring("/mcp/".Length) : string.Empty;
 
-		if (!_routes.TryGetValue(key, out ProtocolClaudeDashP? protocol))
+		if (!_routes.TryGetValue(key, out IMcpToolHost? protocol))
 		{
 			context.Response.StatusCode = 404;
 			context.Response.Close();
@@ -134,7 +148,9 @@ public sealed class McpBridge
 		{
 			string body;
 			using (StreamReader reader = new StreamReader(context.Request.InputStream, Encoding.UTF8))
+			{
 				body = await reader.ReadToEndAsync();
+			}
 
 			JsonNode? reply = await DispatchAsync(protocol, body);
 			if (reply == null)
@@ -155,7 +171,7 @@ public sealed class McpBridge
 	}
 
 	// One JSON-RPC message or a batch of them. Null when nothing needs an answer (notifications).
-	private static async Task<JsonNode?> DispatchAsync(ProtocolClaudeDashP protocol, string body)
+	private static async Task<JsonNode?> DispatchAsync(IMcpToolHost protocol, string body)
 	{
 		JsonNode? reply = null;
 		JsonNode? parsed;
@@ -175,7 +191,9 @@ public sealed class McpBridge
 			{
 				JsonObject? answer = message is JsonObject obj ? await AnswerAsync(protocol, obj) : null;
 				if (answer != null)
+				{
 					replies.Add((JsonNode)answer);
+				}
 			}
 			reply = replies.Count > 0 ? replies : null;
 		}
@@ -190,7 +208,7 @@ public sealed class McpBridge
 		return reply;
 	}
 
-	private static async Task<JsonObject?> AnswerAsync(ProtocolClaudeDashP protocol, JsonObject message)
+	private static async Task<JsonObject?> AnswerAsync(IMcpToolHost protocol, JsonObject message)
 	{
 		JsonNode?   id     = message["id"]?.DeepClone();
 		string      method = message["method"]?.ToString() ?? string.Empty;
@@ -229,6 +247,37 @@ public sealed class McpBridge
 			}
 		}
 		return answer;
+	}
+
+	// Beast's tool result as an MCP result: the same text every protocol sends, plus each image the
+	// result carries.
+	public static JsonObject ToolReply(ToolResult result)
+	{
+		string text = result.StdOut;
+		if (!string.IsNullOrEmpty(result.StdErr))
+		{
+			text = $"{text}\nstderr: {result.StdErr}";
+		}
+
+		JsonObject reply   = TextReply(text, false);
+		JsonArray  content = (JsonArray)reply["content"]!;
+		foreach (MediaFile file in result.Media)
+		{
+			if (file.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && File.Exists(file.Path))
+			{
+				content.Add((JsonNode)new JsonObject { ["type"] = "image", ["data"] = Convert.ToBase64String(File.ReadAllBytes(file.Path)), ["mimeType"] = file.MimeType });
+			}
+		}
+		return reply;
+	}
+
+	public static JsonObject TextReply(string text, bool isError)
+	{
+		return new JsonObject
+		{
+			["content"] = new JsonArray((JsonNode)new JsonObject { ["type"] = "text", ["text"] = text }),
+			["isError"] = isError
+		};
 	}
 
 	private static JsonObject Result(JsonNode id, JsonObject result)

@@ -29,7 +29,9 @@ public static class OutputModality
 		foreach (string output in outputs)
 		{
 			if (string.Equals(output, modality, StringComparison.OrdinalIgnoreCase))
+			{
 				produces = true;
+			}
 		}
 		return produces;
 	}

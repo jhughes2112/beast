@@ -72,7 +72,9 @@ public static class MarkdownBlockTests
 						msg.Append(text.Substring(len - 1, 1));
 						mismatch = Compare(block.Build(msg), msg, w);
 						if (mismatch.Length > 0)
+						{
 							mismatch = $"after {len} chars: {mismatch}";
+						}
 					}
 					ctx.Assert(mismatch.Length == 0, $"MarkdownBlock: {name} {type} w={w} every prefix — {mismatch}");
 				}
@@ -126,9 +128,13 @@ public static class MarkdownBlockTests
 			block.Build(msg);
 			long spent = Stopwatch.GetTimestamp() - start;
 			if (i < Sample)
+			{
 				firstTicks += spent;
+			}
 			else if (i >= pushes - Sample)
+			{
 				lastTicks += spent;
+			}
 		}
 		total.Stop();
 
@@ -152,9 +158,15 @@ public static class MarkdownBlockTests
 		while (sb.Length < length)
 		{
 			if (n % 15 == 0)
+			{
 				sb.Append($"## Step {n / 15}\n\n");
+			}
+
 			if (n % 7 == 3)
+			{
 				sb.Append("- check the first thing\n- then the second thing\n- and finally the third\n\n");
+			}
+
 			sb.Append($"Paragraph {n}: Wait, let me reconsider. The user wants the answer, but I should verify the **assumption** about `the input` first. ");
 			sb.Append("If the value is negative then the earlier reasoning does not hold, so I need to go back and look at it again more carefully.\n");
 			sb.Append("Actually, that seems right. Let me continue with the next part of the problem and see whether it holds up.\n\n");
@@ -171,7 +183,10 @@ public static class MarkdownBlockTests
 		BlockLayer     want   = new MarkdownBlock(whole, w).Build(whole);
 		string         result = CompareScreens("expanded", streamed.Expanded, want.Expanded);
 		if (result.Length == 0)
+		{
 			result = CompareScreens("collapsed", streamed.Collapsed, want.Collapsed);
+		}
+
 		return result;
 	}
 
@@ -179,13 +194,18 @@ public static class MarkdownBlockTests
 	{
 		string result = "";
 		if (got.H != want.H || got.W != want.W)
+		{
 			result = $"{view} size {got.W}x{got.H}, want {want.W}x{want.H}; first row '{RowText(got, 0)}' want '{RowText(want, 0)}'";
+		}
+
 		for (int y = 0; y < want.H && result.Length == 0; y++)
 		{
 			for (int x = 0; x < want.W && result.Length == 0; x++)
 			{
 				if (!SameCell(got.Get(x, y), want.Get(x, y)))
+				{
 					result = $"{view} row {y} col {x}: '{RowText(got, y)}' want '{RowText(want, y)}'";
+				}
 			}
 		}
 		return result;
@@ -200,7 +220,10 @@ public static class MarkdownBlockTests
 	{
 		StringBuilder sb = new StringBuilder();
 		for (int x = 0; x < s.W; x++)
+		{
 			sb.Append(s.Get(x, y).Ch);
+		}
+
 		return sb.ToString().TrimEnd();
 	}
 }

@@ -26,7 +26,9 @@ internal static class InputLayer
 			{
 				int gx = endX;
 				for (int i = 0; i < ghostSuffix.Length && gx < w; i++, gx++)
+				{
 					s.Set(gx, r, new Cell(ghostSuffix[i], DisplayScreen.Palette.GhostFg, DisplayScreen.Palette.InputBg, CellStyle.None));
+				}
 			}
 		}
 		return s;
@@ -43,16 +45,24 @@ internal static class InputLayer
 		{
 			first = selected - rows / 2;
 			if (first < 0)
+			{
 				first = 0;
+			}
+
 			if (first > total - rows)
+			{
 				first = total - rows;
+			}
 		}
 
 		for (int r = 0; r < rows; r++)
 		{
 			int idx = first + r;
 			if (idx >= total)
+			{
 				break;
+			}
+
 			bool   isSel = idx == selected;
 			Rgb    bg    = isSel ? DisplayScreen.Palette.PopupSelBg : DisplayScreen.Palette.InputBg;
 			string line  = "  " + matches[idx];
@@ -75,14 +85,22 @@ internal static class InputLayer
 			if (full.Length == 0)
 			{ result.Add(prefix); continue; }
 			foreach (string wl in AnsiString.Wrap(full, w))
+			{
 				result.Add(wl);
+			}
 		}
 		if (result.Count == 0)
+		{
 			result.Add(PromptPrefix);
+		}
+
 		return result;
 	}
 
-	internal static int ComputeInputRows(string text, int w) => WrapInput(text, w).Count;
+	internal static int ComputeInputRows(string text, int w)
+	{
+		return WrapInput(text, w).Count;
+	}
 
 	// Maps a character offset into the input string to (screen line index, column).
 	internal static (int LineIdx, int Col) CursorInInputLines(string text, int cursor, int w)
@@ -143,7 +161,10 @@ internal static class InputLayer
 	{
 		int i = pos - 1;
 		while (i > 0 && text[i - 1] != ' ' && text[i - 1] != '\n')
+		{
 			i--;
+		}
+
 		return i < 0 ? 0 : i;
 	}
 
@@ -152,9 +173,15 @@ internal static class InputLayer
 	{
 		int i = pos;
 		while (i < text.Length && (text[i] == ' ' || text[i] == '\n'))
+		{
 			i++;
+		}
+
 		while (i < text.Length && text[i] != ' ' && text[i] != '\n')
+		{
 			i++;
+		}
+
 		return i;
 	}
 
@@ -178,7 +205,10 @@ internal static class InputLayer
 				if (File.Exists(path))
 				{
 					if (markers.Length > 0)
+					{
 						markers.Append(' ');
+					}
+
 					markers.Append($"[ path {Path.GetFullPath(path)} ]");
 				}
 				else
@@ -210,9 +240,13 @@ internal static class InputLayer
 			if (quote != '\0')
 			{
 				if (c == quote)
+				{
 					quote = '\0';
+				}
 				else
+				{
 					current.Append(c);
+				}
 			}
 			else if (c == '"' || c == '\'')
 			{
@@ -225,7 +259,10 @@ internal static class InputLayer
 			else if (char.IsWhiteSpace(c))
 			{
 				if (current.Length > 0)
+				{
 					paths.Add(current.ToString());
+				}
+
 				current.Clear();
 			}
 			else
@@ -234,7 +271,10 @@ internal static class InputLayer
 			}
 		}
 		if (current.Length > 0)
+		{
 			paths.Add(current.ToString());
+		}
+
 		return paths;
 	}
 
@@ -252,14 +292,22 @@ internal static class InputLayer
 		{
 			int start = text.IndexOf(open, scan, StringComparison.Ordinal);
 			if (start < 0)
+			{
 				break;
+			}
+
 			int end = text.IndexOf(close, start + open.Length, StringComparison.Ordinal);
 			if (end < 0)
+			{
 				break;
+			}
 
 			string path = text.Substring(start + open.Length, end - start - open.Length).Trim();
 			if (path.Length > 0)
+			{
 				paths.Add(path);
+			}
+
 			scan = end + close.Length;
 		}
 		return paths;
@@ -269,10 +317,14 @@ internal static class InputLayer
 	{
 		string? marker = TryMakePathMarker(content);
 		if (marker != null)
+		{
 			return marker;
+		}
 
 		if (content.Length < 256)
+		{
 			return content;
+		}
 
 		int    byteCount          = Encoding.UTF8.GetByteCount(content);
 		string placeholder        = $"[Pasted {byteCount} bytes from clipboard #{++pasteSeq}]";
@@ -285,14 +337,21 @@ internal static class InputLayer
 	{
 		matches.Clear();
 		if (!input.StartsWith("/", StringComparison.Ordinal))
+		{
 			return;
+		}
 
 		foreach (string completion in completions)
 		{
 			if (completion.StartsWith(input, StringComparison.OrdinalIgnoreCase))
+			{
 				matches.Add(completion);
+			}
 		}
 	}
 
-	private static string ExpandTabs(string text) => text.Replace("\t", "    ");
+	private static string ExpandTabs(string text)
+	{
+		return text.Replace("\t", "    ");
+	}
 }

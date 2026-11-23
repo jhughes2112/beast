@@ -176,9 +176,13 @@ public class ProtocolChatCompletions
 		msg["tool_call_id"] = toolCallId;
 
 		if (_toolMediaCarrier != null)
+		{
 			_native.Insert(_native.IndexOf(_toolMediaCarrier), msg);
+		}
 		else
+		{
 			_native.Add((JsonNode)msg);
+		}
 
 		foreach (MediaFile file in media ?? new List<MediaFile>())
 		{
@@ -227,9 +231,15 @@ public class ProtocolChatCompletions
 				// attachment as the OpenAI-compatible image_url / input_audio part.
 				JsonArray parts = new JsonArray();
 				if (!string.IsNullOrEmpty(um.Text))
+				{
 					parts.Add((JsonNode)new JsonObject { ["type"] = "text", ["text"] = um.Text });
+				}
+
 				foreach (MediaAttachment att in um.Attachments)
+				{
 					parts.Add((JsonNode)MediaPart(att));
+				}
+
 				obj["content"] = parts;
 			}
 			else
@@ -248,7 +258,9 @@ public class ProtocolChatCompletions
 			// string to work with, so the emitted shape is gone. reasoning_content is the field the
 			// models that ask for this replay it in, and the one they emit it in.
 			if (_retainReasoning && !string.IsNullOrEmpty(am.Thinking))
+			{
 				obj["reasoning_content"] = am.Thinking;
+			}
 
 			if (am.ToolCalls.Count > 0)
 			{
@@ -338,7 +350,9 @@ public class ProtocolChatCompletions
 		_toolMediaCarrier = null;
 		JsonObject? msg   = ToNativeMessage(new UserMessage(text, attachments));
 		if (msg != null)
+		{
 			_native.Add((JsonNode)msg);
+		}
 	}
 
 	// A completed assistant turn, either the one this protocol just parsed or one from replay or
@@ -358,9 +372,13 @@ public class ProtocolChatCompletions
 			// shape the server used, which is what a model trained on preserved thinking expects back.
 			// The flattened string is the fallback for turns that reached this protocol some other way.
 			if (emitted.HasValue)
+			{
 				msg[emitted.Value.Field] = emitted.Value.Value.DeepClone();
+			}
 			else if (!string.IsNullOrEmpty(thinking))
+			{
 				msg["reasoning_content"] = thinking;
+			}
 		}
 
 		if (toolCalls.Count > 0)
@@ -428,11 +446,16 @@ public class ProtocolChatCompletions
 
 				// The same seed on the same request would only reproduce the empty turn being retried.
 				if (emptyRetries > 0 && model.Config.Seed.HasValue)
+				{
 					body["seed"] = TurnSeed(model.Config.Seed.Value, (JsonArray)body["messages"]!) + emptyRetries;
+				}
 
 				string? mediaNote = _media.TakeNote();
 				if (mediaNote != null)
+				{
 					logger.Note(mediaNote);
+				}
+
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
 				if (_streamingSupported)
@@ -480,7 +503,10 @@ public class ProtocolChatCompletions
 				{
 					ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 					if (timeout != null)
+					{
 						return timeout;
+					}
+
 					throw;
 				}
 				catch (HttpRequestException ex)
@@ -526,7 +552,9 @@ public class ProtocolChatCompletions
 					// <tool_call> text instead of the native tool_calls array. Only blocks naming
 					// a tool offered this turn are extracted; the rest remain prose.
 					if (toolCalls.Count == 0)
+					{
 						assistantText = ExtractXmlToolCalls(assistantText, tools, toolCalls);
+					}
 
 					string finishReason = ProtocolHelpers.TurnFinishReason(choices[0]?["finish_reason"]?.GetValue<string>() ?? string.Empty, toolCalls.Count > 0);
 
@@ -551,16 +579,22 @@ public class ProtocolChatCompletions
 
 				// Too many images, or too many bytes of them: the same history with less media will go.
 				if (_media.LearnFromRefusal(model, (int)httpResponse.StatusCode, responseBody, _onCapabilityLearned, logger))
+				{
 					continue;
+				}
 
 				// Over-window only by the output we asked for: the same prompt with a smaller ask will go.
 				if (TryLearnPromptSkew(body, (int)httpResponse.StatusCode, responseBody, model, bundle, logger))
+				{
 					continue;
+				}
 
 				// Ahead of TryAdaptToError, whose reasoning-effort fallback matches any body that says
 				// "reasoning" and would otherwise take a refused replay for a refused effort.
 				if (TryDropReplayedReasoning((int)httpResponse.StatusCode, responseBody, model, logger))
+				{
 					continue;
+				}
 
 				bool reasoningConfigured = ReasoningEffort.Sent(model.Config.ReasoningEffort) != null;
 				if (TryAdaptToError(httpResponse, responseBody, reasoningConfigured))
@@ -631,7 +665,10 @@ httpResponse);
 			// is genuinely transient and retries with a message that says so.
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return logger.ProtocolFailure(timeout, model, DetectedProtocol.ChatCompletions, "Timeout", null, timeout.ErrorMessage, null, null);
+			}
+
 			throw;
 		}
 		catch (Exception ex)
@@ -652,7 +689,9 @@ httpResponse);
 		foreach (JsonNode? m in messages)
 		{
 			if (m?["role"]?.GetValue<string>() == "assistant")
+			{
 				turns++;
+			}
 		}
 		return seed + turns;
 	}
@@ -669,7 +708,9 @@ httpResponse);
 		foreach (JsonNode? n in _native)
 		{
 			if (n != null)
+			{
 				messages.Add(n.DeepClone());
+			}
 		}
 
 		// If the last message is neither user nor tool, append an empty user turn so the API will respond.
@@ -743,20 +784,36 @@ httpResponse);
 		}
 
 		if (model.Config.Seed.HasValue)
+		{
 			body["seed"] = TurnSeed(model.Config.Seed.Value, messages);
+		}
 
 		// Beyond OpenAI's own fields these are the spellings llama.cpp, vLLM and OpenRouter share.
 		ProtocolHelpers.ApplyTemperatureAndTopP(body, model.Config);
 		if (model.Config.TopK.HasValue)
+		{
 			body["top_k"] = model.Config.TopK.Value;
+		}
+
 		if (model.Config.MinP.HasValue)
+		{
 			body["min_p"] = model.Config.MinP.Value;
+		}
+
 		if (model.Config.FrequencyPenalty.HasValue)
+		{
 			body["frequency_penalty"] = model.Config.FrequencyPenalty.Value;
+		}
+
 		if (model.Config.PresencePenalty.HasValue)
+		{
 			body["presence_penalty"] = model.Config.PresencePenalty.Value;
+		}
+
 		if (model.Config.RepetitionPenalty.HasValue)
+		{
 			body["repetition_penalty"] = model.Config.RepetitionPenalty.Value;
+		}
 
 		// The learned affordable cap (from a credit-gating 402) tightens whatever the caller asked
 		// for, and applies even when the caller left the size unbounded.
@@ -764,13 +821,18 @@ httpResponse);
 		{
 			int cap = maxCompletionTokens.Value;
 			if (_affordableMaxTokens > 0 && _affordableMaxTokens < cap)
+			{
 				cap = _affordableMaxTokens;
+			}
 
 			// The provider counts the prompt higher than the measurement the ask was sized from. An ask
 			// no bigger than the skew is left alone (the tracer's 1, a nearly full window), and if it
 			// overruns, the rejection is a real overflow that compaction can fix.
 			if (cap > _promptCountSkew)
+			{
 				cap -= _promptCountSkew;
+			}
+
 			body["max_completion_tokens"] = cap;
 		}
 		else if (_affordableMaxTokens > 0)
@@ -834,13 +896,18 @@ httpResponse);
 			int limit     = ParseIntAfter(responseBody, "maximum context length is ");
 			int requested = ParseIntAfter(responseBody, "you requested about ");
 			if (requested == 0)
+			{
 				requested = ParseIntAfter(responseBody, "you requested ");
+			}
+
 			if (requested == 0)
 			{
 				int rendered = ParseIntAfter(responseBody, "rendered prompt has ");
 				int reply    = ParseIntAfter(responseBody, "tokens and requests ");
 				if (rendered > 0 && reply > 0)
+				{
 					requested = rendered + reply;
+				}
 			}
 			int sent    = body["max_completion_tokens"]?.GetValue<int>() ?? 0;
 			int overrun = requested - limit;
@@ -866,9 +933,14 @@ httpResponse);
 			int start = idx + marker.Length;
 			int end   = start;
 			while (end < responseBody.Length && char.IsDigit(responseBody[end]))
+			{
 				end++;
+			}
+
 			if (end > start)
+			{
 				int.TryParse(responseBody.Substring(start, end - start), out result);
+			}
 		}
 		return result;
 	}
@@ -906,7 +978,9 @@ httpResponse);
 		string body       = error.ToJsonString();
 		int    statusCode = 0;
 		if (error is JsonObject && int.TryParse(error["code"]?.ToString(), out int parsed))
+		{
 			statusCode = parsed;
+		}
 
 		ProtocolResult? result = null;
 		if (statusCode == 429)
@@ -978,7 +1052,10 @@ httpResponse);
 		{
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return timeout;
+			}
+
 			throw;
 		}
 		catch (HttpRequestException ex)
@@ -1044,7 +1121,10 @@ httpResponse);
 				// the same 402 to the main loop's affordable-cap adaptation, and the resized
 				// retry streams again.
 				if (statusCode != 402 || ParseAffordableTokens(errorBody) == 0)
+				{
 					_streamingSupported = false;
+				}
+
 				logger.ProtocolFailure(
 					model, DetectedProtocol.ChatCompletions,
 					statusCode == 401 || statusCode == 403 ? "AuthFailure" : "ClientError",
@@ -1090,20 +1170,28 @@ httpResponse);
 				{
 					string? line = await reader.ReadLineAsync(requestCts.Token);
 					if (line == null)
+					{
 						break;
+					}
 
 					requestCts.CancelAfter(idleTimeout);
 
 					string? data = ProtocolHelpers.SseData(line);
 					if (data == null)
+					{
 						continue;
+					}
 
 					if (data == "[DONE]")
+					{
 						break;
+					}
 
 					JsonNode? chunkNode = JsonNode.Parse(data);
 					if (chunkNode == null)
+					{
 						continue;
+					}
 
 					JsonNode? streamError = chunkNode["error"];
 					if (streamError != null)
@@ -1146,22 +1234,30 @@ httpResponse);
 
 					JsonArray? choices = chunkNode["choices"]?.AsArray();
 					if (choices == null || choices.Count == 0)
+					{
 						continue;
+					}
 
 					JsonNode? delta = choices[0]?["delta"];
 					if (delta == null)
+					{
 						continue;
+					}
 
 					string? fr = choices[0]?["finish_reason"]?.GetValue<string>();
 					if (fr != null)
+					{
 						finishReason = fr;
+					}
 
 					string? reasoningDelta = delta["reasoning_content"]?.GetValue<string>()
 										  ?? delta["reasoning"]?.GetValue<string>();
 					if (!string.IsNullOrEmpty(reasoningDelta))
 					{
 						if (reasoningField.Length == 0)
+						{
 							reasoningField = delta["reasoning_content"] != null ? "reasoning_content" : "reasoning";
+						}
 
 						if (openStreamTag != StreamTag.Thinking)
 						{
@@ -1212,7 +1308,10 @@ httpResponse);
 						foreach (JsonNode? tcNode in tcDeltas)
 						{
 							if (tcNode == null)
+							{
 								continue;
+							}
+
 							int index = tcNode["index"]?.GetValue<int>() ?? 0;
 
 							while (toolCallAccumulators.Count <= index)
@@ -1222,7 +1321,10 @@ httpResponse);
 
 							StreamingToolCall acc = toolCallAccumulators[index];
 							if (tcNode["id"] != null)
+							{
 								acc.Id = tcNode["id"]!.GetValue<string>();
+							}
+
 							if (tcNode["function"]?["name"] != null)
 							{
 								acc.Name = tcNode["function"]!["name"]!.GetValue<string>();
@@ -1253,7 +1355,10 @@ httpResponse);
 			// as one so it retries rather than unwinding the turn as an interrupt.
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
+			{
 				return timeout;
+			}
+
 			throw;
 		}
 		catch (Exception ex)
@@ -1327,18 +1432,27 @@ httpResponse);
 			JsonObject obj = finalNode is JsonObject final ? (JsonObject)final.DeepClone() : new JsonObject();
 
 			if (promptTokens > (obj["prompt_tokens"]?.GetValue<int?>() ?? 0))
+			{
 				obj["prompt_tokens"] = promptTokens;
+			}
+
 			if (completionTokens > (obj["completion_tokens"]?.GetValue<int?>() ?? 0))
+			{
 				obj["completion_tokens"] = completionTokens;
+			}
 
 			if (cachedTokens > (obj["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int?>() ?? 0))
 			{
 				// Mutated in place when it already exists: re-assigning a node that already has a
 				// parent throws, and the details object may carry other fields worth keeping.
 				if (obj["prompt_tokens_details"] is JsonObject details)
+				{
 					details["cached_tokens"] = cachedTokens;
+				}
 				else
+				{
 					obj["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cachedTokens };
+				}
 			}
 
 			merged = obj;
@@ -1462,7 +1576,9 @@ httpResponse);
 		foreach (ToolDefinition td in tools)
 		{
 			if (string.Equals(td.Function.Name, name, StringComparison.Ordinal))
+			{
 				return true;
+			}
 		}
 		return false;
 	}
@@ -1487,11 +1603,17 @@ httpResponse);
 					JsonNode? args = node["arguments"];
 					string    argsJson;
 					if (args is JsonObject argsObj)
+					{
 						argsJson = argsObj.ToJsonString();
+					}
 					else if (args is JsonValue value && value.TryGetValue(out string? argsText))
+					{
 						argsJson = argsText ?? "{}";
+					}
 					else
+					{
 						argsJson = "{}";
+					}
 
 					call = MakeXmlCall(name!, argsJson);
 				}
@@ -1530,22 +1652,38 @@ httpResponse);
 				{
 					int pStart = inner.IndexOf(parameterOpen, pos, StringComparison.Ordinal);
 					if (pStart < 0)
+					{
 						break;
+					}
+
 					int pNameEnd = inner.IndexOf('>', pStart + parameterOpen.Length);
 					if (pNameEnd < 0)
+					{
 						break;
+					}
+
 					int pClose = inner.IndexOf(parameterClose, pNameEnd + 1, StringComparison.Ordinal);
 					if (pClose < 0)
+					{
 						break;
+					}
 
 					string key   = inner.Substring(pStart + parameterOpen.Length, pNameEnd - pStart - parameterOpen.Length).Trim();
 					string value = inner.Substring(                 pNameEnd + 1,                    pClose - pNameEnd - 1);
 					if (value.StartsWith("\n", StringComparison.Ordinal))
+					{
 						value = value.Substring(1);
+					}
+
 					if (value.EndsWith("\n", StringComparison.Ordinal))
+					{
 						value = value.Substring(0, value.Length - 1);
+					}
+
 					if (key.Length > 0)
+					{
 						args[key] = value;
+					}
 
 					pos = pClose + parameterClose.Length;
 				}
@@ -1578,7 +1716,9 @@ httpResponse);
 				foreach (SemanticToolCall call in assistant.ToolCalls)
 				{
 					if (call.Id.StartsWith(kXmlCallPrefix, StringComparison.Ordinal) && long.TryParse(call.Id.AsSpan(kXmlCallPrefix.Length), out long used))
+					{
 						SessionService.RaiseCounter("xml_call", used);
+					}
 				}
 			}
 		}
@@ -1595,7 +1735,10 @@ httpResponse);
 			foreach (JsonNode? n in tcArr)
 			{
 				if (n == null)
+				{
 					continue;
+				}
+
 				string id       = n["id"]?.GetValue<string>() ?? string.Empty;
 				string name     = n["function"]?["name"]?.GetValue<string>() ?? string.Empty;
 				string argsJson = n["function"]?["arguments"]?.GetValue<string>() ?? string.Empty;
@@ -1618,11 +1761,20 @@ httpResponse);
 		{
 			JsonNode? node = messageObj[field];
 			if (node == null)
+			{
 				continue;
+			}
+
 			if (node is JsonValue value && value.TryGetValue<string>(out string? text) && string.IsNullOrEmpty(text))
+			{
 				continue;
+			}
+
 			if (node is JsonArray array && array.Count == 0)
+			{
 				continue;
+			}
+
 			return (field, node.DeepClone());
 		}
 
@@ -1633,7 +1785,9 @@ httpResponse);
 	{
 		string? reasoningContent = messageObj["reasoning_content"]?.GetValue<string>();
 		if (!string.IsNullOrEmpty(reasoningContent))
+		{
 			return reasoningContent;
+		}
 
 		JsonArray? details = messageObj["reasoning_details"]?.AsArray();
 		if (details != null)
@@ -1643,10 +1797,14 @@ httpResponse);
 			{
 				string? text = item?["text"]?.GetValue<string>();
 				if (!string.IsNullOrEmpty(text))
+				{
 					sb.Append(text);
+				}
 			}
 			if (sb.Length > 0)
+			{
 				return sb.ToString();
+			}
 		}
 
 		return string.Empty;
@@ -1662,7 +1820,9 @@ httpResponse);
 		TokenUsageInfo usage = new TokenUsageInfo();
 		decimal        cost  = 0m;
 		if (usageNode == null)
+		{
 			return (usage, cost);
+		}
 
 		int totalPromptTokens  = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
 		usage.CompletionTokens = usageNode["completion_tokens"]?.GetValue<int>() ?? 0;
@@ -1712,7 +1872,9 @@ httpResponse);
 			string lowerBody = responseBody.ToLowerInvariant();
 			bool   named     = false;
 			foreach (string field in ReplayedReasoningFields)
+			{
 				named = named || lowerBody.Contains(field);
+			}
 
 			if (named && StripReplayedReasoning())
 			{
@@ -1734,7 +1896,9 @@ httpResponse);
 			if (node is JsonObject msg)
 			{
 				foreach (string field in ReplayedReasoningFields)
+				{
 					removed = msg.Remove(field) || removed;
+				}
 			}
 		}
 		return removed;
@@ -1744,7 +1908,9 @@ httpResponse);
 	{
 		int statusCode = (int)response.StatusCode;
 		if (statusCode < 400 || statusCode >= 500 || statusCode == 429)
+		{
 			return false;
+		}
 
 		string lowerBody = responseBody.ToLowerInvariant();
 
@@ -1758,7 +1924,10 @@ httpResponse);
 			// effort now defaults to medium for models nobody configured). Record it so the next run —
 			// and every other session on this model — stops paying a rejected request to find out.
 			if (_reasoningMode == 2)
+			{
 				_onCapabilityLearned?.Invoke(_configId, "none", null, null, null);
+			}
+
 			return true;
 		}
 
@@ -1771,7 +1940,9 @@ httpResponse);
 		}
 
 		if (!_parallelToolCallsSupported)
+		{
 			return false;
+		}
 
 		if (lowerBody.Contains("parallel_tool_calls") || lowerBody.Contains("parallel tool calls"))
 		{
@@ -1826,7 +1997,10 @@ httpResponse);
 			{
 				ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 				if (timeout != null)
+				{
 					return TracerResult.Failed(timeout.ErrorMessage);
+				}
+
 				throw;
 			}
 			catch (HttpRequestException ex)
@@ -1844,11 +2018,15 @@ httpResponse);
 			{
 				JsonNode? root = JsonNode.Parse(responseBody);
 				if (root == null)
+				{
 					return TracerResult.Failed("Empty response from API");
+				}
 
 				JsonNode? usageNode = root["usage"];
 				if (usageNode == null)
+				{
 					return TracerResult.Failed("No usage info in tracer response");
+				}
 
 				int promptTokens = usageNode["prompt_tokens"]?.GetValue<int>() ?? 0;
 				int cachedTokens = usageNode["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0;

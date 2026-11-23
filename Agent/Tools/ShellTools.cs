@@ -46,7 +46,9 @@ public static class ShellTools
 		ToolResult result = await RunBashAsync(toolCallId, command, null, false, true, cancellationToken);
 
 		if (result.ExitCode != 0 || string.IsNullOrEmpty(result.StdOut))
+		{
 			return result;
+		}
 
 		return CapLsOutput(toolCallId, result);
 	}
@@ -63,7 +65,9 @@ public static class ShellTools
 		foreach (string line in lines)
 		{
 			if (line.Length == 0)
+			{
 				continue;
+			}
 
 			bool isEntry = !line.StartsWith("total ", StringComparison.Ordinal);
 			if (isEntry)
@@ -81,7 +85,9 @@ public static class ShellTools
 		}
 
 		if (omitted > 0)
+		{
 			sb.Append($"[First {MaxLsEntries} entries shown; {omitted} more were omitted. Narrow the pattern or use bash to inspect the rest.]\n");
+		}
 
 		return new ToolResult(toolCallId, sb.ToString(), result.StdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
@@ -93,14 +99,19 @@ public static class ShellTools
 	public static async Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
 		if (RefusedInSeededRun(command))
+		{
 			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
+		}
 
 		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, cancellationToken);
 		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
 		string     stdOut     = Sandbox.SteadyShellOutput(result.StdOut);
 		string     stdErr     = Sandbox.SteadyShellOutput(result.StdErr);
 		if (sealedNote.Length > 0)
+		{
 			stdErr = string.IsNullOrEmpty(stdErr) ? sealedNote : stdErr + "\n" + sealedNote;
+		}
+
 		return new ToolResult(toolcallid, stdOut, stdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
 
@@ -120,7 +131,9 @@ public static class ShellTools
 	public static async Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
 		if (RefusedInSeededRun(command))
+		{
 			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
+		}
 
 		ToolResult result = await RunBashAsync(toolcallid, command, timeoutSeconds, true, true, cancellationToken);
 		return new ToolResult(toolcallid, Sandbox.SteadyShellOutput(result.StdOut), Sandbox.SteadyShellOutput(result.StdErr), result.ExitCode, result.MeasuredOutputTokens);
@@ -142,13 +155,20 @@ public static class ShellTools
 			{
 				int count = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
 				if (count <= 0)
+				{
 					break;
+				}
 
 				int room = MaxCapturedChars - sink.Length;
 				if (room > 0)
+				{
 					sink.Append(buffer, 0, Math.Min(count, room));
+				}
+
 				if (count > room)
+				{
 					capped = true;
+				}
 			}
 		}
 		catch (OperationCanceledException)
@@ -171,7 +191,10 @@ public static class ShellTools
 	{
 		string text = captured.ToString().TrimEnd();
 		if (capped)
+		{
 			text = text + $"\n[{streamName} truncated: exceeded the {MaxCapturedChars / (1024 * 1024)} MB capture limit]";
+		}
+
 		return text;
 	}
 
@@ -213,7 +236,9 @@ public static class ShellTools
 				psi.ArgumentList.Add(command);
 
 				if (asShellUser)
+				{
 					Sandbox.RunAsShellUser(psi, restricted);
+				}
 
 				using (Process process = new Process { StartInfo = psi })
 				{
@@ -344,9 +369,13 @@ public static class ShellTools
 	{
 		bool boundary;
 		if (result.ExitCode == 127)
+		{
 			boundary = true;
+		}
 		else
+		{
 			boundary = result.StdErr.Contains("command not found", StringComparison.Ordinal) || result.StdErr.Contains("restricted", StringComparison.Ordinal);
+		}
 
 		return boundary;
 	}
@@ -359,7 +388,9 @@ public static class ShellTools
 		try
 		{
 			foreach (string path in Directory.GetFileSystemEntries(ReadonlyBinDir))
+			{
 				names.Add(Path.GetFileName(path));
+			}
 		}
 		catch
 		{

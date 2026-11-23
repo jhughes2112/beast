@@ -70,7 +70,10 @@ public static class ToolFactory
 			JsonObject shellProp = Req("shell", "string", $"{tc.Parameters["shell"]} Available on this host: {string.Join(", ", hostShells)}.");
 			JsonArray  shellEnum = new JsonArray();
 			foreach (string shell in hostShells)
+			{
 				shellEnum.Add((JsonNode?)JsonValue.Create(shell));
+			}
+
 			shellProp["enum"] = shellEnum;
 			Register(tools, "host_command", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), shellProp, Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
@@ -306,7 +309,9 @@ public static class ToolFactory
 				{
 					string prompt = Str(args, "prompt");
 					if (string.IsNullOrWhiteSpace(prompt))
+					{
 						return new ToolResult(toolCallId, string.Empty, "Error: assign_work requires a 'prompt'.", 1, 0);
+					}
 
 					string effort = Str(args, "effort");
 					int    turns  = 0;
@@ -315,14 +320,18 @@ public static class ToolFactory
 						// Sizes come from the Developer role in roles.json, resolved per call so a reload applies.
 						Role? live = roleService?.GetRole("Developer");
 						if (live == null || !TryEffortTurns(live, effort, out turns))
+						{
 							return new ToolResult(toolCallId, string.Empty, $"Error: effort must be one of: {EffortSizes(live)}. Got '{effort}'.", 1, 0);
+						}
 					}
 
 					onWorkAssigned();
 
 					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, turns, ct);
 					if (!ok)
+					{
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
+					}
 
 					return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
 				}
@@ -376,11 +385,15 @@ public static class ToolFactory
 				{
 					string prompt = Str(args, "prompt");
 					if (string.IsNullOrWhiteSpace(prompt))
+					{
 						return new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0);
+					}
 
 					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, 0, ct);
 					if (!ok)
+					{
 						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
+					}
 
 					return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
 				}
@@ -409,12 +422,16 @@ public static class ToolFactory
 				{
 					string message = Str(args, "message");
 					if (string.IsNullOrWhiteSpace(message))
+					{
 						return new ToolResult(toolCallId, string.Empty, "Error: commit_and_rebase requires a commit 'message'.", 1, 0);
+					}
 
 					(bool ok, string transcript) = await GitTools.CommitAndRebaseAsync(message, ct);
 					int tokens                   = Math.Max(1, ToolDispatch.EstimateTokens(transcript));
 					if (!ok)
+					{
 						return new ToolResult(toolCallId, string.Empty, transcript, 1, tokens);
+					}
 
 					return new ToolResult(toolCallId, transcript, string.Empty, 0, tokens);
 				}
@@ -474,7 +491,9 @@ public static class ToolFactory
 				{
 					bool? approved = BoolOpt(args, "approved");
 					if (approved == null)
+					{
 						return Task.FromResult(new ToolResult(toolCallId, string.Empty, "Error: finish_review requires 'approved' to be the boolean true or false.", 1, 0));
+					}
 
 					string comments = Str(args, "comments");
 					onTerminate(approved.Value, comments);
@@ -537,7 +556,9 @@ public static class ToolFactory
 		if (role != null)
 		{
 			foreach ((string name, int budget) in role.TurnBudgets)
+			{
 				sizes.Add($"{name} = {budget} turns");
+			}
 		}
 		return string.Join(", ", sizes);
 	}
@@ -574,7 +595,9 @@ public static class ToolFactory
 			prop.Remove("_required");
 			properties[name] = prop;
 			if (isRequired)
+			{
 				required.Add((JsonNode)name);
+			}
 		}
 
 		JsonObject schema = new()
@@ -584,7 +607,9 @@ public static class ToolFactory
 		};
 
 		if (required.Count > 0)
+		{
 			schema["required"] = required;
+		}
 
 		return schema;
 	}
@@ -618,7 +643,9 @@ public static class ToolFactory
 			foreach (JsonNode? item in array)
 			{
 				if (item != null)
+				{
 					values.Add(item.ToString());
+				}
 			}
 		}
 		return values;
@@ -627,14 +654,20 @@ public static class ToolFactory
 	private static string Str(JsonObject args, string key)
 	{
 		if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null)
+		{
 			return node.ToString();
+		}
+
 		return string.Empty;
 	}
 
 	private static int? IntOpt(JsonObject args, string key)
 	{
 		if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && int.TryParse(node.ToString(), out int v))
+		{
 			return v;
+		}
+
 		return null;
 	}
 
@@ -648,14 +681,20 @@ public static class ToolFactory
 			string text  = node.ToString();
 			int    start = 0;
 			while (start < text.Length && !char.IsAsciiDigit(text[start]))
+			{
 				start++;
+			}
 
 			int stop = start;
 			while (stop < text.Length && char.IsAsciiDigit(text[stop]))
+			{
 				stop++;
+			}
 
 			if (int.TryParse(text.AsSpan(start, stop - start), out int value))
+			{
 				pixels = value;
+			}
 		}
 		return pixels;
 	}
@@ -665,7 +704,10 @@ public static class ToolFactory
 	private static bool? BoolOpt(JsonObject args, string key)
 	{
 		if (args.TryGetPropertyValue(key, out JsonNode? node) && node != null && bool.TryParse(node.ToString(), out bool v))
+		{
 			return v;
+		}
+
 		return null;
 	}
 }

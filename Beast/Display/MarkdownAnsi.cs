@@ -91,7 +91,10 @@ public static class MarkdownAnsi
 		for (int i = from; i < to; i++)
 		{
 			if (i > from || separateFirst)
+			{
 				lines.Add(new RenderLine("", false));
+			}
+
 			lines.AddRange(blocks[i].Lines);
 		}
 	}
@@ -100,7 +103,9 @@ public static class MarkdownAnsi
 	public static void TrimTrailingBlank(List<RenderLine> lines)
 	{
 		while (lines.Count > 0 && string.IsNullOrEmpty(lines[lines.Count - 1].Text))
+		{
 			lines.RemoveAt(lines.Count - 1);
+		}
 	}
 
 	// Renders one top-level block under the current heading section and returns the section indent in
@@ -129,7 +134,10 @@ public static class MarkdownAnsi
 		foreach (Block block in blocks)
 		{
 			if (!first)
+			{
 				lines.Add(new RenderLine("", false));
+			}
+
 			first = false;
 			RenderBlock(block, lines, indent, type, w);
 		}
@@ -150,7 +158,9 @@ public static class MarkdownAnsi
 		{
 			string text = InlinesToAnsi(para.Inline, type);
 			foreach (string segment in text.Split('\n'))
+			{
 				lines.Add(new RenderLine(indent + segment + Codes.Reset, false));
+			}
 		}
 		else if (block is FencedCodeBlock fenced)
 		{
@@ -189,7 +199,9 @@ public static class MarkdownAnsi
 							}
 						}
 						else
+						{
 							RenderBlock(child, lines, childIndent, type, w);
+						}
 					}
 				}
 			}
@@ -198,7 +210,9 @@ public static class MarkdownAnsi
 		{
 			string quoteIndent = indent + Codes.DimGrey + "│ " + Codes.Reset;
 			foreach (Block child in quote)
+			{
 				RenderBlock(child, lines, quoteIndent, type, w);
+			}
 		}
 		else if (block is ThematicBreakBlock)
 		{
@@ -232,18 +246,26 @@ public static class MarkdownAnsi
 		foreach (Block rowBlock in table)
 		{
 			if (rowBlock is not TableRow row)
+			{
 				continue;
+			}
+
 			List<string> cells = new List<string>();
 			int          ci    = 0;
 			foreach (Block cellBlock in row)
 			{
 				if (cellBlock is not TableCell cell)
+				{
 					continue;
+				}
+
 				StringBuilder sb = new StringBuilder();
 				foreach (Block child in cell)
 				{
 					if (child is ParagraphBlock pp)
+					{
 						sb.Append(InlinesToAnsi(pp.Inline, type));
+					}
 				}
 				// A table cell is always one row; flatten any in-cell line break back to a space so it
 				// can't blow out the column layout.
@@ -251,9 +273,14 @@ public static class MarkdownAnsi
 				cells.Add(text);
 				int vis = AnsiString.VisibleLength(text);
 				if (ci >= colWidths.Count)
+				{
 					colWidths.Add(vis);
+				}
 				else if (vis > colWidths[ci])
+				{
 					colWidths[ci] = vis;
+				}
+
 				ci++;
 			}
 			rows.Add(cells);
@@ -261,15 +288,21 @@ public static class MarkdownAnsi
 		}
 
 		if (rows.Count == 0)
+		{
 			return;
+		}
 
 		// Cap each column so no single column is wider than about a third of the viewport. A wide free-text
 		// column otherwise spreads the whole table out uselessly; capped cells word-wrap within their column
 		// (below) instead of forcing the table wide.
 		int maxColWidth = Math.Max(8, (w - indent.Length) / 3);
 		for (int ci = 0; ci < colWidths.Count; ci++)
+		{
 			if (colWidths[ci] > maxColWidth)
+			{
 				colWidths[ci] = maxColWidth;
+			}
+		}
 
 		// Clamp only against the natural-width overscan (not the viewport) so the table keeps its column
 		// widths and scrolls; the layout is the leading border plus, per column, a leading space, the content,
@@ -292,10 +325,15 @@ public static class MarkdownAnsi
 				string       cell      = ci < cells.Count ? cells[ci] : string.Empty;
 				List<string> cellLines = AnsiString.WordWrap(cell, colWidths[ci]);
 				if (cellLines.Count == 0)
+				{
 					cellLines.Add(string.Empty);
+				}
+
 				wrapped.Add(cellLines);
 				if (cellLines.Count > rowHeight)
+				{
 					rowHeight = cellLines.Count;
+				}
 			}
 
 			for (int sub = 0; sub < rowHeight; sub++)
@@ -312,10 +350,16 @@ public static class MarkdownAnsi
 					int          vis       = AnsiString.VisibleLength(frag);
 					int          pad       = colWidths[ci] - vis;
 					if (pad < 0)
+					{
 						pad = 0;
+					}
+
 					sb.Append(' ');
 					if (isHeader[r])
+					{
 						sb.Append(Codes.Bold);
+					}
+
 					sb.Append(frag);
 					sb.Append(Codes.Reset);
 					// Re-apply the border color after reset so padding spaces render with the block's
@@ -355,7 +399,9 @@ public static class MarkdownAnsi
 		const int MinCol = 3;
 		int total = 1;
 		foreach (int cw in colWidths)
+		{
 			total += cw + 3;
+		}
 
 		int overflow = total - available;
 		while (overflow > 0)
@@ -364,12 +410,19 @@ public static class MarkdownAnsi
 			for (int i = 0; i < colWidths.Count; i++)
 			{
 				if (colWidths[i] <= MinCol)
+				{
 					continue;
+				}
+
 				if (widest < 0 || colWidths[i] > colWidths[widest])
+				{
 					widest = i;
+				}
 			}
 			if (widest < 0)
+			{
 				break;
+			}
 
 			colWidths[widest]--;
 			overflow--;
@@ -395,7 +448,9 @@ public static class MarkdownAnsi
 			// over-pads the line and pushes the closing border out a column per wide glyph.
 			visLens[i] = AnsiString.VisibleLength(codeLines[i].TrimEnd('\r'));
 			if (visLens[i] > maxContent)
+			{
 				maxContent = visLens[i];
+			}
 		}
 
 		// Box width = the natural content width, clamped only by the overscan (the viewport plus headroom)
@@ -403,7 +458,9 @@ public static class MarkdownAnsi
 		int maxBox     = Math.Max(1, w + MaxOverscan - indent.Length - 2);
 		int boxContent = Math.Min(maxContent, maxBox);
 		if (boxContent < 1)
+		{
 			boxContent = 1;
+		}
 
 		string labelSuffix  = !string.IsNullOrEmpty(lang) ? $" {lang} " : "";
 		int    topFillLen   = Math.Max(0, boxContent - labelSuffix.Length);
@@ -427,7 +484,10 @@ public static class MarkdownAnsi
 	private static string InlinesToAnsi(ContainerInline? container, FrameType type)
 	{
 		if (container == null)
+		{
 			return "";
+		}
+
 		StringBuilder sb = new StringBuilder();
 		AppendInlines(container, sb, type);
 		return sb.ToString();
@@ -436,26 +496,44 @@ public static class MarkdownAnsi
 	private static string InlinesToString(ContainerInline? container)
 	{
 		if (container == null)
+		{
 			return "";
+		}
+
 		StringBuilder sb = new StringBuilder();
 		foreach (Inline inline in container)
+		{
 			sb.Append(InlineToPlain(inline));
+		}
+
 		return sb.ToString();
 	}
 
 	private static string InlineToPlain(Inline inline)
 	{
 		if (inline is LiteralInline lit)
+		{
 			return lit.Content.ToString();
+		}
+
 		if (inline is CodeInline code)
+		{
 			return code.Content.ToString();
+		}
+
 		if (inline is LineBreakInline)
+		{
 			return " ";
+		}
+
 		if (inline is ContainerInline ci)
 		{
 			StringBuilder sb = new StringBuilder();
 			foreach (Inline child in ci)
+			{
 				sb.Append(InlineToPlain(child));
+			}
+
 			return sb.ToString();
 		}
 		return "";
@@ -464,7 +542,9 @@ public static class MarkdownAnsi
 	private static void AppendInlines(IEnumerable<Inline> inlines, StringBuilder sb, FrameType type)
 	{
 		foreach (Inline inline in inlines)
+		{
 			AppendInline(inline, sb, type);
+		}
 	}
 
 	private static void AppendInline(Inline inline, StringBuilder sb, FrameType type)
@@ -553,10 +633,16 @@ public static class MarkdownAnsi
 	internal static bool IsMarkdownFile(string filePath)
 	{
 		if (string.IsNullOrEmpty(filePath))
+		{
 			return false;
+		}
+
 		int dot = filePath.LastIndexOf('.');
 		if (dot < 0)
+		{
 			return false;
+		}
+
 		string ext = filePath.Substring(dot + 1).ToLowerInvariant();
 		return ext == "md" || ext == "markdown" || ext == "mdown" || ext == "mkd";
 	}
@@ -569,7 +655,9 @@ public static class MarkdownAnsi
 	internal static bool LooksLikeMarkdown(string text)
 	{
 		if (string.IsNullOrWhiteSpace(text))
+		{
 			return false;
+		}
 
 		string[] lines   = text.Replace("\r\n", "\n").Split('\n');
 		int      signals = 0;
@@ -586,14 +674,19 @@ public static class MarkdownAnsi
 				continue;
 			}
 			if (fence)
+			{
 				continue;
+			}
 
 			// ATX heading: one to six '#' followed by a space.
 			if (line.Length >= 2 && line[0] == '#')
 			{
 				int h = 0;
 				while (h < line.Length && line[h] == '#')
+				{
 					h++;
+				}
+
 				if (h <= 6 && h < line.Length && line[h] == ' ')
 				{
 					signals += 2;
@@ -610,7 +703,10 @@ public static class MarkdownAnsi
 			// Ordered list: digits then ". ".
 			int d = 0;
 			while (d < line.Length && char.IsDigit(line[d]))
+			{
 				d++;
+			}
+
 			if (d > 0 && d + 1 < line.Length && line[d] == '.' && line[d + 1] == ' ')
 			{
 				signals += 1;
@@ -638,14 +734,21 @@ public static class MarkdownAnsi
 
 		// Inline markers are weaker on their own, so they only nudge an already-suspicious body over the line.
 		if (text.Contains("]("))
+		{
 			signals += 1;
+		}
+
 		if (text.Contains("**"))
+		{
 			signals += 1;
+		}
 
 		// A genuine inline code span (`like this`) is on its own a strong signal — often a backtick-wrapped
 		// word or two is the only markdown a short message carries — so it alone clears the threshold.
 		if (HasInlineCodeSpan(text))
+		{
 			signals += 2;
+		}
 
 		return signals >= 2;
 	}
@@ -669,7 +772,10 @@ public static class MarkdownAnsi
 					p++;
 				}
 				if (p < line.Length && sawContent)
+				{
 					return true;
+				}
+
 				tick = line.IndexOf('`', tick + 1);
 			}
 		}
@@ -680,10 +786,16 @@ public static class MarkdownAnsi
 	internal static string GuessLang(string filePath)
 	{
 		if (string.IsNullOrEmpty(filePath))
+		{
 			return string.Empty;
+		}
+
 		int dot = filePath.LastIndexOf('.');
 		if (dot < 0)
+		{
 			return string.Empty;
+		}
+
 		string ext = filePath.Substring(dot + 1).ToLowerInvariant();
 		switch (ext)
 		{
@@ -730,7 +842,9 @@ public static class MarkdownAnsi
 		bool isBash   = lang is "bash" or "sh" or "shell" or "powershell" or "ps1";
 
 		if (!isClike && !isPython && !isBash)
+		{
 			return Codes.CodeText + line;
+		}
 
 		HashSet<string> keywords = GetKeywords(lang);
 		return TokenizeLine(line, keywords, lang);
@@ -756,7 +870,9 @@ public static class MarkdownAnsi
 		bool   isPython = lang is "python" or "py";
 
 		if ((isClike && trimmed.StartsWith("//")) || (isBash && trimmed.StartsWith("#")) || (isPython && trimmed.StartsWith("#")))
+		{
 			return Codes.Comment + line + Codes.Reset;
+		}
 
 		sb.Append(Codes.CodeText);
 
@@ -776,7 +892,10 @@ public static class MarkdownAnsi
 					{
 						i++;
 						if (i < line.Length)
+						{
 							i++;
+						}
+
 						continue;
 					}
 					if (line[i] == quote)
@@ -794,7 +913,10 @@ public static class MarkdownAnsi
 			{
 				int start = i;
 				while (i < line.Length && (char.IsDigit(line[i]) || line[i] == '.' || line[i] == 'x' || line[i] == '_' || (i > start && char.IsLetter(line[i]))))
+				{
 					i++;
+				}
+
 				sb.Append(Codes.Number);
 				sb.Append(line.Substring(start, i - start));
 				sb.Append(Codes.CodeText);
@@ -806,7 +928,10 @@ public static class MarkdownAnsi
 			{
 				int start = i;
 				while (i < line.Length && (char.IsLetterOrDigit(line[i]) || line[i] == '_'))
+				{
 					i++;
+				}
+
 				string word = line.Substring(start, i - start);
 				if (keywords.Contains(word))
 				{
@@ -832,10 +957,14 @@ public static class MarkdownAnsi
 	private static HashSet<string> GetKeywords(string lang)
 	{
 		if (lang is "python" or "py")
+		{
 			return new HashSet<string>(StringComparer.Ordinal) { "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "True", "try", "while", "with", "yield" };
+		}
 
 		if (lang is "bash" or "sh" or "shell" or "powershell" or "ps1")
+		{
 			return new HashSet<string>(StringComparer.Ordinal) { "if", "then", "else", "elif", "fi", "for", "in", "do", "done", "while", "until", "case", "esac", "function", "return", "local", "export", "echo", "exit" };
+		}
 
 		// C-like family.
 		return new HashSet<string>(StringComparer.Ordinal) { "abstract", "as", "async", "await", "base", "bool", "break", "byte", "case", "catch", "char", "checked", "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else", "enum", "event", "explicit", "extern", "false", "finally", "fixed", "float", "for", "foreach", "goto", "if", "implicit", "in", "int", "interface", "internal", "is", "lock", "long", "namespace", "new", "null", "object", "operator", "out", "override", "params", "private", "protected", "public", "readonly", "record", "ref", "return", "sbyte", "sealed", "short", "sizeof", "stackalloc", "static", "string", "struct", "switch", "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using", "virtual", "void", "volatile", "while", "var", "let", "const", "function", "import", "export", "from", "extends", "implements", "type", "interface", "package", "fn", "mut", "pub", "use", "mod", "impl", "trait", "struct", "enum", "match", "Some", "None", "Ok", "Err" };

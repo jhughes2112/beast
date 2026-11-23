@@ -6,11 +6,24 @@ using System.Reflection;
 public class TestContext
 {
 	private readonly ITransportServer _transport;
-	private int _passed;
-	private int _failed;
+	private          int              _passed;
+	private          int              _failed;
 
-	public int Passed => _passed;
-	public int Failed => _failed;
+	public int Passed
+	{
+		get
+		{
+			return _passed;
+		}
+	}
+
+	public int Failed
+	{
+		get
+		{
+			return _failed;
+		}
+	}
 
 	public TestContext(ITransportServer transport)
 	{

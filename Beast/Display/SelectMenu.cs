@@ -129,7 +129,10 @@ public static class SelectMenu
 
 				ConsoleInputEvent? evOpt = Platform.Current.ReadInput(50);
 				if (evOpt == null || evOpt.Value.Type != InputEventType.Key)
+				{
 					continue;
+				}
+
 				ConsoleKeyInfo key = evOpt.Value.Key;
 
 				// Ctrl+C leaves the menu, even mid-edit. While beast reads the keyboard it arrives as a key on
@@ -159,7 +162,9 @@ public static class SelectMenu
 					else if (key.Key == ConsoleKey.Backspace)
 					{
 						if (text.Length > 0)
+						{
 							text.Remove(text.Length - 1, 1);
+						}
 					}
 					else if (!char.IsControl(key.KeyChar))
 					{
@@ -238,7 +243,10 @@ public static class SelectMenu
 	{
 		List<ChoiceLine> text = new List<ChoiceLine>();
 		foreach (string line in lines)
+		{
 			text.Add(new ChoiceLine(line, null, false));
+		}
+
 		ChoicePopup popup  = new ChoicePopup(string.Empty, string.Empty, title, new Rgb(130, 150, 190), text, labels, defaultIndex, escapeIndex, 0, _ => { });
 		int         chosen = -1;
 		while (chosen < 0)
@@ -247,7 +255,10 @@ public static class SelectMenu
 			int    h     = Console.WindowHeight;
 			Screen frame = new Screen(w, h, new Cell(' ', ItemFg, Bg, CellStyle.None));
 			if (_drawn != null)
+			{
 				frame.Blit(_drawn, 0, 0, BlendMode.Replace, null);
+			}
+
 			Screen box = popup.Build(w, h, 0);
 			frame.Blit(box, Math.Max(0, (w - box.W) / 2), Math.Max(0, (h - box.H) / 2), BlendMode.Replace, null);
 			Write(frame);
@@ -258,13 +269,20 @@ public static class SelectMenu
 				ConsoleKeyInfo key = evOpt.Value.Key;
 				// Ctrl+C backs out of the question like Esc; another one leaves the menu.
 				if (key.Key == ConsoleKey.C && (key.Modifiers & ConsoleModifiers.Control) != 0)
+				{
 					chosen = escapeIndex;
+				}
 				else
+				{
 					chosen = popup.HandleKey(key);
+				}
 			}
 		}
 		if (_drawn != null)
+		{
 			Write(_drawn);
+		}
+
 		return chosen;
 	}
 
@@ -365,7 +383,10 @@ public static class SelectMenu
 		}
 
 		if (status.Length > 0)
+		{
 			s.WriteText(2, h - 2, status, isError ? ErrorFg : InfoFg, Bg, CellStyle.None);
+		}
+
 		return s;
 	}
 
@@ -383,7 +404,9 @@ public static class SelectMenu
 			string tag = "(" + note + ")";
 			int    x   = w - tag.Length - 2;
 			if (x > 2)
+			{
 				s.WriteText(x, row, tag, NoteFg, bg, CellStyle.None);
+			}
 		}
 	}
 }

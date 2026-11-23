@@ -44,21 +44,64 @@ public static class WebToolsTests
 			Calls     = 0;
 		}
 
-		public override string  Id               => _id;
-		public override string  DisplayName      => _id;
-		public override string  Domain           => _id + ".test";
-		public override decimal PricePerThousand => _price;
-		public override string  DefaultModel     => "stub";
+		public override string Id
+		{
+			get
+			{
+				return _id;
+			}
+		}
+
+		public override string DisplayName
+		{
+			get
+			{
+				return _id;
+			}
+		}
+
+		public override string Domain
+		{
+			get
+			{
+				return _id + ".test";
+			}
+		}
+
+		public override decimal PricePerThousand
+		{
+			get
+			{
+				return _price;
+			}
+		}
+
+		public override string DefaultModel
+		{
+			get
+			{
+				return "stub";
+			}
+		}
 
 		public override Task<WebSearchAnswer> SearchAsync(string query, string goal, string systemPrompt, string apiKey, string model, int maxOutputTokens, CancellationToken ct)
 		{
 			Calls++;
 			if (_throws)
+			{
 				throw new InvalidOperationException($"{_id} exploded");
+			}
+
 			if (_succeeds)
+			{
 				return Task.FromResult(WebSearchAnswer.Success($"answer from {_id}", SearchFee));
+			}
+
 			if (_status > 0)
+			{
 				return Task.FromResult(WebSearchAnswer.FailureHttp($"{_id} said no", 0m, _status));
+			}
+
 			return Task.FromResult(WebSearchAnswer.Failure($"{_id} said no", 0m));
 		}
 	}
@@ -118,7 +161,9 @@ public static class WebToolsTests
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
 			if (type == FrameType.Alert && text.Contains("out of credits", StringComparison.Ordinal))
+			{
 				alerts++;
+			}
 		}
 		ctx.AssertEqual(1, alerts, "WebSearchTool: an exhausted-credits 402 raises a client alert");
 
@@ -128,7 +173,9 @@ public static class WebToolsTests
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
 			if (type == FrameType.Alert && text.Contains("out of credits", StringComparison.Ordinal))
+			{
 				repeated++;
+			}
 		}
 		ctx.AssertEqual(1, repeated, "WebSearchTool: the credit alert is raised once per provider, not per search");
 

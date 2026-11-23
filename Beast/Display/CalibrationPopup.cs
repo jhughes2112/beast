@@ -35,7 +35,13 @@ internal class CalibrationPopup
 		return claimed;
 	}
 
-	public bool Visible => _state.Length > 0 && Environment.TickCount64 < _hideAt;
+	public bool Visible
+	{
+		get
+		{
+			return _state.Length > 0 && Environment.TickCount64 < _hideAt;
+		}
+	}
 
 	public Screen Build(int screenW)
 	{
@@ -61,7 +67,9 @@ internal class CalibrationPopup
 		else
 		{
 			foreach (string line in PopupFrame.WrapWords(_message, innerW))
+			{
 				lines.Add((line, _state == "done" ? textFg : warnFg));
+			}
 		}
 
 		int    bh = lines.Count + 2;
@@ -69,7 +77,10 @@ internal class CalibrationPopup
 		PopupFrame.Draw(s, "HallMonitor", borderFg, titleFg, bg);
 
 		for (int i = 0; i < lines.Count; i++)
+		{
 			AnsiToScreen.WriteLine(s, 2, i + 1, lines[i].Text, lines[i].Fg, bg);
+		}
+
 		return s;
 	}
 }

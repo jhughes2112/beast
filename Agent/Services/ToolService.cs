@@ -52,9 +52,14 @@ public class ToolService
 				if (merged.TryGetValue(name, out ToolConfig? config))
 				{
 					if (!string.IsNullOrEmpty(fromFile.Description))
+					{
 						config.Description = fromFile.Description;
+					}
+
 					foreach ((string parameter, string text) in fromFile.Parameters)
+					{
 						config.Parameters[parameter] = text;
+					}
 				}
 				else
 				{
@@ -75,7 +80,9 @@ public class ToolService
 			{
 				string json = File.ReadAllText(_toolsPath);
 				if (!string.IsNullOrWhiteSpace(json))
+				{
 					file = System.Text.Json.JsonSerializer.Deserialize(json, BeastJson.Config.ToolsFile);
+				}
 			}
 			catch (Exception ex)
 			{
@@ -95,7 +102,9 @@ public class ToolService
 		{
 			string? dir = Path.GetDirectoryName(_toolsPath);
 			if (dir != null)
+			{
 				Directory.CreateDirectory(dir);
+			}
 
 			if (backUpExisting)
 			{
@@ -116,7 +125,10 @@ public class ToolService
 	{
 		ToolConfig config = new ToolConfig { Description = description };
 		foreach ((string name, string text) in parameters)
+		{
 			config.Parameters[name] = text;
+		}
+
 		return config;
 	}
 

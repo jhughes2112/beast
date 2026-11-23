@@ -64,7 +64,9 @@ public static class ModelCatalog
 		foreach (AutoModelConfig entry in configured)
 		{
 			if (entry.Enabled && !SameCapabilities(FindById(prior, entry.Id), FindById(fresh, entry.Id)))
+			{
 				changed = true;
+			}
 		}
 		return changed;
 	}
@@ -77,7 +79,9 @@ public static class ModelCatalog
 			foreach (DiscoveredModel model in models)
 			{
 				if (found == null && string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+				{
 					found = model;
+				}
 			}
 		}
 		return found;
@@ -87,13 +91,18 @@ public static class ModelCatalog
 	{
 		bool same;
 		if (a == null || b == null)
+		{
 			same = a == null && b == null;
+		}
 		else
+		{
 			same = a.ContextWindow == b.ContextWindow && a.MaxOutputTokens == b.MaxOutputTokens
 				&& a.CostInput == b.CostInput && a.CostOutput == b.CostOutput && a.CostCacheRead == b.CostCacheRead
 				&& SameList(a.Modalities, b.Modalities) && SameList(a.Outputs, b.Outputs)
 				&& SameList(   a.Efforts,    b.Efforts) && a.ThinkingRequired == b.ThinkingRequired
 				&& string.Equals(a.DefaultEffort, b.DefaultEffort, StringComparison.Ordinal);
+		}
+
 		return same;
 	}
 
@@ -113,10 +122,14 @@ public static class ModelCatalog
 				foreach (string other in b)
 				{
 					if (string.Equals(item, other, StringComparison.OrdinalIgnoreCase))
+					{
 						present = true;
+					}
 				}
 				if (!present)
+				{
 					same = false;
+				}
 			}
 		}
 		return same;
@@ -130,12 +143,31 @@ public static class ModelCatalog
 		// Logging in is proved separately, when /config opens the endpoint.
 		(List<DiscoveredModel> Models, string Error) result;
 		if (ClaudeCode.IsEndpoint(baseUrl))
+		{
 			result = await ClaudeCode.FetchCatalogAsync(apiKey, ct);
+		}
 		else if (ChatGptSubscription.IsEndpoint(baseUrl))
+		{
 			result = await ChatGptSubscription.FetchCatalogAsync(ct);
+		}
+		else if (Antigravity.IsEndpoint(baseUrl))
+		{
+			result = await FetchAntigravityAsync(apiKey, ct);
+		}
 		else
+		{
 			result = await FetchHttpAsync(baseUrl, apiKey, ct);
+		}
+
 		return result;
+	}
+
+	// The Google subscription's catalog comes from a session of the Antigravity CLI, signed in with the
+	// stored refresh token.
+	private static async Task<(List<DiscoveredModel> Models, string Error)> FetchAntigravityAsync(string refreshToken, CancellationToken ct)
+	{
+		(List<DiscoveredModel> models, string error, bool _) = await Antigravity.FetchCatalogAsync(refreshToken, ct);
+		return (models, error);
 	}
 
 	private static async Task<(List<DiscoveredModel> Models, string Error)> FetchHttpAsync(string baseUrl, string apiKey, CancellationToken ct)
@@ -157,7 +189,10 @@ public static class ModelCatalog
 			if (anthropic)
 			{
 				if (!string.IsNullOrEmpty(apiKey))
+				{
 					http.DefaultRequestHeaders.TryAddWithoutValidation("x-api-key", apiKey);
+				}
+
 				http.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
 			}
 			else if (!string.IsNullOrEmpty(apiKey))
@@ -177,7 +212,9 @@ public static class ModelCatalog
 				foreach (JsonNode? entry in data)
 				{
 					if (entry == null)
+					{
 						continue;
+					}
 
 					// One malformed or shape-shifted entry must never kill the whole catalog —
 					// providers add fields (and change their types) without notice.
@@ -189,7 +226,9 @@ public static class ModelCatalog
 						// 24h turnaround), never the live endpoints a session calls; listing them at
 						// their half price would only invite a model that cannot answer.
 						if (model.Id.Length > 0 && !model.Id.EndsWith(":batch", StringComparison.OrdinalIgnoreCase))
+						{
 							models.Add(model);
+						}
 					}
 					catch (Exception ex)
 					{
@@ -211,7 +250,9 @@ public static class ModelCatalog
 		// /language-models endpoint reports modalities and full pricing (in cents per 100M
 		// tokens). It does NOT report a context window, so that stays for the user to answer.
 		if (error.Length == 0 && apiRoot.Contains("api.x.ai", StringComparison.OrdinalIgnoreCase))
+		{
 			await ApplyXaiAsync(http, apiRoot, models, ct);
+		}
 
 		// Local-server enrichment, tried only when the catalog left windows unknown so cloud
 		// endpoints (which always report them) never eat the extra round-trips. Each probe hits a
@@ -225,9 +266,14 @@ public static class ModelCatalog
 			string serverRoot = ServerRoot(baseUrl);
 			await ApplyServerPropsAsync(http, serverRoot, models, ct);
 			if (AnyWindowUnknown(models))
+			{
 				await ApplyLmStudioAsync(http, serverRoot, models, ct);
+			}
+
 			if (AnyWindowUnknown(models))
+			{
 				await ApplyOllamaAsync(http, serverRoot, models, ct);
+			}
 		}
 
 		return (models, error);
@@ -239,18 +285,24 @@ public static class ModelCatalog
 	public static string NormalizeRequestEndpoint(string url)
 	{
 		// The subscription marker is not an HTTP address; it is kept exactly as configured.
-		if (ClaudeCode.IsEndpoint(url))
+		if (ClaudeCode.IsEndpoint(url) || Antigravity.IsEndpoint(url))
+		{
 			return url;
+		}
 
 		string trimmed = url.TrimEnd('/');
 		foreach (string suffix in kEndpointSuffixes)
 		{
 			if (trimmed.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+			{
 				return trimmed;
+			}
 		}
 
 		if (trimmed.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase))
+		{
 			return trimmed.EndsWith("/v1", StringComparison.OrdinalIgnoreCase) ? $"{trimmed}/messages" : $"{trimmed}/v1/messages";
+		}
 
 		return trimmed.EndsWith("/v1", StringComparison.OrdinalIgnoreCase) || trimmed.Contains("/api/", StringComparison.OrdinalIgnoreCase)
 			? $"{trimmed}/chat/completions"
@@ -271,7 +323,9 @@ public static class ModelCatalog
 		foreach (string suffix in kEndpointSuffixes)
 		{
 			if (trimmed.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+			{
 				return trimmed.Substring(0, trimmed.Length - suffix.Length);
+			}
 		}
 		return trimmed;
 	}
@@ -280,7 +334,10 @@ public static class ModelCatalog
 	private static string ServerRoot(string url)
 	{
 		if (Uri.TryCreate(NormalizeRequestEndpoint(url), UriKind.Absolute, out Uri? uri))
+		{
 			return $"{uri.Scheme}://{uri.Authority}";
+		}
+
 		return url.TrimEnd('/');
 	}
 
@@ -304,7 +361,9 @@ public static class ModelCatalog
 			{
 			}
 			if (!string.IsNullOrEmpty(createdAt) && DateTimeOffset.TryParse(createdAt, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTimeOffset parsed))
+			{
 				model.Created = parsed.ToUnixTimeSeconds();
+			}
 		}
 
 		// Context window under whichever key this server family uses: OpenRouter context_length,
@@ -330,11 +389,19 @@ public static class ModelCatalog
 			decimal? completion = ReadDecimal(pricing, "completion");
 			decimal? cacheRead  = ReadDecimal(pricing, "input_cache_read");
 			if (prompt.HasValue)
+			{
 				model.CostInput = prompt.Value * 1_000_000m;
+			}
+
 			if (completion.HasValue)
+			{
 				model.CostOutput = completion.Value * 1_000_000m;
+			}
+
 			if (cacheRead.HasValue)
+			{
 				model.CostCacheRead = cacheRead.Value * 1_000_000m;
+			}
 		}
 
 		// Modalities: OpenRouter declares them outright; LM Studio/Ollama expose a capabilities
@@ -347,10 +414,14 @@ public static class ModelCatalog
 			{
 				string? value = m?.GetValue<string>();
 				if (!string.IsNullOrEmpty(value))
+				{
 					modalities.Add(value);
+				}
 			}
 			if (modalities.Count > 0)
+			{
 				model.Modalities = modalities;
+			}
 		}
 		else
 		{
@@ -364,9 +435,14 @@ public static class ModelCatalog
 				{
 					string? value = c?.GetValue<string>();
 					if (string.Equals(value, "vision", StringComparison.OrdinalIgnoreCase))
+					{
 						modalities.Add("image");
+					}
+
 					if (string.Equals(value, "audio", StringComparison.OrdinalIgnoreCase))
+					{
 						modalities.Add("audio");
+					}
 				}
 				model.Modalities = modalities;
 			}
@@ -383,11 +459,20 @@ public static class ModelCatalog
 				{
 					List<string> modalities = new List<string> { "text" };
 					if (image)
+					{
 						modalities.Add("image");
+					}
+
 					if (audio)
+					{
 						modalities.Add("audio");
+					}
+
 					if (pdf)
+					{
 						modalities.Add("file");
+					}
+
 					model.Modalities = modalities;
 				}
 			}
@@ -407,9 +492,14 @@ public static class ModelCatalog
 		if (anthropic)
 		{
 			if (model.ContextWindow == 0)
+			{
 				model.ContextWindow = 200000;
+			}
+
 			if (model.Modalities == null)
+			{
 				model.Modalities = new List<string> { "text", "image" };
+			}
 		}
 
 		return model;
@@ -426,11 +516,18 @@ public static class ModelCatalog
 	{
 		List<string> words;
 		if (ClaudeCode.IsEndpoint(baseUrl))
+		{
 			words = ReasoningEffort.ClaudeCodeWords();
+		}
 		else if (baseUrl.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase))
+		{
 			words = ReasoningEffort.AnthropicBudgetWords();
+		}
 		else
+		{
 			words = ReasoningEffort.StandardWords();
+		}
+
 		return words;
 	}
 
@@ -462,7 +559,9 @@ public static class ModelCatalog
 			foreach (KeyValuePair<string, JsonNode?> level in effort)
 			{
 				if (level.Key != "supported" && ReadSupported(effort, level.Key))
+				{
 					listed.Add(level.Key);
+				}
 			}
 			model.Efforts = ReasoningEffort.InAnthropicOrder(listed);
 		}
@@ -476,7 +575,10 @@ public static class ModelCatalog
 		{
 			List<string>? supported = ReadStringList(ReadNode(reasoning, "supported_efforts"));
 			if (supported != null)
+			{
 				supported.Reverse();
+			}
+
 			model.Efforts          = WithoutOff(supported ?? new List<string>(kOpenRouterWords));
 			model.DefaultEffort    = ReadString(reasoning, "default_effort");
 			model.ThinkingRequired = ReadBool(reasoning, "mandatory");
@@ -492,14 +594,19 @@ public static class ModelCatalog
 			foreach (JsonNode? level in levels)
 			{
 				if (ReadNode(level, "effort") is JsonValue value && value.TryGetValue(out string? word))
+				{
 					listed.Add(word);
+				}
 			}
 			model.Efforts       = WithoutOff(listed);
 			model.DefaultEffort = ReadString(entry, "default_reasoning_level");
 		}
 
 		if (capabilities != null && ReadNode(thinking, "types") is JsonObject types)
+		{
 			model.ThinkingRequired = types.ContainsKey("disabled") && !ReadSupported(types, "disabled");
+		}
+
 		model.EffortsListed = model.Efforts != null;
 	}
 
@@ -510,7 +617,9 @@ public static class ModelCatalog
 		foreach (string word in words)
 		{
 			if (!ReasoningEffort.IsOff(word) && !options.Contains(word))
+			{
 				options.Add(word);
+			}
 		}
 		return options;
 	}
@@ -519,7 +628,10 @@ public static class ModelCatalog
 	{
 		string? result = null;
 		if (ReadNode(node, key) is JsonValue value && value.TryGetValue(out string? text) && !string.IsNullOrEmpty(text))
+		{
 			result = text;
+		}
+
 		return result;
 	}
 
@@ -556,7 +668,9 @@ public static class ModelCatalog
 		foreach (int? candidate in candidates)
 		{
 			if (candidate.HasValue && candidate.Value > 0)
+			{
 				return candidate.Value;
+			}
 		}
 		return 0;
 	}
@@ -569,7 +683,9 @@ public static class ModelCatalog
 			string    body  = await http.GetStringAsync($"{serverRoot}/props", ct);
 			JsonNode? props = JsonNode.Parse(body);
 			if (props == null)
+			{
 				return;
+			}
 
 			int nCtx = ReadInt(props, "n_ctx") ?? ReadInt(props["default_generation_settings"], "n_ctx") ?? 0;
 
@@ -579,21 +695,37 @@ public static class ModelCatalog
 			{
 				modalities = new List<string> { "text" };
 				if (modNode["vision"]?.GetValue<bool>() == true)
+				{
 					modalities.Add("image");
+				}
+
 				if (modNode["audio"]?.GetValue<bool>() == true)
+				{
 					modalities.Add("audio");
+				}
 			}
 
 			foreach (DiscoveredModel model in models)
 			{
 				if (model.ContextWindow == 0 && nCtx > 0)
+				{
 					model.ContextWindow = nCtx;
+				}
+
 				if (model.Modalities == null && modalities != null)
+				{
 					model.Modalities = modalities;
+				}
+
 				if (model.CostInput < 0)
+				{
 					model.CostInput = 0m;
+				}
+
 				if (model.CostOutput < 0)
+				{
 					model.CostOutput = 0m;
+				}
 			}
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -615,7 +747,9 @@ public static class ModelCatalog
 			JsonNode?  root = JsonNode.Parse(body);
 			JsonArray? list = AsArrayOrNull(root?["models"]);
 			if (list != null)
+			{
 				ParseXaiList(list, models);
+			}
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)
 		{
@@ -634,13 +768,18 @@ public static class ModelCatalog
 		foreach (JsonNode? entry in list)
 		{
 			if (entry == null)
+			{
 				continue;
+			}
 
 			// Collect this entry's id plus aliases for matching against discovered ids.
 			List<string> names = new List<string>();
 			string?      id    = entry["id"]?.GetValue<string>();
 			if (!string.IsNullOrEmpty(id))
+			{
 				names.Add(id);
+			}
+
 			JsonArray? aliases = AsArrayOrNull(entry["aliases"]);
 			if (aliases != null)
 			{
@@ -648,7 +787,9 @@ public static class ModelCatalog
 				{
 					string? alias = a?.GetValue<string>();
 					if (!string.IsNullOrEmpty(alias))
+					{
 						names.Add(alias);
+					}
 				}
 			}
 
@@ -664,10 +805,14 @@ public static class ModelCatalog
 					}
 				}
 				if (!match)
+				{
 					continue;
+				}
 
 				if (model.Outputs == null)
+				{
 					model.Outputs = ReadStringList(entry["output_modalities"]);
+				}
 
 				if (model.Modalities == null)
 				{
@@ -679,10 +824,14 @@ public static class ModelCatalog
 						{
 							string? value = m?.GetValue<string>();
 							if (!string.IsNullOrEmpty(value))
+							{
 								modalities.Add(value);
+							}
 						}
 						if (modalities.Count > 0)
+						{
 							model.Modalities = modalities;
+						}
 					}
 				}
 
@@ -690,19 +839,25 @@ public static class ModelCatalog
 				{
 					decimal? prompt = ReadDecimal(entry, "prompt_text_token_price");
 					if (prompt.HasValue)
+					{
 						model.CostInput = prompt.Value / 10_000m;
+					}
 				}
 				if (model.CostOutput < 0)
 				{
 					decimal? completion = ReadDecimal(entry, "completion_text_token_price");
 					if (completion.HasValue)
+					{
 						model.CostOutput = completion.Value / 10_000m;
+					}
 				}
 				if (model.CostCacheRead < 0)
 				{
 					decimal? cached = ReadDecimal(entry, "cached_prompt_text_token_price");
 					if (cached.HasValue)
+					{
 						model.CostCacheRead = cached.Value / 10_000m;
+					}
 				}
 			}
 		}
@@ -718,7 +873,9 @@ public static class ModelCatalog
 			JsonNode?  root = JsonNode.Parse(body);
 			JsonArray? data = AsArrayOrNull(root?["data"]);
 			if (data != null)
+			{
 				ParseLmStudioList(data, models);
+			}
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)
 		{
@@ -738,18 +895,27 @@ public static class ModelCatalog
 		foreach (JsonNode? entry in data)
 		{
 			if (entry == null)
+			{
 				continue;
+			}
+
 			string id = entry["id"]?.GetValue<string>() ?? string.Empty;
 			if (id.Length == 0)
+			{
 				continue;
+			}
 
 			foreach (DiscoveredModel model in models)
 			{
 				if (!string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+				{
 					continue;
+				}
 
 				if (model.ContextWindow == 0)
+				{
 					model.ContextWindow = ReadInt(entry, "loaded_context_length") ?? ReadInt(entry, "max_context_length") ?? 0;
+				}
 
 				if (model.Modalities == null)
 				{
@@ -760,16 +926,24 @@ public static class ModelCatalog
 						foreach (JsonNode? c in capabilities)
 						{
 							if (string.Equals(c?.GetValue<string>(), "vision", StringComparison.OrdinalIgnoreCase))
+							{
 								vision = true;
+							}
 						}
 					}
 					model.Modalities = vision ? new List<string> { "text", "image" } : new List<string> { "text" };
 				}
 
 				if (model.CostInput < 0)
+				{
 					model.CostInput = 0m;
+				}
+
 				if (model.CostOutput < 0)
+				{
 					model.CostOutput = 0m;
+				}
+
 				break;
 			}
 		}
@@ -787,27 +961,38 @@ public static class ModelCatalog
 		{
 			HttpResponseMessage tags = await http.GetAsync($"{serverRoot}/api/tags", ct);
 			if (!tags.IsSuccessStatusCode)
+			{
 				return;
+			}
 
 			int calls = 0;
 			foreach (DiscoveredModel model in models)
 			{
 				if (calls >= kMaxOllamaShowCalls)
+				{
 					break;
+				}
+
 				if (model.ContextWindow > 0 && model.Modalities != null)
+				{
 					continue;
+				}
 
 				calls++;
 				JsonObject request           = new JsonObject { ["model"] = model.Id };
 				using StringContent content  = new StringContent(request.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
 				HttpResponseMessage response = await http.PostAsync($"{serverRoot}/api/show", content, ct);
 				if (!response.IsSuccessStatusCode)
+				{
 					continue;
+				}
 
 				string    body = await response.Content.ReadAsStringAsync(ct);
 				JsonNode? show = JsonNode.Parse(body);
 				if (show != null)
+				{
 					ParseOllamaShow(show, model);
+				}
 			}
 		}
 		catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -837,9 +1022,14 @@ public static class ModelCatalog
 				{
 					string? value = c?.GetValue<string>();
 					if (string.Equals(value, "vision", StringComparison.OrdinalIgnoreCase))
+					{
 						modalities.Add("image");
+					}
+
 					if (string.Equals(value, "audio", StringComparison.OrdinalIgnoreCase))
+					{
 						modalities.Add("audio");
+					}
 				}
 			}
 			model.Modalities = modalities;
@@ -856,16 +1046,24 @@ public static class ModelCatalog
 				{
 					string value = trimmed.Substring("num_ctx".Length).Trim();
 					if (int.TryParse(value, out int numCtx) && numCtx > 0)
+					{
 						model.ContextWindow = numCtx;
+					}
+
 					break;
 				}
 			}
 		}
 
 		if (model.CostInput < 0)
+		{
 			model.CostInput = 0m;
+		}
+
 		if (model.CostOutput < 0)
+		{
 			model.CostOutput = 0m;
+		}
 	}
 
 	private static bool AnyWindowUnknown(List<DiscoveredModel> models)
@@ -873,7 +1071,9 @@ public static class ModelCatalog
 		foreach (DiscoveredModel model in models)
 		{
 			if (model.ContextWindow == 0)
+			{
 				return true;
+			}
 		}
 		return false;
 	}
@@ -898,7 +1098,10 @@ public static class ModelCatalog
 			{
 				string? value = item is JsonValue v && v.TryGetValue(out string? s) ? s : null;
 				if (string.IsNullOrEmpty(value))
+				{
 					continue;
+				}
+
 				values ??= new List<string>();
 				values.Add(value);
 			}
@@ -912,7 +1115,10 @@ public static class ModelCatalog
 	private static JsonNode? ReadNode(JsonNode? node, string key)
 	{
 		if (node is JsonObject obj && obj.TryGetPropertyValue(key, out JsonNode? value))
+		{
 			return value;
+		}
+
 		return null;
 	}
 
@@ -920,7 +1126,10 @@ public static class ModelCatalog
 	{
 		JsonNode? value = ReadNode(node, key);
 		if (value == null)
+		{
 			return null;
+		}
+
 		try
 		{
 			return value.GetValue<long>();
@@ -935,7 +1144,10 @@ public static class ModelCatalog
 	{
 		JsonNode? value = ReadNode(node, key);
 		if (value == null)
+		{
 			return null;
+		}
+
 		try
 		{
 			return value.GetValue<int>();
@@ -951,7 +1163,10 @@ public static class ModelCatalog
 	{
 		JsonNode? value = ReadNode(node, key);
 		if (value == null)
+		{
 			return null;
+		}
+
 		try
 		{
 			return value.GetValue<decimal>();
@@ -963,7 +1178,9 @@ public static class ModelCatalog
 		{
 			string? text = value.GetValue<string>();
 			if (decimal.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out decimal parsed))
+			{
 				return parsed;
+			}
 		}
 		catch (Exception)
 		{

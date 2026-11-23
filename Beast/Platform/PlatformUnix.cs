@@ -120,7 +120,9 @@ internal sealed class PlatformUnix : IPlatform
 			(int exitCode, string output) = RunHelper("osascript", new string[] { "-e", "POSIX path of (the clipboard as «class furl»)" });
 			string path                   = output.Trim();
 			if (exitCode == 0 && path.Length > 0 && File.Exists(path))
+			{
 				files.Add(path);
+			}
 		}
 		return files;
 	}
@@ -144,9 +146,13 @@ internal sealed class PlatformUnix : IPlatform
 			};
 			(int exitCode, string _) = RunHelper("osascript", args);
 			if (exitCode == 0 && File.Exists(path) && new FileInfo(path).Length > 0)
+			{
 				saved = path;
+			}
 			else if (File.Exists(path))
+			{
 				File.Delete(path);
+			}
 		}
 		return saved;
 	}
@@ -157,11 +163,15 @@ internal sealed class PlatformUnix : IPlatform
 	public void PlaySound(IReadOnlyList<string> candidates)
 	{
 		if (_overSsh)
+		{
 			return;
+		}
 
 		string soundFile = SoundCandidates.FirstExisting(candidates);
 		if (soundFile.Length == 0)
+		{
 			return;
+		}
 
 		string[] players = OperatingSystem.IsMacOS()
 			? new string[] { "afplay" }
@@ -169,7 +179,9 @@ internal sealed class PlatformUnix : IPlatform
 		foreach (string player in players)
 		{
 			if (StartDetached(player, soundFile))
+			{
 				break;
+			}
 		}
 	}
 
@@ -212,7 +224,9 @@ internal sealed class PlatformUnix : IPlatform
 				if (e.Data != null)
 				{
 					lock (output)
+					{
 						output.AppendLine(e.Data);
+					}
 				}
 			};
 			// stderr is drained (so a chatty helper cannot block on a full pipe) and discarded.
@@ -238,7 +252,10 @@ internal sealed class PlatformUnix : IPlatform
 
 		string text;
 		lock (output)
+		{
 			text = output.ToString();
+		}
+
 		return (exitCode, text);
 	}
 
@@ -256,7 +273,10 @@ internal sealed class PlatformUnix : IPlatform
 			CreateNoWindow         = true
 		};
 		foreach (string argument in arguments)
+		{
 			psi.ArgumentList.Add(argument);
+		}
+
 		return psi;
 	}
 }

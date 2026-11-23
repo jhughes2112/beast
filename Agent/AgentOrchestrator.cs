@@ -44,7 +44,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// Runs host_command on the user's machine through the client, after HallMonitor's judgment.
 	private HostCommands? _hostCommands;
 
-	public HostCommands? HostCommands => _hostCommands;
+	public HostCommands? HostCommands
+	{
+		get
+		{
+			return _hostCommands;
+		}
+	}
 
 	// The session the client is showing, for agent-wide notices such as calibration progress: the first
 	// session, then whichever one last changed the configuration.
@@ -96,14 +102,19 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// install can do nothing until at least one model is enabled, so don't make the user
 		// discover the command on their own.
 		if (!_registry.HasModels)
+		{
 			_transport.Config(initial.Id, "{\"kind\":\"no-models\"}");
+		}
 
 		// Restore all saved sessions to the client before the first handler starts so the F10 session
 		// tree shows the complete worktree history, then the resumed root, which is then activated. That marks
 		// the end of the restore: Beast now knows every conversation, and shows the one it last had on screen
 		// (it keeps that itself), or this root.
 		if (!_ephemeral)
+		{
 			RestoreAllSessions(initial);
+		}
+
 		initial.ReplayToTransport();
 		_transport.SessionActivate(initial.Id);
 
@@ -126,12 +137,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 			string? parentId   = GetParentId(session.Id);
 			bool    parentGone = parentId != null && (!_allSessions.TryGetValue(parentId, out Session? parent) || parent.Deleted);
 			if (_quiescing || parentGone)
+			{
 				refused = true;
+			}
 			else
+			{
 				_allSessions[session.Id] = session;
+			}
 		}
 		if (refused)
+		{
 			session.MarkDeleted();
+		}
 	}
 
 	// Registration for the restore pass only: bypasses the parent-alive rule so an orphaned child
@@ -139,13 +156,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private void RegisterRestoredSession(Session session)
 	{
 		lock (_sessionLock)
+		{
 			_allSessions[session.Id] = session;
+		}
 	}
 
 	public void UnregisterSession(string sessionId)
 	{
 		lock (_sessionLock)
+		{
 			_allSessions.Remove(sessionId);
+		}
 	}
 
 	// Spawns a child session under parent for the named role, runs it via a SessionHandler until
@@ -161,7 +182,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		Role? role = _roleService.GetRole(roleName);
 		if (role == null)
+		{
 			return (false, $"Unknown role '{roleName}'.", 0);
+		}
 
 		return await StartChildAsync(parent, role, displayName, prompt, maxWorkTurns, false, ct);
 	}
@@ -178,7 +201,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		Role? summarizer = _roleService.GetRole(ReasoningSummarizer.RoleName);
 		if (summarizer == null)
+		{
 			return (false, $"No {ReasoningSummarizer.RoleName} role is configured.", 0);
+		}
 
 		return await StartChildAsync(parent, summarizer.ForCall(name, systemPrompt, tools, maxTurns), displayName, userPrompt, maxTurns, true, ct);
 	}
@@ -198,19 +223,27 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
 		// user deleted this tree — either way new work would race the teardown.
 		if (parent.Deleted || _quiescing)
+		{
 			return (false, "The calling session is shutting down; no new subagents may start.", 0);
+		}
 
 		if (role.Kind != RoleKind.Subagent)
+		{
 			return (false, $"Role '{roleName}' is not a subagent role.", 0);
+		}
 
 		// A subagent is a conversation; a role whose models answer decisions (HallMonitor) cannot hold one.
 		if (!string.Equals(role.Produces, OutputModality.Text, StringComparison.OrdinalIgnoreCase))
+		{
 			return (false, $"Role '{roleName}' produces {role.Produces}, not text, so it cannot run as a subagent.", 0);
+		}
 
 		long?       seed    = _registry.SeedOf(parent);
 		LlmService? service = _registry.CreateService(role, string.Empty, 0, false, seed);
 		if (service == null)
+		{
 			return (false, $"No model available for role '{roleName}'.", 0);
+		}
 
 		// Its protocol has no seed to pass on, so this part of the run can differ.
 		if (seed.HasValue && !service.Seeded)
@@ -226,14 +259,19 @@ public class AgentOrchestrator : ISessionOrchestrator
 			int    nl   = prompt.IndexOf('\n');
 			string head = (nl >= 0 ? prompt.Substring(0, nl) : prompt).Trim();
 			if (head.Length > 60)
+			{
 				head = head.Substring(0, 60);
+			}
+
 			displayName = head.Length > 0 ? $"{role.Name} {head}" : role.Name;
 		}
 
 		// Allocate child ID and persist the parent counter so it survives a reload.
 		string childId = parent.AllocateChildId();
 		if (!parent.Ephemeral)
+		{
 			SessionService.Save(parent.Data);
+		}
 
 		string seededPrompt = prompt;
 
@@ -241,7 +279,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// A budgeted child is told its limit up front so it can pace itself before the warnings arrive.
 		int turnBudget = maxWorkTurns > 0 ? maxWorkTurns : role.MaxTurns;
 		if (turnBudget > 0)
+		{
 			seededPrompt = $"{seededPrompt}\n\n{Nudges.BudgetNotice(turnBudget)}";
+		}
 
 		// The reply obligation is written onto the session itself so it survives save/load and can
 		// travel to a compaction successor: the child knows which tool answers the caller. It carries
@@ -252,7 +292,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		subData.ConferredSeed = seed;
 		Session subSession    = new Session(subData, role.SystemPrompt, _transport, true);
 		if (callRole)
+		{
 			subSession.SetCallRole(role);
+		}
 		// Claim the session before registering it so no Deliver can slip in and start a second,
 		// generic handler ahead of the configured one below.
 		subSession.TryAttachHandler();
@@ -279,7 +321,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 				// task is terminal and can never observe it), so a successful late result is handed
 				// to the parent as ordinary input rather than dropped on the floor.
 				if (!tcs.TrySetResult((ok, text, tokens)) && ok)
+				{
 					parent.DeliverLateToolResult($"{roleName} subagent", text);
+				}
 			};
 		}
 
@@ -306,7 +350,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		_                      = RunChildAndCleanUpAsync();
 		ToolClock.Current      = callerClock;
 		using (ToolClock.Wait())
+		{
 			return await tcs.Task;
+		}
 
 		async Task RunChildAndCleanUpAsync()
 		{
@@ -338,7 +384,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		Session? session;
 		lock (_sessionLock)
+		{
 			_allSessions.TryGetValue(sessionId, out session);
+		}
+
 		if (session != null)
 		{
 			session.Deliver(sessionId, content);
@@ -355,7 +404,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 	public void EnsureHandler(Session session)
 	{
 		if (!session.TryAttachHandler())
+		{
 			return;
+		}
 
 		SessionHandler handler = new SessionHandler(session);
 		_                      = RunRevivedAsync();
@@ -416,9 +467,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 				}
 			}
 			if (!anyAttached)
+			{
 				return true;
+			}
+
 			if (DateTimeOffset.UtcNow >= deadline)
+			{
 				return false;
+			}
+
 			await Task.Delay(100, ct);
 		}
 	}
@@ -444,7 +501,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (string id in _allSessions.Keys)
 			{
 				if (!id.Contains('_'))
+				{
 					return true;
+				}
 			}
 		}
 		return false;
@@ -459,7 +518,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (parentId != null)
 		{
 			lock (_sessionLock)
+			{
 				_allSessions.TryGetValue(parentId, out parent);
+			}
 		}
 		return parent;
 	}
@@ -485,7 +546,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		lock (_sessionLock)
 		{
 			if (_completions.TryGetValue(sessionId, out callback))
+			{
 				_completions.Remove(sessionId);
+			}
 		}
 		callback?.Invoke(ok, text, responseTokens);
 	}
@@ -547,7 +610,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 		foreach (SessionService.SessionFileInfo info in all)
 		{
 			if (info.Session.Id.Contains('_'))
+			{
 				continue;
+			}
+
 			if (info.CreationOrder > bestOrder)
 			{
 				bestOrder = info.CreationOrder;
@@ -565,7 +631,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		List<SessionService.SessionFileInfo> allSessions = SessionService.LoadAll();
 		if (allSessions.Count == 0)
+		{
 			return;
+		}
 
 		Dictionary<string, List<SessionService.SessionFileInfo>> childrenMap =
 			new Dictionary<string, List<SessionService.SessionFileInfo>>(StringComparer.Ordinal);
@@ -599,13 +667,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 		}
 
 		foreach (KeyValuePair<string, List<SessionService.SessionFileInfo>> kvp in childrenMap)
+		{
 			kvp.Value.Sort((a, b) => b.CreationOrder.CompareTo(a.CreationOrder));
+		}
 
 		List<SessionService.SessionFileInfo> roots = new List<SessionService.SessionFileInfo>();
 		foreach (SessionService.SessionFileInfo s in allSessions)
 		{
 			if (!hasParent.Contains(s.Session.Id))
+			{
 				roots.Add(s);
+			}
 		}
 		roots.Sort((a, b) => b.CreationOrder.CompareTo(a.CreationOrder));
 
@@ -619,20 +691,29 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 		}
 		if (resumedRoot != null)
+		{
 			roots.Remove(resumedRoot);
+		}
 
 		List<SessionService.SessionFileInfo> ordered = new List<SessionService.SessionFileInfo>();
 		foreach (SessionService.SessionFileInfo rootInfo in roots)
+		{
 			DfsAddToOrdered(rootInfo, childrenMap, ordered);
+		}
+
 		if (resumedRoot != null)
+		{
 			DfsAddToOrdered(resumedRoot, childrenMap, ordered);
+		}
 
 		foreach (SessionService.SessionFileInfo info in ordered)
 		{
 			// The resumed root already has a live, registered Session; its handler replays it.
 			// Building a second wrapper for it here would shadow the live one in the registry.
 			if (string.Equals(info.Session.Id, root.Id, StringComparison.Ordinal))
+			{
 				continue;
+			}
 
 			Session session = new Session(info.Session, string.Empty, _transport, info.Session.Id.Contains('_'));
 
@@ -642,7 +723,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			// marked Incomplete first, so the tree shows its work was cut short rather than
 			// blending it in with ordinary conversations.
 			if (session.OwesReply && session.Status == SessionStatus.Ongoing)
+			{
 				session.SetTerminationStatus(SessionStatus.Incomplete);
+			}
+
 			session.ClearReplyObligation();
 
 			session.AnnounceToClient();
@@ -671,7 +755,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		if (childrenMap.TryGetValue(node.Session.Id, out List<SessionService.SessionFileInfo>? children))
 		{
 			foreach (SessionService.SessionFileInfo child in children)
+			{
 				DfsAddToOrdered(child, childrenMap, ordered);
+			}
 		}
 	}
 
@@ -679,10 +765,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		int last = id.LastIndexOf('_');
 		if (last < 0)
+		{
 			return null;
+		}
+
 		string suffix = id.Substring(last + 1);
 		if (!int.TryParse(suffix, out _))
+		{
 			return null;
+		}
+
 		return id.Substring(0, last);
 	}
 
@@ -720,16 +812,22 @@ public class AgentOrchestrator : ISessionOrchestrator
 				break;
 			}
 			if (line.Length == 0)
+			{
 				continue;
+			}
 
 			int    pipe    = line.IndexOf('|');
 			string content = pipe >= 0 ? line.Substring(pipe + 1) : line;
 			if (content.Length == 0)
+			{
 				continue;
+			}
 
 			// A running host_command's output, exit or approval coming back from the client.
 			if (content.StartsWith("/host-", StringComparison.Ordinal) && _hostCommands != null && _hostCommands.HandleInbound(content))
+			{
 				continue;
+			}
 
 			if (content.StartsWith("/", StringComparison.Ordinal) && IsGlobalCommand(content))
 			{
@@ -776,7 +874,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 				// No session prefix — broadcast to all registered sessions.
 				List<Session> all;
 				lock (_sessionLock)
+				{
 					all = new List<Session>(_allSessions.Values);
+				}
+
 				foreach (Session s in all)
 				{
 					s.Deliver(s.Id, content);
@@ -817,9 +918,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 			// (models/endpoints) propagate immediately to running sessions.
 			List<Session> allSessions;
 			lock (_sessionLock)
+			{
 				allSessions = new List<Session>(_allSessions.Values);
+			}
+
 			foreach (Session s in allSessions)
+			{
 				s.RequestRefresh();
+			}
+
 			reloaded = true;
 
 			// A decision model newly assigned to HallMonitor is calibrated now, before its first use.
@@ -873,7 +980,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (ModelConfig m in manual.Models)
 			{
 				if (m.Enabled)
+				{
 					enabled++;
+				}
 			}
 			payload.Endpoints.Add(new ConfigEndpointInfo { BaseUrl = manual.BaseUrl, Source = "manual", EnabledCount = enabled });
 		}
@@ -924,9 +1033,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 		int    space   = args.IndexOf(' ');
 		string baseUrl = space >= 0 ? args.Substring(space + 1).Trim() : string.Empty;
 		if (space < 0 || !int.TryParse(args.Substring(0, space), out int delta) || baseUrl.Length == 0)
+		{
 			_transport.Error(sessionId, $"config-endpoint-move: expected '<-1|1> <baseUrl>', got '{args}'");
+		}
 		else
+		{
 			_settings.MoveAutoEndpoint(baseUrl, delta);
+		}
+
 		HandleConfigEndpoints(sessionId);
 	}
 
@@ -936,9 +1050,14 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		string value = args.Trim();
 		if (value == "ask" || value == "beSafe" || value == "beUnsafe")
+		{
 			_settings.SaveHallMonitorUnsure(value);
+		}
 		else
+		{
 			_transport.Error(sessionId, $"config-hallmonitor: expected ask, beSafe or beUnsafe, got '{value}'");
+		}
+
 		HandleConfigEndpoints(sessionId);
 	}
 
@@ -953,14 +1072,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 		lock (_sessionLock)
 		{
 			if (_allSessions.TryGetValue(sessionId, out Session? session))
+			{
 				payload.Active = session.Role;
+			}
 		}
 
 		foreach ((string name, Role role) in _roleService.Roles)
 		{
 			// The Summarizer's jobs have no models to arrange, so there is nothing to show for them.
 			if (!RoleService.IsListed(role))
+			{
 				continue;
+			}
 
 			ConfigRoleInfo info = new ConfigRoleInfo { Name = role.Name, Kind = role.Kind.ToString(), Output = role.Produces };
 			foreach (string modelId in role.Models)
@@ -974,13 +1097,21 @@ public class AgentOrchestrator : ISessionOrchestrator
 					foreach (string input in model.Config.Input)
 					{
 						if (string.Equals(input, "text", StringComparison.OrdinalIgnoreCase))
+						{
 							continue;
+						}
+
 						modalities = modalities.Length == 0 ? input.ToLowerInvariant() : modalities + "," + input.ToLowerInvariant();
 					}
 					if (modalities.Length > 0)
+					{
 						label += "  +" + modalities;
+					}
+
 					if (!OutputModality.Produces(model.Config.Output, OutputModality.Text))
+					{
 						label += "  →" + string.Join(",", model.Config.Output);
+					}
 				}
 				info.Models.Add(new ConfigRoleModel { Id = modelId, Label = label, Available = model != null });
 			}
@@ -1009,11 +1140,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 			// project file was unreadable), and a saved order can fail to APPLY (reload rejects
 			// the config). Claiming success in either case told the user an inactive order was live.
 			if (!_roleService.SaveRoleModelOrder(payload.Role, payload.Models))
+			{
 				_transport.Error(sessionId, $"The {payload.Role} order could not be saved — no roles.json owns that role (see the agent log for the file error).");
+			}
 			else if (await ReloadConfigurationAsync(sessionId, ct))
+			{
 				_transport.Status(sessionId, $"Saved model order for the {payload.Role} role.");
+			}
 			else
+			{
 				_transport.Error(sessionId, $"The {payload.Role} order was saved to roles.json, but applying it failed — fix the reported problem, then /reload.");
+			}
 		}
 	}
 
@@ -1059,6 +1196,12 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		ConfigCatalogPayload payload             = new ConfigCatalogPayload { BaseUrl = baseUrl };
 		bool                 capabilitiesChanged = false;
+
+		// Set when the Google subscription needs signing in: the picker gets the link instead of a catalog.
+		string signInUrl = string.Empty;
+
+		// What the picker itself sent, before a stored key stands in for a blank one.
+		string typedKey = apiKey;
 		if (string.IsNullOrWhiteSpace(baseUrl))
 		{
 			payload.Error = "No baseUrl supplied.";
@@ -1067,7 +1210,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			AutoProviderConfig? existing = FindAutoEndpoint(baseUrl);
 			if (string.IsNullOrEmpty(apiKey) && existing != null)
+			{
 				apiKey = existing.ApiKey;
+			}
 
 			// A manually-configured provider at the same URL can lend its key too, so browsing a
 			// manual endpoint's catalog in the picker just works.
@@ -1095,6 +1240,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 			{
 				(discovered, error) = await VerifyChatGptSubscriptionAsync(sessionId, ct);
 			}
+			else if (Antigravity.IsEndpoint(baseUrl))
+			{
+				(discovered, error, signInUrl) = await VerifyGoogleSubscriptionAsync(sessionId, typedKey, existing?.ApiKey ?? string.Empty, ct);
+			}
 			else
 			{
 				_transport.Status(sessionId, $"[config] Fetching catalog from {baseUrl} ...");
@@ -1121,14 +1270,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 						error           = string.Empty;
 						AutoProviderConfig? swappedExisting = FindAutoEndpoint(baseUrl);
 						if (swappedExisting != null)
+						{
 							existing = swappedExisting;
+						}
 					}
 				}
 			}
 
 			// A failed subscription login is never papered over with the cached list: the token is
 			// exactly what this visit is checking.
-			if (error.Length > 0 && !ClaudeCode.IsEndpoint(baseUrl) && !ChatGptSubscription.IsEndpoint(baseUrl))
+			if (error.Length > 0 && !ClaudeCode.IsEndpoint(baseUrl) && !ChatGptSubscription.IsEndpoint(baseUrl) && !Antigravity.IsEndpoint(baseUrl))
 			{
 				List<DiscoveredModel>? cached = _registry.CachedCatalog(baseUrl);
 				if (cached != null)
@@ -1204,10 +1355,20 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		payload.SeedSupported = !ChatGptSubscription.IsEndpoint(payload.BaseUrl) && ProtocolProxy.EndpointTakesSeed(ModelCatalog.NormalizeRequestEndpoint(payload.BaseUrl));
 
-		_transport.Status(sessionId, payload.Error.Length > 0
-			? $"[config] Catalog fetch failed: {payload.Error}"
-			: $"[config] {payload.Models.Count} models from {payload.BaseUrl}");
-		_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigCatalogPayload));
+		if (signInUrl.Length > 0)
+		{
+			// The picker opens the link on the host and asks for the code Google ends on; that code
+			// comes back as the key of the next catalog request.
+			_transport.Status(sessionId, "[config] Waiting for the Google sign-in ...");
+			_transport.Config(sessionId, new JsonObject { ["kind"] = "signin", ["baseUrl"] = baseUrl, ["url"] = signInUrl }.ToJsonString());
+		}
+		else
+		{
+			_transport.Status(sessionId, payload.Error.Length > 0
+				? $"[config] Catalog fetch failed: {payload.Error}"
+				: $"[config] {payload.Models.Count} models from {payload.BaseUrl}");
+			_transport.Config(sessionId, JsonSerializer.Serialize(payload, BeastJson.Compact.ConfigCatalogPayload));
+		}
 
 		// Visiting an endpoint is how the user asks what it can do now. Leaving the picker without a
 		// change applies nothing, so an enabled model's new capabilities go live here. The picker
@@ -1228,7 +1389,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		_transport.Status(sessionId, "[config] Verifying the subscription login with one Haiku request ...");
 		string update = await ClaudeCode.EnsureUpdatedAsync(ct);
 		if (update.Length > 0)
+		{
 			_transport.Status(sessionId, $"[config] {update}");
+		}
 
 		string                error  = await ClaudeCode.VerifyLoginAsync(token, ct);
 		List<DiscoveredModel> models = new List<DiscoveredModel>();
@@ -1270,6 +1433,46 @@ public class AgentOrchestrator : ISessionOrchestrator
 		return (models, error);
 	}
 
+	// Opening the Google subscription in /config is where it is signed in. A stored sign-in that still
+	// opens a session is reused. Otherwise the Antigravity CLI's own sign-in is started and its Google
+	// link returned for the picker to open; the picker then sends back the authorization code as
+	// typedKey, the waiting sign-in turns it into a refresh token, and that is saved as the endpoint's
+	// key in settings.json. Only then is the account's catalog listed.
+	private async Task<(List<DiscoveredModel> Models, string Error, string SignInUrl)> VerifyGoogleSubscriptionAsync(string sessionId, string typedKey, string storedToken, CancellationToken ct)
+	{
+		List<DiscoveredModel> models    = new List<DiscoveredModel>();
+		string                error     = string.Empty;
+		string                signInUrl = string.Empty;
+		string                token     = storedToken;
+
+		if (typedKey.Length > 0 && Antigravity.LoginPending)
+		{
+			_transport.Status(sessionId, "[config] Completing the Google sign-in ...");
+			(token, error) = await Antigravity.CompleteLoginAsync(typedKey, ct);
+			if (error.Length == 0)
+			{
+				// Models already running on this endpoint carry the old token; the reload hands them the new one.
+				_settings.SaveAutoEndpointTokens(Antigravity.EndpointUrl, Antigravity.IsEndpoint, token, null);
+				await ReloadConfigurationAsync(sessionId, ct);
+			}
+		}
+
+		if (error.Length == 0)
+		{
+			_transport.Status(sessionId, "[config] Checking the Google subscription sign-in ...");
+			(List<DiscoveredModel> listed, string catalogError, bool needsLogin) = await Antigravity.FetchCatalogAsync(token, ct);
+			if (needsLogin)
+			{
+				(signInUrl, error) = await Antigravity.BeginLoginAsync(ct);
+			}
+			else
+			{
+				(models, error) = (listed, catalogError);
+			}
+		}
+		return (models, error, signInUrl);
+	}
+
 	// Tries a model's edited settings with one small request and tells the picker how it went. Nothing is
 	// saved; an apply that did not re-enter the key uses the one on disk, as the save itself would.
 	private async Task HandleConfigTestAsync(string sessionId, string args, CancellationToken ct)
@@ -1279,7 +1482,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		(LlmService? service, string error) = _registry.CreateTrialService(payload.BaseUrl, apiKey, payload.Model);
 		if (service != null)
+		{
 			error = await ModelTrial.RunAsync(service, sessionId, ct);
+		}
 
 		JsonObject result = new JsonObject
 		{
@@ -1320,14 +1525,18 @@ public class AgentOrchestrator : ISessionOrchestrator
 				{
 					previouslyConfigured.Add(model.Id);
 					if (model.Enabled)
+					{
 						previouslyEnabled.Add(model.Id);
+					}
 				}
 			}
 			List<string> nowEnabled = new List<string>();
 			foreach (AutoModelConfig model in payload.Models)
 			{
 				if (model.Enabled)
+				{
 					nowEnabled.Add(model.Id);
+				}
 			}
 
 			_settings.SaveAutoEndpoint(payload.BaseUrl, payload.ApiKey, payload.Models, payload.Remove);
@@ -1339,7 +1548,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (string id in nowEnabled)
 			{
 				if (!ContainsIgnoreCase(previouslyEnabled, id))
+				{
 					added.Add((id, CatalogOutputs(catalog, id)));
+				}
 			}
 			// A dropped id stays in the roles when ANOTHER source (a second endpoint, a manual
 			// provider) still serves it enabled — checked against the just-saved settings.
@@ -1347,15 +1558,21 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (string id in previouslyConfigured)
 			{
 				if (!ContainsIgnoreCase(nowEnabled, id) && !ModelEnabledAnywhere(id))
+				{
 					removed.Add(id);
+				}
 			}
 			if (added.Count > 0 || removed.Count > 0)
+			{
 				_roleService.ApplyModelEnablement(added, removed);
+			}
 
 			bool reloaded = await ReloadConfigurationAsync(sessionId, ct);
 			_transport.Config(sessionId, reloaded ? "{\"kind\":\"applied\"}" : "{\"kind\":\"apply-failed\"}");
 			if (reloaded)
+			{
 				_transport.Status(sessionId, $"Saved {payload.Models.Count} enabled model(s) for {payload.BaseUrl}.");
+			}
 		}
 		else if (payload != null)
 		{
@@ -1368,15 +1585,23 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private static string SwapDockerHost(string url)
 	{
 		if (!Uri.TryCreate(url.TrimEnd('/'), UriKind.Absolute, out Uri? uri))
+		{
 			return string.Empty;
+		}
 
 		string replacement;
 		if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) || uri.Host == "127.0.0.1")
+		{
 			replacement = "host.docker.internal";
+		}
 		else if (string.Equals(uri.Host, "host.docker.internal", StringComparison.OrdinalIgnoreCase))
+		{
 			replacement = "localhost";
+		}
 		else
+		{
 			return string.Empty;
+		}
 
 		UriBuilder builder = new UriBuilder(uri) { Host = replacement };
 		return builder.Uri.ToString().TrimEnd('/');
@@ -1387,7 +1612,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		foreach (string candidate in ids)
 		{
 			if (string.Equals(candidate, id, StringComparison.OrdinalIgnoreCase))
+			{
 				return true;
+			}
 		}
 		return false;
 	}
@@ -1419,7 +1646,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (AutoModelConfig model in auto.Models)
 			{
 				if (model.Enabled && string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+				{
 					return true;
+				}
 			}
 		}
 		foreach (ProviderConfig provider in _settings.Settings.Providers)
@@ -1427,7 +1656,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			foreach (ModelConfig model in provider.Models)
 			{
 				if (model.Enabled && string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+				{
 					return true;
+				}
 			}
 		}
 		return false;
@@ -1438,7 +1669,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 		foreach (AutoProviderConfig auto in _settings.Settings.Auto)
 		{
 			if (string.Equals(auto.BaseUrl, baseUrl, StringComparison.OrdinalIgnoreCase))
+			{
 				return auto;
+			}
 		}
 		return null;
 	}
@@ -1446,11 +1679,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 	private static AutoModelConfig? FindAutoModel(AutoProviderConfig? endpoint, string id)
 	{
 		if (endpoint == null)
+		{
 			return null;
+		}
+
 		foreach (AutoModelConfig model in endpoint.Models)
 		{
 			if (string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase))
+			{
 				return model;
+			}
 		}
 		return null;
 	}
@@ -1461,9 +1699,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 		string verb;
 		int    spaceIdx = trimmed.IndexOf(' ');
 		if (spaceIdx >= 0)
+		{
 			verb = trimmed.Substring(0, spaceIdx).ToLowerInvariant();
+		}
 		else
+		{
 			verb = trimmed.ToLowerInvariant();
+		}
 
 		switch (verb)
 		{
@@ -1566,7 +1808,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 						foreach ((string id, Session s) in _allSessions)
 						{
 							if (string.Equals(id, target, StringComparison.Ordinal) || id.StartsWith(childPrefix, StringComparison.Ordinal))
+							{
 								doomed.Add(s);
+							}
 						}
 						foreach (Session s in doomed)
 						{
@@ -1587,7 +1831,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 					// for the replacement the agent is contracted to provide: start a fresh root
 					// and ask the client to show it so the user can keep working.
 					if (!AnyRootRegistered())
+					{
 						StartReplacementRoot();
+					}
 				}
 				break;
 			}
@@ -1718,7 +1964,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			string detail = remove.StdErr;
 			if (!string.IsNullOrEmpty(remove.StdOut))
+			{
 				detail = string.IsNullOrEmpty(detail) ? remove.StdOut : detail + "\n" + remove.StdOut;
+			}
+
 			_quiescing = false;
 			_transport.Error(sessionId, "Failed to remove the worktree:\n" +
 				(string.IsNullOrWhiteSpace(detail) ? "(no output)" : detail) +
@@ -1761,7 +2010,9 @@ public class AgentOrchestrator : ISessionOrchestrator
 			}
 		}
 		if (any != null)
+		{
 			await WebToolsTests.TestAsync(ctx, _settings.Settings, _roleService, _transport, any, ct);
+		}
 
 		await PerModelLlmTests.TestAsync(ctx, _registry, _roleService, _settings, ct);
 		ProtocolSwitchTests.Test(ctx);

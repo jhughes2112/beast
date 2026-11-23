@@ -41,7 +41,9 @@ public static class HostCommandRunnerTests
 			ctx.Log($"    shells found: {runner.ShellNames}");
 			ctx.Assert(shells.Length > 0, "host runner: finds at least one shell");
 			foreach (string shell in shells)
+			{
 				ctx.Assert(Cases.ContainsKey(shell), $"host runner: '{shell}' is one of the four allowed shells");
+			}
 
 			ctx.Assert(!runner.OnConfigFrame("s1", "{\"kind\":\"catalog\"}"), "host runner: other Config frames are left for the display");
 
@@ -116,7 +118,9 @@ public static class HostCommandRunnerTests
 		foreach (string message in messages)
 		{
 			if (message.Contains(fragment, StringComparison.Ordinal))
+			{
 				found = true;
+			}
 		}
 		return found;
 	}
@@ -124,7 +128,9 @@ public static class HostCommandRunnerTests
 	private static async Task WaitForAsync(ConcurrentQueue<string> sent, string fragment, CancellationToken ct)
 	{
 		while (!Contains(new List<string>(sent), fragment))
+		{
 			await Task.Delay(20, ct);
+		}
 	}
 
 	// Every message for this run, once its exit has arrived.
@@ -135,7 +141,9 @@ public static class HostCommandRunnerTests
 		foreach (string message in sent)
 		{
 			if (message.Contains($" {id} ", StringComparison.Ordinal))
+			{
 				run.Add(message);
+			}
 		}
 		return run;
 	}

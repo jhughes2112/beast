@@ -195,21 +195,31 @@ public static class FakeLlmTests
 					// what the provider already told it — the failure that made the status bar read
 					// c:0 i:0 and the context measure itself at output size alone.
 					if (result.Payload!.Usage.PromptTokens <= 0)
+					{
 						unmeasuredTurns++;
+					}
 
 					session.CommitAssistantTurn(result.Payload!);
 					totalTokens += result.Payload!.Usage.PromptTokens + result.Payload.Usage.CompletionTokens;
 
 					bool hasCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, session, transport, cts.Token);
 					if (hasCalls)
+					{
 						session.CommitToolResults(result.Payload!);
+					}
 					else if (toolPhase)
+					{
 						session.Bundle.OnUserMessage("Keep going with more chaos.");
+					}
 					else
+					{
 						session.Bundle.OnUserMessage($"Consider this large brief and keep going:\n{JunkText(6000 + Random.Shared.Next(3000))}");
+					}
 
 					if (mechCompactions >= kRequiredEachPath && fullCompactions >= kRequiredEachPath && totalTokens >= kRequiredTokens)
+					{
 						turnsAfterFinal++;
+					}
 				}
 				else if (result.Outcome == ProtocolCallOutcome.ContextFull)
 				{
@@ -243,7 +253,10 @@ public static class FakeLlmTests
 					{
 						string ledger = MechanicalCompaction.BuildLedger(session.Data.Messages);
 						if (ledger.Length > 0)
+						{
 							seed.Insert(0, new UserMessage(ledger));
+						}
+
 						if (pending.Count > 0)
 						{
 							MechanicalCompaction.CloseOpenCalls(pending);
@@ -252,7 +265,9 @@ public static class FakeLlmTests
 						// Exactly CompactAsync's rule: the successor is only prodded when its seeded
 						// history asks the model for nothing (the mechanical pass's usual shape).
 						if (MechanicalCompaction.NeedsResumePrompt(seed))
+						{
 							seed.Add(new UserMessage(Nudges.ResumeAfterCompaction()));
+						}
 
 						session = BuildSession($"fake-e2e-{mechCompactions + fullCompactions + 1}", model, transport);
 						session.Data.Messages.AddRange(seed);
@@ -291,9 +306,14 @@ public static class FakeLlmTests
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
 			if (type == FrameType.Thinking || (type == FrameType.StreamStart && text == StreamTag.Thinking))
+			{
 				sawThinking = true;
+			}
+
 			if (type == FrameType.ToolCall)
+			{
 				sawToolCall = true;
+			}
 		}
 		ctx.Assert(sawThinking, "FakeLlm: reasoning streamed through to the transport");
 		ctx.Assert(sawToolCall, "FakeLlm: tool calls streamed through to the transport");
@@ -309,9 +329,14 @@ public static class FakeLlmTests
 		{
 			statFrames++;
 			if (cached + input + output != context)
+			{
 				partitions = false;
+			}
+
 			if (input > 0 && output > 0)
+			{
 				breakdowns++;
+			}
 		}
 		ctx.Assert(statFrames > 0, "FakeLlm: stats frames reached the transport");
 		ctx.Assert(    partitions, "FakeLlm: every stats frame's cached+input+output equals its context");
@@ -347,7 +372,9 @@ public static class FakeLlmTests
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
 			if (type == FrameType.Alert)
+			{
 				alerted = true;
+			}
 		}
 		ctx.Assert(alerted, "AccountError: the human is alerted that the model needs a fix");
 	}
@@ -383,7 +410,10 @@ public static class FakeLlmTests
 		// Committing is the caller's job, and it is what ends the unmeasured state: from here the
 		// floor has a real size to stand on and the model gets the rest of the window to answer in.
 		if (result.Payload != null)
+		{
 			session.CommitAssistantTurn(result.Payload);
+		}
+
 		ctx.Assert(session.ContextLength > 0, "FirstRequest: the committed response measures the session, so the next request can size itself properly");
 	}
 
@@ -428,14 +458,19 @@ public static class FakeLlmTests
 				}
 			}
 			if (!seen)
+			{
 				missing++;
+			}
 		}
 		ctx.AssertEqual(0, missing, $"Coverage: every one of the {kSegments} transcript segments reached the model");
 
 		// And the stages were not the same page repeatedly: the bodies must differ from one another.
 		HashSet<string> distinct = new HashSet<string>(StringComparer.Ordinal);
 		foreach (string body in received)
+		{
 			distinct.Add(body);
+		}
+
 		ctx.AssertEqual(received.Count, distinct.Count, "Coverage: no two stage requests were byte-identical");
 	}
 
@@ -471,7 +506,9 @@ public static class FakeLlmTests
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
 			if (type == FrameType.Status && text.Contains("retrying with less source context", StringComparison.Ordinal))
+			{
 				shrinks++;
+			}
 		}
 		ctx.Assert(shrinks > 0, $"ChokingServer: the run shrank its source context in response to the failures (saw {shrinks})");
 	}
@@ -495,7 +532,10 @@ public static class FakeLlmTests
 
 		int transcriptChars = 0;
 		foreach (string block in Summarizer.RenderTranscript(session.Data.Messages))
+		{
 			transcriptChars += block.Length;
+		}
+
 		ctx.Assert(transcriptChars > 1_000_000, $"HugeSummary: the transcript really is oversized ({transcriptChars} chars vs a {FakeLlm.ContextWindow} token window)");
 
 		string? summary = await Summarizer.SummarizeAsync(session, session.Data.Messages, kSummaryPrompt, registry, roleService, transport, ct);
@@ -509,7 +549,9 @@ public static class FakeLlmTests
 		foreach ((FrameType type, string text) in transport.Sent)
 		{
 			if (type == FrameType.Status && text.Contains("Summarizing segment", StringComparison.Ordinal))
+			{
 				segments++;
+			}
 		}
 		ctx.Assert(segments >= 5, $"HugeSummary: folded through many staged segments (saw {segments})");
 	}
@@ -544,10 +586,14 @@ public static class FakeLlmTests
 			foreach ((FrameType type, string text) in transport.Sent)
 			{
 				if (type == FrameType.Alert && text.Contains("compaction could not fix it", StringComparison.Ordinal))
+				{
 					alerted = true;
+				}
 			}
 			if (!alerted)
+			{
 				await Task.Delay(50, ct);
+			}
 		}
 		ctx.Assert(alerted, "CompactionSpin: the session reports it cannot continue");
 
@@ -587,7 +633,9 @@ public static class FakeLlmTests
 		ProtocolResult first = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
 		ctx.AssertEqual(ProtocolCallOutcome.Success, first.Outcome, "SkewedCount: the unmeasured first turn runs");
 		if (first.Payload != null)
+		{
 			session.CommitAssistantTurn(first.Payload);
+		}
 
 		// Measured and tiny: the ask is nearly the whole window, and the skew overruns it.
 		session.AddUserMessage("Second turn.");
@@ -604,7 +652,9 @@ public static class FakeLlmTests
 			ctx.Assert(retried?["stream"]?.GetValue<bool>() == true, "SkewedCount: the retry still streams");
 		}
 		if (second.Payload != null)
+		{
 			session.CommitAssistantTurn(second.Payload);
+		}
 
 		// The skew is remembered: the next turn goes through on its first request, still streaming.
 		session.AddUserMessage("Third turn.");
@@ -614,7 +664,9 @@ public static class FakeLlmTests
 		ctx.AssertEqual(ProtocolCallOutcome.Success, third.Outcome, "SkewedCount: the next turn runs");
 		ctx.AssertEqual(1, clean.Count, "SkewedCount: the learned skew sizes the next turn right the first time");
 		if (clean.Count == 1)
+		{
 			ctx.Assert(JsonNode.Parse(clean[0])?["stream"]?.GetValue<bool>() == true, "SkewedCount: streaming survived the rejection");
+		}
 	}
 
 	private static async Task TestProvisionalStatsTreatPriorTurnAsCachedAsync(TestContext ctx, LlmModel model, CancellationToken ct)
@@ -627,7 +679,9 @@ public static class FakeLlmTests
 		ProtocolResult first = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
 		ctx.AssertEqual(ProtocolCallOutcome.Success, first.Outcome, "StatsRoll: the first turn runs");
 		if (first.Payload != null)
+		{
 			session.CommitAssistantTurn(first.Payload);
+		}
 
 		int settled = session.ContextLength;
 		ctx.Assert(settled > 0, "StatsRoll: the first turn measured the session");
@@ -702,7 +756,9 @@ public static class FakeLlmTests
 		foreach ((FrameType type, string text) in transport.Snapshot())
 		{
 			if ((type == FrameType.Alert || type == FrameType.Status) && text.Contains("compact", StringComparison.OrdinalIgnoreCase))
+			{
 				sizingFailure = true;
+			}
 		}
 		ctx.Assert(!sizingFailure, "CountFirst: a conversation that fits its window never reaches compaction");
 
@@ -762,19 +818,33 @@ public static class FakeLlmTests
 		public readonly Dictionary<string, Session> Parents = new Dictionary<string, Session>(StringComparer.Ordinal);
 
 		public Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(Session parent, string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct)
-			=> Task.FromResult((false, "no subagents in this test", 0));
+		{
+			return Task.FromResult((false, "no subagents in this test", 0));
+		}
 
 		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
-			=> Task.FromResult((false, "no subagents in this test", 0));
+		{
+			return Task.FromResult((false, "no subagents in this test", 0));
+		}
 
-		public void          Deliver           (string sessionId, string content) { }
-		public void          RegisterSession   (Session session)                  { }
-		public void          UnregisterSession (string sessionId)                 { }
-		public void          EnsureHandler     (Session session)                  { }
-		public Session?      FindParent        (Session session) => Parents.TryGetValue(session.Id, out Session? parent) ? parent : null;
+		public void     Deliver          (string sessionId, string content) { }
+		public void     RegisterSession  (Session session)                  { }
+		public void     UnregisterSession(string sessionId)                 { }
+		public void     EnsureHandler    (Session session)                  { }
+		public Session? FindParent       (Session session)
+		{
+			return Parents.TryGetValue(session.Id, out Session? parent) ? parent : null;
+		}
+
 		public void          TransferCompletion(string fromSessionId, string toSessionId)                   { }
 		public void          CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
-		public HostCommands? HostCommands => null;
+		public HostCommands? HostCommands
+		{
+			get
+			{
+				return null;
+			}
+		}
 	}
 
 	// Minimal orchestrator for driving a SessionHandler in isolation: it records nothing and starts
@@ -782,19 +852,33 @@ public static class FakeLlmTests
 	internal sealed class StubOrchestrator : ISessionOrchestrator
 	{
 		public Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(Session parent, string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct)
-			=> Task.FromResult((false, "no subagents in this test", 0));
+		{
+			return Task.FromResult((false, "no subagents in this test", 0));
+		}
 
 		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
-			=> Task.FromResult((false, "no subagents in this test", 0));
+		{
+			return Task.FromResult((false, "no subagents in this test", 0));
+		}
 
-		public void          Deliver           (string sessionId, string content) { }
-		public void          RegisterSession   (Session session)                  { }
-		public void          UnregisterSession (string sessionId)                 { }
-		public void          EnsureHandler     (Session session)                  { }
-		public Session?      FindParent        (Session session) => null;
+		public void     Deliver          (string sessionId, string content) { }
+		public void     RegisterSession  (Session session)                  { }
+		public void     UnregisterSession(string sessionId)                 { }
+		public void     EnsureHandler    (Session session)                  { }
+		public Session? FindParent       (Session session)
+		{
+			return null;
+		}
+
 		public void          TransferCompletion(string fromSessionId, string toSessionId)                   { }
 		public void          CompleteSession   (string sessionId, bool ok, string text, int responseTokens) { }
-		public HostCommands? HostCommands => null;
+		public HostCommands? HostCommands
+		{
+			get
+			{
+				return null;
+			}
+		}
 	}
 
 	private static LlmService BuildService(LlmModel model)
@@ -863,7 +947,9 @@ public static class FakeLlmTests
 		foreach (CanonicalMessage msg in messages)
 		{
 			if (msg is ToolResultMessage tr)
+			{
 				satisfied.Add(tr.ToolCallId);
+			}
 		}
 
 		int open = 0;
@@ -874,7 +960,9 @@ public static class FakeLlmTests
 				foreach (SemanticToolCall call in am.ToolCalls)
 				{
 					if (!satisfied.Contains(call.Id))
+					{
 						open++;
+					}
 				}
 			}
 		}
@@ -953,7 +1041,10 @@ public static class FakeLlmTests
 	{
 		StringBuilder sb = new StringBuilder(length);
 		while (sb.Length < length)
+		{
 			sb.Append("chaos-").Append(Random.Shared.Next(100000)).Append(' ');
+		}
+
 		return sb.ToString(0, length);
 	}
 }

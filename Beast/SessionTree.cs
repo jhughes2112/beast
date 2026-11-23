@@ -11,7 +11,10 @@ internal static class SessionTree
 	{
 		bool engaged = false;
 		foreach (SessionDisplayInfo session in sessions)
+		{
 			engaged = engaged || IsRunning(session, sessions, waiting);
+		}
+
 		return engaged;
 	}
 
@@ -31,9 +34,13 @@ internal static class SessionTree
 				if (other.Id.StartsWith(prefix, StringComparison.Ordinal))
 				{
 					if (waiting.Contains(other.Id) || (other.Paused && !other.IsBusy && other.CanContinue))
+					{
 						held = true;
+					}
 					else if (IsRunning(other, sessions, waiting))
+					{
 						live = true;
+					}
 				}
 			}
 			running = !held || live;
@@ -47,10 +54,16 @@ internal static class SessionTree
 	{
 		int last = id.LastIndexOf('_');
 		if (last < 0)
+		{
 			return null;
+		}
+
 		string suffix = id.Substring(last + 1);
 		if (!int.TryParse(suffix, out _))
+		{
 			return null;
+		}
+
 		return id.Substring(0, last);
 	}
 
@@ -65,7 +78,10 @@ internal static class SessionTree
 	{
 		result.Add((id, depth));
 		if (!childrenMap.TryGetValue(id, out List<string>? children))
+		{
 			return;
+		}
+
 		children.Sort((a, b) =>
 		{
 			int lastA = a.LastIndexOf('_');
@@ -75,7 +91,9 @@ internal static class SessionTree
 			return numB.CompareTo(numA);
 		});
 		foreach (string child in children)
+		{
 			DfsAdd(child, depth + 1, childrenMap, result);
+		}
 	}
 
 	// Returns the ID of the root session: the one whose parent is not itself a known session.
@@ -84,10 +102,15 @@ internal static class SessionTree
 		foreach (string id in sessions.Keys)
 		{
 			if (string.IsNullOrEmpty(id))
+			{
 				continue;
+			}
+
 			string? parentId = GetParentId(id);
 			if (parentId == null || !sessions.ContainsKey(parentId))
+			{
 				return id;
+			}
 		}
 		return "";
 	}
@@ -99,7 +122,9 @@ internal static class SessionTree
 		foreach (string busyId in busySessions)
 		{
 			if (string.Equals(busyId, sessionId, StringComparison.Ordinal) || busyId.StartsWith(subtreePrefix, StringComparison.Ordinal))
+			{
 				return false;
+			}
 		}
 		return true;
 	}
@@ -117,7 +142,9 @@ internal static class SessionTree
 			if (string.Equals(id, sessionId, StringComparison.Ordinal) || id.StartsWith(subtreePrefix, StringComparison.Ordinal))
 			{
 				if (string.Equals(activeSessionId, id, StringComparison.Ordinal))
+				{
 					wasActiveInSubtree = true;
+				}
 			}
 		}
 		return (wasActiveInSubtree, subtreePrefix);
@@ -135,7 +162,9 @@ internal static class SessionTree
 		foreach (string id in sessions.Keys)
 		{
 			if (string.Equals(id, sessionId, StringComparison.Ordinal) || id.StartsWith(subtreePrefix, StringComparison.Ordinal))
+			{
 				toRemove.Add(id);
+			}
 		}
 		foreach (string id in toRemove)
 		{
@@ -159,7 +188,10 @@ internal static class SessionTree
 		foreach (string id in sessions.Keys)
 		{
 			if (string.IsNullOrEmpty(id))
+			{
 				continue;
+			}
+
 			string? parentId = GetParentId(id);
 			if (parentId != null && sessions.ContainsKey(parentId))
 			{
@@ -178,13 +210,17 @@ internal static class SessionTree
 		foreach (string id in sessions.Keys)
 		{
 			if (!string.IsNullOrEmpty(id) && !hasParent.Contains(id))
+			{
 				roots.Add(id);
+			}
 		}
 		roots.Sort(StringComparer.Ordinal);
 
 		List<(string Id, int Depth)> ordered = new List<(string, int)>();
 		foreach (string root in roots)
+		{
 			DfsAdd(root, 0, childrenMap, ordered);
+		}
 
 		List<SessionDisplayInfo> list = new List<SessionDisplayInfo>();
 		foreach ((string id, int depth) in ordered)
