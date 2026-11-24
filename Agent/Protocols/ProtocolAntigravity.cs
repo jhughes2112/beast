@@ -784,8 +784,9 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 				}
 				else if (method == "session/update" && evt["params"]?["update"] is JsonObject update)
 				{
-					string kind  = update["sessionUpdate"]?.ToString() ?? string.Empty;
-					string chunk = update["content"]?["text"]?.ToString() ?? string.Empty;
+					string kind = update["sessionUpdate"]?.ToString() ?? string.Empty;
+					// Message and thought chunks carry one content block; tool-call updates carry an array.
+					string chunk = update["content"] is JsonObject block ? block["text"]?.ToString() ?? string.Empty : string.Empty;
 					if (kind == "agent_message_chunk")
 					{
 						text.Append(chunk);
@@ -911,7 +912,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			ResetPromptLocked();
 		}
 
-		JsonObject? usage = response["result"]?["usage"] as JsonObject;
+		JsonObject? usage = response["result"] is JsonObject done ? done["usage"] as JsonObject : null;
 		if (response["error"] is JsonObject failure)
 		{
 			int    code    = failure["code"] is JsonValue value && value.TryGetValue(out int number) ? number : 0;
