@@ -187,8 +187,9 @@ public static class Antigravity
 	}
 
 	// The handshake every use of the server opens with. The session/new reply lists the account's
-	// models; Code is the JSON-RPC error code of a refusal.
-	public static async Task<(JsonObject? Session, int Code, string Error)> OpenSessionAsync(AcpConnection connection, string cwd, CancellationToken ct)
+	// models; Code is the JSON-RPC error code of a refusal. A resumeId reopens that session, which an
+	// earlier process left in the same state folder, with its conversation intact; empty opens a new one.
+	public static async Task<(JsonObject? Session, int Code, string Error)> OpenSessionAsync(AcpConnection connection, string cwd, string resumeId, CancellationToken ct)
 	{
 		JsonObject hello = new JsonObject
 		{
@@ -203,8 +204,15 @@ public static class Antigravity
 		(JsonObject? session, int code, string error) = await connection.RequestAsync("initialize", hello, kHandshakeTimeout, ct);
 		if (session != null)
 		{
-			JsonObject open        = new JsonObject { ["cwd"] = cwd, ["mcpServers"] = new JsonArray() };
-			(session, code, error) = await connection.RequestAsync("session/new", open, kHandshakeTimeout, ct);
+			JsonObject open   = new JsonObject { ["cwd"] = cwd, ["mcpServers"] = new JsonArray() };
+			string     method = "session/new";
+			if (resumeId.Length > 0)
+			{
+				open["sessionId"] = resumeId;
+				method            = "session/resume";
+			}
+
+			(session, code, error) = await connection.RequestAsync(method, open, kHandshakeTimeout, ct);
 		}
 		return (session, code, error);
 	}
@@ -235,7 +243,7 @@ public static class Antigravity
 			{
 				try
 				{
-					(JsonObject? session, int code, string sessionError) = await OpenSessionAsync(connection, stateDir, ct);
+					(JsonObject? session, int code, string sessionError) = await OpenSessionAsync(connection, stateDir, string.Empty, ct);
 					if (session != null)
 					{
 						models = ParseCatalog(session);

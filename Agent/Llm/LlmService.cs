@@ -85,6 +85,17 @@ public class LlmService
 		}
 	}
 
+	// Whether the provider holds the conversation itself and reports the size of what it holds. Antigravity's
+	// CLI does, and trims as it sees fit: it reported 65k tokens for a history that came to 272k on the next
+	// model, whose first request went out on that figure and was rejected as twice its window.
+	public bool KeepsOwnConversation
+	{
+		get
+		{
+			return _handler.GetDetectedProtocol() == DetectedProtocol.Antigravity;
+		}
+	}
+
 	public bool IsDown
 	{
 		get
@@ -440,13 +451,19 @@ public class LlmService
 						// retries are spent do we give up — the caller then falls back to the next model in the
 						// role's list instead of the model being killed outright.
 						transientRetries++;
-						if (transientRetries > maxTransientRetries)
+
+						// A tool-grammar failure is a server error only by status: the same request fails the
+						// same way, so it is not retried at all — least of all forever, on a seeded model.
+						bool repeats = ProtocolHelpers.IsToolGrammarFailure(result.ErrorMessage ?? string.Empty);
+						if (repeats || transientRetries > maxTransientRetries)
 						{
 							// Surface the actual last error (e.g. "HTTP 500: ...") as a failure rather than
 							// collapsing it into TooManyRetries, which the caller would otherwise report as
 							// rate-limiting and bury the real cause. Rate-limit exhaustion (above) keeps
 							// TooManyRetries; this transient path carries its reason.
-							string message = string.IsNullOrEmpty(result.ErrorMessage) ?
+							string message = repeats ?
+								$"The server could not fit the model's output to its tool grammar, and the same request fails the same way: {result.ErrorMessage}" :
+								string.IsNullOrEmpty(result.ErrorMessage) ?
 								"Transient errors persisted after repeated retries." :
 								$"Transient errors persisted after {maxTransientRetries} retries: {result.ErrorMessage}";
 							conversation.QueryLog.ModelFailure(_model, _handler, "Failed", null, message, transientRetries, maxTransientRetries, result.RetryAfter, true);

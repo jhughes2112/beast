@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 
 
 // First-pass compaction that rewrites history deterministically, with no LLM call at all. Tool
@@ -15,8 +16,9 @@ using System.Text.Json.Nodes;
 //
 // Shell calls can change things, so re-running one is not a way to find out what it did. Each stale one
 // goes to the compaction log whole and leaves a tool_call_memory call in its place: the note the model
-// wrote when it ran the command, the exit code, and where the rest is. That tool does not exist, so a
-// model copying the records it sees can never run anything.
+// wrote when it ran the command, the exit code, and where the rest is. That tool runs nothing, so a
+// model copying the records it sees can never run anything: it is declared (MemoryTool) only so a server
+// that holds output to the declared tools can accept the copy, and all it does is say it is a record.
 //
 // File calls become the same records, at any size, whenever the record is the smaller: a read keeps its
 // path and range, an edit its note, path and rough line range, a write its note and path. What they read or
@@ -33,7 +35,7 @@ public static class MechanicalCompaction
 	// stale ledger and emit a fresh one instead of stacking them up.
 	public const string LedgerMarker = "[Beast file ledger]";
 
-	// The record a stale shell call becomes. Never offered to a model, so never run.
+	// The record a stale shell call becomes. Offered to a model only as MemoryTool, which runs nothing.
 	public const string MemoryToolName = "tool_call_memory";
 
 	// The required note on what a shell command, edit or write is for, which outlives the call.
@@ -242,6 +244,35 @@ public static class MechanicalCompaction
 	{
 		string note = $"{MemoryToolName} entries are records of earlier tool calls, not a tool: call the real tool instead. Each result gives the exit code and, when something was cut, where the full call is. Reasoning references point the same way. read_file reads those files, with offset and lines.";
 		return ledger.Length > 0 ? $"{ledger}\n\n{note}" : $"{LedgerMarker}\n{note}";
+	}
+
+	// The record's name as a tool a model can be shown, for a history that holds records. A model copies what
+	// it sees, and a server that constrains output to the declared tools (llama-server's tool grammar) cannot
+	// emit a name outside them: with 182 records in a history it failed every request with a 500 before the
+	// copy could be answered. Declared, the copy arrives, and the answer tells the model to call the real tool.
+	public static Tool MemoryTool()
+	{
+		return new Tool
+		{
+			Definition = new ToolDefinition
+			{
+				Type     = "function",
+				Function = new FunctionDefinition
+				{
+					Name        = MemoryToolName,
+					Description = "Not a callable tool. Entries under this name are records of earlier tool calls, left where the calls were. Calling it does nothing and returns an error: call the real tool the record names instead.",
+					Parameters  = new JsonObject
+					{
+						["type"]       = "object",
+						["properties"] = new JsonObject
+						{
+							["tool"] = new JsonObject { ["type"] = "string", ["description"] = "The real tool the record stands for." }
+						}
+					}
+				}
+			},
+			Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) => Task.FromResult(ToolDispatch.MemoryRecordResult(toolCallId))
+		};
 	}
 
 	public static bool HasMemoryCalls(IReadOnlyList<CanonicalMessage> messages)

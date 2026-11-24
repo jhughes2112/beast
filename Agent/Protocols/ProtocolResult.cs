@@ -46,6 +46,10 @@ public class ProtocolCallPayload
 	public object? NativeAnthropic { get; }
 	public object? NativeResponses { get; }
 
+	// True when this turn is one more tool call from a model call an earlier turn already returned
+	// (a CLI that hands a model call's tool calls over one at a time). It is not a turn of work.
+	public bool ContinuesModelCall { get; }
+
 	public ProtocolCallPayload(
 		string assistantText,
 		string thinking,
@@ -56,16 +60,38 @@ public class ProtocolCallPayload
 		decimal        cost,
 		object?        nativeAnthropic = null,
 		object?        nativeResponses = null)
+		: this(assistantText, thinking, toolCalls, toolResults, finishReason, usage, cost, nativeAnthropic, nativeResponses, false)
 	{
-		AssistantText   = assistantText;
-		Thinking        = thinking;
-		ToolCalls       = toolCalls;
-		ToolResults     = toolResults;
-		FinishReason    = finishReason;
-		Usage           = usage;
-		Cost            = cost;
-		NativeAnthropic = nativeAnthropic;
-		NativeResponses = nativeResponses;
+	}
+
+	private ProtocolCallPayload(
+		string assistantText,
+		string thinking,
+		IReadOnlyList<SemanticToolCall> toolCalls,
+		List<ToolResult>                toolResults,
+		string         finishReason,
+		TokenUsageInfo usage,
+		decimal        cost,
+		object?        nativeAnthropic,
+		object?        nativeResponses,
+		bool           continuesModelCall)
+	{
+		AssistantText      = assistantText;
+		Thinking           = thinking;
+		ToolCalls          = toolCalls;
+		ToolResults        = toolResults;
+		FinishReason       = finishReason;
+		Usage              = usage;
+		Cost               = cost;
+		NativeAnthropic    = nativeAnthropic;
+		NativeResponses    = nativeResponses;
+		ContinuesModelCall = continuesModelCall;
+	}
+
+	// The same turn, marked as a further tool call of a model call already returned.
+	public ProtocolCallPayload ContinuingModelCall()
+	{
+		return new ProtocolCallPayload(AssistantText, Thinking, ToolCalls, ToolResults, FinishReason, Usage, Cost, NativeAnthropic, NativeResponses, true);
 	}
 }
 

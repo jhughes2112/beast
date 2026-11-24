@@ -208,7 +208,9 @@ public class SessionHandler
 				// request asks for MORE output and is rejected again. That spun out 22 successor
 				// sessions in a minute, each one a real API call and a session file. Compaction is only
 				// an answer when there is something to compact.
-				bool compactable = _activeSession.Budget.OverflowPlausible();
+				// A size taken from another provider's copy says nothing about how full this window is, so
+				// it cannot be the reason to call an overflow implausible.
+				bool compactable = _activeSession.Budget.OverflowPlausible() || SizedFromAnotherCopy(_service);
 				if (contextFull && (!compactable || !await CompactAsync(role, true, registry, roleService, transport, orchestrator, ct)))
 				{
 					transport.Alert(_activeSession.Id, compactable
@@ -340,7 +342,7 @@ public class SessionHandler
 				break;
 			}
 
-			Tool[] offered = service.Seeded ? WithoutHostCommand(tools) : tools;
+			Tool[] offered = WithMemoryTool(service.Seeded ? WithoutHostCommand(tools) : tools);
 
 			contextFull = await CheckContextFullAsync(service, offered, transport, _scope.Token);
 			if (contextFull)
@@ -391,9 +393,15 @@ public class SessionHandler
 					_activeSession.QueryLog.Note($"Usage limit lifted; resumed on {service.Model.Config.Name}");
 				}
 
-				// Ahead of the commit, whose save has to include it.
-				_workTurns++;
-				_activeSession.Data.WorkTurns = _workTurns;
+				// Ahead of the commit, whose save has to include it. A turn of work is one model call,
+				// however many turns its tool calls were handed over in.
+				if (!result.Payload!.ContinuesModelCall)
+				{
+					_workTurns++;
+				}
+
+				_activeSession.Data.WorkTurns            = _workTurns;
+				_activeSession.Data.ContextSizeOfOwnCopy = service.KeepsOwnConversation;
 				_activeSession.CommitAssistantTurn(result.Payload!);
 				if (result.Payload!.Usage.PromptTokens > 0)
 				{
@@ -582,7 +590,8 @@ public class SessionHandler
 		// request from that produced a max_out of 29492 on top of an uncounted 7438-token prompt,
 		// which the provider rejected as overflow, which compacted, which built another unmeasured
 		// session. Counting first costs one call and makes every number after it real.
-		bool unmeasured = _activeSession.ContextLength <= 0 && messages.Count > 0;
+		// A size that describes another provider's own copy of the conversation is no measurement of this one.
+		bool unmeasured = (_activeSession.ContextLength <= 0 || SizedFromAnotherCopy(service)) && messages.Count > 0;
 
 		// No new turn begins past the line. A provider-measured size already there is the whole answer:
 		// counting again costs a full prefill on a local engine, and could only talk this out of compacting.
@@ -601,7 +610,8 @@ public class SessionHandler
 				// on the session as well as the budget: the two disagreeing is what let a counted
 				// session still report ContextLength 0 to everything that reads it.
 				_activeSession.RecordCountedContext(tracer.InputTokens, tracer.CachedTokens);
-				_lastInputTokens = tracer.InputTokens;
+				_activeSession.Data.ContextSizeOfOwnCopy = service.KeepsOwnConversation;
+				_lastInputTokens                         = tracer.InputTokens;
 				// Same current-context reading as Session.SendStats. The tracer measured the entire
 				// prompt the next call would send, so cached plus the fresh remainder IS the whole
 				// context here — including the previous turn's output, which the prompt now contains.
@@ -632,6 +642,13 @@ public class SessionHandler
 			}
 		}
 		return full;
+	}
+
+	// True when the session's size is what a provider holding its own copy reported, and the model about to
+	// answer is not that provider: it gets the whole canonical history, which nothing has counted.
+	private bool SizedFromAnotherCopy(LlmService? service)
+	{
+		return service != null && _activeSession.Data.ContextSizeOfOwnCopy && !service.KeepsOwnConversation;
 	}
 
 	// Swaps _service to a fallback model when one exists. When none does but the limit lifts at a
@@ -1436,6 +1453,21 @@ public class SessionHandler
 			}
 		}
 		return kept.ToArray();
+	}
+
+	// A history holding compaction records declares the record's name, so a model copying one is answered
+	// instead of the request failing on a server that only lets declared tools be called.
+	private Tool[] WithMemoryTool(Tool[] tools)
+	{
+		Tool[] offered = tools;
+		if (MechanicalCompaction.HasMemoryCalls(_activeSession.Bundle.Canonical.Messages))
+		{
+			offered = new Tool[tools.Length + 1];
+			tools.CopyTo(offered, 0);
+			offered[tools.Length] = MechanicalCompaction.MemoryTool();
+		}
+
+		return offered;
 	}
 
 	// Terminator tool callback: records the reply so the loop can deliver it to the caller. Every

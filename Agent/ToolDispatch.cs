@@ -209,7 +209,7 @@ public static class ToolDispatch
 			if (matchedTool == null)
 			{
 				result = string.Equals(toolCall.Name, MechanicalCompaction.MemoryToolName, StringComparison.Ordinal)
-					? Error(toolCall.Id, $"Error: {toolCall.Name} is a record of an earlier tool call, not a tool. Call the real tool instead.")
+					? MemoryRecordResult(toolCall.Id)
 					: Error(toolCall.Id, $"Error: Tool '{toolCall.Name}' not found in available tools.");
 			}
 			else
@@ -312,6 +312,12 @@ public static class ToolDispatch
 		}
 
 		return broken.Length == 0 ? null : "Tool call(s) could not be repaired: " + broken;
+	}
+
+	// What a model gets for calling a compaction record as though it were a tool, declared or not.
+	public static ToolResult MemoryRecordResult(string id)
+	{
+		return Error(id, $"Error: {MechanicalCompaction.MemoryToolName} is a record of an earlier tool call, not a tool. Call the real tool instead.");
 	}
 
 	// Builds an error tool result (content in StdErr, non-zero exit) with an estimated token count so

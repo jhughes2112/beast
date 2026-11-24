@@ -154,6 +154,16 @@ public static class MechanicalCompactionTests
 			ToolResult               copied  = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "c1", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = "{}" }, noTools, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
 			ctx.Assert(copied.ExitCode != 0 && copied.StdErr.Contains("not a tool", StringComparison.Ordinal), "Shell: calling a record explains itself");
 
+			// Declared, for a server that only lets declared tools be called, it says the same and still runs
+			// nothing; a copied record's arguments are no reason to refuse the turn.
+			Tool                     declared = MechanicalCompaction.MemoryTool();
+			Dictionary<string, Tool> withTool = new Dictionary<string, Tool> { [MechanicalCompaction.MemoryToolName] = declared };
+			ToolResult               answered = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "c2", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = turn.ToolCalls[0].ArgumentsJson }, withTool, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+			ctx.AssertEqual(MechanicalCompaction.MemoryToolName, declared.Definition.Function.Name, "Shell: the record's name can be declared");
+			ctx.Assert(answered.ExitCode != 0 && answered.StdErr.Contains("not a tool", StringComparison.Ordinal), "Shell: a declared record explains itself too");
+			(JsonObject? copiedArgs, string? copiedError) = FixJson.TryParseWithSchema(turn.ToolCalls[0].ArgumentsJson, declared.Definition.Function, null);
+			ctx.Assert(copiedArgs != null && copiedError == null, "Shell: a copied record passes the declared schema");
+
 			string note = MechanicalCompaction.WithMemoryNote(string.Empty);
 			ctx.Assert(note.StartsWith(MechanicalCompaction.LedgerMarker, StringComparison.Ordinal), "Shell: the note counts as the ledger, so the next compaction replaces it");
 

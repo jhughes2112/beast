@@ -29,6 +29,11 @@ public class FakeLlm
 	public const string BillingSentinel  = "[[fake-llm-out-of-credit]]";
 	public const string BillingRejection = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"},\"request_id\":\"req_fake\"}";
 
+	// Put this anywhere in a conversation and every request for it fails the way llama-server does when the
+	// model writes a tool call its grammar has no place for: a 500, verbatim, that no retry changes.
+	public const string GrammarSentinel = "[[fake-llm-grammar-failure]]";
+	public const string GrammarFailure  = "{\"error\":{\"code\":500,\"message\":\"got exception: Unexpected empty grammar stack after accepting piece: tool (2251)\",\"type\":\"server_error\"}}";
+
 	// Ask for this model id and every request is rejected as over-window, however small it really
 	// is: the provider whose real limit is nothing like the configured one, so compacting never
 	// satisfies it. Keyed on the requested MODEL rather than on anything in the conversation, so a
@@ -263,6 +268,12 @@ public class FakeLlm
 		if (bodyText.Contains(BillingSentinel, StringComparison.Ordinal))
 		{
 			await WriteJsonAsync(context.Response, 400, BillingRejection, ct);
+			return;
+		}
+
+		if (bodyText.Contains(GrammarSentinel, StringComparison.Ordinal))
+		{
+			await WriteJsonAsync(context.Response, 500, GrammarFailure, ct);
 			return;
 		}
 

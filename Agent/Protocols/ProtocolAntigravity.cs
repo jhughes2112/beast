@@ -25,9 +25,17 @@ using System.Threading.Tasks;
 // folder's mcp_config.json — a server passed in session/new is cut off after three minutes.
 //
 // Antigravity owns the native conversation and cannot be handed one, so any break in step — a new
-// conversation, a failed or interrupted turn, a changed tool set, an idle process reaped — ends the
-// process, and the next turn starts a fresh one seeded from canonical: the conversation itself when
-// it is still only user text, otherwise a transcript of it.
+// conversation, a failed or interrupted turn — ends the process, and the next turn starts a fresh one
+// seeded from canonical: the conversation itself when it is still only user text, otherwise a
+// transcript of it. The CLI cuts a long prompt short and keeps its head, so a prompt past that size —
+// a long transcript above all — goes over in parts, each acknowledged by the model before the next.
+// That costs a model call per part, so a transcript is still the last resort.
+//
+// A process that ends while its conversation is still in step with canonical — a changed tool set,
+// an idle process reaped while waiting on the user, a process that died between prompts — keeps its
+// state folder, and the next turn's process resumes the same session (session/resume) with nothing
+// replayed. The tool list is read from the agent file at start, so this is also how a session's tools
+// change: the pending call is answered, the prompt cancelled, and the session resumed on new files.
 //
 // Usage is the CLI's own: after each model call it reports that call's tokens (usage_update), and a
 // finished prompt reports the totals of all its calls. A turn that ends in a tool call is charged its
@@ -46,6 +54,11 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	private static readonly TimeSpan kIdleLifetime = TimeSpan.FromHours(1);
 	private static readonly TimeSpan kSetupTimeout = TimeSpan.FromSeconds(60);
 
+	// The CLI keeps only the first 192,000 bytes or so of one prompt's text and drops the rest
+	// (measured on agy 1.5.14, whether the text is one block or several). Anything longer is sent in
+	// parts of this size, which leaves room for the line that introduces each part.
+	private const int kMaxPromptBytes = 160000;
+
 	private readonly object _lock   = new object();
 	private          string _system = string.Empty;
 
@@ -57,6 +70,11 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	private List<ToolDefinition> _tools         = new List<ToolDefinition>();
 	private Timer?               _idleTimer;
 	private bool                 _executing;
+
+	// The session an ended process left in the kept state folder for the next one to resume (empty =
+	// none), and why the last process ended, for the session log.
+	private string _resumeId    = string.Empty;
+	private string _endedReason = string.Empty;
 
 	// User content (text and image blocks) committed since the last thing sent to the process.
 	private readonly List<JsonObject> _unsent = new List<JsonObject>();
@@ -122,7 +140,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	{
 		lock (_lock)
 		{
-			StopLocked("protocol discarded");
+			StopLocked("protocol discarded", false);
 		}
 	}
 
@@ -141,16 +159,30 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			string         startError = string.Empty;
 			int            startCode  = 0;
 			AcpConnection? fresh      = null;
+			string         signature  = ToolSignature(tools);
+			bool           switching;
+			bool           resuming = false;
 			lock (_lock)
 			{
-				string signature = ToolSignature(tools);
-				if (_connection != null && (_connection.HasExited || signature != _toolSignature))
+				switching = _connection != null && !_connection.HasExited && signature != _toolSignature;
+			}
+
+			if (switching)
+			{
+				await EndForNewToolsAsync(cancellationToken);
+			}
+
+			lock (_lock)
+			{
+				// A process that died between prompts took nothing with it; one that died mid-prompt did.
+				if (_connection != null && _connection.HasExited)
 				{
-					StopLocked(_connection.HasExited ? "process exited" : "tool set changed");
+					StopLocked("process exited", _outstandingId.Length == 0 && _promptId == 0);
 				}
 
 				if (_connection == null)
 				{
+					resuming   = _resumeId.Length > 0;
 					startError = StartLocked(model, tools, signature, bundle.Canonical.Messages, logger);
 					fresh      = _connection;
 				}
@@ -161,23 +193,53 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 				(startError, startCode) = await OpenAsync(fresh, model, logger, cancellationToken);
 			}
 
+			// A session that will not reopen is given up: a fresh process, seeded from canonical.
+			if (resuming && startError.Length > 0)
+			{
+				fresh = null;
+				lock (_lock)
+				{
+					StopLocked($"session could not be resumed: {startError}", false);
+					startError = StartLocked(model, tools, signature, bundle.Canonical.Messages, logger);
+					fresh      = _connection;
+				}
+
+				if (fresh != null)
+				{
+					(startError, startCode) = await OpenAsync(fresh, model, logger, cancellationToken);
+				}
+			}
+
 			if (startError.Length > 0)
 			{
 				lock (_lock)
 				{
-					StopLocked(startError);
+					StopLocked(startError, false);
 				}
 
 				result = Fail(startError, startCode, "StartFailed", model, logger, null);
 			}
 			else
 			{
-				lock (_lock)
+				string partsError = await SendLeadingPartsAsync(model, logger, cancellationToken);
+				if (partsError.Length > 0)
 				{
-					DeliverLocked(model, logger);
-				}
+					lock (_lock)
+					{
+						StopLocked(partsError, false);
+					}
 
-				result = await ReadTurnAsync(model, bundle, onProgress, logger, cancellationToken);
+					result = Fail(partsError, 0, "TurnFailed", model, logger, null);
+				}
+				else
+				{
+					lock (_lock)
+					{
+						DeliverLocked(model, logger);
+					}
+
+					result = await ReadTurnAsync(model, bundle, onProgress, logger, cancellationToken);
+				}
 			}
 		}
 		catch (OperationCanceledException)
@@ -185,7 +247,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			// An interrupted turn leaves Antigravity mid-flight; the next turn starts over from canonical.
 			lock (_lock)
 			{
-				StopLocked("turn interrupted");
+				StopLocked("turn interrupted", false);
 			}
 
 			throw;
@@ -253,11 +315,9 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	// Builds the process's private state folder and starts it. Returns the reason when it cannot start.
 	private string StartLocked(LlmModel model, List<ToolDefinition> tools, string signature, IReadOnlyList<CanonicalMessage> canonical, SessionLogger logger)
 	{
-		string error = string.Empty;
+		string error    = string.Empty;
+		bool   resuming = _resumeId.Length > 0;
 
-		// A fresh process knows nothing, so everything it needs comes from canonical: the system
-		// prompt, and the conversation as the first user message.
-		_unsent.Clear();
 		ResetPromptLocked();
 		foreach (CanonicalMessage msg in canonical)
 		{
@@ -266,12 +326,20 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 				_system = sm.Text;
 			}
 		}
-		SeedFromCanonical(canonical, _unsent);
+
+		// A fresh process knows nothing, so everything it needs comes from canonical: the system
+		// prompt, and the conversation as the first user message. One that resumes a kept session
+		// already holds the conversation and is owed only what was committed since.
+		if (!resuming)
+		{
+			_unsent.Clear();
+			SeedFromCanonical(canonical, _unsent);
+			_stateDir = Antigravity.CreateStateDir(model.ApiKey);
+		}
 
 		_tools         = new List<ToolDefinition>(tools);
 		_toolSignature = signature;
 		_routeUrl      = McpBridge.Shared().Register(this);
-		_stateDir      = Antigravity.CreateStateDir(model.ApiKey);
 
 		string configDir = Path.Combine(_stateDir, "config");
 		string agentsDir = Path.Combine(configDir, "agents");
@@ -285,7 +353,11 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 		if (connection != null)
 		{
 			_connection = connection;
-			logger.Write(model.Config.Name, model.Endpoint, $"[antigravity] started pid {connection.Pid}: agy acp --agent {kAgentName}");
+
+			string after = _endedReason.Length > 0 ? $" (the last process ended: {_endedReason})" : string.Empty;
+			string how   = resuming ? $", resuming session {_resumeId}" : (_endedReason.Length > 0 ? ", starting over from the saved conversation" : string.Empty);
+			_endedReason = string.Empty;
+			logger.Write(model.Config.Name, model.Endpoint, $"[antigravity] started pid {connection.Pid}: agy acp --agent {kAgentName}{how}{after}");
 		}
 		else
 		{
@@ -299,15 +371,18 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	private async Task<(string Error, int Code)> OpenAsync(AcpConnection connection, LlmModel model, SessionLogger logger, CancellationToken ct)
 	{
 		string stateDir;
+		string resumeId;
 		lock (_lock)
 		{
-			stateDir = _stateDir;
+			stateDir  = _stateDir;
+			resumeId  = _resumeId;
+			_resumeId = string.Empty;
 		}
 
-		(JsonObject? session, int code, string error) = await Antigravity.OpenSessionAsync(connection, stateDir, ct);
+		(JsonObject? session, int code, string error) = await Antigravity.OpenSessionAsync(connection, stateDir, resumeId, ct);
 		if (session != null)
 		{
-			string sessionId = session["sessionId"]?.ToString() ?? string.Empty;
+			string sessionId = resumeId.Length > 0 ? resumeId : session["sessionId"]?.ToString() ?? string.Empty;
 			lock (_lock)
 			{
 				_sessionId = sessionId;
@@ -327,7 +402,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 
 			if (chosen != null)
 			{
-				logger.Note($"[antigravity] session {sessionId} on {cliModel}{ReasoningEffort.DisplaySuffix(model.Config.ReasoningEffort)}");
+				logger.Note($"[antigravity] session {sessionId}{(resumeId.Length > 0 ? " resumed" : string.Empty)} on {cliModel}{ReasoningEffort.DisplaySuffix(model.Config.ReasoningEffort)}");
 			}
 			else
 			{
@@ -337,10 +412,64 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 		return (error, code);
 	}
 
-	// Kills the process (if any) and releases everything tied to it. Held MCP requests are answered
-	// so no bridge request outlives the process it belonged to.
-	private void StopLocked(string reason)
+	// The tool set changed under a live process. Its conversation is kept by bringing it to rest first:
+	// the pending call gets its result, and the prompt is cancelled before the model can act on the old
+	// tools — the CLI records the result and ends the prompt. A prompt that will not end is given up.
+	private async Task EndForNewToolsAsync(CancellationToken ct)
 	{
+		AcpConnection connection;
+		int           promptId;
+		bool          midPrompt;
+		lock (_lock)
+		{
+			connection = _connection!;
+			promptId   = _promptId;
+			midPrompt  = _outstandingId.Length > 0;
+			if (midPrompt)
+			{
+				AnswerOutstandingLocked();
+				connection.Send(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "session/cancel", ["params"] = new JsonObject { ["sessionId"] = _sessionId } });
+			}
+		}
+
+		bool atRest = true;
+		if (midPrompt)
+		{
+			atRest = false;
+			using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+			limit.CancelAfter(kSetupTimeout);
+			try
+			{
+				while (!atRest && await connection.Events.WaitToReadAsync(limit.Token))
+				{
+					if (connection.Events.TryRead(out JsonObject? evt))
+					{
+						if (evt["method"]?.ToString() == "session/request_permission")
+						{
+							AnswerPermission(connection, evt);
+						}
+
+						atRest = AcpConnection.IsResponseTo(evt, promptId);
+					}
+				}
+			}
+			catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+			{
+			}
+		}
+
+		lock (_lock)
+		{
+			StopLocked("tool set changed", atRest);
+		}
+	}
+
+	// Kills the process (if any) and releases everything tied to it. Held MCP requests are answered
+	// so no bridge request outlives the process it belonged to. keepSession leaves the state folder
+	// for the next process to resume the session from; otherwise the conversation there is discarded.
+	private void StopLocked(string reason, bool keepSession)
+	{
+		_endedReason = reason;
 		if (_connection != null)
 		{
 			Console.Error.WriteLine($"[Antigravity] Ending the CLI process: {reason}.");
@@ -353,8 +482,18 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			McpBridge.Shared().Unregister(_routeUrl);
 			_routeUrl = string.Empty;
 		}
-		Antigravity.DeleteStateDir(_stateDir);
-		_stateDir  = string.Empty;
+
+		if (keepSession && _sessionId.Length > 0)
+		{
+			_resumeId = _sessionId;
+		}
+		else
+		{
+			Antigravity.DeleteStateDir(_stateDir);
+			_stateDir = string.Empty;
+			_resumeId = string.Empty;
+		}
+
 		_sessionId = string.Empty;
 
 		foreach ((string _, TaskCompletionSource<JsonObject> reply) in _held)
@@ -374,9 +513,11 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	{
 		lock (_lock)
 		{
+			// A process waiting on the user is resumed when they return; a finished subagent's, whose
+			// last call is still held, is never driven again.
 			if (!_executing && _connection != null)
 			{
-				StopLocked($"idle for {kIdleLifetime.TotalMinutes:0} minutes");
+				StopLocked($"idle for {kIdleLifetime.TotalMinutes:0} minutes", _outstandingId.Length == 0 && _promptId == 0);
 			}
 		}
 	}
@@ -396,27 +537,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 	{
 		if (_outstandingId.Length > 0)
 		{
-			JsonObject answer = _results.TryGetValue(_outstandingId, out ToolResult? result)
-				? McpBridge.ToolReply(result)
-				: McpBridge.TextReply("[the call was not run]", true);
-
-			// User text committed alongside the result has no prompt of its own to go in — Antigravity
-			// is mid-turn — so it rides on the result.
-			JsonArray content = (JsonArray)answer["content"]!;
-			foreach (JsonObject block in _unsent)
-			{
-				content.Add((JsonNode)McpContent(block));
-			}
-
-			_unsent.Clear();
-
-			if (_held.Remove(_outstandingId, out TaskCompletionSource<JsonObject>? reply))
-			{
-				reply.TrySetResult(answer);
-			}
-
-			_outstandingId = string.Empty;
-			_results.Clear();
+			AnswerOutstandingLocked();
 		}
 		else
 		{
@@ -439,6 +560,157 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			ResetPromptLocked();
 			_promptId = _connection!.SendRequest("session/prompt", parameters);
 		}
+	}
+
+	// A prompt too long for the CLI goes over in parts: every part but the last is a prompt of its own
+	// that the model only acknowledges, and the last is left as the unsent prompt of the turn itself.
+	// Returns the reason when a part was not taken. The acknowledgements are not turns of Beast's, so
+	// their tokens are noted in the session log and charged to no turn.
+	private async Task<string> SendLeadingPartsAsync(LlmModel model, SessionLogger logger, CancellationToken ct)
+	{
+		string        error = string.Empty;
+		List<string>  parts = new List<string>();
+		AcpConnection connection;
+		string        sessionId;
+		lock (_lock)
+		{
+			connection = _connection!;
+			sessionId  = _sessionId;
+			if (_outstandingId.Length == 0)
+			{
+				parts = TakeLeadingPartsLocked();
+			}
+		}
+
+		TimeSpan timeout = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
+		for (int i = 0; i < parts.Count && error.Length == 0; i++)
+		{
+			string     text       = $"[Part {i + 1} of {parts.Count + 1} of a message too long to arrive at once. Reply with only the word OK and wait for the rest.]\n\n{parts[i]}";
+			JsonObject parameters = new JsonObject
+			{
+				["sessionId"] = sessionId,
+				["prompt"]    = new JsonArray((JsonNode)new JsonObject { ["type"] = "text", ["text"] = text })
+			};
+
+			logger.Write(model.Config.Name, model.Endpoint, parameters.ToJsonString());
+			(JsonObject? answer, int _, string failure) = await connection.RequestAsync("session/prompt", parameters, timeout, ct);
+			if (answer != null)
+			{
+				int tokens = answer["usage"] is JsonObject usage ? ReadInt(usage, "totalTokens") : 0;
+				logger.Note($"[antigravity] part {i + 1} of {parts.Count + 1} of a long prompt delivered ({Encoding.UTF8.GetByteCount(text)} bytes, {tokens} tokens)");
+			}
+			else
+			{
+				error = $"Antigravity did not take part {i + 1} of {parts.Count + 1} of a long prompt: {failure}";
+			}
+		}
+		return error;
+	}
+
+	// When the unsent text is more than one prompt can carry, returns all of it but the last part and
+	// leaves that last part (with any images) as the unsent prompt. Returns nothing when it fits.
+	private List<string> TakeLeadingPartsLocked()
+	{
+		List<string>     leading = new List<string>();
+		StringBuilder    text    = new StringBuilder();
+		List<JsonObject> other   = new List<JsonObject>();
+		foreach (JsonObject block in _unsent)
+		{
+			if (block["type"]?.ToString() == "text")
+			{
+				if (text.Length > 0)
+				{
+					text.Append("\n\n");
+				}
+
+				text.Append(block["text"]?.ToString() ?? string.Empty);
+			}
+			else
+			{
+				other.Add(block);
+			}
+		}
+
+		string whole = text.ToString();
+		if (Encoding.UTF8.GetByteCount(whole) > kMaxPromptBytes)
+		{
+			leading     = SplitByBytes(whole, kMaxPromptBytes);
+			string last = leading[leading.Count - 1];
+			leading.RemoveAt(leading.Count - 1);
+
+			_unsent.Clear();
+			_unsent.Add(new JsonObject { ["type"] = "text", ["text"] = $"[Part {leading.Count + 1} of {leading.Count + 1}, the last. The message is now complete; act on all of it.]\n\n{last}" });
+			_unsent.AddRange(other);
+		}
+		return leading;
+	}
+
+	// Cuts text into pieces of at most maxBytes of UTF-8, at a line end when one falls in a piece's
+	// second half, and never inside a surrogate pair.
+	private static List<string> SplitByBytes(string text, int maxBytes)
+	{
+		List<string> pieces = new List<string>();
+		int          start  = 0;
+		while (start < text.Length)
+		{
+			int  end     = start;
+			int  bytes   = 0;
+			int  lineEnd = -1;
+			bool full    = false;
+			while (end < text.Length && !full)
+			{
+				int width = char.IsHighSurrogate(text[end]) && end + 1 < text.Length ? 2 : 1;
+				int size  = Encoding.UTF8.GetByteCount(text.AsSpan(end, width));
+				if (bytes + size > maxBytes)
+				{
+					full = true;
+				}
+				else
+				{
+					bytes += size;
+					end   += width;
+					if (text[end - 1] == '\n')
+					{
+						lineEnd = end;
+					}
+				}
+			}
+
+			if (full && lineEnd > start + (end - start) / 2)
+			{
+				end = lineEnd;
+			}
+
+			pieces.Add(text.Substring(start, end - start));
+			start = end;
+		}
+		return pieces;
+	}
+
+	// Answers the held MCP request of the last turn's tool call with its committed result.
+	private void AnswerOutstandingLocked()
+	{
+		JsonObject answer = _results.TryGetValue(_outstandingId, out ToolResult? result)
+			? McpBridge.ToolReply(result)
+			: McpBridge.TextReply("[the call was not run]", true);
+
+		// User text committed alongside the result has no prompt of its own to go in — Antigravity
+		// is mid-turn — so it rides on the result.
+		JsonArray content = (JsonArray)answer["content"]!;
+		foreach (JsonObject block in _unsent)
+		{
+			content.Add((JsonNode)McpContent(block));
+		}
+
+		_unsent.Clear();
+
+		if (_held.Remove(_outstandingId, out TaskCompletionSource<JsonObject>? reply))
+		{
+			reply.TrySetResult(answer);
+		}
+
+		_outstandingId = string.Empty;
+		_results.Clear();
 	}
 
 	// ---- Reading a turn ----
@@ -482,7 +754,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 				{
 					lock (_lock)
 					{
-						StopLocked("no output within the request timeout");
+						StopLocked("no output within the request timeout", false);
 					}
 
 					result = logger.ProtocolFailure(ProtocolResult.Transient($"Antigravity produced nothing for {idleTimeout.TotalSeconds:0}s", null),
@@ -495,7 +767,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 					string tail = connection.StderrTail();
 					lock (_lock)
 					{
-						StopLocked("process exited");
+						StopLocked("process exited", false);
 					}
 
 					result = logger.ProtocolFailure(ProtocolResult.Transient($"Antigravity exited mid-turn: {tail}", null),
@@ -614,8 +886,16 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			_callUsed      = 0;
 		}
 
-		TokenUsageInfo usage = new TokenUsageInfo { PromptTokens = prompt, CompletionTokens = 0, CachedTokens = 0 };
-		return ProtocolResult.Succeeded(new ProtocolCallPayload(text.ToString(), thinking.ToString(), new List<SemanticToolCall> { toolCall }, new List<ToolResult>(), "tool_calls", usage, Cost(model, prompt, 0, 0)));
+		TokenUsageInfo      usage   = new TokenUsageInfo { PromptTokens = prompt, CompletionTokens = 0, CachedTokens = 0 };
+		ProtocolCallPayload payload = new ProtocolCallPayload(text.ToString(), thinking.ToString(), new List<SemanticToolCall> { toolCall }, new List<ToolResult>(), "tool_calls", usage, Cost(model, prompt, 0, 0));
+
+		// No model call was reported since the last tool call, so this one came from the same model call.
+		if (prompt == 0)
+		{
+			payload = payload.ContinuingModelCall();
+		}
+
+		return ProtocolResult.Succeeded(payload);
 	}
 
 	// The prompt's own response: the turn is over. Its usage totals every model call of the prompt, so
@@ -638,7 +918,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			string message = failure["message"]?.ToString() ?? "the prompt failed";
 			lock (_lock)
 			{
-				StopLocked($"prompt failed: {message}");
+				StopLocked($"prompt failed: {message}", false);
 			}
 
 			result = Fail(message, code, "TurnFailed", model, logger, response.ToJsonString());
@@ -653,7 +933,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 
 			lock (_lock)
 			{
-				StopLocked($"turn ended without a model call: {message}");
+				StopLocked($"turn ended without a model call: {message}", false);
 			}
 
 			result = Fail(message, 0, "TurnFailed", model, logger, response.ToJsonString());

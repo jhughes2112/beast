@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -47,7 +49,7 @@ public static class AntigravityLiveTests
 			return;
 		}
 
-		using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+		using CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromMinutes(8));
 		await TestCatalogAsync(ctx, token, cts.Token);
 
 		Rig rig = Build(token);
@@ -56,7 +58,9 @@ public static class AntigravityLiveTests
 			await TestPlainTextAsync(ctx, rig, cts.Token);
 			await TestToolRoundTripAsync(ctx, rig, cts.Token);
 			await TestTwoCallsAsync(ctx, rig, cts.Token);
+			await TestToolSwitchAsync(ctx, rig, cts.Token);
 			await TestReseedAsync(ctx, rig, cts.Token);
+			await TestLongSeedAsync(ctx, rig, cts.Token);
 		}
 		finally
 		{
@@ -116,16 +120,57 @@ public static class AntigravityLiveTests
 		ProtocolResult result = await StepAsync(rig, ct);
 		int            calls  = result.Payload?.ToolCalls.Count ?? 0;
 		int            turns  = 1;
+		int counted =result.Payload != null && !result.Payload.ContinuesModelCall ? 1 : 0;
 		while (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count > 0 && turns < 5)
 		{
-			result = await StepAsync(rig, ct);
-			calls += result.Payload?.ToolCalls.Count ?? 0;
+			result   = await StepAsync(rig, ct);
+			calls   += result.Payload?.ToolCalls.Count ?? 0;
+			counted += result.Payload != null && !result.Payload.ContinuesModelCall ? 1 : 0;
 			turns++;
 		}
 		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, $"Antigravity TwoCalls: succeeds ({result.ErrorMessage})");
 		ctx.AssertEqual(2, calls, "Antigravity TwoCalls: two add calls were made");
+		ctx.AssertEqual(2, counted, $"Antigravity TwoCalls: the model call that made both calls counts once, the answer once ({turns} turns)");
 		string text = result.Payload?.AssistantText ?? string.Empty;
 		ctx.Assert(text.Contains('5') && text.Contains("30"), $"Antigravity TwoCalls: both sums reach the answer ({text})");
+	}
+
+	// The tool set changes while a call is pending, as it does when a work loop starts or a budget runs
+	// out: the session is resumed in a new process with the new tools, and nothing is replayed.
+	private static async Task TestToolSwitchAsync(TestContext ctx, Rig rig, CancellationToken ct)
+	{
+		Tool[] switched = new Tool[] { EchoTool(), ShoutTool() };
+
+		rig.Session.Bundle.OnUserMessage("Call the echo tool with the text 'quince'. After it returns, call the shout tool with the text 'medlar' if you have one, otherwise say NO SHOUT. Then state exactly what each call returned.");
+		ProtocolResult result = await StepAsync(rig, rig.Tools, ct);
+		ctx.Assert(result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count == 1 && result.Payload.ToolCalls[0].Name == "echo",
+			$"Antigravity ToolSwitch: the echo call arrives before the switch ({result.ErrorMessage})");
+
+		bool shouted = false;
+		int  turns   = 0;
+		do
+		{
+			result = await StepAsync(rig, switched, ct);
+			turns++;
+			foreach (SemanticToolCall call in result.Payload?.ToolCalls ?? new List<SemanticToolCall>())
+			{
+				shouted = shouted || call.Name == "shout";
+			}
+		}
+		while (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count > 0 && turns < 5);
+
+		string text = result.Payload?.AssistantText ?? string.Empty;
+		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, $"Antigravity ToolSwitch: succeeds ({result.ErrorMessage})");
+		ctx.Assert(shouted, $"Antigravity ToolSwitch: the tool added mid-prompt is offered and called ({text})");
+		ctx.Assert(text.Contains("echo: quince") && text.Contains("MEDLAR"), $"Antigravity ToolSwitch: the result from before the switch and the one after both reach the answer ({text})");
+
+		string log = File.ReadAllText(Path.Combine(AgentState.LogsDir, $"{rig.Session.Id}.log"));
+		ctx.Assert(log.Contains("resuming session") && !log.Contains("continues in a new session"), "Antigravity ToolSwitch: the session was resumed, not replayed as a transcript");
+
+		// Back on the first tool set for the checks that follow: a switch between prompts.
+		rig.Session.Bundle.OnUserMessage("Without calling a tool: what exact text did the echo tool return for 'quince'?");
+		result = await StepAsync(rig, rig.Tools, ct);
+		ctx.AssertContains(result.Payload?.AssistantText ?? string.Empty, "echo: quince", "Antigravity ToolSwitch: a switch between prompts keeps the conversation too");
 	}
 
 	// A new protocol instance has no process, so it seeds one from canonical as a transcript.
@@ -137,6 +182,26 @@ public static class AntigravityLiveTests
 		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, $"Antigravity Reseed: succeeds ({result.ErrorMessage})");
 		ctx.AssertContains(result.Payload?.AssistantText ?? string.Empty, "zebra", "Antigravity Reseed: the history carried over");
 		ReportUsage(ctx, "Reseed", result, true);
+	}
+
+	// A transcript longer than one prompt can carry goes over in parts, so its end arrives as well as its start.
+	private static async Task TestLongSeedAsync(TestContext ctx, Rig rig, CancellationToken ct)
+	{
+		StringBuilder filler = new StringBuilder();
+		for (int line = 1; filler.Length < 400000; line++)
+		{
+			filler.Append($"L{line:000000} the quick brown fox jumps over the lazy dog near the quiet river bank today\n");
+		}
+
+		rig.Session.InvalidateProtocol();
+		rig.Session.Bundle.OnUserMessage($"Numbered filler lines follow; there is a question after them.\n{filler}The closing code is ROWAN-88. State the closing code, and the exact text the echo tool returned at the very start of this conversation.");
+		ProtocolResult result = await StepAsync(rig, ct);
+		string         text   = result.Payload?.AssistantText ?? string.Empty;
+		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, $"Antigravity LongSeed: succeeds ({result.ErrorMessage})");
+		ctx.Assert(text.Contains("ROWAN-88") && text.Contains("zebra"), $"Antigravity LongSeed: the end of a long transcript arrives as well as its start ({text})");
+
+		string log = File.ReadAllText(Path.Combine(AgentState.LogsDir, $"{rig.Session.Id}.log"));
+		ctx.Assert(log.Contains("part 2 of 3 of a long prompt delivered"), "Antigravity LongSeed: the transcript went over in parts");
 	}
 
 	// A turn that ends in a tool call is charged its model call's tokens as prompt; only the turn
@@ -173,11 +238,17 @@ public static class AntigravityLiveTests
 	// One production turn: the call, the commit, and the tool round it asked for.
 	private static async Task<ProtocolResult> StepAsync(Rig rig, CancellationToken ct)
 	{
-		ProtocolResult result = await rig.Service.RunToCompletionAsync(rig.Session, rig.Tools, null, 0, 0, false, rig.Transport, ct);
+		return await StepAsync(rig, rig.Tools, ct);
+	}
+
+	// The same turn, offered the given tools.
+	private static async Task<ProtocolResult> StepAsync(Rig rig, Tool[] tools, CancellationToken ct)
+	{
+		ProtocolResult result = await rig.Service.RunToCompletionAsync(rig.Session, tools, null, 0, 0, false, rig.Transport, ct);
 		if (result.Outcome == ProtocolCallOutcome.Success)
 		{
 			rig.Session.CommitAssistantTurn(result.Payload!);
-			bool hasCalls = await ToolDispatch.DispatchAsync(result.Payload!, rig.Tools, rig.Session, rig.Transport, ct);
+			bool hasCalls = await ToolDispatch.DispatchAsync(result.Payload!, tools, rig.Session, rig.Transport, ct);
 			if (hasCalls)
 			{
 				rig.Session.CommitToolResults(result.Payload!);
@@ -199,6 +270,22 @@ public static class AntigravityLiveTests
 			Definition = new ToolDefinition { Function = new FunctionDefinition { Name = "echo", Description = "Echoes text back, prefixed with 'echo: '.", Parameters = parameters } },
 			Handler    = (args, id, ct, transport, sessionId, maxOutput) =>
 				Task.FromResult(new ToolResult(id, $"echo: {args["text"]?.GetValue<string>() ?? string.Empty}", string.Empty, 0, 3))
+		};
+	}
+
+	private static Tool ShoutTool()
+	{
+		JsonObject parameters = new JsonObject
+		{
+			["type"]       = "object",
+			["properties"] = new JsonObject { ["text"] = new JsonObject { ["type"] = "string" } },
+			["required"]   = new JsonArray("text")
+		};
+		return new Tool
+		{
+			Definition = new ToolDefinition { Function = new FunctionDefinition { Name = "shout", Description = "Returns text in capitals, prefixed with 'shout: '.", Parameters = parameters } },
+			Handler    = (args, id, ct, transport, sessionId, maxOutput) =>
+				Task.FromResult(new ToolResult(id, $"shout: {(args["text"]?.GetValue<string>() ?? string.Empty).ToUpperInvariant()}", string.Empty, 0, 3))
 		};
 	}
 

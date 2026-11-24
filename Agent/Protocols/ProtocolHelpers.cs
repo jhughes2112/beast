@@ -337,6 +337,15 @@ static class ProtocolHelpers
 			|| lower.Contains("unauthorized");
 	}
 
+	// llama-server holds a tool call to a grammar built from the declared tools, and throws when the model
+	// writes something that grammar has no place for ("Unexpected empty grammar stack after accepting
+	// piece"). It arrives as a 500, but nothing about the server is wrong: the conversation led the model
+	// there, and the same conversation leads it there again on every retry.
+	public static bool IsToolGrammarFailure(string errorText)
+	{
+		return errorText.Contains("empty grammar stack", StringComparison.OrdinalIgnoreCase);
+	}
+
 	public static bool IsContextOverflow(string errorText)
 	{
 		if (string.IsNullOrEmpty(errorText))

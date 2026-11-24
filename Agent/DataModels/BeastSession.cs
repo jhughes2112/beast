@@ -58,6 +58,12 @@ public class BeastSession
 	[JsonPropertyName("currentContextSize")]
 	public int CurrentContextSize { get; internal set; }
 
+	// True when CurrentContextSize was reported by a provider that keeps its own copy of the conversation
+	// (LlmService.KeepsOwnConversation): it is the size of that copy, which another model never sees.
+	[JsonInclude]
+	[JsonPropertyName("contextSizeOfOwnCopy")]
+	public bool ContextSizeOfOwnCopy { get; internal set; }
+
 	[JsonPropertyName("totalCost")]
 	public decimal TotalCost { get; internal set; }
 

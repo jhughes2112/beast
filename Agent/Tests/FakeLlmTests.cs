@@ -145,6 +145,7 @@ public static class FakeLlmTests
 
 		await TestFullContextStillTakesWholeToolOutputAsync(ctx, model, cts.Token);
 		await TestAccountErrorIsNotOverflowAsync(ctx, model, cts.Token);
+		await TestGrammarFailureIsNotRetriedAsync(ctx, server, model, cts.Token);
 		await TestHugeConversationAlwaysSummarizesAsync(ctx, model, registry, roleService, cts.Token);
 		await TestChokingServerStillSummarizesAsync(ctx, registry, roleService, cts.Token);
 		await TestWholeTranscriptReachesTheModelAsync(ctx, server, model, registry, roleService, cts.Token);
@@ -377,6 +378,24 @@ public static class FakeLlmTests
 			}
 		}
 		ctx.Assert(alerted, "AccountError: the human is alerted that the model needs a fix");
+	}
+
+	// llama-server answers a tool call its grammar cannot hold with a 500. A compacted history full of
+	// tool_call_memory records drew exactly that from a local model on every attempt, and it was retried
+	// five times over forty seconds before the session parked on the same error. One request is enough.
+	private static async Task TestGrammarFailureIsNotRetriedAsync(TestContext ctx, FakeLlm server, LlmModel model, CancellationToken ct)
+	{
+		TestCaptureTransport transport = new TestCaptureTransport();
+		Session              session   = BuildSession("grammar", model, transport);
+		session.Bundle.OnUserMessage($"Continue the work. {FakeLlm.GrammarSentinel}");
+
+		int            served  = server.RequestsServed;
+		LlmService     service = BuildService(model);
+		ProtocolResult result  = await service.RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
+
+		ctx.AssertEqual(ProtocolCallOutcome.Failed,        result.Outcome, "GrammarFailure: reported as a failure, not waited out");
+		ctx.AssertEqual(                served + 1, server.RequestsServed, "GrammarFailure: the request that cannot succeed is sent once");
+		ctx.AssertContains(result.ErrorMessage ?? string.Empty, "grammar stack", "GrammarFailure: the server's own words reach the human");
 	}
 
 	// The exact shape a compaction successor has on its very first request: real content in the
