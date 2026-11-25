@@ -8,6 +8,16 @@
 // written to the real file, not held here: they survive an unmount and the host sees them. A program
 // that sets a time itself (touch -d, cp -p, tar) keeps that time. Every time a file reports is its
 // modification time, so `ls -lc` and `ls -lu` show nothing real either.
+//
+//   clockfs --owner <uid> <gid> <folder>
+//
+// The sandbox's ownership instead of a clock, mounted over the workspace at startup (Sandbox.cs). Times
+// are real. Ownership is reported, not stored: everything belongs to uid:gid, except a top-level
+// dot-folder, dot-symlink or .git that is really root's, which reads as root's with no group or other
+// write bit all the way down. The kernel checks permissions against what is reported, so the lockdown
+// only has to chown the top-level entries instead of every file, which on Docker Desktop's Windows bind
+// mounts took minutes per start. A hard link to a sealed file is refused: under another name it would
+// read as uid's.
 #define FUSE_USE_VERSION 31
 #define _GNU_SOURCE
 
@@ -28,11 +38,50 @@
 
 static int         g_root  = -1;
 static int         g_clock = -1;
+static int         g_owner = 0;
+static uid_t       g_uid   = 0;
+static gid_t       g_gid   = 0;
 
 // The path relative to the real folder; the folder itself is ".".
 static const char *rel(const char *path)
 {
 	return path[1] == '\0' ? "." : path + 1;
+}
+
+// Whether a path is inside (or is) a sealed top-level entry: a dot-folder, dot-symlink or .git that
+// is really root's. Only a path whose first name starts with '.' costs a look at that entry.
+static int is_sealed(const char *path)
+{
+	char        top[NAME_MAX + 1];
+	const char *name  = path + 1;
+	const char *slash = strchr(name, '/');
+	size_t      len   = slash != NULL ? (size_t)(slash - name) : strlen(name);
+	struct stat st;
+	if (name[0] != '.' || len == 0 || len > NAME_MAX)
+		return 0;
+	memcpy(top, name, len);
+	top[len] = '\0';
+	if (fstatat(g_root, top, &st, AT_SYMLINK_NOFOLLOW) != 0 || st.st_uid != 0)
+		return 0;
+	return S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode) || strcmp(top, ".git") == 0;
+}
+
+// What the kernel checks permissions against in owner mode. The mount's own folder reports as it is.
+static void report_owner(const char *path, struct stat *st)
+{
+	if (path[1] == '\0')
+		return;
+	if (is_sealed(path))
+	{
+		st->st_uid   = 0;
+		st->st_gid   = 0;
+		st->st_mode &= ~(mode_t)(S_IWGRP | S_IWOTH);
+	}
+	else
+	{
+		st->st_uid = g_uid;
+		st->st_gid = g_gid;
+	}
 }
 
 static time_t now(void)
@@ -45,9 +94,12 @@ static time_t now(void)
 	return (time_t)strtoll(text, NULL, 10);
 }
 
+// Owner mode has no clock: a change keeps the time the kernel gave it.
 static void stamp(const char *path)
 {
 	struct timespec times[2];
+	if (g_clock < 0)
+		return;
 	times[0].tv_sec  = times[1].tv_sec  = now();
 	times[0].tv_nsec = times[1].tv_nsec = 0;
 	utimensat(g_root, rel(path), times, AT_SYMLINK_NOFOLLOW);
@@ -89,7 +141,10 @@ static int cf_getattr(const char *path, struct stat *st, struct fuse_file_info *
 	(void)fi;
 	if (rc != 0)
 		return -errno;
-	flatten(st);
+	if (g_owner)
+		report_owner(path, st);
+	else
+		flatten(st);
 	return 0;
 }
 
@@ -209,6 +264,8 @@ static int cf_rename(const char *from, const char *to, unsigned int flags)
 
 static int cf_link(const char *from, const char *to)
 {
+	if (g_owner && is_sealed(from))
+		return -EPERM;
 	if (linkat(g_root, rel(from), g_root, rel(to), 0) != 0)
 		return -errno;
 	stamp_parent(to);
@@ -364,6 +421,18 @@ static void *cf_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 	cfg->direct_io        = 0;
 	cfg->kernel_cache     = 0;
 	cfg->auto_cache       = 0;
+
+	// Owner mode reports real times, so the kernel may keep what it was told for a second: uncached, every
+	// lookup is a round trip through here and onto a bind mount that is slow already. A file's contents are
+	// reread when its time or size changes, as an edit from the host does. A folder sealed while its
+	// entries are cached reads as the shell user's for that second, so the agent waits it out (Sandbox.cs).
+	if (g_owner)
+	{
+		cfg->entry_timeout    = 1.0;
+		cfg->attr_timeout     = 1.0;
+		cfg->negative_timeout = 1.0;
+		cfg->auto_cache       = 1;
+	}
 	return NULL;
 }
 
@@ -400,20 +469,40 @@ static const struct fuse_operations kOps = {
 
 int main(int argc, char *argv[])
 {
-	if (argc != 3)
+	char *folder;
+	char *options;
+	if (argc == 5 && strcmp(argv[1], "--owner") == 0)
 	{
-		fprintf(stderr, "usage: clockfs <folder> <clock file>\n");
+		g_owner = 1;
+		g_uid   = (uid_t)strtoul(argv[2], NULL, 10);
+		g_gid   = (gid_t)strtoul(argv[3], NULL, 10);
+		folder  = argv[4];
+		options = "allow_other,default_permissions,fsname=ownerfs,subtype=ownerfs";
+	}
+	else if (argc == 3)
+	{
+		folder  = argv[1];
+		g_clock = open(argv[2], O_RDONLY);
+		options = "allow_other,default_permissions,fsname=clockfs";
+		if (g_clock < 0)
+		{
+			perror("clockfs");
+			return 1;
+		}
+	}
+	else
+	{
+		fprintf(stderr, "usage: clockfs <folder> <clock file>\n       clockfs --owner <uid> <gid> <folder>\n");
 		return 2;
 	}
-	g_root  = open(argv[1], O_RDONLY | O_DIRECTORY);
-	g_clock = open(argv[2], O_RDONLY);
-	if (g_root < 0 || g_clock < 0)
+	g_root = open(folder, O_RDONLY | O_DIRECTORY);
+	if (g_root < 0)
 	{
 		perror("clockfs");
 		return 1;
 	}
 	umask(0);
 
-	char *args[] = { argv[0], argv[1], "-o", "allow_other,default_permissions,fsname=clockfs", NULL };
+	char *args[] = { argv[0], folder, "-o", options, NULL };
 	return fuse_main(4, args, &kOps, NULL);
 }

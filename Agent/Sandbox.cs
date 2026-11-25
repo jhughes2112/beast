@@ -21,6 +21,8 @@ using System.Threading.Tasks;
 //   - its git is read-only (status, diff, log); the agent records its work;
 //   - the workspace folder is sticky, the same rule /tmp uses: it may create files there, but only
 //     delete or rename its own, so it cannot move a root-owned folder aside and put its own in place.
+// That ownership is reported by clockfs's owner mode, mounted over the workspace (MountWorkspaceAsync),
+// rather than written to each file: only the top-level entries are ever chowned.
 //
 // The in-process file tools cannot lean on permissions — they run inside the root agent — so they
 // resolve every path through its symlinks and are confined to the workspace and the temp folder,
@@ -36,8 +38,12 @@ public static class Sandbox
 
 	private static string _root = string.Empty;
 	private static bool   _shellUserActive;
+	private static bool   _ownershipMounted;
 	private static uint   _uid;
 	private static uint   _gid;
+
+	// How long the ownership mount lets the kernel keep an entry's owner, plus a margin (clockfs.c).
+	private const int kOwnershipCacheMs = 1100;
 
 	// Repeatable time for seeded runs. A listing or a script that shows the real time hands every run
 	// different text, so a seeded run could never repeat. Time is counted instead: a fixed date plus one
@@ -149,8 +155,9 @@ public static class Sandbox
 	// root on Linux and the image created the account.
 	public static void Initialize(string workspaceRoot)
 	{
-		_root            = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRoot));
-		_shellUserActive = false;
+		_root             = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRoot));
+		_shellUserActive  = false;
+		_ownershipMounted = false;
 		if (OperatingSystem.IsLinux() && Environment.UserName == "root")
 		{
 			(bool found, uint uid, uint gid) = LookUpUser(ShellUser);
@@ -160,6 +167,31 @@ public static class Sandbox
 		}
 	}
 
+	// Mounts clockfs in owner mode over the workspace, once at startup before the lockdown: the shell user
+	// then owns every working file without a chown each, and a sealed folder reads as root's all the way
+	// down (clockfs.c). Without it (no fuse device, a container made by an older Beast) the lockdown falls
+	// back to chowning the tree. Returns a one-line summary.
+	public static async Task<string> MountWorkspaceAsync(CancellationToken ct)
+	{
+		string summary = "ownership mount skipped (no shell user or no fuse)";
+		if (FileClockAvailable)
+		{
+			ToolResult result = await ShellTools.AgentBashAsync("sandbox_mount", $"{kClockFsPath} --owner {_uid} {_gid} '{Root.Replace("'", "'\\''")}'", 60, ct);
+			_ownershipMounted = result.ExitCode == 0;
+			if (_ownershipMounted)
+			{
+				// This process's working folder is still the real one underneath; a path is resolved afresh.
+				Directory.SetCurrentDirectory(Root);
+				summary = "workspace ownership mounted";
+			}
+			else
+			{
+				summary = $"ownership mount FAILED, chowning the tree instead: {result.StdOut} {result.StdErr}".TrimEnd();
+			}
+		}
+		return summary;
+	}
+
 	// Applies the ownership and permission layout described above. Idempotent, and re-run on every
 	// start rather than trusting what an earlier container left behind. Returns a one-line summary.
 	public static async Task<string> LockDownAsync(CancellationToken ct)
@@ -167,7 +199,7 @@ public static class Sandbox
 		string summary = "skipped (no shell user)";
 		if (_shellUserActive)
 		{
-			ToolResult result = await ShellTools.AgentBashAsync("sandbox_lockdown", LockDownScript(Root), 600, ct);
+			ToolResult result = await ShellTools.AgentBashAsync("sandbox_lockdown", LockDownScript(Root, _ownershipMounted), 600, ct);
 			string     names  = Listed(result.StdOut, "LOCKED ");
 			summary           = result.ExitCode == 0
 				? $"workspace locked down; root-owned dot-folders: {(names.Length > 0 ? names : "none")}"
@@ -186,11 +218,17 @@ public static class Sandbox
 		string note = string.Empty;
 		if (_shellUserActive)
 		{
-			ToolResult result  = await ShellTools.AgentBashAsync("sandbox_seal", SealScript(Root), 120, ct);
+			ToolResult result  = await ShellTools.AgentBashAsync("sandbox_seal", SealScript(Root, _ownershipMounted), 120, ct);
 			string     locked  = Listed(result.StdOut, "LOCKED ");
 			string     removed = Listed(result.StdOut, "REMOVED ");
 			if (locked.Length > 0)
 			{
+				// The kernel may still hold the folder's files as the shell user's; the next command waits that out.
+				if (_ownershipMounted)
+				{
+					await Task.Delay(kOwnershipCacheMs, ct);
+				}
+
 				note = $"[sandbox: {locked} now belongs to the agent and is read-only for you — top-level folders whose names start with '.' always do. Use a name without the dot (e.g. venv/, not .venv/).]";
 			}
 
@@ -580,17 +618,25 @@ public static class Sandbox
 
 	// Shell functions both scripts share. give: hand a tree to the shell user. seal: make a tree root's,
 	// readable but not writable by anyone else (root keeps its own write bit: on Docker Desktop's
-	// bind mounts root cannot write a file it owns once that bit is gone). Each only touches entries
+	// bind mounts root cannot write a file it owns once that bit is gone). seal_tree always does the
+	// whole tree, for the git dir of a worktree, which lies outside the workspace. Each only touches entries
 	// that are not already right, so a re-run over a big repository walks it but changes little.
-	private static string SharedFunctions(string root)
+	// On the ownership mount (MountWorkspaceAsync) a tree reads as its top entry's, so give has nothing to
+	// do and seal only changes that entry: no walk, which over a Windows bind mount took minutes per start.
+	private static string SharedFunctions(string root, bool mounted)
 	{
 		string quoted = root.Replace("'", "'\\''");
+		string tree   = "seal_tree() { find \"$1\" -xdev ! -user root -exec chown -h root:root {} +; find \"$1\" -xdev ! -type l -perm /go=w -exec chmod go-w {} +; }\n";
 		return
 			"set -u\n" +
 			$"W='{quoted}'\n" +
 			$"U={ShellUser}\n" +
-			"give() { find \"$1\" -xdev ! -user \"$U\" -exec chown -h \"$U:$U\" {} +; }\n" +
-			"seal() { find \"$1\" -xdev ! -user root -exec chown -h root:root {} +; find \"$1\" -xdev ! -type l -perm /go=w -exec chmod go-w {} +; }\n";
+			tree +
+			(mounted
+				? "give() { :; }\n" +
+				  "seal() { chown -h root:root \"$1\"; [ -L \"$1\" ] || chmod go-w \"$1\"; }\n"
+				: "give() { find \"$1\" -xdev ! -user \"$U\" -exec chown -h \"$U:$U\" {} +; }\n" +
+				  "seal() { seal_tree \"$1\"; }\n");
 	}
 
 	// The lockdown, as root. In order:
@@ -610,10 +656,10 @@ public static class Sandbox
 	//   4. The workspace folder is sticky and root's: the shell user creates freely but can only delete
 	//      or rename what it owns, so the sealed entries above stay put.
 	// Re-run after every commit_and_rebase, which writes the working tree as root.
-	private static string LockDownScript(string root)
+	private static string LockDownScript(string root, bool mounted)
 	{
 		return
-			SharedFunctions(root) +
+			SharedFunctions(root, mounted) +
 			"for e in \"$W\"/* \"$W\"/.[!.]* \"$W\"/..?*; do\n" +
 			"  [ -e \"$e\" ] || [ -L \"$e\" ] || continue\n" +
 			"  n=${e##*/}\n" +
@@ -630,7 +676,7 @@ public static class Sandbox
 			"  wt=$(sed -n 's/^gitdir: //p' \"$W/.git\")\n" +
 			"  case \"$wt\" in */.git/worktrees/*) common=${wt%/worktrees/*}; main=${common%/.git}; printf '../..\\n' > \"$wt/commondir\" ;; esac\n" +
 			"fi\n" +
-			"if [ -d \"$common\" ]; then rm -f \"$common/commondir\"; seal \"$common\"; fi\n" +
+			"if [ -d \"$common\" ]; then rm -f \"$common/commondir\"; if [ -n \"$main\" ]; then seal_tree \"$common\"; else seal \"$common\"; fi; fi\n" +
 			"if [ -n \"$main\" ]; then\n" +
 			"  chown root:root \"$main\"; chmod 711 \"$main\"\n" +
 			"  for e in \"$main\"/* \"$main\"/.[!.]* \"$main\"/..?*; do\n" +
@@ -649,10 +695,10 @@ public static class Sandbox
 	// After a command of the model's shell: a top-level dot-folder it created is sealed, a dot-symlink
 	// it created is removed. Root-owned entries are already sealed and the shell cannot write inside
 	// them, so only each entry's own owner needs checking.
-	private static string SealScript(string root)
+	private static string SealScript(string root, bool mounted)
 	{
 		return
-			SharedFunctions(root) +
+			SharedFunctions(root, mounted) +
 			"for e in \"$W\"/.[!.]* \"$W\"/..?*; do\n" +
 			"  [ -e \"$e\" ] || [ -L \"$e\" ] || continue\n" +
 			"  n=${e##*/}\n" +

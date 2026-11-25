@@ -112,6 +112,8 @@ public class Program
 		// shell user, and the workspace's ownership and permissions keep that user out of the keys,
 		// the agent's state, and the git control files.
 		Sandbox.Initialize(Environment.CurrentDirectory);
+		string mount = await Sandbox.MountWorkspaceAsync(cts.Token);
+		Console.Error.WriteLine($"[Sandbox] {mount}");
 		string lockdown = await Sandbox.LockDownAsync(cts.Token);
 		Console.Error.WriteLine($"[Sandbox] {lockdown}");
 

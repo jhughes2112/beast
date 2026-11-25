@@ -56,6 +56,18 @@ public static class SandboxTests
 					Sandbox.Initialize(workspace);
 					await ShellTools.AgentBashAsync("cleanup", $"rm -rf '{bare}'", null, CancellationToken.None);
 				}
+
+				string owned = Path.Combine(previous, $"beast-ownerfs-{Guid.NewGuid():N}");
+				try
+				{
+					await TestOwnershipMountAsync(ctx, owned);
+				}
+				finally
+				{
+					Directory.SetCurrentDirectory(workspace);
+					Sandbox.Initialize(workspace);
+					await ShellTools.AgentBashAsync("cleanup", $"umount '{owned}' 2>/dev/null; rm -rf '{owned}'", null, CancellationToken.None);
+				}
 			}
 			else
 			{
@@ -133,6 +145,41 @@ public static class SandboxTests
 		Sandbox.Initialize(bare);
 		string summary = await Sandbox.LockDownAsync(CancellationToken.None);
 		ctx.Assert(!Directory.Exists(Path.Combine(bare, ".beast")), $"LockDown: no .beast is created in the workspace — {summary}");
+	}
+
+	// The ownership mount: files that are really root's (as every file on a Windows bind mount is) read as
+	// the shell user's and are its to change, while a root-owned dot-folder stays root's all the way down,
+	// by name, by hard link, or by a file the shell already had open when the folder was sealed.
+	private static async Task TestOwnershipMountAsync(TestContext ctx, string root)
+	{
+		await ShellTools.AgentBashAsync("o0",
+			$"set -e; mkdir -p '{root}/src' '{root}/.git/hooks'; echo a > '{root}/src/a.txt'; chmod 644 '{root}/src/a.txt'; " +
+			$"echo cfg > '{root}/.git/config'; chmod 666 '{root}/.git/config'; chown -R root:root '{root}'",
+			null, CancellationToken.None);
+		Directory.SetCurrentDirectory(root);
+		Sandbox.Initialize(root);
+		if (Sandbox.FileClockAvailable)
+		{
+			string mount = await Sandbox.MountWorkspaceAsync(CancellationToken.None);
+			ctx.AssertEqual("workspace ownership mounted", mount, "Ownership: the workspace is mounted");
+			await Sandbox.LockDownAsync(CancellationToken.None);
+
+			ToolResult edit = await ShellTools.BashAsync("o1", "echo b >> src/a.txt && chmod +x src/a.txt && echo c > src/new.txt", null, CancellationToken.None);
+			ctx.AssertEqual(0, edit.ExitCode, $"Ownership: the shell edits and chmods a file that is really root's 644 {edit.StdErr}");
+
+			ToolResult git  = await ShellTools.BashAsync("o2", "echo evil >> .git/config || echo evil > .git/hooks/post-checkout || ln .git/config src/cfg || mv .git gitx", null, CancellationToken.None);
+			ToolResult kept = await ShellTools.AgentBashAsync("o3", "cat .git/config; ls .git/hooks src | grep -c -e post-checkout -e cfg; ls -d gitx 2>/dev/null | wc -l", null, CancellationToken.None);
+			ctx.Assert(git.ExitCode != 0 && kept.StdOut.Trim() == "cfg\n0\n0", $"Ownership: .git cannot be written, planted in, linked out of or moved — {kept.StdOut.Replace('\n', '|')}");
+
+			// bash seals what the command made before it returns, and says so.
+			ToolResult made = await ShellTools.BashAsync("o4", "mkdir .venv && echo 1 > .venv/x && cat .venv/x", null, CancellationToken.None);
+			ToolResult late = await ShellTools.BashAsync("o5", "echo 2 >> .venv/x", null, CancellationToken.None);
+			ctx.Assert(made.ExitCode == 0 && made.StdErr.Contains(".venv", StringComparison.Ordinal) && late.ExitCode != 0, $"Ownership: a dot-folder the shell made is sealed, even a file it already opened — {made.StdErr}");
+		}
+		else
+		{
+			ctx.Log("    SKIP: no clockfs or fuse device, so the ownership mount is untested");
+		}
 	}
 
 	// A symlink the model's shell plants inside the workspace must not carry the file tools out of it.
