@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -76,12 +77,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		CancellationToken ct = _cancellationTokenSource.Token;
 
+		// Each startup phase's time goes to the container log, so a slow start says where it went.
+		Stopwatch startup = Stopwatch.StartNew();
+
 		_roleService.Reload();
 		_settings.LoadSettings();
 		_registry.LoadFromConfigs(_settings, _roleService);
 		await _registry.LoadAutoProvidersAsync(_settings, ct);
+		Console.Error.WriteLine($"[Startup] model catalogs: {startup.ElapsedMilliseconds} ms");
 		_registry.ExpandRoleWildcards(_roleService);
 		await _registry.ProbeEndpointsAsync(ct);
+		Console.Error.WriteLine($"[Startup] endpoint probes: {startup.ElapsedMilliseconds} ms");
 
 		// Both exist before any session does, so the first toolset built already has host_command.
 		// One memory for both: exact repeats are decided from it, and calibration measures with its answers.
@@ -110,6 +116,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 		// tree shows the complete worktree history, then the resumed root, which is then activated. That marks
 		// the end of the restore: Beast now knows every conversation, and shows the one it last had on screen
 		// (it keeps that itself), or this root.
+		Console.Error.WriteLine($"[Startup] resumed session loaded: {startup.ElapsedMilliseconds} ms");
 		if (!_ephemeral)
 		{
 			RestoreAllSessions(initial);
@@ -117,6 +124,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		initial.ReplayToTransport();
 		_transport.SessionActivate(initial.Id);
+		Console.Error.WriteLine($"[Startup] {_allSessions.Count} sessions restored and replayed: {startup.ElapsedMilliseconds} ms");
 
 		Task rootHandlerTask = RunRootHandlerAsync(initial, ct);
 		await ReadInputAsync(ct);

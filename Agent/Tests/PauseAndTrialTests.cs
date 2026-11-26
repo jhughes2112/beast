@@ -552,11 +552,18 @@ public static class PauseAndTrialTests
 		roles.Roles[ReasoningSummarizer.RoleName] = roles.Roles[ReasoningSummarizer.RoleName].WithModels(new List<string> { kModelId, "plain" });
 		Role        twoModels                     = roles.Roles[ReasoningSummarizer.RoleName];
 		LlmService? seededTop                     = registry.CreateService(twoModels, kModelId, 0, false);
-		ctx.Assert(seededTop != null && seededTop.Seeded && registry.CreateFallbackService(seededTop, 0, false) == null, "Seeded run: a seeded model has no fallback");
+		ctx.Assert(seededTop != null && seededTop.Seeded && registry.CreateFallbackService(seededTop, 0, false, new HashSet<string>()) == null, "Seeded run: a seeded model has no fallback");
 		models[kModelId] = new LlmModel(kModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), new ModelConfig { Id = kModelId, Name = "Fake", ContextWindow = 200000, MaxOutputTokens = 4096 });
 		registry.RestoreModels(models);
 		LlmService? plainTop = registry.CreateService(twoModels, kModelId, 0, false);
-		ctx.Assert(plainTop != null && registry.CreateFallbackService(plainTop, 0, false) != null, "Unseeded run: the same list falls back");
+		ctx.Assert(plainTop != null && registry.CreateFallbackService(plainTop, 0, false, new HashSet<string>()) != null, "Unseeded run: the same list falls back");
+
+		// The last model in the list falls back up to the first, the ObolApps case: a session moved down to
+		// a local model died there with a healthy subscription above it. Never to a model this turn left.
+		LlmService? plainBottom = registry.CreateService(twoModels, "plain", 0, false);
+		LlmService? wrapped     = plainBottom != null ? registry.CreateFallbackService(plainBottom, 0, false, new HashSet<string>()) : null;
+		ctx.AssertEqual(kModelId, wrapped?.Model.ConfigId ?? string.Empty, "Fallback: the last model in the list falls back to one above it");
+		ctx.Assert(plainBottom != null && registry.CreateFallbackService(plainBottom, 0, false, new HashSet<string> { kModelId }) == null, "Fallback: but never to a model the turn already left");
 
 		// A seed only counts on a protocol that has one.
 		LlmModel Seeded(string endpoint)

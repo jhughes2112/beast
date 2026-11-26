@@ -95,6 +95,8 @@ public class TransportConsoleDebug : ITransportServer
 
 	public void PendingQueue(string sessionId, string[] lines) { }
 
+	public void Unqueued(string sessionId, string text) { }
+
 	// Streaming renders inline so the user sees tokens as they arrive.
 	public void StreamStart(string sessionId, string tag)
 	{

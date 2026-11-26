@@ -96,6 +96,28 @@ internal static class SessionTree
 		}
 	}
 
+	// Higher root counter first; an id that is not a number (an old-style one) sorts after them by text.
+	private static int CompareRootsNewestFirst(string a, string b)
+	{
+		bool numericA = long.TryParse(a, out long numA);
+		bool numericB = long.TryParse(b, out long numB);
+		int  order;
+		if (numericA && numericB)
+		{
+			order = numB.CompareTo(numA);
+		}
+		else if (numericA != numericB)
+		{
+			order = numericA ? -1 : 1;
+		}
+		else
+		{
+			order = string.CompareOrdinal(a, b);
+		}
+
+		return order;
+	}
+
 	// Returns the ID of the root session: the one whose parent is not itself a known session.
 	public static string GetRootSessionId(Dictionary<string, BeastApp.SessionState> sessions)
 	{
@@ -205,7 +227,9 @@ internal static class SessionTree
 			}
 		}
 
-		// DFS from roots (sorted by key for deterministic order).
+		// DFS from roots, newest first. A root's id is the agent's persisted root counter, so it is the
+		// conversation's own creation index: a compaction successor, or a new conversation, goes in above
+		// the rest, and a restart lists them the same way. Numeric, not ordinal, so "10" follows "9".
 		List<string> roots = new List<string>();
 		foreach (string id in sessions.Keys)
 		{
@@ -214,7 +238,7 @@ internal static class SessionTree
 				roots.Add(id);
 			}
 		}
-		roots.Sort(StringComparer.Ordinal);
+		roots.Sort(CompareRootsNewestFirst);
 
 		List<(string Id, int Depth)> ordered = new List<(string, int)>();
 		foreach (string root in roots)

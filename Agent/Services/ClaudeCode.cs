@@ -42,7 +42,8 @@ public static class ClaudeCode
 	// key silently bills the API instead of the subscription, which would void any comparison.
 	private static readonly string[] kShadowingVariables = { "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL" };
 
-	// `claude update` runs once per container, on the first use of the endpoint.
+	// `claude update` runs once per container: in the background once startup has the catalog, or first
+	// thing in whichever use of the CLI gets there before it.
 	private static readonly SemaphoreSlim _updateGate = new SemaphoreSlim(1, 1);
 	private static          bool          _updated;
 
@@ -102,12 +103,6 @@ public static class ClaudeCode
 		}
 		else
 		{
-			string update = await EnsureUpdatedAsync(ct);
-			if (update.Length > 0)
-			{
-				Console.Error.WriteLine($"[ClaudeCode] {update}");
-			}
-
 			List<string> args = new List<string>
 			{
 				"-p",
@@ -190,6 +185,17 @@ public static class ClaudeCode
 			}
 		}
 		return models;
+	}
+
+	// Runs the update off the startup path, which only needed the catalog; a network round trip and a
+	// reinstall would otherwise hold every session back for many seconds.
+	public static async Task UpdateInBackgroundAsync(CancellationToken ct)
+	{
+		string update = await EnsureUpdatedAsync(ct);
+		if (update.Length > 0)
+		{
+			Console.Error.WriteLine($"[ClaudeCode] {update}");
+		}
 	}
 
 	// Brings the image's Claude Code up to date the first time this container uses the endpoint.

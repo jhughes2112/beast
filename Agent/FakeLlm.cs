@@ -32,7 +32,11 @@ public class FakeLlm
 	// Put this anywhere in a conversation and every request for it fails the way llama-server does when the
 	// model writes a tool call its grammar has no place for: a 500, verbatim, that no retry changes.
 	public const string GrammarSentinel = "[[fake-llm-grammar-failure]]";
-	public const string GrammarFailure  = "{\"error\":{\"code\":500,\"message\":\"got exception: Unexpected empty grammar stack after accepting piece: tool (2251)\",\"type\":\"server_error\"}}";
+
+	// The same failure, until the conversation carries the nudge that names the offered tools: a model that
+	// reached for a tool it was not offered, and called the right one once told.
+	public const string GrammarUntilToldSentinel = "[[fake-llm-grammar-until-told]]";
+	public const string GrammarFailure           = "{\"error\":{\"code\":500,\"message\":\"got exception: Unexpected empty grammar stack after accepting piece: tool (2251)\",\"type\":\"server_error\"}}";
 
 	// Ask for this model id and every request is rejected as over-window, however small it really
 	// is: the provider whose real limit is nothing like the configured one, so compacting never
@@ -271,7 +275,8 @@ public class FakeLlm
 			return;
 		}
 
-		if (bodyText.Contains(GrammarSentinel, StringComparison.Ordinal))
+		if (bodyText.Contains(GrammarSentinel, StringComparison.Ordinal)
+			|| (bodyText.Contains(GrammarUntilToldSentinel, StringComparison.Ordinal) && !bodyText.Contains("rejected by the server", StringComparison.Ordinal)))
 		{
 			await WriteJsonAsync(context.Response, 500, GrammarFailure, ct);
 			return;

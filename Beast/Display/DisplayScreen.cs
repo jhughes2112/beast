@@ -84,6 +84,7 @@ public class DisplayScreen : IDisplay
 		public static readonly string ErrBodyAnsi   = $"\x1b[38;2;{FileErrBodyFg.R};{FileErrBodyFg.G};{FileErrBodyFg.B}m\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
 		public static readonly string BodyBgAnsi    = $"\x1b[48;2;{FileBodyBg.R};{FileBodyBg.G};{FileBodyBg.B}m";
 		public static readonly string ErrBodyBgAnsi = $"\x1b[48;2;{FileErrBodyBg.R};{FileErrBodyBg.G};{FileErrBodyBg.B}m";
+		public static readonly string CallBgAnsi    = $"\x1b[48;2;{ToolCallBg.R};{ToolCallBg.G};{ToolCallBg.B}m";
 		public static readonly string FileNameAnsi  = "\x1b[38;2;212;182;120m"; // soft gold filename highlight
 		public static readonly string ResetAnsi     = "\x1b[39m";               // reset foreground only
 
@@ -176,10 +177,18 @@ public class DisplayScreen : IDisplay
 	// above the input separator. Keyed by session id so each session keeps its own pending text: a
 	// steer can sit queued a long time, and switching sessions must swap which pending text is shown.
 	// Submissions accumulate per session and clear together when that session echoes a User frame
-	// (ClearPendingGhost). They are unmodifiable and uncancelable once sent (only /cancel, which tears
-	// down the whole turn, removes them). Guarded by _consoleLock.
+	// (ClearPendingGhost). Up on an empty input line asks the agent for the newest one back (/unqueue);
+	// /cancel, which tears down the whole turn, removes them all. Guarded by _consoleLock.
 	private readonly Dictionary<string, List<string>> _pendingGhost = new Dictionary<string, List<string>>();
-	private          string _statusText = "";
+
+	// Text the agent handed back for /unqueue, waiting for the input loop to put it in the input line.
+	// Null when nothing is waiting. Guarded by _consoleLock.
+	private string? _unqueuedText = null;
+
+	// The session a question pulled the view away from while the user had text typed; the view goes back
+	// there once every question is answered, since the typed text belongs to it. "" when none.
+	private string _draftReturnId = "";
+	private string _statusText    = "";
 	// Status bar is laid out as three segments: left (path + mode), center (token/cost metrics),
 	// right (model name). They're stored separately so each can be positioned independently.
 	// The center segment is composed at draw time rather than stored as text, because the active
@@ -769,7 +778,28 @@ public class DisplayScreen : IDisplay
 			string first = ChoicePopup.WaitingSessions(_choices)[0];
 			if (!string.Equals(first, _sessionActiveId, StringComparison.Ordinal))
 			{
+				if (_currentInputText.Length > 0 && _draftReturnId.Length == 0)
+				{
+					_draftReturnId = _sessionActiveId;
+				}
+
 				_sessionSwitchCallback?.Invoke(first);
+			}
+		}
+		else if (_draftReturnId.Length > 0)
+		{
+			// Every question is answered: take the view back to the session the typed text was meant for.
+			string back    = _draftReturnId;
+			_draftReturnId = "";
+			bool known     = false;
+			foreach (SessionDisplayInfo s in _sessionList)
+			{
+				known = known || string.Equals(s.Id, back, StringComparison.Ordinal);
+			}
+
+			if (known && !string.Equals(back, _sessionActiveId, StringComparison.Ordinal))
+			{
+				_sessionSwitchCallback?.Invoke(back);
 			}
 		}
 	}
@@ -849,6 +879,31 @@ public class DisplayScreen : IDisplay
 		}
 	}
 
+	// Whether the session on screen shows sent text the agent has not echoed back yet.
+	private bool HasPendingGhost()
+	{
+		lock (_consoleLock)
+		{
+			bool pending = _pendingGhost.TryGetValue(_sessionActiveId, out List<string>? queued) && queued.Count > 0;
+			return pending;
+		}
+	}
+
+	public void OnUnqueued(string text)
+	{
+		lock (_consoleLock)
+		{
+			if (text.Length > 0)
+			{
+				_unqueuedText = _unqueuedText == null ? text : $"{_unqueuedText}\n{text}";
+			}
+			else
+			{
+				SetStatus("Too late: the agent already took that message");
+			}
+		}
+	}
+
 	public bool IsAutoTrackSuppressed()
 	{
 		lock (_consoleLock)
@@ -861,6 +916,12 @@ public class DisplayScreen : IDisplay
 			// The F10 overlay being open does not suppress following. A waiting approval does: the view
 			// belongs to the session that asked until the user has answered.
 			if (_waitingSessions.Count > 0)
+			{
+				return true;
+			}
+
+			// Text in the input line is addressed to the session on screen: the view never leaves it on its own.
+			if (_currentInputText.Length > 0)
 			{
 				return true;
 			}
@@ -2092,6 +2153,29 @@ public class DisplayScreen : IDisplay
 				}
 			}
 
+			// A message taken back with /unqueue goes into the input line for editing, ahead of anything
+			// typed since.
+			string? unqueued;
+			lock (_consoleLock)
+			{
+				unqueued      = _unqueuedText;
+				_unqueuedText = null;
+			}
+			if (unqueued != null)
+			{
+				if (inputBuffer.Length > 0)
+				{
+					inputBuffer.Insert(0, '\n');
+				}
+
+				inputBuffer.Insert(0, unqueued);
+				cursorPos         = unqueued.Length;
+				inCompletion      = false;
+				historyIndex      = -1;
+				historySavedDraft = "";
+				SetInput(inputBuffer.ToString(), cursorPos);
+			}
+
 			// Poll faster only while something is animating (busy spinner, scroll glide, scrollbar fade,
 			// transient status); an idle screen just needs to notice the next keystroke.
 			int pollTimeout;
@@ -2400,18 +2484,17 @@ public class DisplayScreen : IDisplay
 			}
 
 			// The session-tree panel is non-modal: it stays open beside the input line without blocking
-			// typing. It borrows only the bare Up/Down arrows for tree navigation when the input line is
-			// empty — when the buffer is non-empty, Up/Down fall through to autocomplete/history so the
-			// user can keep typing. Delete drops a session only when the input line is empty. Every other
-			// key falls through to normal handling below. Navigation previews live.
+			// typing. It has its own keys, F7 (up) and F8 (down), so the arrows always belong to the input
+			// line and nothing typed there can move the view to another session. Delete drops a session
+			// only when the input line is empty. Every other key falls through to normal handling below.
+			// Navigation previews live.
 			if (_sessionTreeOpen)
 			{
 				bool treeHandled = false;
 				lock (_consoleLock)
 				{
 					_followReadyTick = 0;
-					// Up/Down only navigate the tree when the input line is empty.
-					if (inputBuffer.Length == 0 && key.Key == ConsoleKey.UpArrow && !ctrl && !alt && !shift)
+					if (key.Key == ConsoleKey.F7)
 					{
 						if (_sessionTreeSelected > 0)
 						{
@@ -2426,7 +2509,7 @@ public class DisplayScreen : IDisplay
 						Redraw();
 						treeHandled = true;
 					}
-					else if (inputBuffer.Length == 0 && key.Key == ConsoleKey.DownArrow && !ctrl && !alt && !shift)
+					else if (key.Key == ConsoleKey.F8)
 					{
 						if (_sessionTreeSelected < _sessionList.Count - 1)
 						{
@@ -2604,7 +2687,7 @@ public class DisplayScreen : IDisplay
 					}
 				}
 			}
-			else if (key.Key == ConsoleKey.Backspace && ctrl)
+			else if ((key.Key == ConsoleKey.Backspace && ctrl) || (key.Key == ConsoleKey.W && ctrl))
 			{
 				lock (_consoleLock)
 				{
@@ -2781,6 +2864,18 @@ public class DisplayScreen : IDisplay
 					(int upLine, int upCol) = InputLayer.CursorInInputLines(inputBuffer.ToString(), cursorPos, upW);
 					cursorPos               = InputLayer.CharFromInputLines(inputBuffer.ToString(), upLine - 1, upCol, upW);
 					SetInput(inputBuffer.ToString(), cursorPos);
+				}
+				else if (historyIndex == -1 && HasPendingGhost())
+				{
+					// A sent message the agent has not taken yet: ask for it back. The reply (OnUnqueued)
+					// puts it in the input line; one already consumed just reports so.
+					string target;
+					lock (_consoleLock)
+					{
+						target = _sessionActiveId;
+					}
+
+					_ = SendToAsync(target, "/unqueue");
 				}
 				else if (history.Count > 0)
 				{

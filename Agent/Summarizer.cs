@@ -89,6 +89,9 @@ public static class Summarizer
 			// pays for a fresh round of doomed attempts on every segment of the transcript.
 			int budgetCeiling = int.MaxValue;
 
+			// The models this compaction has moved off, so a fallback never returns to one of them.
+			HashSet<string> tried = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
 			while (!failed && (index < blocks.Count || stage == 0))
 			{
 				// A stage never carries more running summary than the budget reserved for it: an
@@ -111,7 +114,8 @@ public static class Summarizer
 						// another model rather than abandon the compaction — and the new model starts
 						// from its own full budget, since the ratchet described what the OLD one could
 						// not take.
-						LlmService? smaller = registry.CreateFallbackService(service, 0, true);
+						tried.Add(service.Model.ConfigId);
+						LlmService? smaller = registry.CreateFallbackService(service, 0, true, tried);
 						if (smaller != null)
 						{
 							service       = smaller;
@@ -167,7 +171,8 @@ public static class Summarizer
 						// Sustained-rate-limited: fall back to the next usable model in the role's
 						// list (like /model) and retry this stage. Window size is no constraint —
 						// the chunk budget is recomputed for the new model.
-						LlmService? fallback = registry.CreateFallbackService(service, 0, true);
+						tried.Add(service.Model.ConfigId);
+						LlmService? fallback = registry.CreateFallbackService(service, 0, true, tried);
 						if (fallback != null)
 						{
 							service       = fallback;

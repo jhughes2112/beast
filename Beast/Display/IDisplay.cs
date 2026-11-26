@@ -42,6 +42,9 @@ public interface IDisplay
 	// agent sends a PendingQueue snapshot so the ghost reflects exactly what is still queued.
 	void SetPendingGhost(string sessionId, string[] lines);
 
+	// The agent's reply to /unqueue: the queued text it took back, to put in the input line for editing ("" = already consumed).
+	void OnUnqueued(string text);
+
 	// Feeds a /config flow payload (endpoint list, catalog, apply ack) to the picker overlay.
 	void OnConfigFrame(string json);
 

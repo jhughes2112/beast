@@ -28,9 +28,11 @@ internal static class VtKeys
 			return KeyEvent('\r', ConsoleKey.Enter, shift, alt, ctrl);
 		}
 
+		// Under VT input a bare Backspace arrives as DEL (0x7f) and Ctrl+Backspace as BS (0x08), with no
+		// modifier bits on the record, so the character itself is what says Ctrl was held.
 		if (c == '\b' || c == '\x7f')
 		{
-			return KeyEvent('\b', ConsoleKey.Backspace, shift, alt, ctrl);
+			return KeyEvent('\b', ConsoleKey.Backspace, shift, alt, ctrl || c == '\b');
 		}
 
 		// Remaining control chars 0x01-0x1A are Ctrl + a letter (A=0x01 .. Z=0x1A). Surface them as the

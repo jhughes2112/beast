@@ -105,6 +105,10 @@ internal static class BlockRenderer
 			}
 		}
 
+		// Preview rows so far are body (output, or a file's contents) drawn on the body background; the whole
+		// row, indent included, takes it, or the call's color shows as a strip down the left beside them.
+		int bodyPreviewEnd = collapsedLines.Count;
+
 		// The header already carries the filename, so the condensed preview is just the prompt — one line per
 		// source line so a multi-line prompt keeps its newlines rather than being collapsed onto a single row.
 		if (isToolCall && toolName == "file_subagent")
@@ -144,7 +148,7 @@ internal static class BlockRenderer
 		for (int r = 0; r < collapsedLines.Count; r++)
 		{
 			Rgb  lineFg                    = r == 0 ? headerFg : fg;
-			Rgb? lineBg                    = r == 0 ? headerBg : bg;
+			Rgb? lineBg                    = r == 0 ? headerBg : (r < bodyPreviewEnd ? DisplayScreen.Palette.FileBodyBg : bg);
 			(int endX, Rgb? cFg, Rgb? cBg) = AnsiToScreen.WriteLine(collapsed, 0, r, collapsedLines[r], lineFg, lineBg);
 			AnsiToScreen.PadRowBackground(collapsed, endX, r, cFg, cBg);
 		}
@@ -545,6 +549,13 @@ internal static class BlockRenderer
 					}
 					else if (bp.Kind == 1)
 					{
+						// File content is drawn on the body background, so its rows (the indent too) start the
+						// body region; otherwise the call's color runs down the left beside it.
+						if (responseStart < 0)
+						{
+							responseStart = result.Count;
+						}
+
 						foreach (string valLine in bp.Val.Split('\n'))
 						{
 							result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(valLine), fileLang, respBodyBgAnsi));
@@ -570,16 +581,21 @@ internal static class BlockRenderer
 			}
 		}
 
-		// bash's command shows as a one-line "$ …" header; when it spans multiple lines the header only
-		// carries the first, so emit the full command shell-highlighted in the body so its newlines survive.
+		// bash's command shows as a one-line "$ …" header; when it spans multiple lines, or is too long for
+		// that one line, the header only carries the start, so emit the full command shell-highlighted in the
+		// body, word-wrapped since an expanded block is one being read. It is part of the call, so it sits on
+		// the call's background rather than the response's.
 		if (name == "bash" || name == "readonly_bash")
 		{
 			string command = ExtractStringArg(msg.Content, "command");
-			if (command.IndexOf('\n') >= 0)
+			if (command.IndexOf('\n') >= 0 || AnsiString.VisibleLength(summary) > w)
 			{
 				foreach (string cmdLine in command.Replace("\r\n", "\n").Split('\n'))
 				{
-					result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(cmdLine), "bash", respBodyBgAnsi));
+					foreach (string wrapped in AnsiString.WordWrapIndented(ExpandTabs(cmdLine), Math.Max(1, w - 2)))
+					{
+						result.Add(MarkdownAnsi.SyntaxHighlight(wrapped, "bash", DisplayScreen.Palette.CallBgAnsi));
+					}
 				}
 			}
 		}
@@ -607,9 +623,20 @@ internal static class BlockRenderer
 			}
 
 			errorStart = result.Count;
-			foreach (string errLine in msg.PairedResponseError.Split('\n'))
+			if (name == "bash" || name == "readonly_bash")
 			{
-				result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(errLine), fileLang, DisplayScreen.Palette.ErrBodyBgAnsi));
+				// Shell stderr is compiler and tool output: columns matter, so it scrolls rather than reflows.
+				foreach (string errLine in msg.PairedResponseError.Split('\n'))
+				{
+					result.Add(MarkdownAnsi.SyntaxHighlight(ExpandTabs(errLine), fileLang, DisplayScreen.Palette.ErrBodyBgAnsi));
+				}
+			}
+			else
+			{
+				// Any other tool's error is a message (a failed review's findings, a refusal): formatted and
+				// word-wrapped like the same tool's successful output would be.
+				RespMode errMode = MarkdownAnsi.LooksLikeMarkdown(msg.PairedResponseError) ? RespMode.Markdown : RespMode.Plain;
+				EmitResponseLines(result, msg.PairedResponseError, errMode, fileLang, DisplayScreen.Palette.ErrBodyBgAnsi, w);
 			}
 		}
 

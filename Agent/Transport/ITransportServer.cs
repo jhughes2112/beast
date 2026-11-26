@@ -29,7 +29,8 @@ public enum FrameType : byte
 	PendingQueue    = 21, // agent sends the current pending-input queue snapshot; content is newline-delimited lines
 	Alert           = 22, // human-actionable failure (credits exhausted, bad API key). Rendered as a loud persistent banner in the chat, never collapsed or hidden.
 	Config          = 23, // /config flow payload (JSON with a "kind" discriminator: endpoints, catalog, applied)
-	Host            = 24  // a host_command's live block in the client; only ever streamed (StreamTag.Host), never sent as a frame
+	Host            = 24, // a host_command's live block in the client; only ever streamed (StreamTag.Host), never sent as a frame
+	Unqueued        = 25  // reply to /unqueue: the queued user text taken back for editing, or "" when it was already consumed
 }
 
 // Session termination status reported via SessionStatus frames.
@@ -94,6 +95,8 @@ public interface ITransportServer
 	// Sends the current pending-input queue snapshot so the client can rebuild the ghost region exactly.
 	// Content is a newline-delimited list of the queued lines (empty string = queue is empty).
 	void PendingQueue(string sessionId, string[] lines);
+	// Hands back the queued user text /unqueue took out of the pending queue ("" when nothing was left to take).
+	void Unqueued(string sessionId, string text);
 	// Reports a session's termination status (Success / Failure / Incomplete) so the F10 overlay can color it.
 	void SessionStatus(string sessionId, string status);
 	// Sends a /config flow payload (endpoint list, catalog, or apply acknowledgment) as JSON.

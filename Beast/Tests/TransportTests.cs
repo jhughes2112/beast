@@ -32,6 +32,7 @@ file sealed class NullDisplay : IDisplay
 	public void SetSessionDeleteCallback(Action<string> deleteSession)                                { }
 	public void ClearPendingGhost       (string sessionId)                       { }
 	public void SetPendingGhost         (string sessionId, string[] lines)       { }
+	public void OnUnqueued              (string text)                            { }
 	public void OnConfigFrame           (string json)                            { }
 	public void SetAgentStateDir        (string stateDir)                        { }
 	public void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }

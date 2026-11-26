@@ -233,6 +233,9 @@ public class LlmRegistry
 	// transient server state the user did not intend as "disabled".
 	public async Task LoadAutoProvidersAsync(SettingsService settings, CancellationToken ct)
 	{
+		// Every catalog is asked for at once: each subscription's is a CLI to start, and one after another
+		// they added up to a long wait before any session appeared. Results still apply in settings order.
+		List<(AutoProviderConfig Provider, Task<(List<DiscoveredModel> Models, string Error)> Fetch)> fetches = new List<(AutoProviderConfig, Task<(List<DiscoveredModel>, string)>)>();
 		foreach (AutoProviderConfig provider in settings.Settings.Auto)
 		{
 			if (string.IsNullOrWhiteSpace(provider.BaseUrl) || provider.Models.Count == 0)
@@ -240,7 +243,17 @@ public class LlmRegistry
 				continue;
 			}
 
-			(List<DiscoveredModel> discovered, string error) = await ModelCatalog.FetchAsync(provider.BaseUrl, provider.ApiKey, ct);
+			fetches.Add((provider, ModelCatalog.FetchAsync(provider.BaseUrl, provider.ApiKey, ct)));
+		}
+
+		foreach ((AutoProviderConfig provider, Task<(List<DiscoveredModel> Models, string Error)> fetch) in fetches)
+		{
+			(List<DiscoveredModel> discovered, string error) = await fetch;
+			if (ClaudeCode.IsEndpoint(provider.BaseUrl))
+			{
+				_ = ClaudeCode.UpdateInBackgroundAsync(ct);
+			}
+
 			if (error.Length == 0 && discovered.Count > 0)
 			{
 				_catalogCache[provider.BaseUrl] = discovered;
@@ -563,13 +576,16 @@ public class LlmRegistry
 	// Builds a service for the next model below the current one in its role list — the automatic equivalent
 	// of the user typing /model <next> after a model is sustained-rate-limited. Resumes just past the current
 	// model and skips any that is gone, too small, or itself down/backing off, so the fallback lands on one
-	// that can serve now. The new service carries the same list, so it can fall back again. Returns null when
-	// the list is exhausted, at which point the caller surfaces the rate-limit failure.
+	// that can serve now. Past the end it wraps to the models above the current one: a session the user moved
+	// down the list (/model) otherwise died on its last model with a healthy one above it. tried holds the
+	// models the caller already left this turn, which are skipped, so two failing models never hand the turn
+	// back and forth. The new service carries the same list, so it can fall back again. Returns null when
+	// the list is exhausted, at which point the caller surfaces the failure.
 	// withoutReasoning carries the caller's intent across the switch, exactly as CreateService takes it.
 	// Compaction asks for a quiet model and then falls back when one is rate-limited or too small; without
 	// this the replacement thought again, spending the summary's output budget on deliberation nobody reads.
 	// A seeded model has no fallback: a different model could only produce a different run.
-	public LlmService? CreateFallbackService(LlmService current, int minContextRequired, bool withoutReasoning)
+	public LlmService? CreateFallbackService(LlmService current, int minContextRequired, bool withoutReasoning, HashSet<string> tried)
 	{
 		if (current.Seeded)
 		{
@@ -589,9 +605,14 @@ public class LlmRegistry
 			}
 		}
 
-		for (int i = start; i < modelIds.Count; i++)
+		for (int step = 0; step < modelIds.Count; step++)
 		{
-			string modelId = modelIds[i];
+			string modelId = modelIds[(start + step) % modelIds.Count];
+			if (string.Equals(modelId, current.Model.ConfigId, StringComparison.OrdinalIgnoreCase) || tried.Contains(modelId))
+			{
+				continue;
+			}
+
 			if (!_models.TryGetValue(modelId, out LlmModel? model))
 			{
 				continue;

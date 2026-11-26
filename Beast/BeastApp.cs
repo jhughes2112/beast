@@ -837,6 +837,10 @@ state.StatsContextTokens, state.StatsCachedTokens);
 				_display.SetPendingGhost(effectiveId, pendingLines);
 				break;
 
+			case FrameType.Unqueued:
+				_display.OnUnqueued(content);
+				break;
+
 			case FrameType.ToolCall:
 				session.Model.Update(session.NextIndex++, FrameType.ToolCall, content);
 				break;

@@ -148,6 +148,11 @@ public class TestCaptureTransport : ITransportServer
 		Send(FrameType.PendingQueue, sessionId, string.Join("\n", lines));
 	}
 
+	public void Unqueued(string sessionId, string text)
+	{
+		Send(FrameType.Unqueued, sessionId, text);
+	}
+
 	public void StreamStart(string sessionId, string tag)
 	{
 		Send(FrameType.StreamStart, sessionId, tag);

@@ -49,6 +49,10 @@ public class SessionHandler
 	// first call that succeeds afterwards announces the resume.
 	private bool _waitingOnLimit;
 
+	// The models this turn has failed on and moved off, so a fallback never returns to one of them and
+	// the failure report can say how many were tried. Emptied when a turn succeeds.
+	private readonly HashSet<string> _modelsTried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
 	// Set when RollUpCost moved spend into ancestors that have not been saved since.
 	private bool _rolledUpUnsaved;
 
@@ -386,6 +390,7 @@ public class SessionHandler
 			}
 			else
 			{
+				_modelsTried.Clear();
 				if (_waitingOnLimit)
 				{
 					_waitingOnLimit = false;
@@ -665,8 +670,9 @@ public class SessionHandler
 
 		// PendingReserve covers tool outputs appended since the last measurement — without it a
 		// tool-heavy round can pick a fallback model the real conversation no longer fits in.
-		int         minContext = _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve();
-		LlmService? fallback   = registry.CreateFallbackService(service, minContext, role.NoReasoning);
+		int minContext = _activeSession.ContextLength + _activeSession.Budget.PendingReserve + GetCompactionReserve();
+		_modelsTried.Add(service.Model.ConfigId);
+		LlmService? fallback = registry.CreateFallbackService(service, minContext, role.NoReasoning, _modelsTried);
 
 		// A limit with a stated reset (a subscription's usage window) lifts on its own. The registry
 		// already holds every model's backoff, so selection returns whichever role model serves
@@ -705,12 +711,18 @@ public class SessionHandler
 			string detail = rateLimited
 				? result.ErrorMessage.Length > 0 ? $"Rate limited, and no fallback model is available. {result.ErrorMessage}" : "Rate limited after too many retries, and no fallback model is available."
 				: string.IsNullOrEmpty(result.ErrorMessage) ? "Model failed and no fallback model is available." : result.ErrorMessage;
-			_activeSession.QueryLog.SessionFailure(_activeSession, service, detail, service.RoleModelIds.Count);
-			// Every model in the role is exhausted — nothing the system can do; a human must add
-			// credits, fix keys/config, or wait out the provider. Raise it loudly and persistently.
+			_activeSession.QueryLog.SessionFailure(_activeSession, service, detail, _modelsTried.Count);
+			// Every model in the role is exhausted — nothing the system can do, so raise it loudly and
+			// persistently. The advice follows the last failure: credits and keys only when the provider
+			// said so, and never for a model that merely failed, which sent people looking at keys that were fine.
+			string advice = rateLimited
+				? "Wait out the rate limits, or add another model to the role"
+				: ProtocolHelpers.IsAccountError(result.ErrorMessage)
+					? "Add provider credits or fix the API key in settings.json"
+					: "The model itself failed on this conversation; nothing is wrong with the account. Retry, or pick another model with /model";
 			transport.Alert(_activeSession.Id,
-				$"Every model available to the '{_activeSession.Role}' role has failed. Last error: {detail}\n"
-				+ "A human needs to intervene: add provider credits, fix API keys in settings.json, or wait out the rate limits — then send a message to retry, or /reload or /model to resume.");
+				$"Every model available to the '{_activeSession.Role}' role has failed ({_modelsTried.Count} tried). Last error: {detail}\n"
+				+ $"A human needs to intervene. {advice} — then send a message to retry, or /reload or /model to resume.");
 			failure = string.IsNullOrEmpty(result.ErrorMessage) ? "all models failed" : result.ErrorMessage;
 		}
 		return failure;
@@ -1597,6 +1609,7 @@ public class SessionHandler
 		if (role != null && (_modelsExhausted || registry.GetMillisecondsUntilAvailable(role) == long.MaxValue))
 		{
 			_modelsExhausted = false;
+			_modelsTried.Clear();
 			registry.ResetRoleAvailability(role);
 			LlmService? retry = registry.CreateService(role, "", _activeSession.ContextLength + GetCompactionReserve(), false, _activeSession.Data.ConferredSeed);
 			if (retry != null)

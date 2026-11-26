@@ -39,7 +39,7 @@ internal static class SessionTreeLayer
 
 		Rgb markFg = new Rgb(230,  90,  90); // marked for deletion
 
-		string header = marked.Count > 0 ? $" Sessions  ({marked.Count} marked · Enter deletes)" : " Sessions  (↑↓ · Enter · Del marks · Esc)";
+		string header = marked.Count > 0 ? $" Sessions  ({marked.Count} marked · Enter deletes)" : " Sessions  (F7↑ F8↓ · Del marks · Esc)";
 		AnsiToScreen.WriteLine(s, 1, 0, header, headerFg, panelBg);
 
 		// The header above and the Pause/Play button below take a row each.

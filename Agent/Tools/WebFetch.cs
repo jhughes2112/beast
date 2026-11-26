@@ -14,8 +14,10 @@ using System.Threading.Tasks;
 // result says what was saved and nothing about what to do with it: the caller's tools already say that.
 public class WebFetch
 {
-	private static readonly HttpClient SharedHttpClient = new();
-	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(120);
+	// The client's own timeout is off (HttpClient's default of 100 s would cut DefaultTimeout short): DefaultTimeout,
+	// set on each call, is the one limit. Three minutes covers a server that starts what it serves on first ask.
+	private static readonly HttpClient SharedHttpClient = new() { Timeout = Timeout.InfiniteTimeSpan };
+	private static readonly TimeSpan   DefaultTimeout   = TimeSpan.FromSeconds(180);
 
 	// Anything bigger is refused rather than held in memory.
 	private const long MaxDownloadBytes = 50L * 1024 * 1024;

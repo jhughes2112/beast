@@ -19,6 +19,7 @@ public static class Nudges
 		"Budget check:",
 		"That output is about ",
 		"A tool call in your previous response was invalid",
+		"Your previous response was rejected by the server",
 		"The conversation was compacted to free context.",
 	};
 
@@ -62,6 +63,13 @@ public static class Nudges
 	public static string InvalidToolCall(string problem)
 	{
 		return $"A tool call in your previous response was invalid and was discarded — it never ran. {problem}. Call the tool again with every required argument supplied correctly.";
+	}
+
+	// After the server refused a response that did not fit its tool grammar: usually a call to a tool
+	// this turn does not offer, such as bash on the final turn, when only the terminator is left.
+	public static string ToolGrammarRejected(string offeredTools)
+	{
+		return $"Your previous response was rejected by the server and discarded: it did not match the tools available right now. The only tools you can call this turn are: {offeredTools}. Call one of them.";
 	}
 
 	// True when the text is one of the injected steering messages: a generated template above or

@@ -146,6 +146,7 @@ public static class FakeLlmTests
 		await TestFullContextStillTakesWholeToolOutputAsync(ctx, model, cts.Token);
 		await TestAccountErrorIsNotOverflowAsync(ctx, model, cts.Token);
 		await TestGrammarFailureIsNotRetriedAsync(ctx, server, model, cts.Token);
+		await TestGrammarFailureRetriesWithToolsNamedAsync(ctx, server, model, cts.Token);
 		await TestHugeConversationAlwaysSummarizesAsync(ctx, model, registry, roleService, cts.Token);
 		await TestChokingServerStillSummarizesAsync(ctx, registry, roleService, cts.Token);
 		await TestWholeTranscriptReachesTheModelAsync(ctx, server, model, registry, roleService, cts.Token);
@@ -382,7 +383,8 @@ public static class FakeLlmTests
 
 	// llama-server answers a tool call its grammar cannot hold with a 500. A compacted history full of
 	// tool_call_memory records drew exactly that from a local model on every attempt, and it was retried
-	// five times over forty seconds before the session parked on the same error. One request is enough.
+	// five times over forty seconds before the session parked on the same error. With no tools to name in a
+	// nudge, one request is enough.
 	private static async Task TestGrammarFailureIsNotRetriedAsync(TestContext ctx, FakeLlm server, LlmModel model, CancellationToken ct)
 	{
 		TestCaptureTransport transport = new TestCaptureTransport();
@@ -396,6 +398,34 @@ public static class FakeLlmTests
 		ctx.AssertEqual(ProtocolCallOutcome.Failed,        result.Outcome, "GrammarFailure: reported as a failure, not waited out");
 		ctx.AssertEqual(                served + 1, server.RequestsServed, "GrammarFailure: the request that cannot succeed is sent once");
 		ctx.AssertContains(result.ErrorMessage ?? string.Empty, "grammar stack", "GrammarFailure: the server's own words reach the human");
+	}
+
+	// The field case: a local model on its budget's final turn, offered only the terminator, kept writing
+	// bash, and the session parked on the first 500. Told which tools it has, it calls the right one.
+	private static async Task TestGrammarFailureRetriesWithToolsNamedAsync(TestContext ctx, FakeLlm server, LlmModel model, CancellationToken ct)
+	{
+		Tool[]               tools     = BuildChaosTools();
+		TestCaptureTransport transport = new TestCaptureTransport();
+		Session              session   = BuildSession("grammar-told", model, transport);
+		session.Bundle.OnUserMessage($"Continue the work. {FakeLlm.GrammarUntilToldSentinel}");
+
+		server.StartRecording();
+		ProtocolResult result = await BuildService(model).RunToCompletionAsync(session, tools, null, 0, 0, false, transport, ct);
+		List<string>   bodies = server.StopRecording();
+
+		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, "GrammarRetry: the turn succeeds once the model is told its tools");
+		ctx.AssertEqual(2, bodies.Count, "GrammarRetry: one refused request, then one retry, with no backoff in between");
+		ctx.Assert(bodies.Count == 2 && bodies[1].Contains("rejected by the server", StringComparison.Ordinal) && bodies[1].Contains(tools[0].Definition.Function.Name, StringComparison.Ordinal),
+			"GrammarRetry: the retry carries the nudge naming the offered tools");
+
+		// A model that never fits the grammar is retried a bounded number of times, then reported.
+		Session stuck = BuildSession("grammar-stuck", model, transport);
+		stuck.Bundle.OnUserMessage($"Continue the work. {FakeLlm.GrammarSentinel}");
+		int            served = server.RequestsServed;
+		ProtocolResult failed = await BuildService(model).RunToCompletionAsync(stuck, tools, null, 0, 0, false, transport, ct);
+		ctx.AssertEqual(ProtocolCallOutcome.Failed,        failed.Outcome, "GrammarRetry: a model that never fits is reported as failed");
+		ctx.AssertEqual(                served + 3, server.RequestsServed, "GrammarRetry: the first request and two nudged retries, no more");
+		ctx.AssertContains(failed.ErrorMessage ?? string.Empty, "retries naming the tools", "GrammarRetry: the report says the retries were made");
 	}
 
 	// The exact shape a compaction successor has on its very first request: real content in the

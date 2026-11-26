@@ -27,6 +27,7 @@ public class TransportSilent : ITransportServer
 	public void SessionActivate   (string sessionId)                             { }
 	public void SessionStatus     (string sessionId,  string status)             { }
 	public void PendingQueue      (string sessionId, string[] lines)             { }
+	public void Unqueued          (string sessionId,    string text)             { }
 	public void StreamStart       (string sessionId,     string tag)             { }
 	public void StreamChunk       (string sessionId,   string chunk)             { }
 	public void StreamEnd         (string sessionId,     string tag)             { }

@@ -142,6 +142,14 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 
 		try
 		{
+			// Startup runs `claude update` in the background; a CLI launched mid-update could find it half
+			// replaced, so the first turn waits for it. Afterwards this returns at once.
+			string update = await ClaudeCode.EnsureUpdatedAsync(cancellationToken);
+			if (update.Length > 0)
+			{
+				logger.Write(model.Config.Name, model.Endpoint, $"[claude-code] {update}");
+			}
+
 			string? startError = null;
 			lock (_lock)
 			{

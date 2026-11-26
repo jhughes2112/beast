@@ -28,6 +28,15 @@ public class Session
 	// picked up with identical timing.
 	private readonly ConcurrentQueue<string> _pending = new ConcurrentQueue<string>();
 
+	// Serializes every change to _pending, so /unqueue can take the queue apart and put it back without a
+	// line arriving or leaving halfway through. Emptiness checks still read the queue directly.
+	private readonly object _pendingLock = new object();
+
+	// The queue entries the user typed, oldest first, so /unqueue can take back all of them and nothing
+	// else (a nudge or a late tool result shares the queue). Compared by reference: equal text from
+	// anywhere else is not theirs. Guarded by _pendingLock.
+	private readonly List<string> _clientTexts = new List<string>();
+
 	// Last known termination status. Ongoing while busy; updated by SetTerminationStatus.
 	// Initialized from BeastSession.TerminalStatus so reloaded sessions reflect their prior state.
 	private SessionStatus _status = SessionStatus.Ongoing;
@@ -816,7 +825,7 @@ public class Session
 		}
 
 		SetPaused(false);
-		_pending.Enqueue("/resume");
+		Enqueue("/resume");
 		Signal();
 		foreach (Session child in _children.Values)
 		{
@@ -882,7 +891,90 @@ public class Session
 	// when the queue is empty. The boundary drain uses this to process everything that is waiting.
 	public bool TryDequeuePending(out string? line)
 	{
-		return _pending.TryDequeue(out line);
+		lock (_pendingLock)
+		{
+			bool dequeued = _pending.TryDequeue(out line);
+			ForgetConsumedClientText(line);
+			return dequeued;
+		}
+	}
+
+	private void Enqueue(string line)
+	{
+		lock (_pendingLock)
+		{
+			_pending.Enqueue(line);
+		}
+	}
+
+	// Queues text the user typed, remembering it as theirs for /unqueue.
+	private void EnqueueClientText(string text)
+	{
+		lock (_pendingLock)
+		{
+			_pending.Enqueue(text);
+			_clientTexts.Add(text);
+		}
+	}
+
+	// The queue is FIFO, so the user's texts leave it oldest first: a dequeued line that is the oldest
+	// remembered one is no longer waiting. Called under _pendingLock.
+	private void ForgetConsumedClientText(string? line)
+	{
+		if (_clientTexts.Count > 0 && ReferenceEquals(line, _clientTexts[0]))
+		{
+			_clientTexts.RemoveAt(0);
+		}
+	}
+
+	// Takes back every piece of text the user sent that the handler has not consumed yet, joined in order
+	// into one block, so sending A then B and pressing Up gives back A and B together to edit. The /attach
+	// lines sent just before each piece go with it (the client re-attaches when the text is sent again).
+	// Returns "" when none is waiting. Nudges, late tool results and slash commands stay queued.
+	private string RetractNewestText()
+	{
+		List<string> taken = new List<string>();
+		lock (_pendingLock)
+		{
+			List<string> lines = new List<string>();
+			while (_pending.TryDequeue(out string? line))
+			{
+				lines.Add(line);
+			}
+
+			List<string> kept     = new List<string>();
+			List<string> attaches = new List<string>();
+			int          next     = 0;
+			foreach (string line in lines)
+			{
+				if (line.StartsWith("/attach ", StringComparison.Ordinal))
+				{
+					attaches.Add(line);
+				}
+				else if (next < _clientTexts.Count && ReferenceEquals(line, _clientTexts[next]))
+				{
+					// The user's text: it and the attachments staged for it come back to the client.
+					taken.Add(line);
+					attaches.Clear();
+					next++;
+				}
+				else
+				{
+					kept.AddRange(attaches);
+					attaches.Clear();
+					kept.Add(line);
+				}
+			}
+			kept.AddRange(attaches);
+
+			_clientTexts.Clear();
+			foreach (string line in kept)
+			{
+				_pending.Enqueue(line);
+			}
+		}
+
+		return string.Join("\n", taken);
 	}
 
 	// Returns a snapshot of everything currently in the pending queue without consuming any items.
@@ -905,7 +997,7 @@ public class Session
 	// Routes incoming text to the correct session by ID.
 	// - If targetId matches this session (targetId == _data.Id):
 	//     /cancel is special: it interrupts the session immediately instead of being queued.
-	//     /pause and /resume act immediately too. Text from the user also ends a pause: they have
+	//     /pause, /resume and /unqueue act immediately too. Text from the user also ends a pause: they have
 	//     just asked for an answer.
 	//     Everything else (plain text and slash commands alike) goes to the pending queue
 	//     in arrival order, to be drained at the next turn boundary or mid-turn checkpoint.
@@ -930,15 +1022,24 @@ public class Session
 			{
 				Resume();
 			}
+			else if (text.Equals("/unqueue", StringComparison.OrdinalIgnoreCase))
+			{
+				// The client wants its newest unconsumed message back to edit. It gets the text (or "" when the
+				// handler already took it) and the queue as it now stands.
+				_transport.Unqueued(_data.Id, RetractNewestText());
+				_transport.PendingQueue(_data.Id, PeekAllPending());
+			}
 			else if (text.StartsWith("/"))
 			{
-				_pending.Enqueue(text);
+				Enqueue(text);
 				Signal();
 			}
 			else
 			{
 				SetPaused(false);
-				AddUserMessage(text);
+				_interruptedAndWaiting = false;
+				EnqueueClientText(text);
+				Signal();
 			}
 			return;
 		}
@@ -957,7 +1058,7 @@ public class Session
 	public void AddUserMessage(string text)
 	{
 		_interruptedAndWaiting = false;
-		_pending.Enqueue(text);
+		Enqueue(text);
 		Signal();
 	}
 
@@ -1041,23 +1142,27 @@ public class Session
 	// session that had AddUserMessage() called outside of a running turn.
 	public void FlushPendingMessages()
 	{
-		while (_pending.TryPeek(out string? line))
+		lock (_pendingLock)
 		{
-			if (line!.StartsWith("/", StringComparison.Ordinal))
+			while (_pending.TryPeek(out string? line))
 			{
-				break;
-			}
+				if (line!.StartsWith("/", StringComparison.Ordinal))
+				{
+					break;
+				}
 
-			// Media is waiting for this line. Only the handler's drain can resolve it (reading the
-			// staged file, checking the model's modalities), so leave the text queued for it rather
-			// than committing a message whose image would then attach itself to the next one.
-			if (HasPendingAttachments)
-			{
-				break;
-			}
+				// Media is waiting for this line. Only the handler's drain can resolve it (reading the
+				// staged file, checking the model's modalities), so leave the text queued for it rather
+				// than committing a message whose image would then attach itself to the next one.
+				if (HasPendingAttachments)
+				{
+					break;
+				}
 
-			_pending.TryDequeue(out string? _);
-			_bundle.OnUserMessage(line);
+				_pending.TryDequeue(out string? _);
+				ForgetConsumedClientText(line);
+				_bundle.OnUserMessage(line);
+			}
 		}
 	}
 

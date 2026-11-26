@@ -175,6 +175,21 @@ public class LlmService
 		return await _handler.CountTokensAsync(conversation.Bundle, toolDefs, forcedToolName, conversation.QueryLog, cancellationToken);
 	}
 
+	// The callable tools of a request, comma-separated: the memory placeholder is offered but never callable.
+	private static string OfferedToolNames(List<ToolDefinition> toolDefs)
+	{
+		List<string> names = new List<string>();
+		foreach (ToolDefinition def in toolDefs)
+		{
+			if (def.Function.Name != MechanicalCompaction.MemoryToolName)
+			{
+				names.Add(def.Function.Name);
+			}
+		}
+
+		return string.Join(", ", names);
+	}
+
 	// forcedToolName (null = free choice) requires the model to call that exact tool this turn.
 	// maxOutputCap (0 = none) hard-limits each response's max_tokens for capped sub-session retries.
 	// guaranteed to fit the calling agent's allotted space without any post-hoc truncation.
@@ -212,8 +227,13 @@ public class LlmService
 
 				int rateLimitRetries = 0;
 				int transientRetries = 0;
+				int grammarRetries   = 0;
 				const int kMaxRateLimitRetries = 10;
 				const int kMaxTransientRetries = 5;
+
+				// A tool-grammar failure is retried only after the model is told which tools it has: the
+				// nudge changes the request, so the retry is not the same request failing the same way.
+				const int kMaxGrammarRetries = 2;
 
 				// A stage prompt is one WE shaped — a summarizer stage, a media probe — and its caller
 				// can reshape it and try again far more cheaply than we can sit out a backoff.
@@ -444,6 +464,20 @@ public class LlmService
 						conversation.QueryLog.ModelFailure(_model, _handler, "RateLimited", 429, result.ErrorMessage ?? "Rate limited by provider", rateLimitRetries, kMaxRateLimitRetries, result.RetryAfter, false);
 						// loop and retry once the backoff is honored at the top of the loop
 					}
+					else if (result.Outcome == ProtocolCallOutcome.Transient
+						&& ProtocolHelpers.IsToolGrammarFailure(result.ErrorMessage ?? string.Empty)
+						&& toolDefs.Count > 0
+						&& grammarRetries < kMaxGrammarRetries)
+					{
+						// The server refused output its tool grammar has no place for — in the field, bash on
+						// the budget's final turn, when only the terminator was offered. Like an unrepairable
+						// call, the model is told what it may call and asked again, with no backoff: nothing is
+						// wrong with the server. It goes in as a user message, since nothing was committed.
+						grammarRetries++;
+						conversation.Bundle.OnUserMessage(Nudges.ToolGrammarRejected(OfferedToolNames(toolDefs)));
+						transport.Status(conversation.Id, $"Response did not fit the server's tool grammar; retrying with the available tools named ({grammarRetries}/{kMaxGrammarRetries})");
+						conversation.QueryLog.ModelFailure(_model, _handler, "Transient", null, result.ErrorMessage ?? "Tool grammar failure", grammarRetries, kMaxGrammarRetries, null, false);
+					}
 					else if (result.Outcome == ProtocolCallOutcome.Transient)
 					{
 						// A recoverable error (5xx/overload/network/timeout). Back off and retry on the SAME model
@@ -452,8 +486,9 @@ public class LlmService
 						// role's list instead of the model being killed outright.
 						transientRetries++;
 
-						// A tool-grammar failure is a server error only by status: the same request fails the
-						// same way, so it is not retried at all — least of all forever, on a seeded model.
+						// A tool-grammar failure is a server error only by status: retrying the same request
+						// without the nudge above changes nothing, so once the nudged retries are spent (or
+						// there were no tools to name) it ends here — least of all forever, on a seeded model.
 						bool repeats = ProtocolHelpers.IsToolGrammarFailure(result.ErrorMessage ?? string.Empty);
 						if (repeats || transientRetries > maxTransientRetries)
 						{
@@ -462,7 +497,7 @@ public class LlmService
 							// rate-limiting and bury the real cause. Rate-limit exhaustion (above) keeps
 							// TooManyRetries; this transient path carries its reason.
 							string message = repeats ?
-								$"The server could not fit the model's output to its tool grammar, and the same request fails the same way: {result.ErrorMessage}" :
+								$"The server could not fit the model's output to its tool grammar, even after {grammarRetries} retries naming the tools it could call: {result.ErrorMessage}" :
 								string.IsNullOrEmpty(result.ErrorMessage) ?
 								"Transient errors persisted after repeated retries." :
 								$"Transient errors persisted after {maxTransientRetries} retries: {result.ErrorMessage}";
