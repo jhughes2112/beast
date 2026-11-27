@@ -212,6 +212,11 @@ public class TransportWebSocketServer : ITransportServer, IAsyncDisposable
 		Send(FrameType.Busy, sessionId, string.Empty);
 	}
 
+	public void Activity(string sessionId, string kind, int processes)
+	{
+		Send(FrameType.Activity, sessionId, $"{kind} {processes}");
+	}
+
 	public void ToolCallWithId(string sessionId, string callId, string text)
 	{
 		Send(FrameType.ToolCall, sessionId, callId + "\x01" + text);

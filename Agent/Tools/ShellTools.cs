@@ -105,7 +105,7 @@ public static class ShellTools
 			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
 		}
 
-		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, false, sessionId, cancellationToken);
+		ToolResult result     = await RunCountedAsync(toolcallid, command, timeoutSeconds, false, false, sessionId, cancellationToken);
 		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
 		string     stdOut     = WithStillRunning(Sandbox.SteadyShellOutput(result.StdOut), sessionId);
 		string     stdErr     = Sandbox.SteadyShellOutput(result.StdErr);
@@ -147,9 +147,11 @@ public static class ShellTools
 			DeleteQuietly(log);
 			DeleteQuietly(status);
 			ProcessStartInfo psi = await ShellStartAsync(SessionProcesses.Wrap(command, log, status), false, true, readOnlyUser, owner.Id, cancellationToken);
-			SessionProcesses.Watch(owner, job, psi, command, log, status, limit);
+			SessionProcesses.Watch(owner, job, psi, log, status, limit);
 
-			string text = $"Started background job {job}. You will get a message when it finishes, or if it is still running after {limit} seconds, when it is stopped; until then you can end your turn and wait, or keep working. Its output goes to {log}.";
+			// No log path here: the harness watches the job, and a path invites the model to poll it. The
+			// notice that comes when the job ends names the log, when its full output is worth reading.
+			string text = $"Started background job {job}. A message will come when it finishes, or after {limit} seconds, when it is stopped. Do not poll or sleep for it: keep working on something else, or end your turn and wait.";
 			result      = new ToolResult(toolcallid, text, string.Empty, 0, ToolDispatch.EstimateTokens(text));
 		}
 		return result;
@@ -191,6 +193,29 @@ public static class ShellTools
 		return found;
 	}
 
+	// A model's shell command, counted among its session's running processes while it runs, for the client.
+	private static async Task<ToolResult> RunCountedAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool readOnlyUser, string sessionId, CancellationToken cancellationToken)
+	{
+		ToolResult result;
+		if (sessionId.Length > 0)
+		{
+			SessionProcesses.BeginCommand(sessionId);
+			try
+			{
+				result = await RunBashAsync(toolcallid, command, timeoutSeconds, restricted, true, readOnlyUser, sessionId, cancellationToken);
+			}
+			finally
+			{
+				SessionProcesses.EndCommand(sessionId);
+			}
+		}
+		else
+		{
+			result = await RunBashAsync(toolcallid, command, timeoutSeconds, restricted, true, readOnlyUser, sessionId, cancellationToken);
+		}
+		return result;
+	}
+
 	// A command's output with the session's still-running note after it, when there is one.
 	private static string WithStillRunning(string stdOut, string sessionId)
 	{
@@ -213,7 +238,7 @@ public static class ShellTools
 		}
 
 		bool       readOnlyUser = Sandbox.ReadOnlyShellAvailable;
-		ToolResult result       = await RunBashAsync(toolcallid, command, timeoutSeconds, !readOnlyUser, true, readOnlyUser, sessionId, cancellationToken);
+		ToolResult result       = await RunCountedAsync(toolcallid, command, timeoutSeconds, !readOnlyUser, readOnlyUser, sessionId, cancellationToken);
 		return new ToolResult(toolcallid, WithStillRunning(Sandbox.SteadyShellOutput(result.StdOut), sessionId), Sandbox.SteadyShellOutput(result.StdErr), result.ExitCode, result.MeasuredOutputTokens);
 	}
 

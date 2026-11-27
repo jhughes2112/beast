@@ -368,6 +368,7 @@ public class Session
 		{
 			_transport.Busy(_data.Id);
 		}
+		ReportActivity();
 	}
 
 	public void SendIdle()
@@ -376,6 +377,53 @@ public class Session
 		{
 			ReportPlayState();
 			_transport.Idle(_data.Id, _isSubagent);
+		}
+		ReportActivity();
+	}
+
+	// What the client shows this session doing (SessionActivity): model requests in flight, the processes
+	// it has running (SessionProcesses counts them), and the busy count above. Sent only when it changes.
+	private readonly object _activityLock = new object();
+	private          int    _modelCalls;
+	private          int    _processes;
+	private          string _lastActivity = string.Empty;
+
+	public void BeginModelCall()
+	{
+		Interlocked.Increment(ref _modelCalls);
+		ReportActivity();
+	}
+
+	public void EndModelCall()
+	{
+		Interlocked.Decrement(ref _modelCalls);
+		ReportActivity();
+	}
+
+	public void SetProcessCount(int processes)
+	{
+		Volatile.Write(ref _processes, processes);
+		ReportActivity();
+	}
+
+	private void ReportActivity()
+	{
+		int    processes = Volatile.Read(ref _processes);
+		string kind      = Volatile.Read(ref _modelCalls) > 0 ? SessionActivity.Receiving
+			: processes > 0 ? SessionActivity.Working
+			: Volatile.Read(ref _busyCount) > 0 ? SessionActivity.Waiting
+			: SessionActivity.Idle;
+		string activity = $"{kind} {processes}";
+		bool   changed;
+		lock (_activityLock)
+		{
+			changed       = activity != _lastActivity;
+			_lastActivity = activity;
+		}
+
+		if (changed)
+		{
+			_transport.Activity(_data.Id, kind, processes);
 		}
 	}
 

@@ -362,12 +362,14 @@ public class LlmService
 						};
 
 					WorkMeter.Current = meter;
+					conversation.BeginModelCall();
 					try
 					{
 						result = await _handler.ExecuteAsync(conversation.Bundle, toolDefs, forcedToolName, maxCompletionTokens, onProgress, transport, conversation.QueryLog, linked.Token);
 					}
 					finally
 					{
+						conversation.EndModelCall();
 						WorkMeter.Current = null;
 						conversation.RecordWork(meter.Ms);
 					}

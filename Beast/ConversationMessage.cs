@@ -17,8 +17,11 @@ public class SessionDisplayInfo
 	public bool Paused { get; }
 	// Stopped with a turn still to send, so Play would do something. The agent decides; the client cannot tell.
 	public bool CanContinue { get; }
+	// What it is doing (a SessionActivity name) and how many processes it has running, as the agent reports.
+	public string Activity  { get; }
+	public int    Processes { get; }
 
-	public SessionDisplayInfo(string id, string name, bool isBusy, int depth, SessionStatus status, bool paused, bool canContinue)
+	public SessionDisplayInfo(string id, string name, bool isBusy, int depth, SessionStatus status, bool paused, bool canContinue, string activity, int processes)
 	{
 		Id          = id;
 		Name        = name;
@@ -27,6 +30,8 @@ public class SessionDisplayInfo
 		Status      = status;
 		Paused      = paused;
 		CanContinue = canContinue;
+		Activity    = activity;
+		Processes   = processes;
 	}
 }
 

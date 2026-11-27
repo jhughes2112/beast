@@ -80,10 +80,14 @@ internal static class SessionTreeLayer
 			string indent = new string(' ', info.Depth * 2);
 
 			// The first character: ! when it needs an answer from the user, a red X when marked for deletion,
-			// the play arrow when running. A stopped session, paused or not, shows nothing.
+			// and while running, what it is doing by shape, not just color: ↓ receiving from its model, @
+			// working on processes (which keep it running even once its agent loop is idle), ▶ waiting on
+			// anything else, such as a subagent. A stopped session, paused or not, shows nothing.
 			bool   isWaiting = waiting.Contains(info.Id);
 			bool   isMarked  = marked.Contains(info.Id);
-			string marker    = isWaiting ? "! " : isMarked ? "✗ " : SessionTree.IsRunning(info, sessions, waiting) ? "▶ " : "  ";
+			bool   running   = SessionTree.IsRunning(info, sessions, waiting) || info.Processes > 0;
+			string doing     = info.Activity == SessionActivity.Receiving ? "↓ " : info.Activity == SessionActivity.Working || info.Processes > 0 ? "@ " : "▶ ";
+			string marker    = isWaiting ? "! " : isMarked ? "✗ " : running ? doing : "  ";
 			Rgb    markerFg  = isWaiting ? waitingFg : isMarked ? markFg : busyFg;
 
 			int col = 1; // start after border

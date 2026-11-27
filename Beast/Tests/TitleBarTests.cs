@@ -85,10 +85,12 @@ public static class TitleBarTests
 		SessionDisplayInfo       running  = Info("run",  true, false, false);
 		SessionDisplayInfo       waiter   = Info("ask",  true, false, false);
 		SessionDisplayInfo       paused   = Info("pau", false,  true,  true);
-		SessionDisplayInfo       finished = new SessionDisplayInfo("fin",   "fin", false, 0, SessionStatus.Ongoing, false, false);
-		SessionDisplayInfo       success  = new SessionDisplayInfo("suc",   "suc", false, 0, SessionStatus.Success, false, false);
-		SessionDisplayInfo       nested   = new SessionDisplayInfo("run_1", "kid",  true, 1, SessionStatus.Ongoing, false, false);
-		List<SessionDisplayInfo> rows     = new List<SessionDisplayInfo> { running, waiter, paused, finished, success, nested };
+		SessionDisplayInfo       finished = new SessionDisplayInfo("fin",   "fin", false, 0, SessionStatus.Ongoing, false, false,      SessionActivity.Idle, 0);
+		SessionDisplayInfo       success  = new SessionDisplayInfo("suc",   "suc", false, 0, SessionStatus.Success, false, false,      SessionActivity.Idle, 0);
+		SessionDisplayInfo       nested   = new SessionDisplayInfo("run_1", "kid",  true, 1, SessionStatus.Ongoing, false, false,   SessionActivity.Waiting, 0);
+		SessionDisplayInfo       talking  = new SessionDisplayInfo("rcv",   "rcv",  true, 0, SessionStatus.Ongoing, false, false, SessionActivity.Receiving, 0);
+		SessionDisplayInfo       jobs     = new SessionDisplayInfo("job",   "job", false, 0, SessionStatus.Ongoing, false, false,   SessionActivity.Working, 3);
+		List<SessionDisplayInfo> rows     = new List<SessionDisplayInfo> { running, waiter, paused, finished, success, nested, talking, jobs };
 
 		Screen panel = Build(rows, 0);
 		ctx.AssertEqual('▶', panel.Get(1, 1).Ch, "Row: running shows the play indicator first");
@@ -99,6 +101,8 @@ public static class TitleBarTests
 		ctx.AssertEqual('p', panel.Get(3, 3).Ch, "Row: the name follows the indicator column");
 		ctx.AssertEqual(' ', panel.Get(1, 6).Ch, "Row: depth indents first");
 		ctx.AssertEqual('▶', panel.Get(3, 6).Ch, "Row: and the indicator comes after it");
+		ctx.AssertEqual('↓', panel.Get(1, 7).Ch, "Row: receiving from its model shows a down arrow");
+		ctx.AssertEqual('@', panel.Get(1, 8).Ch, "Row: processes running show @, even with the agent loop idle");
 
 		ctx.Assert(!Same(panel.Get(3, 3).Fg, panel.Get(3, 4).Fg), "Row: a session Play could continue and a finished one differ in color");
 		ctx.Assert(!Same(panel.Get(3, 5).Fg, panel.Get(3, 3).Fg), "Row: a delivered result differs from one Play could continue");
@@ -139,6 +143,6 @@ public static class TitleBarTests
 
 	private static SessionDisplayInfo Info(string id, bool busy, bool paused, bool canContinue)
 	{
-		return new SessionDisplayInfo(id, id, busy, 0, SessionStatus.Ongoing, paused, canContinue);
+		return new SessionDisplayInfo(id, id, busy, 0, SessionStatus.Ongoing, paused, canContinue, busy ? SessionActivity.Waiting : SessionActivity.Idle, 0);
 	}
 }

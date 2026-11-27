@@ -20,9 +20,11 @@ public interface IDisplay
 	void OnStreamEnd   ();
 	// startTick is the tick when the busy session's current turn began (ignored when busy is false),
 	// so the separator shows the session's own working duration rather than time-since-view-switch.
-	void SetAgentBusy  (  bool busy,  long startTick);
-	void SetSendAsync  (Func<string, Task> sendAsync);
-	void SetRequestExit(Action requestExit);
+	void SetAgentBusy(bool busy, long startTick);
+	// How many processes the viewed session has running, shown beside the busy animation when above zero.
+	void SetProcessCount(int processes);
+	void SetSendAsync   (Func<string, Task> sendAsync);
+	void SetRequestExit (Action requestExit);
 	// Puts a question to the user with a row of answers and calls onChoice with the index they pick
 	// (escapeIndex on Esc). A display that cannot ask answers defaultIndex at once.
 	void AskChoice    (string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice);

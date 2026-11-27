@@ -21,7 +21,8 @@ file sealed class NullDisplay : IDisplay
 	public void OnStreamStart           (int streamIndex, FrameType type)   { StreamStarts.Add((streamIndex, type)); }
 	public void OnStreamChunk           (string chunk)                      { }
 	public void OnStreamEnd             ()                                  { }
-	public void SetAgentBusy            (  bool busy,  long startTick)      { }
+	public void SetAgentBusy            (bool busy, long startTick)         { }
+	public void SetProcessCount         (int processes)                     { }
 	public void SetSendAsync            (Func<string, Task> sendAsync)      { }
 	public void SetRequestExit          (Action requestExit)                { }
 	public void AskChoice               (string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice) { onChoice(defaultIndex); }

@@ -254,7 +254,7 @@ internal static class SessionTree
 			// Status comes straight from the agent's report — busyness sets the row's indicator, not its
 			// hue, so a Working session stays visually distinct whether it is running or parked.
 			SessionStatus status = sessions.TryGetValue(id, out BeastApp.SessionState? st) ? st.Status : SessionStatus.Ongoing;
-			list.Add(new SessionDisplayInfo(id, name, isBusy, depth, status, st != null && st.Paused, st != null && st.CanContinue));
+			list.Add(new SessionDisplayInfo(id, name, isBusy, depth, status, st != null && st.Paused, st != null && st.CanContinue, st != null ? st.Activity : SessionActivity.Idle, st != null ? st.Processes : 0));
 		}
 
 		display.SetSessionList(list, activeSessionId);

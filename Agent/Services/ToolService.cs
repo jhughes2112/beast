@@ -263,7 +263,7 @@ public class ToolService
 	}
 
 	private const string kTimeoutText    = "Timeout in seconds (default 120, or 3600 for a background job). Raise it for builds and test runs.";
-	private const string kBackgroundText = "True to start the command and return at once, for a build, a test suite or a server that takes a while. Its output goes to a log file, and a message arrives when it finishes (with its exit code and the end of its output) or when its timeout stops it, so end your turn and wait for that rather than polling or sleeping. Everything a session starts is stopped when its work ends.";
+	private const string kBackgroundText = "True to start the command and return at once, for a build, a test suite or a server that takes a while. A message arrives when it finishes (with its exit code, the end of its output and where the rest is) or when its timeout stops it. Do not poll or sleep for it: keep working, or end your turn and wait. Everything a session starts is stopped when its work ends.";
 
 	// The one line a subagent writes for its caller's list of results, kept when the full report is not.
 	private const string kSummaryDescription = "One brief sentence stating the outcome, for someone scanning a list of results: the verdict or what came of it, not the steps taken.";

@@ -45,6 +45,17 @@ public class BeastApp : IAsyncDisposable
 
 		// Stopped with a turn still to send, as reported by the agent. Whether Play is offered once idle.
 		public bool CanContinue;
+
+		// What it is doing and how many processes it has running, from the agent's Activity frames. A session
+		// with processes running shows busy even when its agent loop is idle (a background job, a server).
+		public string Activity = SessionActivity.Idle;
+		public int    Processes;
+	}
+
+	// Whether a session shows the busy animation: its agent loop is busy, or it has processes running.
+	private bool ShowsBusy(string sessionId, SessionState state)
+	{
+		return _busySessions.Contains(sessionId) || state.Processes > 0;
 	}
 
 	private readonly ILauncher      _agentContext;
@@ -465,7 +476,8 @@ public class BeastApp : IAsyncDisposable
 			}
 		}
 		_display.OnStreamEnd();
-		_display.SetAgentBusy(_busySessions.Contains(sessionId), state.BusyStartTick);
+		_display.SetProcessCount(state.Processes);
+		_display.SetAgentBusy(ShowsBusy(sessionId, state), state.BusyStartTick);
 		_display.SetActiveTime(state.StatsWorkedMs);
 		_display.SetStatsInfo(state.StatsModel, state.StatsRole, state.StatsPromptTokens, state.StatsCompletionTokens, state.StatsTotalCost, state.StatsMaxContext,
 state.StatsContextTokens, state.StatsCachedTokens);
@@ -735,8 +747,9 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		{
 			case FrameType.Busy:
 				// Record the turn start on the first Busy of a turn so the duration reflects the
-				// session's own working time, not when the user switched to view it.
-				if (!_busySessions.Contains(effectiveId))
+				// session's own working time, not when the user switched to view it. A session already
+				// showing busy for its running processes keeps the time they started.
+				if (!ShowsBusy(effectiveId, session))
 				{
 					session.BusyStartTick = Environment.TickCount64;
 				}
@@ -756,10 +769,14 @@ state.StatsContextTokens, state.StatsCachedTokens);
 
 			case FrameType.Idle:
 				_busySessions.Remove(effectiveId);
-				session.BusyStartTick = 0;
-				if (isActive)
+				// Processes still running keep it showing busy: the agent loop is idle, the session is not.
+				if (!ShowsBusy(effectiveId, session))
 				{
-					_display.SetAgentBusy(false, 0);
+					session.BusyStartTick = 0;
+					if (isActive)
+					{
+						_display.SetAgentBusy(false, 0);
+					}
 				}
 				// Content "subagent" marks a sub-session completion; it gets its own sound.
 				Platform.Current.PlaySound(content == "subagent" ? _subagentSounds : _idleSounds);
@@ -770,6 +787,37 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					RequestGracefulExit();
 				}
 
+				break;
+
+			case FrameType.Activity:
+				// "<kind> <processes>": what the session is doing, for its F10 icon, and how many processes it
+				// has running, which keep the busy animation up (with the count beside it) on their own.
+				int    space      = content.IndexOf(' ');
+				string kind       = space > 0 ? content.Substring(0, space) : content;
+				int    processes  = space > 0 && int.TryParse(content.Substring(space + 1), out int parsed) ? parsed : 0;
+				bool   before     = ShowsBusy(effectiveId, session);
+				session.Activity  = kind;
+				session.Processes = processes;
+				bool after        = ShowsBusy(effectiveId, session);
+				if (!before && after)
+				{
+					session.BusyStartTick = Environment.TickCount64;
+				}
+				else if (before && !after)
+				{
+					session.BusyStartTick = 0;
+				}
+
+				if (isActive)
+				{
+					_display.SetProcessCount(processes);
+					if (before != after)
+					{
+						_display.SetAgentBusy(after, session.BusyStartTick);
+					}
+				}
+
+				NotifySessionList();
 				break;
 
 			case FrameType.StreamStart:

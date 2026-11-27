@@ -98,6 +98,9 @@ public class SessionHandler
 	// streamed live.
 	public async Task RunAsync(LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, bool replayOnStart, CancellationToken ct)
 	{
+		// The client is shown how many processes this session has running while the handler drives it.
+		SessionProcesses.Track(_activeSession);
+
 		if (replayOnStart)
 		{
 			_activeSession.ReplayToTransport();
@@ -282,6 +285,7 @@ public class SessionHandler
 			// The loop only exits on shutdown, deletion, or an unhandled failure. Release the session
 			// either way; after a failure with input already queued, hand it straight back to the
 			// orchestrator so a fresh handler processes that input rather than leaving it to sit.
+			SessionProcesses.Untrack(_activeSession.Id);
 			_activeSession.DetachHandler();
 			if (!ct.IsCancellationRequested && !_activeSession.Deleted && _activeSession.HasPending)
 			{

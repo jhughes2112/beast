@@ -90,9 +90,10 @@ internal static class SeparatorLayer
 		}
 	}
 
-	// Builds the 1-row separator Screen. Idle: plain horizontal rule. Busy: animated label on the left.
+	// Builds the 1-row separator Screen. Idle: plain horizontal rule. Busy: animated label on the left, with
+	// "(3 processes)" after it while the session has processes running (it shows busy for those alone too).
 	// The right end always carries the "{Role} F10(N/T)" status (role in yellow), independent of busy state.
-	internal static Screen Build(int w, bool agentBusy, long busyStartTick, int busyWordIndex, int currentAnimationIndex, string role, int sessionActive, int sessionTotal)
+	internal static Screen Build(int w, bool agentBusy, long busyStartTick, int busyWordIndex, int currentAnimationIndex, string role, int sessionActive, int sessionTotal, int processes)
 	{
 		Screen sep = new Screen(w, 1, new Cell('─', DisplayScreen.Palette.BrightWhite, DisplayScreen.Palette.Background, CellStyle.None));
 
@@ -116,7 +117,8 @@ internal static class SeparatorLayer
 				? $"{ts.Minutes}:{ts.Seconds:D2}"
 				: $"{ts.TotalSeconds:F1}s";
 
-		string label  = $" {frames} {word} {timeLabel} ";
+		string count  = processes == 1 ? " (1 process)" : processes > 1 ? $" ({processes} processes)" : string.Empty;
+		string label  = $" {frames} {word} {timeLabel}{count} ";
 		Rgb    busyFg = new Rgb(126, 192, 196);
 		AnsiToScreen.WriteLine(sep, 0, 0, label, busyFg, DisplayScreen.Palette.Background);
 

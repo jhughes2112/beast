@@ -30,7 +30,20 @@ public enum FrameType : byte
 	Alert           = 22, // human-actionable failure (credits exhausted, bad API key). Rendered as a loud persistent banner in the chat, never collapsed or hidden.
 	Config          = 23, // /config flow payload (JSON with a "kind" discriminator: endpoints, catalog, applied)
 	Host            = 24, // a host_command's live block in the client; only ever streamed (StreamTag.Host), never sent as a frame
-	Unqueued        = 25  // reply to /unqueue: the queued user text taken back for editing, or "" when it was already consumed
+	Unqueued        = 25, // reply to /unqueue: the queued user text taken back for editing, or "" when it was already consumed
+	Activity        = 26  // what a session is doing, for the client's indicators: "<kind> <processes>", kind one of SessionActivity's names
+}
+
+// What a session is doing right now, reported via Activity frames with how many processes it has running.
+// Receiving: a model request is in flight. Working: none is, but a shell command, a background job or
+// something one left behind is running. Waiting: busy otherwise (on a subagent, a retry backoff, an
+// approval). Idle: nothing at all.
+public static class SessionActivity
+{
+	public const string Receiving = "receiving";
+	public const string Working   = "working";
+	public const string Waiting   = "waiting";
+	public const string Idle      = "idle";
 }
 
 // Session termination status reported via SessionStatus frames.
@@ -77,6 +90,8 @@ public interface ITransportServer
 	// can react differently (e.g. play a different notification sound).
 	void Idle(string sessionId, bool subagent);
 	void Busy(string sessionId);
+	// kind is one of SessionActivity's names; processes is how many it has running. Sent only on a change.
+	void Activity(string sessionId, string kind, int processes);
 	// Frame content is "callId\x01text" so Beast can pair by identity.
 	void ToolCallWithId(string sessionId, string callId, string text);
 	// Frame content is "callId\x01exitCode\x01stdout\x01stderr" so Beast can display results richly.

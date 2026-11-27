@@ -314,6 +314,7 @@ public class DisplayScreen : IDisplay
 	// Agent busy animation: driven by SeparatorLayer. State fields wired up here; arrays live in SeparatorLayer.
 	private bool _agentBusy     = false;
 	private long _busyStartTick = 0;
+	private int  _processCount  = 0;
 	// Incremented each time a new block type arrives (StreamStart or ToolCall) so the word changes per activity, not per clock tick.
 	private int _busyWordIndex = 0;
 
@@ -466,6 +467,14 @@ public class DisplayScreen : IDisplay
 		}
 	}
 	public void OnStreamEnd() { lock (_consoleLock) { if (_streamingSlot >= 0) { _dirtySlots.Add(_streamingSlot); } _streamingSlot = -1; } }
+
+	public void SetProcessCount(int processes)
+	{
+		lock (_consoleLock)
+		{
+			_processCount = processes;
+		}
+	}
 
 	public void SetAgentBusy(bool busy, long startTick)
 	{
@@ -1345,7 +1354,7 @@ public class DisplayScreen : IDisplay
 		// 5. Composite the remaining layers onto the full-frame Screen.
 
 		// Separator layer. Carries the "{Role} F10(N/T)" status at its right end.
-		Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex, _currentRole, _sessionActive, _sessionTotal);
+		Screen sep = SeparatorLayer.Build(w, _agentBusy, _busyStartTick, _busyWordIndex, _currentAnimationIndex, _currentRole, _sessionActive, _sessionTotal, _processCount);
 		frame.Blit(sep, 0, separatorRow, BlendMode.Normal, null);
 
 		// The console tab title/icon is kept current by the tick loop (UpdateConsoleChrome): it follows every

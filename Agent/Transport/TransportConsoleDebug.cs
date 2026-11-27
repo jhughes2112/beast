@@ -72,6 +72,11 @@ public class TransportConsoleDebug : ITransportServer
 		Console.WriteLine($"{sessionId} [busy]");
 	}
 
+	public void Activity(string sessionId, string kind, int processes)
+	{
+		Console.WriteLine($"{sessionId} [activity] {kind} ({processes} processes)");
+	}
+
 	public void ToolCallWithId(string sessionId, string callId, string text)
 	{
 		Console.WriteLine($"{sessionId} [tool-call] {text}");

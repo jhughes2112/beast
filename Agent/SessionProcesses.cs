@@ -37,7 +37,6 @@ public static class SessionProcesses
 		public Session  Owner = null!;
 		public int      Number;
 		public Process  Process = null!;
-		public string   Command = string.Empty;
 		public string   Log     = string.Empty;
 		public string   Status  = string.Empty;
 		public int      Limit;
@@ -47,6 +46,14 @@ public static class SessionProcesses
 	// How often the running jobs' status files are looked at.
 	private static readonly TimeSpan kPollInterval = TimeSpan.FromSeconds(1);
 	private static          bool     _polling;
+
+	// The sessions whose process counts the client is shown (Session.SetProcessCount), the shell commands
+	// each has running in the foreground, and how often the counts are refreshed: a leftover process ends on
+	// its own, with nothing to say so but a fresh count.
+	private static readonly Dictionary<string, Session> _tracked        = new Dictionary<string, Session>(StringComparer.Ordinal);
+	private static readonly Dictionary<string, int>     _foreground     = new Dictionary<string, int>(StringComparer.Ordinal);
+	private static readonly TimeSpan                    kReportInterval = TimeSpan.FromSeconds(1);
+	private static          bool                        _reporting;
 
 	// Holders, running jobs and job counts by the session that owns them now; a successor takes its
 	// predecessor's. Jobs are numbered per session from 1, so a seeded run numbers them the same way.
@@ -64,9 +71,8 @@ public static class SessionProcesses
 	private static readonly TimeSpan kStartTimeout = TimeSpan.FromSeconds(5);
 	private static readonly TimeSpan kStartPoll    = TimeSpan.FromMilliseconds(20);
 
-	// Leftovers named in one note before the rest are counted, and the most of a command line shown.
-	private const int kMaxListed       = 8;
-	private const int kMaxCommandChars = 120;
+	// Leftover program names in one note before the rest are counted.
+	private const int kMaxListed = 8;
 
 	// The process to enter for this session's command (the namespace's first process), starting the
 	// holder on first use; 0 when the session has none and the command runs outside any namespace.
@@ -100,13 +106,152 @@ public static class SessionProcesses
 		return init;
 	}
 
-	// A compaction successor takes over its predecessor's namespace, with whatever is running in it, its
-	// background jobs (whose notices now go to it) and its job count.
-	public static void Inherit(Session successor, string predecessorId)
+	// Starts showing the client how many processes this session has running, for as long as its handler runs.
+	public static void Track(Session session)
+	{
+		bool start = false;
+		_gate.Wait();
+		try
+		{
+			_tracked[session.Id] = session;
+			start                = !_reporting;
+			_reporting           = true;
+		}
+		finally
+		{
+			_gate.Release();
+		}
+
+		if (start)
+		{
+			_ = ReportLoopAsync();
+		}
+	}
+
+	public static void Untrack(string sessionId)
 	{
 		_gate.Wait();
 		try
 		{
+			_tracked.Remove(sessionId);
+		}
+		finally
+		{
+			_gate.Release();
+		}
+	}
+
+	// A shell command of the session's is running in the foreground, then has returned.
+	public static void BeginCommand(string sessionId)
+	{
+		AdjustForeground(sessionId, 1);
+		Report(sessionId);
+	}
+
+	public static void EndCommand(string sessionId)
+	{
+		AdjustForeground(sessionId, -1);
+		Report(sessionId);
+	}
+
+	private static void AdjustForeground(string sessionId, int by)
+	{
+		_gate.Wait();
+		try
+		{
+			int count = (_foreground.TryGetValue(sessionId, out int running) ? running : 0) + by;
+			if (count > 0)
+			{
+				_foreground[sessionId] = count;
+			}
+			else
+			{
+				_foreground.Remove(sessionId);
+			}
+		}
+		finally
+		{
+			_gate.Release();
+		}
+	}
+
+	// How many processes the session has running: its foreground commands, its background jobs, and the jobs
+	// earlier commands left behind. Shown only to the client, never to a model.
+	public static int ProcessCount(string sessionId)
+	{
+		int     count;
+		Holder? holder;
+		_gate.Wait();
+		try
+		{
+			count = (_foreground.TryGetValue(sessionId, out int running) ? running : 0) + (_jobs.TryGetValue(sessionId, out List<Job>? jobs) ? jobs.Count : 0);
+			_holders.TryGetValue(sessionId, out holder);
+		}
+		finally
+		{
+			_gate.Release();
+		}
+		return holder != null ? count + LeftoverNames(holder).Count : count;
+	}
+
+	private static void Report(string sessionId)
+	{
+		Session? session;
+		_gate.Wait();
+		try
+		{
+			_tracked.TryGetValue(sessionId, out session);
+		}
+		finally
+		{
+			_gate.Release();
+		}
+
+		session?.SetProcessCount(ProcessCount(sessionId));
+	}
+
+	// Runs for the agent's lifetime once a session is tracked: each tracked session's count, once a second.
+	private static async Task ReportLoopAsync()
+	{
+		for (; ; )
+		{
+			await Task.Delay(kReportInterval);
+			List<string> ids = new List<string>();
+			_gate.Wait();
+			try
+			{
+				ids.AddRange(_tracked.Keys);
+			}
+			finally
+			{
+				_gate.Release();
+			}
+
+			foreach (string id in ids)
+			{
+				Report(id);
+			}
+		}
+	}
+
+	// A compaction successor takes over its predecessor's namespace, with whatever is running in it, its
+	// background jobs (whose notices now go to it), its job count and its place in the client's counts.
+	public static void Inherit(Session successor, string predecessorId)
+	{
+		Session? predecessor = null;
+		_gate.Wait();
+		try
+		{
+			if (_tracked.Remove(predecessorId, out predecessor))
+			{
+				_tracked[successor.Id] = successor;
+			}
+
+			if (_foreground.Remove(predecessorId, out int running))
+			{
+				_foreground[successor.Id] = running;
+			}
+
 			if (_holders.Remove(predecessorId, out Holder? holder))
 			{
 				_holders[successor.Id] = holder;
@@ -130,6 +275,10 @@ public static class SessionProcesses
 		{
 			_gate.Release();
 		}
+
+		// The predecessor has nothing running any more; what it had now shows on the successor.
+		predecessor?.SetProcessCount(0);
+		Report(successor.Id);
 	}
 
 	// The number the session's next background job gets.
@@ -185,11 +334,11 @@ public static class SessionProcesses
 	// stopped; one whose process is gone without a file (killed) has an unknown code. Each way its owner gets
 	// a notice with the end of its output, and wakes if it was waiting. Anything a job leaves behind belongs
 	// to the namespace, which names it after later commands and kills it with the session's work.
-	public static void Watch(Session owner, int number, ProcessStartInfo psi, string command, string log, string status, int limitSeconds)
+	public static void Watch(Session owner, int number, ProcessStartInfo psi, string log, string status, int limitSeconds)
 	{
 		Process process = new Process { StartInfo = psi };
 		process.Start();
-		Job  job   = new Job { Owner = owner, Number = number, Process = process, Command = command, Log = log, Status = status, Limit = limitSeconds, Deadline = DateTime.UtcNow.AddSeconds(limitSeconds) };
+		Job  job   = new Job { Owner = owner, Number = number, Process = process, Log = log, Status = status, Limit = limitSeconds, Deadline = DateTime.UtcNow.AddSeconds(limitSeconds) };
 		bool start = false;
 		_gate.Wait();
 		try
@@ -212,6 +361,7 @@ public static class SessionProcesses
 		{
 			_ = PollAsync();
 		}
+		Report(owner.Id);
 	}
 
 	// Runs while any job does: one look at every running job per interval, then the notices, outside the lock.
@@ -255,6 +405,7 @@ public static class SessionProcesses
 			foreach ((Session owner, string notice) in notices)
 			{
 				owner.AddUserMessage(notice);
+				Report(owner.Id);
 			}
 			foreach (Job job in ended)
 			{
@@ -287,7 +438,7 @@ public static class SessionProcesses
 		{
 			string tail   = Tail(job.Log);
 			string output = tail.Length > 0 ? $"\nLast of its output:\n{tail}" : "\nIt wrote no output.";
-			notice        = $"[Beast: background job {job.Number} (`{FirstLine(job.Command)}`) {how}. Full output: {job.Log}]{output}";
+			notice        = $"[Beast: background job {job.Number} {how}. Full output: {job.Log}]{output}";
 		}
 		return notice;
 	}
@@ -316,14 +467,6 @@ public static class SessionProcesses
 		{
 			// It finished as the limit came.
 		}
-	}
-
-	private static string FirstLine(string text)
-	{
-		string trimmed = text.Trim();
-		int    newline = trimmed.IndexOf('\n');
-		string first   = newline >= 0 ? $"{trimmed.Substring(0, newline).TrimEnd()} …" : trimmed;
-		return first.Length > kMaxCommandChars ? $"{first.Substring(0, kMaxCommandChars)}…" : first;
 	}
 
 	// The last lines of a job's log, bounded in lines and characters.
@@ -389,15 +532,16 @@ public static class SessionProcesses
 			}
 			holder.Unshare.Dispose();
 		}
+		Report(sessionId);
 	}
 
-	// A line naming what is still running from this session's earlier commands, or "" when nothing is.
-	// Only the jobs a finished command left behind are named (those the namespace took in as its own
-	// children), not what they started in turn, sorted and by command alone so the line repeats.
+	// One short line saying what the session still has running, or "" when nothing is: its background jobs
+	// by number (the model was told each number with its command), and what earlier commands left behind
+	// by program name, as ps shows it, with repeats counted. Sorted, and nothing that varies run to run.
 	public static string StillRunningNote(string sessionId)
 	{
-		Holder?      holder;
-		List<string> jobs = new List<string>();
+		Holder?   holder;
+		List<int> jobs = new List<int>();
 		_gate.Wait();
 		try
 		{
@@ -406,7 +550,7 @@ public static class SessionProcesses
 			{
 				foreach (Job job in running)
 				{
-					jobs.Add($"{job.Number} (`{FirstLine(job.Command)}`)");
+					jobs.Add(job.Number);
 				}
 			}
 		}
@@ -415,29 +559,47 @@ public static class SessionProcesses
 			_gate.Release();
 		}
 
-		List<string> lines = new List<string>();
-		if (holder != null)
-		{
-			List<string> commands = LeftoverCommands(holder);
-			if (commands.Count > 0)
-			{
-				commands.Sort(StringComparer.Ordinal);
-				List<string> shown = new List<string>();
-				for (int i = 0; i < commands.Count && i < kMaxListed; i++)
-				{
-					shown.Add($"`{commands[i]}`");
-				}
-
-				string more = commands.Count > kMaxListed ? $" and {commands.Count - kMaxListed} more" : string.Empty;
-				lines.Add($"[Still running from earlier commands: {string.Join(", ", shown)}{more}. Everything this session started is stopped when its work ends; kill any you no longer need.]");
-			}
-		}
-
+		List<string> parts = new List<string>();
 		if (jobs.Count > 0)
 		{
-			lines.Add($"[Background jobs still running: {string.Join(", ", jobs)}. A message comes when each one ends.]");
+			jobs.Sort();
+			parts.Add($"background job{(jobs.Count > 1 ? "s" : string.Empty)} {string.Join(", ", jobs)}");
 		}
-		return string.Join("\n", lines);
+
+		List<string> leftovers = holder != null ? Grouped(LeftoverNames(holder)) : new List<string>();
+		if (leftovers.Count > 0)
+		{
+			parts.Add($"left behind by earlier commands: {string.Join(", ", leftovers)}");
+		}
+
+		return parts.Count > 0 ? $"[Still running: {string.Join("; ", parts)}. Everything this session started stops when its work ends.]" : string.Empty;
+	}
+
+	// Names sorted, each once, with "×n" where it repeats; past kMaxListed the rest are counted.
+	private static List<string> Grouped(List<string> names)
+	{
+		SortedDictionary<string, int> counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
+		foreach (string name in names)
+		{
+			counts[name] = (counts.TryGetValue(name, out int n) ? n : 0) + 1;
+		}
+
+		List<string> grouped = new List<string>();
+		int          shown   = 0;
+		foreach ((string name, int count) in counts)
+		{
+			if (shown < kMaxListed)
+			{
+				grouped.Add(count > 1 ? $"{name} ×{count}" : name);
+			}
+			shown++;
+		}
+
+		if (shown > kMaxListed)
+		{
+			grouped.Add($"{shown - kMaxListed} more");
+		}
+		return grouped;
 	}
 
 	private static async Task<Holder?> StartAsync(CancellationToken ct)
@@ -495,26 +657,26 @@ public static class SessionProcesses
 		return holder;
 	}
 
-	// The commands of the namespace's own children (jobs a finished command left behind), zombies aside. Only
-	// a process inside the namespace can have its first process as a parent, so the parent alone says so:
-	// the namespace link of another user's process is not readable without CAP_SYS_PTRACE, which Docker
-	// does not grant.
-	private static List<string> LeftoverCommands(Holder holder)
+	// The program names of the namespace's own children (jobs a finished command left behind), zombies aside,
+	// as ps shows them. Only a process inside the namespace can have its first process as a parent, so the
+	// parent alone says so: the namespace link of another user's process is not readable without
+	// CAP_SYS_PTRACE, which Docker does not grant.
+	private static List<string> LeftoverNames(Holder holder)
 	{
-		List<string> commands = new List<string>();
+		List<string> names = new List<string>();
 		foreach (string dir in Directory.GetDirectories("/proc"))
 		{
 			if (int.TryParse(Path.GetFileName(dir), out int pid))
 			{
 				(char state, int parent) = StateOf(pid);
-				string command           = parent == holder.InitPid && state != 'Z' ? CommandOf(pid) : string.Empty;
-				if (command.Length > 0)
+				string name              = parent == holder.InitPid && state != 'Z' ? NameOf(pid) : string.Empty;
+				if (name.Length > 0)
 				{
-					commands.Add(command);
+					names.Add(name);
 				}
 			}
 		}
-		return commands;
+		return names;
 	}
 
 	// The first child of a process, 0 when it has none (yet).
@@ -557,16 +719,17 @@ public static class SessionProcesses
 		return (state, parent);
 	}
 
-	private static string CommandOf(int pid)
+	// The program's own short name (/proc/<pid>/comm), what ps prints in its COMMAND column with -o comm.
+	private static string NameOf(int pid)
 	{
-		string command = string.Empty;
+		string name = string.Empty;
 		try
 		{
-			command = File.ReadAllText($"/proc/{pid}/cmdline").Replace('\0', ' ').Trim();
+			name = File.ReadAllText($"/proc/{pid}/comm").Trim();
 		}
 		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
 		{
 		}
-		return command.Length > kMaxCommandChars ? $"{command.Substring(0, kMaxCommandChars)}…" : command;
+		return name;
 	}
 }

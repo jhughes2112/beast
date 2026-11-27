@@ -28,20 +28,21 @@ public class TransportClientConsole : ITransportServer
 	public void User              (string sessionId, string text) { }
 	public void Debug             (string sessionId, string text) { }
 	public void Stats             (string sessionId, string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens, long workedMs) { }
-	public void Completions       (string sessionId,   string json)              { }
-	public void Config            (string sessionId,   string json)              { }
-	public void Idle              (string sessionId, bool subagent)              { }
-	public void Busy              (string sessionId)                             { }
-	public void ToolCallWithId    (string sessionId, string callId, string text) { }
-	public void ToolResponseWithId(string sessionId, ToolResult result)          { }
-	public void SessionAnnounce   (string sessionId,       string json)          { }
-	public void SessionActivate   (string sessionId)                             { }
-	public void SessionStatus     (string sessionId,  string status)             { }
-	public void PendingQueue      (string sessionId, string[] lines)             { }
-	public void Unqueued          (string sessionId,    string text)             { }
-	public void StreamStart       (string sessionId,     string tag)             { }
-	public void StreamChunk       (string sessionId,   string chunk)             { }
-	public void StreamEnd         (string sessionId,     string tag)             { }
+	public void Completions       (string sessionId,   string json)                { }
+	public void Config            (string sessionId,   string json)                { }
+	public void Idle              (string sessionId, bool subagent)                { }
+	public void Busy              (string sessionId)                               { }
+	public void Activity          (string sessionId,   string kind, int processes) { }
+	public void ToolCallWithId    (string sessionId, string callId,   string text) { }
+	public void ToolResponseWithId(string sessionId, ToolResult result)            { }
+	public void SessionAnnounce   (string sessionId,       string json)            { }
+	public void SessionActivate   (string sessionId)                               { }
+	public void SessionStatus     (string sessionId,  string status)               { }
+	public void PendingQueue      (string sessionId, string[] lines)               { }
+	public void Unqueued          (string sessionId,    string text)               { }
+	public void StreamStart       (string sessionId,     string tag)               { }
+	public void StreamChunk       (string sessionId,   string chunk)               { }
+	public void StreamEnd         (string sessionId,     string tag)               { }
 
 	public Task<string?> ReadAsync(CancellationToken cancellationToken)
 	{
