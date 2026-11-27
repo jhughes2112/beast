@@ -30,7 +30,7 @@ public class DisplayScreen : IDisplay
 		// Per-session verbs, handled by the session's own command loop rather than the orchestrator.
 		HashSet<string> verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
-			"compact", "model", "effort", "cancel", "attach", "pause", "resume"
+			"compact", "model", "effort", "cancel", "attach", "pause", "resume", "unqueue"
 		};
 		foreach (string verb in AgentOrchestrator.GlobalCommands)
 		{

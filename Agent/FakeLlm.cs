@@ -38,6 +38,12 @@ public class FakeLlm
 	public const string GrammarUntilToldSentinel = "[[fake-llm-grammar-until-told]]";
 	public const string GrammarFailure           = "{\"error\":{\"code\":500,\"message\":\"got exception: Unexpected empty grammar stack after accepting piece: tool (2251)\",\"type\":\"server_error\"}}";
 
+	// Put this anywhere in a conversation and the server takes the request and then sends nothing at all,
+	// holding the connection open for HoldSeconds before dropping it: a server that is alive but stuck.
+	// A client with a shorter ceiling must give up at its ceiling, once, rather than wait or resend.
+	public const string HoldSentinel = "[[fake-llm-hold]]";
+	public const int    HoldSeconds  = 20;
+
 	// Ask for this model id and every request is rejected as over-window, however small it really
 	// is: the provider whose real limit is nothing like the configured one, so compacting never
 	// satisfies it. Keyed on the requested MODEL rather than on anything in the conversation, so a
@@ -279,6 +285,20 @@ public class FakeLlm
 			|| (bodyText.Contains(GrammarUntilToldSentinel, StringComparison.Ordinal) && !bodyText.Contains("rejected by the server", StringComparison.Ordinal)))
 		{
 			await WriteJsonAsync(context.Response, 500, GrammarFailure, ct);
+			return;
+		}
+
+		if (bodyText.Contains(HoldSentinel, StringComparison.Ordinal))
+		{
+			try
+			{
+				await Task.Delay(TimeSpan.FromSeconds(HoldSeconds), ct);
+			}
+			catch (OperationCanceledException)
+			{
+			}
+
+			context.Response.Abort();
 			return;
 		}
 

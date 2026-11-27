@@ -70,6 +70,9 @@ public class SessionHandler
 	// Grace turns after the budget is spent for the forced terminator to land before the reply is salvaged.
 	private const int kMaxWindDownTurns = 5;
 
+	// The output ceiling of a forced terminator turn: room for its thinking and a full report.
+	private const int kForcedTurnMaxOutputTokens = 8192;
+
 
 	// Cancellation scope for the current turn cluster; replaced by ResetScope at each cluster
 	// start and after a steering resume. The session's /cancel handler cancels the installed scope.
@@ -355,8 +358,11 @@ public class SessionHandler
 			}
 
 			// No caller-imposed output cap: a session answers at the size its work warrants, and the
-			// model's own ceiling (or the window remainder) is the only bound.
-			ProtocolResult result = await service.RunToCompletionAsync(_activeSession, offered, forcedTool, GetCompactionReserve(), 0, true, transport, _scope.Token);
+			// model's own ceiling (or the window remainder) is the only bound. A forced terminator turn is
+			// the exception: its report is short, and a model that loops inside the forced call (thinking
+			// confusedly under the server's tool grammar) is stopped there instead of at 32K tokens.
+			int            outputCap = forcedTool != null ? kForcedTurnMaxOutputTokens : 0;
+			ProtocolResult result    = await service.RunToCompletionAsync(_activeSession, offered, forcedTool, GetCompactionReserve(), outputCap, true, transport, _scope.Token);
 
 			if (result.Outcome == ProtocolCallOutcome.ContextFull)
 			{

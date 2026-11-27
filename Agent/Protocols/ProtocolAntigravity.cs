@@ -36,6 +36,9 @@ using System.Threading.Tasks;
 // state folder, and the next turn's process resumes the same session (session/resume) with nothing
 // replayed. The tool list is read from the agent file at start, so this is also how a session's tools
 // change: the pending call is answered, the prompt cancelled, and the session resumed on new files.
+// User text that arrives with a tool result is the same move without the restart: the call is
+// answered, the prompt cancelled, and the text sent as the next prompt, so it reaches the model as
+// the user's own turn rather than as tool output.
 //
 // Usage is the CLI's own: after each model call it reports that call's tokens (usage_update), and a
 // finished prompt reports the totals of all its calls. A turn that ends in a tool call is charged its
@@ -160,8 +163,26 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 			int            startCode  = 0;
 			AcpConnection? fresh      = null;
 			string         signature  = ToolSignature(tools);
+			bool           steering;
 			bool           switching;
 			bool           resuming = false;
+			lock (_lock)
+			{
+				steering = _connection != null && !_connection.HasExited && _outstandingId.Length > 0 && _unsent.Count > 0;
+			}
+
+			// User text committed alongside a tool result goes over as a prompt of its own, never inside
+			// the result: a model rightly distrusts instructions found in tool output. Antigravity takes
+			// no message mid-prompt, so the prompt is brought to rest and the text starts the next one.
+			// A prompt that will not end takes the process with it, and the next starts from canonical.
+			if (steering && !await EndPromptAsync("the user sent a message", logger, cancellationToken))
+			{
+				lock (_lock)
+				{
+					StopLocked("the prompt would not end for the user's message", false);
+				}
+			}
+
 			lock (_lock)
 			{
 				switching = _connection != null && !_connection.HasExited && signature != _toolSignature;
@@ -169,7 +190,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 
 			if (switching)
 			{
-				await EndForNewToolsAsync(cancellationToken);
+				await EndForNewToolsAsync(logger, cancellationToken);
 			}
 
 			lock (_lock)
@@ -412,10 +433,22 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 		return (error, code);
 	}
 
-	// The tool set changed under a live process. Its conversation is kept by bringing it to rest first:
-	// the pending call gets its result, and the prompt is cancelled before the model can act on the old
-	// tools — the CLI records the result and ends the prompt. A prompt that will not end is given up.
-	private async Task EndForNewToolsAsync(CancellationToken ct)
+	// The tool set changed under a live process. Its conversation is kept by bringing it to rest first,
+	// so the model never acts on the old tools. A prompt that will not end is given up.
+	private async Task EndForNewToolsAsync(SessionLogger logger, CancellationToken ct)
+	{
+		bool atRest = await EndPromptAsync("the tool set changed", logger, ct);
+		lock (_lock)
+		{
+			StopLocked("tool set changed", atRest);
+		}
+	}
+
+	// Brings the prompt in flight to rest without losing what it did: the pending call gets its result,
+	// and the prompt is cancelled before the model can act on it — the CLI records the result and ends
+	// the prompt. Answering first matters: a call cancelled while held is recorded as cancelled. Returns
+	// false when the prompt would not end.
+	private async Task<bool> EndPromptAsync(string why, SessionLogger logger, CancellationToken ct)
 	{
 		AcpConnection connection;
 		int           promptId;
@@ -433,6 +466,7 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 		}
 
 		bool atRest = true;
+		int  tokens = 0;
 		if (midPrompt)
 		{
 			atRest = false;
@@ -449,19 +483,43 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 							AnswerPermission(connection, evt);
 						}
 
+						// A call the model made before the cancel landed is never run.
+						if (evt[kToolCallEvent] is JsonObject stray)
+						{
+							lock (_lock)
+							{
+								if (_held.Remove(stray["id"]?.ToString() ?? string.Empty, out TaskCompletionSource<JsonObject>? reply))
+								{
+									reply.TrySetResult(McpBridge.TextReply("[the call was not run]", true));
+								}
+							}
+						}
+
 						atRest = AcpConnection.IsResponseTo(evt, promptId);
+						if (atRest && evt["result"]?["usage"] is JsonObject usage)
+						{
+							tokens = ReadInt(usage, "totalTokens");
+						}
 					}
 				}
 			}
 			catch (OperationCanceledException) when (!ct.IsCancellationRequested)
 			{
 			}
+
+			logger.Note(atRest
+				? $"[antigravity] prompt cancelled after its tool result because {why} ({tokens} tokens over the whole prompt)"
+				: $"[antigravity] prompt did not end within {kSetupTimeout.TotalSeconds:0}s of being cancelled because {why}");
 		}
 
 		lock (_lock)
 		{
-			StopLocked("tool set changed", atRest);
+			if (atRest)
+			{
+				ResetPromptLocked();
+			}
 		}
+		return atRest;
 	}
 
 	// Kills the process (if any) and releases everything tied to it. Held MCP requests are answered
@@ -693,16 +751,6 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 		JsonObject answer = _results.TryGetValue(_outstandingId, out ToolResult? result)
 			? McpBridge.ToolReply(result)
 			: McpBridge.TextReply("[the call was not run]", true);
-
-		// User text committed alongside the result has no prompt of its own to go in — Antigravity
-		// is mid-turn — so it rides on the result.
-		JsonArray content = (JsonArray)answer["content"]!;
-		foreach (JsonObject block in _unsent)
-		{
-			content.Add((JsonNode)McpContent(block));
-		}
-
-		_unsent.Clear();
 
 		if (_held.Remove(_outstandingId, out TaskCompletionSource<JsonObject>? reply))
 		{
@@ -1110,22 +1158,6 @@ public sealed class ProtocolAntigravity : IMcpToolHost
 				}
 			}
 		}
-	}
-
-	// A user content block as it rides on a tool result (an ACP image block is already MCP's shape).
-	private static JsonObject McpContent(JsonObject block)
-	{
-		JsonObject content;
-		if (block["type"]?.ToString() == "image")
-		{
-			content = (JsonObject)block.DeepClone();
-		}
-		else
-		{
-			content = new JsonObject { ["type"] = "text", ["text"] = $"[user message]\n{block["text"]}" };
-		}
-
-		return content;
 	}
 
 	// ---- Helpers ----

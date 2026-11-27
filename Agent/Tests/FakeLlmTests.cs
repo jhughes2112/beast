@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -147,6 +148,7 @@ public static class FakeLlmTests
 		await TestAccountErrorIsNotOverflowAsync(ctx, model, cts.Token);
 		await TestGrammarFailureIsNotRetriedAsync(ctx, server, model, cts.Token);
 		await TestGrammarFailureRetriesWithToolsNamedAsync(ctx, server, model, cts.Token);
+		await TestHeldRequestFailsOnceAtItsCeilingAsync(ctx, server, cts.Token);
 		await TestHugeConversationAlwaysSummarizesAsync(ctx, model, registry, roleService, cts.Token);
 		await TestChokingServerStillSummarizesAsync(ctx, registry, roleService, cts.Token);
 		await TestWholeTranscriptReachesTheModelAsync(ctx, server, model, registry, roleService, cts.Token);
@@ -435,6 +437,37 @@ public static class FakeLlmTests
 	// overran and came back worded as overflow — which compacts, which builds another unmeasured
 	// successor, which does the same thing. The field log has eleven of them in nine minutes, each
 	// dying on request one. The first request has to fit.
+	// A server that takes the request and then goes quiet with the connection up. Silence alone was
+	// once the failure signal: after 300 s the request was abandoned and the identical one resent, five
+	// times, though the server was busy (a model thinking inside a forced tool call streams nothing).
+	// Now silence is waited out and only the request's ceiling ends it — once, with no resend, since
+	// the same request would be held the same way.
+	private static async Task TestHeldRequestFailsOnceAtItsCeilingAsync(TestContext ctx, FakeLlm server, CancellationToken ct)
+	{
+		ModelConfig heldConfig = new ModelConfig
+		{
+			Id                    = FakeLlm.ModelId,
+			Name                  = "Fake Held",
+			ContextWindow         = FakeLlm.ContextWindow,
+			MaxOutputTokens       = 8192,
+			RequestTimeoutSeconds = 2,
+		};
+		LlmModel             held      = new LlmModel(FakeLlm.ModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), heldConfig);
+		TestCaptureTransport transport = new TestCaptureTransport();
+		Session              session   = BuildSession("held", held, transport);
+		session.Bundle.OnUserMessage($"Continue the work. {FakeLlm.HoldSentinel}");
+
+		int            served = server.RequestsServed;
+		Stopwatch      clock  = Stopwatch.StartNew();
+		ProtocolResult result = await BuildService(held).RunToCompletionAsync(session, Array.Empty<Tool>(), null, 0, 0, false, transport, ct);
+		clock.Stop();
+
+		ctx.AssertEqual(ProtocolCallOutcome.Failed,        result.Outcome, "HeldRequest: a request past its ceiling is a failure, not a transient to retry");
+		ctx.AssertEqual(                served + 1, server.RequestsServed, "HeldRequest: the held request is sent once, never resent");
+		ctx.AssertContains(result.ErrorMessage ?? string.Empty, "ceiling", "HeldRequest: the failure names the ceiling it ran into");
+		ctx.Assert(clock.Elapsed < TimeSpan.FromSeconds(FakeLlm.HoldSeconds / 2), $"HeldRequest: it ends at the ceiling, not when the server lets go ({clock.Elapsed.TotalSeconds:F1}s)");
+	}
+
 	private static async Task TestFirstRequestFitsTheWindowAsync(TestContext ctx, LlmModel model, CancellationToken ct)
 	{
 		TestCaptureTransport transport = new TestCaptureTransport();

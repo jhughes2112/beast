@@ -493,8 +493,7 @@ public class ProtocolChatCompletions
 				string              responseBody;
 				try
 				{
-					// Non-streaming has no chunks to re-arm on, so this deadline really is the whole
-					// request — one more reason streaming is worth keeping alive on a slow endpoint.
+					// The same ceiling as a stream: the whole request, however long the server stays quiet.
 					using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
 					httpResponse = await PostAsync(model, body, extraHeaders, extraPayload, requestCts.Token);
 					responseBody = await httpResponse.Content.ReadAsStringAsync(requestCts.Token);
@@ -1039,9 +1038,8 @@ httpResponse);
 			req.Headers.TryAddWithoutValidation(name, value);
 		}
 
-		// The streaming reader pushes this deadline out on every chunk, so it bounds silence only.
+		// The request's ceiling bounds the whole stream; silence within it is waited out (see ProtocolHelpers.SharedClient).
 		using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
-		TimeSpan idleTimeout                     = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
 
 		HttpResponseMessage httpResponse;
 		try
@@ -1084,7 +1082,7 @@ httpResponse);
 			// rejects whatever arrives while it is still unwinding the last request, and it is the
 			// streaming path that happens to arrive first. Latching _streamingSupported off on that
 			// permanently blinded the session to incremental output for the rest of the run, which is
-			// exactly what the silence deadline needs to see. Retry it as a transient instead.
+			// what the user watches a turn by. Retry it as a transient instead.
 			if (statusCode >= 400 && statusCode < 500 && statusCode != 429 && string.IsNullOrEmpty(errorBody))
 			{
 				logger.ProtocolFailure(
@@ -1173,8 +1171,6 @@ httpResponse);
 					{
 						break;
 					}
-
-					requestCts.CancelAfter(idleTimeout);
 
 					string? data = ProtocolHelpers.SseData(line);
 					if (data == null)
@@ -1351,8 +1347,8 @@ httpResponse);
 		}
 		catch (OperationCanceledException)
 		{
-			// A stream that went silent past the deadline is a timeout, not a user cancel: report it
-			// as one so it retries rather than unwinding the turn as an interrupt.
+			// A stream that ran into its ceiling is a failure, not a user cancel: report it as one rather
+			// than unwinding the turn as an interrupt.
 			ProtocolResult? timeout = ProtocolHelpers.TimeoutOrRethrow(cancellationToken, model);
 			if (timeout != null)
 			{

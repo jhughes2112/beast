@@ -59,6 +59,7 @@ public static class AntigravityLiveTests
 			await TestToolRoundTripAsync(ctx, rig, cts.Token);
 			await TestTwoCallsAsync(ctx, rig, cts.Token);
 			await TestToolSwitchAsync(ctx, rig, cts.Token);
+			await TestSteeringAsync(ctx, rig, cts.Token);
 			await TestReseedAsync(ctx, rig, cts.Token);
 			await TestLongSeedAsync(ctx, rig, cts.Token);
 		}
@@ -171,6 +172,33 @@ public static class AntigravityLiveTests
 		rig.Session.Bundle.OnUserMessage("Without calling a tool: what exact text did the echo tool return for 'quince'?");
 		result = await StepAsync(rig, rig.Tools, ct);
 		ctx.AssertContains(result.Payload?.AssistantText ?? string.Empty, "echo: quince", "Antigravity ToolSwitch: a switch between prompts keeps the conversation too");
+	}
+
+	// User text committed with a tool result, as the drain between tool rounds commits it: the prompt
+	// is brought to rest and the text sent as the next one in the same session, so the model reads it
+	// as the user's own turn rather than as tool output.
+	private static async Task TestSteeringAsync(TestContext ctx, Rig rig, CancellationToken ct)
+	{
+		rig.Session.Bundle.OnUserMessage("Call the echo tool with the text 'kiwi', then tell me exactly what it returned.");
+		ProtocolResult result = await StepAsync(rig, ct);
+		ctx.Assert(result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count == 1 && result.Payload.ToolCalls[0].Name == "echo",
+			$"Antigravity Steering: the echo call arrives ({result.ErrorMessage})");
+
+		rig.Session.Bundle.OnUserMessage("Also, end your reply with the word PINEAPPLE.");
+		int turns = 0;
+		do
+		{
+			result = await StepAsync(rig, ct);
+			turns++;
+		}
+		while (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count > 0 && turns < 4);
+
+		string text = result.Payload?.AssistantText ?? string.Empty;
+		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, $"Antigravity Steering: succeeds ({result.ErrorMessage})");
+		ctx.Assert(text.Contains("echo: kiwi") && text.Contains("PINEAPPLE"), $"Antigravity Steering: the result and the user's added instruction both reach the answer ({text})");
+
+		string log = File.ReadAllText(Path.Combine(AgentState.LogsDir, $"{rig.Session.Id}.log"));
+		ctx.Assert(log.Contains("because the user sent a message") && !log.Contains("[user message]"), "Antigravity Steering: the text went as a prompt of its own, not inside the tool result");
 	}
 
 	// A new protocol instance has no process, so it seeds one from canonical as a transcript.

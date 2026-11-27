@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text.Json.Nodes;
 using System.Threading;
+using System.Threading.Tasks;
 
 // Shared utilities used by all protocol implementations.
 static class ProtocolHelpers
@@ -15,13 +18,48 @@ static class ProtocolHelpers
 	// slow, not broken, and killing it there also leaves the server still working on the abandoned
 	// request — so the immediate retry lands on a busy slot and is rejected, which used to read as a
 	// permanent client error and mark a perfectly healthy model down. So the client's own timeout is
-	// disabled and every request carries its own deadline instead (CreateRequestTimeout below), which
-	// the streaming readers re-arm on each chunk. That makes the deadline a measure of SILENCE.
-	private static readonly HttpClient SharedClient = new HttpClient(new WorkTimingHandler(new HttpClientHandler()))
+	// disabled and every request carries its own deadline instead (CreateRequestTimeout below).
+	//
+	// Silence is not failure either. A model thinking inside a forced tool call streams nothing until
+	// the call parses, a request queued behind another on a one-slot server streams nothing, and a long
+	// prefill streams nothing — the silence deadline this used to be killed all three, and the identical
+	// retry did it again (five 5-minute attempts, every one of them thrown away). What says a server is
+	// gone is the connection: a crashed server closes it at once, and TCP keepalive probes find a dead
+	// host or a broken network within about a minute whether or not tokens are flowing. The request
+	// deadline is only a generous ceiling for a server that is alive but stuck.
+	private static readonly HttpClient SharedClient = new HttpClient(new WorkTimingHandler(new SocketsHttpHandler { ConnectCallback = ConnectWithKeepAliveAsync }))
 	{
 		Timeout                      = Timeout.InfiniteTimeSpan,
 		MaxResponseContentBufferSize = 2 * 1024 * 1024 // 2 MB
 	};
+
+	// Keepalive probing on every connection: the first probe after 30 s of quiet, then every 10 s, and
+	// the connection is declared dead after 3 unanswered probes.
+	private const int kKeepAliveIdleSeconds     = 30;
+	private const int kKeepAliveIntervalSeconds = 10;
+	private const int kKeepAliveProbes          = 3;
+
+	// The ceiling on one request when the model's config sets none.
+	private const int kDefaultRequestTimeoutSeconds = 3600;
+
+	private static async ValueTask<Stream> ConnectWithKeepAliveAsync(SocketsHttpConnectionContext context, CancellationToken cancellationToken)
+	{
+		Socket socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+		try
+		{
+			socket.SetSocketOption(SocketOptionLevel.Socket,              SocketOptionName.KeepAlive,                      true);
+			socket.SetSocketOption(   SocketOptionLevel.Tcp,       SocketOptionName.TcpKeepAliveTime,     kKeepAliveIdleSeconds);
+			socket.SetSocketOption(   SocketOptionLevel.Tcp,   SocketOptionName.TcpKeepAliveInterval, kKeepAliveIntervalSeconds);
+			socket.SetSocketOption(   SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount,          kKeepAliveProbes);
+			await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+		}
+		catch
+		{
+			socket.Dispose();
+			throw;
+		}
+		return new NetworkStream(socket, true);
+	}
 
 	public static HttpClient GetClient()
 	{
@@ -70,16 +108,15 @@ static class ProtocolHelpers
 		return line.Length > 5 && line[5] == ' ' ? line.Substring(6) : line.Substring(5);
 	}
 
-	// The per-request deadline for this model, in seconds. Configurable because "how long may this
-	// endpoint stay silent" is a property of the machine behind it, not of the protocol.
+	// The ceiling on one request to this model, in seconds: how long a server that is alive but stuck may
+	// hold a turn. Configurable because a slow machine can legitimately need longer.
 	public static int RequestTimeoutSeconds(LlmModel model)
 	{
-		return model.Config.RequestTimeoutSeconds > 0 ? model.Config.RequestTimeoutSeconds : 300;
+		return model.Config.RequestTimeoutSeconds > 0 ? model.Config.RequestTimeoutSeconds : kDefaultRequestTimeoutSeconds;
 	}
 
-	// A linked source that trips on the caller's cancel OR on the request deadline. Streaming readers
-	// push the deadline out again with CancelAfter every time bytes arrive, so a turn that keeps
-	// producing tokens runs as long as it needs to and only a genuinely mute connection is cut.
+	// A linked source that trips on the caller's cancel OR on the request's ceiling. The ceiling is never
+	// pushed out: silence on a healthy connection is waited out, and a dead one is found by keepalive.
 	public static CancellationTokenSource CreateRequestTimeout(LlmModel model, CancellationToken cancellationToken)
 	{
 		CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -88,20 +125,20 @@ static class ProtocolHelpers
 	}
 
 	// Classifies an OperationCanceledException raised by an HTTP call. When the caller's own token is NOT
-	// the one that tripped, the cancel came from the request deadline elapsing — the endpoint went silent
-	// past the timeout, or it was queued behind other requests on a busy local endpoint. Returns a
-	// Transient result that says so explicitly (and names the timeout) so the loop retries instead of the
-	// turn dying with an opaque "cancelled" message. Returns null when the caller genuinely cancelled, in
-	// which case the protocol must rethrow so the cancel propagates as a real interrupt.
+	// the one that tripped, the request ran into its ceiling: the server held the connection open for the
+	// whole of it without finishing. Sending the same request again would be held the same way, so the
+	// result is a plain failure — the session falls back to another model or stops for the user — rather
+	// than a Transient one the loop retries. Returns null when the caller genuinely cancelled, in which
+	// case the protocol must rethrow so the cancel propagates as a real interrupt.
 	public static ProtocolResult? TimeoutOrRethrow(CancellationToken cancellationToken, LlmModel model)
 	{
-		if (cancellationToken.IsCancellationRequested)
+		ProtocolResult? result = null;
+		if (!cancellationToken.IsCancellationRequested)
 		{
-			return null;
+			int seconds = RequestTimeoutSeconds(model);
+			result      = ProtocolResult.Failed($"Request to {model.Config.Name} did not finish within its {seconds}s ceiling, though the connection stayed up. Not retried: the same request would be held the same way.");
 		}
-
-		int seconds = RequestTimeoutSeconds(model);
-		return ProtocolResult.Transient($"Request to {model.Config.Name} timed out: the endpoint sent nothing for {seconds}s (too slow, or queued behind other requests). Retrying.", null);
+		return result;
 	}
 
 	public static bool IsRateLimited(HttpResponseMessage response, string responseBody)

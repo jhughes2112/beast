@@ -19,6 +19,7 @@ public class SessionLogger
 	}
 
 	private readonly        string _path;
+	private readonly        string _sessionId;
 	private static readonly object _fileLock = new object();
 
 	// The turn's context accounting, stamped on every request header. Reading a log without these
@@ -34,7 +35,8 @@ public class SessionLogger
 		try
 		{ Directory.CreateDirectory(LogsDir); }
 		catch { }
-		_path = Path.Combine(LogsDir, $"{sessionId}.log");
+		_path      = Path.Combine(LogsDir, $"{sessionId}.log");
+		_sessionId = sessionId;
 	}
 
 	// Records what the next request is being sized against. Called by LlmService before each attempt;
@@ -93,6 +95,7 @@ public class SessionLogger
 		sb.AppendLine($"time:       {DateTimeOffset.UtcNow:u}");
 		sb.AppendLine($"level:      ERROR");
 		sb.AppendLine($"category:   ModelFailure");
+		sb.AppendLine($"session:    {_sessionId}");
 		sb.AppendLine($"model:      {model.ConfigId} ({model.Config.Name})");
 		sb.AppendLine($"endpoint:   {model.Endpoint}");
 		sb.AppendLine($"protocol:   {handler.GetDetectedProtocol()}");
@@ -118,7 +121,7 @@ public class SessionLogger
 	// Logs a protocol-level failure. Protocol classes always have LlmModel + DetectedProtocol.
 	public void ProtocolFailure(LlmModel model, DetectedProtocol protocol, string failureType, int? statusCode, string message, string? body, Exception? ex)
 	{
-		Log(BuildProtocolEntry(model.ConfigId, model.Config.Name, model.Endpoint, protocol.ToString(), failureType, statusCode, message, body, ex));
+		Log(BuildProtocolEntry(_sessionId, model.ConfigId, model.Config.Name, model.Endpoint, protocol.ToString(), failureType, statusCode, message, body, ex));
 	}
 
 	// Logs a protocol failure and returns the result, for one-liner call sites.
@@ -131,7 +134,7 @@ public class SessionLogger
 	// Logs a protocol failure using bare string identity (for ProtocolHelpers which has no LlmModel).
 	public void ProtocolFailure(string modelId, string modelName, string endpoint, string protocol, string failureType, int? statusCode, string message, string? body, Exception? ex)
 	{
-		Log(BuildProtocolEntry(modelId, modelName, endpoint, protocol, failureType, statusCode, message, body, ex));
+		Log(BuildProtocolEntry(_sessionId, modelId, modelName, endpoint, protocol, failureType, statusCode, message, body, ex));
 	}
 
 	// Logs a fallback from one model to another. Called from SessionRunner. `detail` is the error the
@@ -144,6 +147,7 @@ public class SessionLogger
 		sb.AppendLine($"time:           {DateTimeOffset.UtcNow:u}");
 		sb.AppendLine($"level:          WARN");
 		sb.AppendLine($"category:       FallbackTransition");
+		sb.AppendLine($"session:        {_sessionId}");
 		sb.AppendLine($"from:           {from.Model.ConfigId} ({from.Model.Config.Name})");
 		sb.AppendLine($"to:             {to.Model.ConfigId} ({to.Model.Config.Name})");
 		sb.AppendLine($"reason:         {reason}");
@@ -171,13 +175,14 @@ public class SessionLogger
 		Log(sb.ToString());
 	}
 
-	private static string BuildProtocolEntry(string modelId, string modelName, string endpoint, string protocol, string failureType, int? statusCode, string message, string? body, Exception? ex)
+	private static string BuildProtocolEntry(string sessionId, string modelId, string modelName, string endpoint, string protocol, string failureType, int? statusCode, string message, string? body, Exception? ex)
 	{
 		StringBuilder sb = new StringBuilder();
 		sb.AppendLine("============================================================");
 		sb.AppendLine($"time:       {DateTimeOffset.UtcNow:u}");
 		sb.AppendLine($"level:      ERROR");
 		sb.AppendLine($"category:   ProtocolFailure");
+		sb.AppendLine($"session:    {sessionId}");
 		sb.AppendLine($"model:      {modelId} ({modelName})");
 		sb.AppendLine($"endpoint:   {endpoint}");
 		sb.AppendLine($"protocol:   {protocol}");

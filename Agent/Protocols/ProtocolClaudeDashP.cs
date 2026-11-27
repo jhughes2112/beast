@@ -73,8 +73,13 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 	private readonly Dictionary<string, ToolResult> _results     = new Dictionary<string, ToolResult>(StringComparer.Ordinal);
 	private readonly HashSet<string>                _answered    = new HashSet<string>(StringComparer.Ordinal);
 	private readonly List<(string Name, JsonObject Arguments, TaskCompletionSource<JsonObject> Reply)> _waiters = new List<(string Name, JsonObject Arguments, TaskCompletionSource<JsonObject> Reply)>();
-	private readonly List<JsonObject> _steering = new List<JsonObject>();
-	private          bool             _released;
+	private          bool _released;
+
+	// The uuid of user text written to the process mid-turn, until Claude Code reports it queued
+	// (empty = none). Queued text is spliced in as a user message of its own right after the tool
+	// results, so the held requests wait for that report: answered first, the model could move on
+	// before the text was taken.
+	private string _queuedUuid = string.Empty;
 
 	public void Rehydrate(IReadOnlyList<CanonicalMessage> messages)
 	{
@@ -454,16 +459,20 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 	// ---- Sending ----
 
 	// Hands the process what the next turn needs: the results of the last turn's tool calls (through
-	// the held MCP requests), or a new user message when the model is waiting on the user.
+	// the held MCP requests, with any user text committed alongside them as a user message of its
+	// own), or a new user message when the model is waiting on the user.
 	private void DeliverLocked(LlmModel model, SessionLogger logger)
 	{
-		if (_outstanding.Count > 0)
+		if (_outstanding.Count > 0 && _unsent.Count > 0)
 		{
-			// User text committed alongside the results has no message of its own to go in — Claude
-			// Code is mid-turn — so it rides on the last result, as the Messages API would merge it
-			// into the same user turn.
-			_steering.AddRange(_unsent);
-			_unsent.Clear();
+			// User text committed alongside the results goes over as a user message of its own, never
+			// inside a tool result: a model rightly distrusts instructions found in tool output. The
+			// results are released once Claude Code reports the text queued (see ReadTurnAsync).
+			_queuedUuid = Guid.NewGuid().ToString();
+			WriteUserLocked(model, logger, _queuedUuid);
+		}
+		else if (_outstanding.Count > 0)
+		{
 			_released = true;
 			AnswerWaitersLocked();
 		}
@@ -475,24 +484,35 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 				AddUserContent(_unsent, "Continue.", null);
 			}
 
-			JsonArray content = new JsonArray();
-			foreach (JsonObject block in _unsent)
-			{
-				content.Add((JsonNode)block.DeepClone());
-			}
-
-			_unsent.Clear();
-
-			JsonObject line = new JsonObject
-			{
-				["type"]               = "user",
-				["message"]            = new JsonObject { ["role"] = "user", ["content"] = content },
-				["parent_tool_use_id"] = null
-			};
-			string text = line.ToJsonString();
-			logger.Write(model.Config.Name, model.Endpoint, text);
-			_process!.StandardInput.WriteLine(text);
+			WriteUserLocked(model, logger, string.Empty);
 		}
+	}
+
+	// Writes the unsent user content to the process as one user message, tagged with uuid when given.
+	private void WriteUserLocked(LlmModel model, SessionLogger logger, string uuid)
+	{
+		JsonArray content = new JsonArray();
+		foreach (JsonObject block in _unsent)
+		{
+			content.Add((JsonNode)block.DeepClone());
+		}
+
+		_unsent.Clear();
+
+		JsonObject line = new JsonObject
+		{
+			["type"]               = "user",
+			["message"]            = new JsonObject { ["role"] = "user", ["content"] = content },
+			["parent_tool_use_id"] = null
+		};
+		if (uuid.Length > 0)
+		{
+			line["uuid"] = uuid;
+		}
+
+		string text = line.ToJsonString();
+		logger.Write(model.Config.Name, model.Endpoint, text);
+		_process!.StandardInput.WriteLine(text);
 	}
 
 	// Answers every held request whose call is now settled. A call Beast never ran (the turn was
@@ -501,7 +521,6 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 	{
 		if (_released)
 		{
-			string lastId = _outstanding.Count > 0 ? _outstanding[_outstanding.Count - 1].Id : string.Empty;
 			foreach ((string name, JsonObject arguments, TaskCompletionSource<JsonObject> reply) in _waiters)
 			{
 				SemanticToolCall? call = MatchCall(name, arguments);
@@ -514,16 +533,6 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 				{
 					_answered.Add(call.Id);
 					answer = _results.TryGetValue(call.Id, out ToolResult? result) ? McpBridge.ToolReply(result) : McpBridge.TextReply($"[the {name} call was not run]", true);
-					if (call.Id == lastId && _steering.Count > 0)
-					{
-						JsonArray content = (JsonArray)answer["content"]!;
-						foreach (JsonObject block in _steering)
-						{
-							content.Add((JsonNode)McpContent(block));
-						}
-
-						_steering.Clear();
-					}
 				}
 				reply.TrySetResult(answer);
 			}
@@ -570,8 +579,8 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 		_outstanding.Clear();
 		_results.Clear();
 		_answered.Clear();
-		_steering.Clear();
-		_released = false;
+		_released   = false;
+		_queuedUuid = string.Empty;
 	}
 
 	// ---- Reading a turn ----
@@ -729,6 +738,19 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 				else if (type == "system")
 				{
 					result = OnSystemEvent(evt, model, bundle, logger);
+				}
+				else if (type == "command_lifecycle")
+				{
+					// The user text written mid-turn is queued behind the tool results; release them.
+					lock (_lock)
+					{
+						if (_queuedUuid.Length > 0 && evt["command_uuid"]?.ToString() == _queuedUuid)
+						{
+							_queuedUuid = string.Empty;
+							_released   = true;
+							AnswerWaitersLocked();
+						}
+					}
 				}
 				else if (type == "rate_limit_event" && evt["rate_limit_info"] is JsonObject rateLimit)
 				{
@@ -964,22 +986,6 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 				}
 			}
 		}
-	}
-
-	// A message content block in MCP's shape (images carry data/mimeType rather than a source).
-	private static JsonObject McpContent(JsonObject block)
-	{
-		JsonObject content;
-		if (block["type"]?.ToString() == "image")
-		{
-			content = new JsonObject { ["type"] = "image", ["data"] = block["source"]?["data"]?.ToString() ?? string.Empty, ["mimeType"] = block["source"]?["media_type"]?.ToString() ?? string.Empty };
-		}
-		else
-		{
-			content = new JsonObject { ["type"] = "text", ["text"] = $"[user message]\n{block["text"]}" };
-		}
-
-		return content;
 	}
 
 	// ---- Helpers ----

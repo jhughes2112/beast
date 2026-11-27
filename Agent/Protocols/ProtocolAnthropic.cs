@@ -292,7 +292,7 @@ public class ProtocolAnthropic
 
 				logger.Write(model.Config.Name, model.Endpoint, body.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 
-				// Fresh deadline per attempt; ReadStreamAsync re-arms it as events arrive.
+				// Fresh ceiling per attempt, covering the whole stream ReadStreamAsync reads.
 				using CancellationTokenSource requestCts = ProtocolHelpers.CreateRequestTimeout(model, cancellationToken);
 
 				using HttpRequestMessage request   = BuildRequest(model.Endpoint, body, model, extraHeaders);
@@ -421,12 +421,11 @@ public class ProtocolAnthropic
 
 	// Reads the SSE stream, assembling the assistant message block-by-block while streaming text
 	// and thinking deltas to the client, then commits the turn.
-	// Takes the request's own deadline source rather than a bare token: every event that arrives pushes
-	// the deadline out again, so a long answer streams for as long as it keeps streaming.
+	// Takes the request's own deadline source: its ceiling bounds the whole stream, and silence within
+	// it is waited out (see ProtocolHelpers.SharedClient).
 	private async Task<ProtocolResult> ReadStreamAsync(HttpResponseMessage response, LlmModel model, ListenerBundle bundle, LiveUsageProgress onProgress, SessionLogger logger, CancellationTokenSource requestCts)
 	{
 		CancellationToken cancellationToken = requestCts.Token;
-		TimeSpan          idleTimeout       = TimeSpan.FromSeconds(ProtocolHelpers.RequestTimeoutSeconds(model));
 
 		SortedDictionary<int, BlockBuilder> blocks = new SortedDictionary<int, BlockBuilder>();
 		string? openStreamTag       = null;
@@ -451,8 +450,6 @@ public class ProtocolAnthropic
 				{
 					break;
 				}
-
-				requestCts.CancelAfter(idleTimeout);
 
 				string? data = ProtocolHelpers.SseData(line);
 				if (data == null)

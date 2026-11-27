@@ -154,7 +154,7 @@ public class AutoModelConfig
 	[JsonPropertyName("maxImages")]
 	public int MaxImages { get; set; } = 0;
 
-	// 0 = the default (see ModelConfig.RequestTimeoutSeconds). Raise for a slow local box.
+	// 0 = the default (see ModelConfig.RequestTimeoutSeconds). Raise for a machine that needs over an hour a turn.
 	[JsonPropertyName("requestTimeoutSeconds")]
 	public int RequestTimeoutSeconds { get; set; } = 0;
 
@@ -285,12 +285,12 @@ public class ModelConfig
 	[JsonPropertyName("retainReasoning")]
 	public bool RetainReasoning { get; set; } = true;
 
-	// How long a single request to this model may stay SILENT before it is abandoned and retried.
-	// Streaming readers push this deadline out again on every chunk that arrives, so it never bounds
-	// the length of a turn — only a mute connection. Raise it for a machine whose prompt processing
-	// runs for minutes before the first token appears (a big quantized model on a slow local box).
+	// The ceiling on one request to this model, in seconds; 0 = the default (an hour, see
+	// ProtocolHelpers.RequestTimeoutSeconds). Silence is never the limit: a healthy connection is waited
+	// on however long the server goes quiet, and keepalive finds a dead one. This only bounds a server
+	// that is alive but stuck. Raise it for a machine that can legitimately need longer for one turn.
 	[JsonPropertyName("requestTimeoutSeconds")]
-	public int RequestTimeoutSeconds { get; set; } = 300;
+	public int RequestTimeoutSeconds { get; set; } = 0;
 
 	// The sampling seed sent with every request to this model; null sends none and leaves sampling to
 	// the server. Zero is a seed like any other. ChatCompletions only: the Messages and Responses APIs

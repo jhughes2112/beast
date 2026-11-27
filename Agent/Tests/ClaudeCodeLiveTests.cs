@@ -54,6 +54,7 @@ public static class ClaudeCodeLiveTests
 			await TestPlainTextAsync(ctx, rig, cts.Token);
 			await TestToolRoundTripAsync(ctx, rig, cts.Token);
 			await TestTwoCallsAsync(ctx, rig, cts.Token);
+			await TestSteeringAsync(ctx, rig, cts.Token);
 			await TestReseedAsync(ctx, rig, token, cts.Token);
 		}
 		finally
@@ -104,6 +105,29 @@ public static class ClaudeCodeLiveTests
 		ctx.AssertEqual(2, calls, "ClaudeCode TwoCalls: two add calls were made");
 		string text = result.Payload?.AssistantText ?? string.Empty;
 		ctx.Assert(text.Contains('5') && text.Contains("30"), $"ClaudeCode TwoCalls: both sums reach the answer ({text})");
+	}
+
+	// User text committed with a tool result, as the drain between tool rounds commits it: Claude Code
+	// queues it as a user message of its own behind the result, and the model acts on it that turn.
+	private static async Task TestSteeringAsync(TestContext ctx, Rig rig, CancellationToken ct)
+	{
+		rig.Session.Bundle.OnUserMessage("Call the echo tool with the text 'kiwi', then tell me exactly what it returned.");
+		ProtocolResult result = await StepAsync(rig, ct);
+		ctx.Assert(result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count == 1 && result.Payload.ToolCalls[0].Name == "echo",
+			$"ClaudeCode Steering: the echo call arrives ({result.ErrorMessage})");
+
+		rig.Session.Bundle.OnUserMessage("Also, end your reply with the word PINEAPPLE.");
+		int turns = 0;
+		do
+		{
+			result = await StepAsync(rig, ct);
+			turns++;
+		}
+		while (result.Outcome == ProtocolCallOutcome.Success && result.Payload!.ToolCalls.Count > 0 && turns < 4);
+
+		string text = result.Payload?.AssistantText ?? string.Empty;
+		ctx.AssertEqual(ProtocolCallOutcome.Success, result.Outcome, $"ClaudeCode Steering: succeeds ({result.ErrorMessage})");
+		ctx.Assert(text.Contains("echo: kiwi") && text.Contains("PINEAPPLE"), $"ClaudeCode Steering: the result and the user's added instruction both reach the answer ({text})");
 	}
 
 	// A new protocol instance has no process, so it seeds one from canonical as a transcript.
