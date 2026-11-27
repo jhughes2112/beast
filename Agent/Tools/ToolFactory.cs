@@ -96,7 +96,21 @@ public static class ToolFactory
 				});
 		}
 
-		if (role.Tools.Contains("readonly_bash"))
+		// A read-only role's shell. Where the sandbox can enforce read-only access it is a plain bash under the
+		// name models know, since a restricted one trips them (no redirection, no cd); a role that also lists
+		// bash keeps that instead. Elsewhere it stays the restricted readonly_bash.
+		if (role.Tools.Contains("readonly_bash") && Sandbox.ReadOnlyShellAvailable && !role.Tools.Contains("bash"))
+		{
+			ToolConfig tc = toolConfigs["bash_read_only"];
+			Register(tools, "bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+				async (args, toolCallId, ct, transport, sessionId) =>
+				{
+					string command        = Str(args, "command");
+					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
+					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, ct);
+				});
+		}
+		else if (role.Tools.Contains("readonly_bash"))
 		{
 			ToolConfig tc = toolConfigs["readonly_bash"];
 			Register(tools, "readonly_bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),

@@ -9,11 +9,13 @@ using System.Threading.Tasks;
 
 // Keeps what the model can reach apart from what only the agent may touch.
 //
-// Two users. The agent is root: it can see and change everything — the API keys in /root/.beast, its
+// Three users. The agent is root: it can see and change everything — the API keys in /root/.beast, its
 // own state (conversations, logs, staged attachments) in /root/.beast-state, the git repository, the
 // main checkout — and it alone commits (commit_and_rebase).
-// Everything the MODEL can cause to run — bash, readonly_bash, ls — runs as ShellUser, a normal user
-// that owns the workspace's working files and nothing else:
+// Everything the MODEL can cause to run — bash, ls — runs as ShellUser, a normal user that owns the
+// workspace's working files and nothing else, except the read-only roles' shell (ReadOnlyShellUser):
+// a user that owns nothing there and is outside ShellUser's group, so it reads the workspace and writes
+// only /tmp and its own home. Being another user, it also cannot signal ShellUser's processes. ShellUser:
 //   - every top-level dot-folder (.git, .github, .vscode, .venv, ...) is root's and read-only to it,
 //     and one it creates is handed to root as soon as the command that made it finishes, so there is
 //     no corner of .git (a hook, config, a planted commondir) or editor/CI config it can write — the
@@ -22,7 +24,9 @@ using System.Threading.Tasks;
 //   - the workspace folder is sticky, the same rule /tmp uses: it may create files there, but only
 //     delete or rename its own, so it cannot move a root-owned folder aside and put its own in place.
 // That ownership is reported by clockfs's owner mode, mounted over the workspace (MountWorkspaceAsync),
-// rather than written to each file: only the top-level entries are ever chowned.
+// rather than written to each file: only the top-level entries are ever chowned. The mount also reports
+// no group or other write bit anywhere, which is what keeps the read-only user out; without the mount
+// the read-only roles fall back to a restricted shell (ReadOnlyShellAvailable).
 //
 // The in-process file tools cannot lean on permissions — they run inside the root agent — so they
 // resolve every path through its symlinks and are confined to the workspace and the temp folder,
@@ -36,8 +40,14 @@ public static class Sandbox
 	public const string ShellUser = "beast";
 	public const string ShellHome = "/home/beast";
 
+	// The read-only roles' user: not the owner of anything in the workspace and not in ShellUser's group,
+	// so it reads everything there and changes nothing. /tmp and its own home are its to write.
+	public const string ReadOnlyShellUser = "beast-ro";
+	public const string ReadOnlyShellHome = "/home/beast-ro";
+
 	private static string _root = string.Empty;
 	private static bool   _shellUserActive;
+	private static bool   _readOnlyUserActive;
 	private static bool   _ownershipMounted;
 	private static uint   _uid;
 	private static uint   _gid;
@@ -116,6 +126,18 @@ public static class Sandbox
 		}
 	}
 
+	// Whether the read-only roles can have a plain bash: the read-only user exists and the ownership mount
+	// is up, which is what stops that user writing the workspace (clockfs reports no group or other write
+	// bit). Without the mount the workspace is a host folder whose files read as writable by all, so those
+	// roles keep the restricted shell instead.
+	public static bool ReadOnlyShellAvailable
+	{
+		get
+		{
+			return _readOnlyUserActive && _ownershipMounted;
+		}
+	}
+
 	// Whether this container can mount clockfs at all; one created by an older Beast has no fuse device.
 	public static bool FileClockAvailable
 	{
@@ -155,15 +177,17 @@ public static class Sandbox
 	// root on Linux and the image created the account.
 	public static void Initialize(string workspaceRoot)
 	{
-		_root             = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRoot));
-		_shellUserActive  = false;
-		_ownershipMounted = false;
+		_root               = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspaceRoot));
+		_shellUserActive    = false;
+		_readOnlyUserActive = false;
+		_ownershipMounted   = false;
 		if (OperatingSystem.IsLinux() && Environment.UserName == "root")
 		{
 			(bool found, uint uid, uint gid) = LookUpUser(ShellUser);
 			_shellUserActive                 = found;
-			_uid = uid;
-			_gid = gid;
+			_uid                = uid;
+			_gid                = gid;
+			_readOnlyUserActive = found && LookUpUser(ReadOnlyShellUser).Found;
 		}
 	}
 
@@ -448,13 +472,16 @@ public static class Sandbox
 		}
 	}
 
-	// Adds the shell user's identity to a process start: setpriv drops to it before bash runs, and
-	// HOME, USER and PATH are the ones its tools expect (pip --user, npm's global prefix, cargo, go).
-	// No-op without a shell user, so native runs launch bash directly.
-	public static void RunAsShellUser(System.Diagnostics.ProcessStartInfo psi, bool restricted)
+	// Adds a shell user's identity to a process start: setpriv drops to it before bash runs, and HOME,
+	// USER and PATH are the ones its tools expect (pip --user, npm's global prefix, cargo, go). readOnly
+	// picks the read-only roles' user (only when ReadOnlyShellAvailable; see ShellTools). No-op without a
+	// shell user, so native runs launch bash directly.
+	public static void RunAsShellUser(System.Diagnostics.ProcessStartInfo psi, bool restricted, bool readOnly)
 	{
 		if (_shellUserActive)
 		{
+			string user     = readOnly ? ReadOnlyShellUser : ShellUser;
+			string home     = readOnly ? ReadOnlyShellHome : ShellHome;
 			string bash     = psi.FileName;
 			string fakeTime = _fakeTime ?? string.Empty;
 			psi.FileName    = "setpriv";
@@ -470,11 +497,11 @@ public static class Sandbox
 			// The container holds SYS_ADMIN only so the agent can mount clockfs. Dropped from the bounding
 			// set, nothing the model runs can get it back, not even through a setuid program.
 			psi.ArgumentList.Insert(0, "--bounding-set=-sys_admin");
-			psi.ArgumentList.Insert(0, $"--regid={ShellUser}");
-			psi.ArgumentList.Insert(0, $"--reuid={ShellUser}");
-			psi.Environment["HOME"]    = ShellHome;
-			psi.Environment["USER"]    = ShellUser;
-			psi.Environment["LOGNAME"] = ShellUser;
+			psi.ArgumentList.Insert(0, $"--regid={user}");
+			psi.ArgumentList.Insert(0, $"--reuid={user}");
+			psi.Environment["HOME"]    = home;
+			psi.Environment["USER"]    = user;
+			psi.Environment["LOGNAME"] = user;
 
 			string? unfaked = fakeTime.Length > 0 ? kUnfakedBinDir + ":" : null;
 			if (fakeTime.Length > 0)
@@ -490,7 +517,7 @@ public static class Sandbox
 			if (!restricted)
 			{
 				string current          = psi.Environment.TryGetValue("PATH", out string? p) && p != null ? p : "/usr/local/bin:/usr/bin:/bin";
-				psi.Environment["PATH"] = $"{unfaked}{ShellHome}/.local/bin:{ShellHome}/.npm-global/bin:{ShellHome}/.dotnet/tools:{current}";
+				psi.Environment["PATH"] = $"{unfaked}{home}/.local/bin:{home}/.npm-global/bin:{home}/.dotnet/tools:{current}";
 			}
 		}
 	}
@@ -655,8 +682,9 @@ public static class Sandbox
 	//   3. The main checkout a worktree integrates into is root's alone: its folder can only be passed
 	//      through (to reach .git), and every other entry in it is 0700, so the shell user can neither
 	//      read nor change it. Only the agent's commit_and_rebase touches it.
-	//   4. The workspace folder is sticky and root's: the shell user creates freely but can only delete
-	//      or rename what it owns, so the sealed entries above stay put.
+	//   4. The workspace folder is sticky and root's, writable by the shell user's group alone: the shell
+	//      user creates freely but can only delete or rename what it owns, so the sealed entries above stay
+	//      put, and the read-only shell user, outside that group, creates nothing.
 	// Re-run after every commit_and_rebase, which writes the working tree as root.
 	private static string LockDownScript(string root, bool mounted)
 	{
@@ -688,7 +716,7 @@ public static class Sandbox
 			"    [ -L \"$e\" ] || chmod go-rwx \"$e\"\n" +
 			"  done\n" +
 			"fi\n" +
-			"chown root:root \"$W\"; chmod 1777 \"$W\"\n" +
+			$"chown root:{ShellUser} \"$W\"; chmod 1775 \"$W\"\n" +
 			// Docker hands the fuse device over world-writable; only the agent ever mounts anything.
 			"[ -e /dev/fuse ] && chmod 600 /dev/fuse\n" +
 			"exit 0\n";

@@ -75,6 +75,66 @@ public static class ToolSandboxTests
 			{
 			}
 		}
+
+		using CancellationTokenSource readOnlyCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+		await ReadOnlyShellAsync(ctx, previous, readOnlyCts.Token);
+	}
+
+	// The read-only roles' plain bash, on a workspace mounted and locked down as a real container's is: it
+	// reads, runs, redirects and changes directory like any bash, writes /tmp, and changes nothing in the
+	// workspace or in the writer's processes. Needs the fuse device (the container check runs with it).
+	private static async Task ReadOnlyShellAsync(TestContext ctx, string previous, CancellationToken ct)
+	{
+		if (!Sandbox.FileClockAvailable)
+		{
+			ctx.Log("    SKIP read-only shell: no fuse device (run the container with --device /dev/fuse --cap-add SYS_ADMIN)");
+			return;
+		}
+
+		string root = Path.Combine(previous, $"beast-rotest-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(Path.Combine(root, "src"));
+		File.WriteAllText(Path.Combine(root, "src", "a.txt"), "original\n");
+		string sleeper = string.Empty;
+		try
+		{
+			Directory.SetCurrentDirectory(root);
+			Sandbox.Initialize(root);
+			string mount = await Sandbox.MountWorkspaceAsync(ct);
+			await Sandbox.LockDownAsync(ct);
+			ctx.Assert(Sandbox.ReadOnlyShellAvailable, $"ReadOnlyShell: available once the ownership mount is up ({mount})");
+
+			ToolResult read = await ShellTools.ReadonlyBashAsync("ro1", "cd src && cat a.txt > /tmp/beast-ro-copy.txt && cat /tmp/beast-ro-copy.txt && whoami", null, ct);
+			ctx.Assert(read.ExitCode == 0 && read.StdOut.Contains("original", StringComparison.Ordinal) && read.StdOut.Contains(Sandbox.ReadOnlyShellUser, StringComparison.Ordinal),
+				$"ReadOnlyShell: cd, redirection into /tmp and reading the workspace all work, as its own user ({read.StdOut} {read.StdErr})");
+
+			ToolResult edit = await ShellTools.ReadonlyBashAsync("ro2", "echo changed > src/a.txt", null, ct);
+			ctx.Assert(edit.ExitCode != 0 && edit.StdErr.Contains("Permission denied", StringComparison.Ordinal), $"ReadOnlyShell: editing a workspace file is refused ({edit.StdErr})");
+			ToolResult create = await ShellTools.ReadonlyBashAsync("ro3", "touch new.txt; mkdir newdir; touch src/new.txt; rm -f src/a.txt; ls", null, ct);
+			ctx.Assert(!File.Exists(Path.Combine(root, "new.txt")) && !Directory.Exists(Path.Combine(root, "newdir")) && !File.Exists(Path.Combine(root, "src", "new.txt")),
+				$"ReadOnlyShell: nothing can be created, at the top or below it ({create.StdErr})");
+			ctx.AssertEqual("original\n", File.ReadAllText(Path.Combine(root, "src", "a.txt")), "ReadOnlyShell: nor changed or deleted");
+
+			ToolResult writer = await ShellTools.BashAsync("rw1", "echo changed > src/a.txt && touch made.txt; sleep 30 > /dev/null 2>&1 & echo $!", null, ct);
+			sleeper = writer.StdOut.Trim();
+			ctx.Assert(writer.ExitCode == 0 && File.Exists(Path.Combine(root, "made.txt")) && File.ReadAllText(Path.Combine(root, "src", "a.txt")) == "changed\n", $"ReadOnlyShell: the writer's bash still writes ({writer.StdErr})");
+			ToolResult kill = await ShellTools.ReadonlyBashAsync("ro4", $"kill {sleeper}", null, ct);
+			ctx.Assert(kill.ExitCode != 0 && kill.StdErr.Contains("not permitted", StringComparison.Ordinal), $"ReadOnlyShell: the writer's processes cannot be signalled ({kill.StdErr})");
+
+			Role         reviewer = new RoleService(root).Roles["Reviewer"];
+			List<string> names    = new List<string>();
+			foreach (Tool tool in ToolFactory.BuildForRole(new SettingsService(), reviewer, null, null, null, false, null, null, null, null, null, null))
+			{
+				names.Add(tool.Definition.Function.Name);
+			}
+			ctx.Assert(names.Contains("bash") && !names.Contains("readonly_bash"), $"ReadOnlyShell: a read-only role is offered it as bash ({string.Join(",", names)})");
+		}
+		finally
+		{
+			Directory.SetCurrentDirectory(previous);
+			Sandbox.Initialize(previous);
+			string killSleeper = sleeper.Length > 0 ? $"kill {sleeper} 2>/dev/null; " : string.Empty;
+			await ShellTools.AgentBashAsync("ro_cleanup", $"{killSleeper}umount '{root}'; rm -rf '{root}' /tmp/beast-ro-copy.txt", null, CancellationToken.None);
+		}
 	}
 
 	private static string FileTime(string path, CancellationToken ct)

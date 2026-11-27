@@ -249,14 +249,20 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash \
 # apt is not available to it; the agent's apt_install tool installs packages as root instead.
 # safe.directory: the workspace is root-owned (sticky) while this user runs git in it.
 # The dotnet call bakes this user's first-run sentinels, as the SDK layer above does for root.
+# beast-ro is the read-only roles' user (Reviewer, orchestrator, file subagent): it owns nothing in the
+# workspace and is not in beast's group, so it reads the workspace and writes only /tmp and its own home,
+# and it cannot signal beast's processes. Its home is set up the same way.
 RUN useradd --create-home --uid 1500 --shell /bin/bash beast \
+    && useradd --create-home --uid 1501 --shell /bin/bash beast-ro \
     && git config --system safe.directory '*' \
     && echo 'debconf debconf/frontend select Noninteractive' | debconf-set-selections \
-    && mkdir -p /home/beast/.config/pip /home/beast/.npm-global /home/beast/.local/bin \
-    && printf '[global]\nbreak-system-packages = true\n' > /home/beast/.config/pip/pip.conf \
-    && printf 'prefix=/home/beast/.npm-global\n' > /home/beast/.npmrc \
-    && chown -R beast:beast /home/beast \
-    && su beast -c 'dotnet nuget locals all --list >/dev/null'
+    && for u in beast beast-ro; do \
+         mkdir -p /home/$u/.config/pip /home/$u/.npm-global /home/$u/.local/bin \
+         && printf '[global]\nbreak-system-packages = true\n' > /home/$u/.config/pip/pip.conf \
+         && printf "prefix=/home/$u/.npm-global\n" > /home/$u/.npmrc \
+         && chown -R $u:$u /home/$u \
+         && su $u -c 'dotnet nuget locals all --list >/dev/null'; \
+       done
 
 # Repeatable time for seeded runs (Sandbox.cs). clockfs gives workspace changes a counted time; libfaketime
 # gives the same time to whatever the shell asks the clock. dotnet's build servers crash under libfaketime,

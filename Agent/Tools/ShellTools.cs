@@ -43,7 +43,7 @@ public static class ShellTools
 		string escaped = target.Replace("'", "'\\''");
 		string command = $"ls -1Ap -- '{escaped}' | awk '{{print ($0 ~ /\\/$/) \"\\t\" $0}}' | sort | cut -f2-";
 		// The shell user's shell, but without BashAsync's dot-folder sweep: a listing creates nothing.
-		ToolResult result = await RunBashAsync(toolCallId, command, null, false, true, cancellationToken);
+		ToolResult result = await RunBashAsync(toolCallId, command, null, false, true, false, cancellationToken);
 
 		if (result.ExitCode != 0 || string.IsNullOrEmpty(result.StdOut))
 		{
@@ -103,7 +103,7 @@ public static class ShellTools
 			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
 		}
 
-		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, cancellationToken);
+		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, false, cancellationToken);
 		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
 		string     stdOut     = Sandbox.SteadyShellOutput(result.StdOut);
 		string     stdErr     = Sandbox.SteadyShellOutput(result.StdErr);
@@ -119,15 +119,16 @@ public static class ShellTools
 	// sandbox lockdown, apt installs — which needs root. Never hand this a command the model wrote.
 	public static Task<ToolResult> AgentBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
-		return RunBashAsync(toolcallid, command, timeoutSeconds, false, false, cancellationToken);
+		return RunBashAsync(toolcallid, command, timeoutSeconds, false, false, false, cancellationToken);
 	}
 
-	// Restricted, read-only variant of bash. Launches the shell with -r (restricted mode: no output
-	// redirection, no cd, no running a program by an explicit path — only bare names resolved through PATH)
-	// and narrows PATH to ReadonlyBinDir, whose symlinks are a curated set of read-only programs. Everything
-	// outside that directory is unreachable, so the command universe is exactly the allowlist. This is a
-	// guardrail for a cooperative (or worst case, prompt-poisoned) agent, not a hardened sandbox against a
-	// determined human attacker.
+	// The read-only roles' bash. Where the sandbox can enforce it (Sandbox.ReadOnlyShellAvailable) this is a
+	// plain bash run as the read-only user, which may read the whole workspace and run anything but change
+	// nothing there: the commands models already know, redirection and cd included, simply work, and a write
+	// to the workspace fails with "Permission denied". Elsewhere it falls back to the restricted shell: -r
+	// (no output redirection, no cd, no running a program by an explicit path) with PATH narrowed to
+	// ReadonlyBinDir, whose symlinks are a curated set of read-only programs. Both are guardrails for a
+	// cooperative (or worst case, prompt-poisoned) agent, not a hardened sandbox against a determined human.
 	public static async Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
 		if (RefusedInSeededRun(command))
@@ -135,7 +136,8 @@ public static class ShellTools
 			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
 		}
 
-		ToolResult result = await RunBashAsync(toolcallid, command, timeoutSeconds, true, true, cancellationToken);
+		bool       readOnlyUser = Sandbox.ReadOnlyShellAvailable;
+		ToolResult result       = await RunBashAsync(toolcallid, command, timeoutSeconds, !readOnlyUser, true, readOnlyUser, cancellationToken);
 		return new ToolResult(toolcallid, Sandbox.SteadyShellOutput(result.StdOut), Sandbox.SteadyShellOutput(result.StdErr), result.ExitCode, result.MeasuredOutputTokens);
 	}
 
@@ -198,7 +200,7 @@ public static class ShellTools
 		return text;
 	}
 
-	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool asShellUser, CancellationToken cancellationToken)
+	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool asShellUser, bool readOnlyUser, CancellationToken cancellationToken)
 	{
 		ToolResult finalResult;
 
@@ -237,7 +239,7 @@ public static class ShellTools
 
 				if (asShellUser)
 				{
-					Sandbox.RunAsShellUser(psi, restricted);
+					Sandbox.RunAsShellUser(psi, restricted, readOnlyUser);
 				}
 
 				using (Process process = new Process { StartInfo = psi })

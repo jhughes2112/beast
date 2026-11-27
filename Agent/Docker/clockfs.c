@@ -13,8 +13,8 @@
 //
 // The sandbox's ownership instead of a clock, mounted over the workspace at startup (Sandbox.cs). Times
 // are real. Ownership is reported, not stored: everything belongs to uid:gid, except a top-level
-// dot-folder, dot-symlink or .git that is really root's, which reads as root's with no group or other
-// write bit all the way down. The kernel checks permissions against what is reported, so the lockdown
+// dot-folder, dot-symlink or .git that is really root's, which reads as root's all the way down; nothing
+// has a group or other write bit, so only the owner writes. The kernel checks permissions against what is reported, so the lockdown
 // only has to chown the top-level entries instead of every file, which on Docker Desktop's Windows bind
 // mounts took minutes per start. A hard link to a sealed file is refused: under another name it would
 // read as uid's.
@@ -67,21 +67,24 @@ static int is_sealed(const char *path)
 }
 
 // What the kernel checks permissions against in owner mode. The mount's own folder reports as it is.
+// Nothing reports a group or other write bit: only its owner may change a file. A host mount reads as
+// writable by all (Docker Desktop's Windows binds report 0777), and the sandbox's read-only shell user,
+// which is neither the owner nor in its group, must not be able to write the workspace through that.
 static void report_owner(const char *path, struct stat *st)
 {
 	if (path[1] == '\0')
 		return;
 	if (is_sealed(path))
 	{
-		st->st_uid   = 0;
-		st->st_gid   = 0;
-		st->st_mode &= ~(mode_t)(S_IWGRP | S_IWOTH);
+		st->st_uid = 0;
+		st->st_gid = 0;
 	}
 	else
 	{
 		st->st_uid = g_uid;
 		st->st_gid = g_gid;
 	}
+	st->st_mode &= ~(mode_t)(S_IWGRP | S_IWOTH);
 }
 
 static time_t now(void)
