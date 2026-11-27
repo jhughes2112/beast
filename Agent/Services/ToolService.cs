@@ -235,12 +235,14 @@ public class ToolService
 		tools["task_complete"] = Cfg(
 			"Declare this task finished and return your report to the agent that delegated it to you. The normal path is review_work, then commit_and_rebase when that tool is available, then this. If you cannot complete the work, or your budget is nearly spent, call it with success=false and say exactly what state things are in.",
 			("results_of_review_work", "The entire response the delegating agent receives, so make it self-contained: what was done and where (files), the Reviewer's verdict quoted as given, integration status (committed or not), anything unfinished or any follow-on tasks it should assign, and the exact error output if something failed."),
+			("summary", kSummaryDescription),
 			("success", "True if the task was completed, reviewed, and integrated; false if it failed, was blocked, or ran out of budget."));
 
 		tools["finish_review"] = Cfg(
 			"Finish this review round. The developer who requested it receives only what you put here, then makes all corrections and handles integration. Approve unless there is a blocking problem; put everything else in comments as non-blocking notes.",
 			("approved", "True to accept these changes (non-blocking notes may still accompany it), false only when a blocking problem must be fixed first."),
-			("comments", "Verdict first, then blocking problems (each with file:line and what is wrong), then non-blocking notes clearly labeled as optional. State what you checked and how, including any build or test you ran and its result. This is the entire response the developer receives."));
+			("comments", "Verdict first, then blocking problems (each with file:line and what is wrong), then non-blocking notes clearly labeled as optional. State what you checked and how, including any build or test you ran and its result. This is the entire response the developer receives."),
+			("summary", kSummaryDescription));
 
 		tools["return_to_caller"] = Cfg(
 			"Call this to declare your task finished and return your result.",
@@ -249,4 +251,7 @@ public class ToolService
 
 		return tools;
 	}
+
+	// The one line a subagent writes for its caller's list of results, kept when the full report is not.
+	private const string kSummaryDescription = "One brief sentence stating the outcome, for someone scanning a list of results: the verdict or what came of it, not the steps taken.";
 }

@@ -457,6 +457,7 @@ public static class ToolFactory
 						Description = tc.Description,
 						Parameters  = Params(
 							Req("results_of_review_work", "string",  tc.Parameters["results_of_review_work"]),
+							Req("summary",                "string",                 tc.Parameters["summary"]),
 							Req("success",                "boolean",                tc.Parameters["success"]))
 					}
 				},
@@ -464,7 +465,7 @@ public static class ToolFactory
 				{
 					string results = Str(args, "results_of_review_work");
 					bool   success = BoolOpt(args, "success") ?? true;
-					onTerminate(success, results);
+					onTerminate(success, WithSummary(Str(args, "summary"), results));
 					string ack = "Task marked complete.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
@@ -484,7 +485,8 @@ public static class ToolFactory
 						Description = tc.Description,
 						Parameters  = Params(
 							Req("approved", "boolean", tc.Parameters["approved"]),
-							Req("comments", "string",  tc.Parameters["comments"]))
+							Req("comments", "string",  tc.Parameters["comments"]),
+							Req("summary",  "string",   tc.Parameters["summary"]))
 					}
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
@@ -496,7 +498,7 @@ public static class ToolFactory
 					}
 
 					string comments = Str(args, "comments");
-					onTerminate(approved.Value, comments);
+					onTerminate(approved.Value, WithSummary(Str(args, "summary"), comments));
 					string ack = approved.Value ? "Review approved." : "Review rejected.";
 					return Task.FromResult(new ToolResult(toolCallId, ack, string.Empty, 0, ToolDispatch.EstimateTokens(ack)));
 				}
@@ -531,6 +533,37 @@ public static class ToolFactory
 		}
 
 		return tools.ToArray();
+	}
+
+	// The terminators that return a Developer's or Reviewer's report to its caller, and the one-line summary
+	// each takes. return_to_caller has none: it answers the small helper jobs, whose answer is the result.
+	public const string ReportSummaryArgument = "summary";
+
+	public static bool IsReportTerminator(string toolName)
+	{
+		return toolName == "task_complete" || toolName == "finish_review";
+	}
+
+	// A subagent's report as its caller receives it: the one-line summary first (SummaryPrefix), where a
+	// compacted history keeps it, then the full report. A summary left out is taken from the report's first
+	// line rather than refused: a refusal costs a turn, and on a forced final turn it can cost them all.
+	private static string WithSummary(string summary, string report)
+	{
+		string line = summary.Trim();
+		if (line.Length == 0)
+		{
+			line        = report.TrimStart();
+			int newline = line.IndexOf('\n');
+			line        = newline >= 0 ? line.Substring(0, newline) : line;
+		}
+
+		line = line.Replace('\r', ' ').Replace('\n', ' ').Trim();
+		if (line.Length > MechanicalCompaction.kMaxSummaryChars)
+		{
+			line = line.Substring(0, MechanicalCompaction.kMaxSummaryChars);
+		}
+
+		return $"{MechanicalCompaction.SummaryPrefix}{line}\n\n{report}";
 	}
 
 	// The turn count of a named budget size on the role, matched case-insensitively.

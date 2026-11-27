@@ -5,11 +5,12 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 
 
-// Unit tests for the mechanical compaction pass: stale-result elision, oversized-argument stubs,
-// thinking cuts, nudge and stale-ledger stripping, the too-small-to-matter bailout, the file
-// ledger builder, and the nudge recognizers. The rehydration test then runs the rebuilt history
-// through all three protocols' wire converters â€” the pass is only safe if every protocol still
-// produces a well-formed request from it â€” and the persistence test round-trips it through the
+// Unit tests for the mechanical compaction pass: the digests stale turns become (one line per call,
+// repeats collapsed, a subagent's summary kept, every call in the log at the lines it names), reasoning,
+// records from earlier versions folded in, nudge and stale-ledger stripping, the too-small-to-matter
+// bailout, the file ledger builder, and the nudge recognizers. The rehydration test then runs the rebuilt
+// history through all three protocols' wire converters — the pass is only safe if every protocol still
+// produces a well-formed request from it — and the persistence test round-trips it through the
 // source-generated serializer the sessions are saved with.
 public static class MechanicalCompactionTests
 {
@@ -20,8 +21,10 @@ public static class MechanicalCompactionTests
 		TestTryBuildElides(ctx);
 		TestTryBuildBailsOut(ctx);
 		TestProjectionAccounting(ctx);
-		TestShellRecords(ctx);
-		TestReasoningMoves(ctx);
+		TestDigest(ctx);
+		TestDigestFoldsOldRecords(ctx);
+		TestReportSummary(ctx);
+		TestReasoning(ctx);
 		TestStaleTraces(ctx);
 		TestLogAccessAndExitCode(ctx);
 		TestBuildLedger(ctx);
@@ -45,30 +48,58 @@ public static class MechanicalCompactionTests
 		return new CompactionLog(Path.Combine(Path.GetTempPath(), $"beast-compaction-{Guid.NewGuid():N}.log"));
 	}
 
-	// Enough later turns that everything before them is stale.
+	// The turn in flight, after which everything before is stale.
 	private static void AddFreshTurns(List<CanonicalMessage> messages)
 	{
-		messages.Add(new AssistantMessage("second", string.Empty, null));
-		messages.Add(new AssistantMessage("third", string.Empty, null));
 		messages.Add(new AssistantMessage("done", string.Empty, null));
 	}
 
-	// The lines a "lines X to Y" reference names, read back from the saved file the way read_file counts them.
-	private static string ReadReference(string path, string text)
+	// The lines a digest line's "(lines X-Y)" names, read back from the saved file the way read_file counts them.
+	private static string ReadReference(string path, string line)
 	{
-		string   marker = " lines ";
-		int      at     = text.LastIndexOf(marker, StringComparison.Ordinal);
-		string[] range  = text.Substring(at + marker.Length).TrimEnd(']').Split(" to ");
+		string   marker = "lines ";
+		int      at     = line.LastIndexOf(marker, StringComparison.Ordinal);
+		string[] range  = line.Substring(at + marker.Length).TrimEnd(')').Split('-');
 		int      first  = int.Parse(range[0]);
 		int      last   = int.Parse(range[1]);
 		string[] lines  = File.ReadAllText(path).Split('\n');
 		return string.Join("\n", lines, first - 1, last - first + 1);
 	}
 
-	private static void TestShellRecords(TestContext ctx)
+	// The digest line that starts with the given text, or "" when there is none.
+	private static string DigestLine(string digest, string start)
+	{
+		string found = string.Empty;
+		foreach (string line in digest.Split('\n'))
+		{
+			if (found.Length == 0 && line.StartsWith(start, StringComparison.Ordinal))
+			{
+				found = line;
+			}
+		}
+		return found;
+	}
+
+	private static int ToolTraffic(IReadOnlyList<CanonicalMessage> messages)
+	{
+		int count = 0;
+		foreach (CanonicalMessage msg in messages)
+		{
+			if (msg is ToolResultMessage || (msg is AssistantMessage am && am.ToolCalls.Count > 0))
+			{
+				count++;
+			}
+		}
+		return count;
+	}
+
+	// Every stale call becomes one digest line. The lines are pinned so any drift in what the model actually
+	// reads shows up in review.
+	private static void TestDigest(TestContext ctx)
 	{
 		string                 longCommand = "python3 - <<'EOF'\nprint('hello')\nEOF";
-		string                 longOutput  = new string('o', 2000) + "\nlast line";
+		string                 longOutput  = new string('o', 200) + "\nlast line";
+		string                 report      = $"\nstderr: {MechanicalCompaction.SummaryPrefix}REJECTED, the chorus is too long\n\nThe full review: " + new string('r', 3000);
 		List<CanonicalMessage> messages    = new List<CanonicalMessage>
 		{
 			new UserMessage("go"),
@@ -78,13 +109,31 @@ public static class MechanicalCompactionTests
 				new SemanticToolCall { Id = "s2", Name = "readonly_bash", ArgumentsJson = new JsonObject { ["why"] = "List files", ["command"] = "ls" }.ToJsonString() },
 				new SemanticToolCall { Id = "s3", Name = "bash", ArgumentsJson = new JsonObject { ["command"] = "make test && echo finished\nsecond line" }.ToJsonString() },
 				new SemanticToolCall { Id = "s4", Name = "bash", ArgumentsJson = new JsonObject { ["why"] = new string('w', 300), ["command"] = "pwd" }.ToJsonString() },
-				new SemanticToolCall { Id = "s5", Name = "host_command", ArgumentsJson = new JsonObject { ["why"] = "Check the host's GPU", ["shell"] = "bash", ["command"] = "nvidia-smi --query-gpu=name --format=csv" }.ToJsonString() }
+				new SemanticToolCall { Id = "r1", Name = "read_file", ArgumentsJson = "{\"file_path\":\"src/a.cs\",\"offset\":10,\"lines\":50}" },
+				new SemanticToolCall { Id = "e1", Name = "edit_file", ArgumentsJson = new JsonObject { ["why"] = "Fix the retry", ["file_path"] = "src/a.cs", ["old_text"] = new string('o', 400), ["new_text"] = "one\ntwo\nthree" }.ToJsonString() },
+				new SemanticToolCall { Id = "e2", Name = "edit_file", ArgumentsJson = new JsonObject { ["why"] = "Try it", ["file_path"] = "src/d.cs", ["old_text"] = "x", ["new_text"] = "z" }.ToJsonString() }
 			}),
 			new ToolResultMessage("s1", longOutput, null, 1),
 			new ToolResultMessage("s2",    "a.txt", null, 0),
 			new ToolResultMessage("s3", "ok"),
-			new ToolResultMessage("s4", "/workspace",     null, 0),
-			new ToolResultMessage("s5", "NVIDIA GeForce", null, 0)
+			new ToolResultMessage("s4",          "/workspace", null, 0),
+			new ToolResultMessage("r1", new string('f', 2000), null, 0),
+			new ToolResultMessage("e1", "Edit applied at line 40:\n" + new string('d', 300), null, 0),
+			new ToolResultMessage("e2",                         "Error: old_text not found", null, 1),
+			new AssistantMessage(string.Empty, string.Empty, new List<SemanticToolCall>
+			{
+				new SemanticToolCall { Id = "v1", Name = "review_work", ArgumentsJson = new JsonObject { ["prompt"] = new string('p', 4000) }.ToJsonString() }
+			}),
+			new ToolResultMessage("v1", report, null, 1),
+			new AssistantMessage("checking twice", string.Empty, new List<SemanticToolCall>
+			{
+				new SemanticToolCall { Id = "t1", Name = "bash", ArgumentsJson = new JsonObject { ["why"] = "Poll the tests", ["command"] = "cat done" }.ToJsonString() },
+				new SemanticToolCall { Id = "t2", Name = "bash", ArgumentsJson = new JsonObject { ["why"] = "Poll the tests", ["command"] = "cat done" }.ToJsonString() }
+			}),
+			new ToolResultMessage("t1", "pending", null, 0),
+			new ToolResultMessage("t2", "pending", null, 0),
+			new UserMessage("now the other one"),
+			new AssistantMessage("on it", string.Empty, null)
 		};
 		AddFreshTurns(messages);
 
@@ -93,84 +142,124 @@ public static class MechanicalCompactionTests
 		log.Save();
 		try
 		{
-			AssistantMessage turn = (AssistantMessage)rebuilt[1];
-			ctx.AssertEqual(MechanicalCompaction.MemoryToolName, turn.ToolCalls[0].Name, "Shell: a stale call becomes a record");
-			ctx.AssertEqual("s1", turn.ToolCalls[0].Id, "Shell: paired with its result as before");
+			// Shape: each user message as itself, one digest per stretch between them, then the turn in flight.
+			ctx.AssertEqual(   5,                  rebuilt.Count, "Digest: user, digest, user, digest, the turn in flight");
+			ctx.AssertEqual("go", ((UserMessage)rebuilt[0]).Text, "Digest: the user's words stay a message of their own");
+			ctx.AssertEqual("now the other one",      ((UserMessage)rebuilt[2]).Text, "Digest: every one of them");
+			ctx.AssertEqual("done",              ((AssistantMessage)rebuilt[4]).Text, "Digest: the last turn stays as it was");
+			ctx.AssertEqual(0, ToolTraffic(rebuilt), "Digest: no tool calls or results are left for a model to copy");
 
-			JsonNode first = JsonNode.Parse(turn.ToolCalls[0].ArgumentsJson)!;
-			ctx.AssertEqual("bash",                         first["tool"]!.GetValue<string>(), "Shell: the record names the real tool");
-			ctx.AssertEqual("Check the greeting prints",     first["why"]!.GetValue<string>(), "Shell: and keeps the note");
-			ctx.AssertEqual("elided",                    first["command"]!.GetValue<string>(), "Shell: a long command is cut");
-			ctx.AssertEqual(30, first["timeout_seconds"]!.GetValue<int>(), "Shell: a short argument is stated");
+			string digest = ((UserMessage)rebuilt[1]).Text;
+			ctx.Assert(digest.StartsWith($"{MechanicalCompaction.DigestMarker} Earlier turns, shortened. Full calls and output: {log.FilePath}\n", StringComparison.Ordinal), $"Digest: Beast's voice, naming its log ({digest})");
+			ctx.Assert(MechanicalCompaction.HasDigest(rebuilt), "Digest: the history can be asked whether it holds one");
+			ctx.AssertContains(digest, "\nYou: running\n", "Digest: the assistant's own words, as it wrote them");
+			ctx.Assert(!digest.Contains("last line", StringComparison.Ordinal) && !digest.Contains(new string('f', 50), StringComparison.Ordinal), "Digest: long output stays in the log");
 
-			ctx.AssertEqual("ls",                         JsonNode.Parse(turn.ToolCalls[1].ArgumentsJson)!["command"]!.GetValue<string>(), "Shell: a short command is stated too");
-			ctx.AssertEqual("make test && echo finished",     JsonNode.Parse(turn.ToolCalls[2].ArgumentsJson)!["why"]!.GetValue<string>(), "Shell: with no note, the first line stands in");
-			ctx.AssertEqual(128, JsonNode.Parse(turn.ToolCalls[3].ArgumentsJson)!["why"]!.GetValue<string>().Length, "Shell: a long note is cut to size");
+			ctx.Assert(DigestLine(digest, $"- bash: Check the greeting prints → failed (exit 1): {new string('o', 120)}… (lines ").Length > 0, "Digest: a failure shows with its first line, cut short");
+			ctx.Assert(             DigestLine(digest, "- readonly_bash: List files → a.txt (lines ").Length > 0, "Digest: a short result is stated");
+			ctx.Assert(         DigestLine(digest, "- bash: make test && echo finished → ok (lines ").Length > 0, "Digest: with no note, the command's first line stands in");
+			ctx.Assert(    DigestLine(digest, $"- bash: {new string('w', 128)} → /workspace (lines ").Length > 0, "Digest: a long note is cut to size");
+			ctx.Assert(    DigestLine(digest, "- read_file: src/a.cs from line 10, 50 lines (lines ").Length > 0, "Digest: a read by its path and range, never its contents");
+			ctx.Assert(DigestLine(digest, "- edit_file: src/a.cs lines 40-42, Fix the retry (lines ").Length > 0, "Digest: an edit by its path, rough lines and note");
+			ctx.Assert(DigestLine(digest, "- edit_file: src/d.cs, Try it → failed (exit 1): Error: old_text not found (lines ").Length > 0, "Digest: a failed edit claims no lines");
+			ctx.Assert(         DigestLine(digest, "- review_work: REJECTED, the chorus is too long → failed (exit 1) (lines ").Length > 0, "Digest: a subagent's report by its own summary");
+			ctx.Assert(DigestLine(digest, "- bash: Poll the tests → pending (×2, lines ").Length > 0, "Digest: repeats collapse into one line with a count");
 
-			JsonNode host = JsonNode.Parse(turn.ToolCalls[4].ArgumentsJson)!;
-			ctx.AssertEqual(MechanicalCompaction.MemoryToolName,           turn.ToolCalls[4].Name, "Shell: a stale host_command becomes a record too");
-			ctx.AssertEqual(                     "host_command", host["tool"]!.GetValue<string>(), "Shell: named as host_command");
-			ctx.AssertEqual("Check the host's GPU",   host["why"]!.GetValue<string>(), "Shell: with its note");
-			ctx.AssertEqual("bash",                 host["shell"]!.GetValue<string>(), "Shell: and the shell it ran in");
+			// Every line's range holds that call in full: its arguments as plain text, its exit code and output.
+			string chunk = ReadReference(log.FilePath, DigestLine(digest, "- bash: Check the greeting prints"));
+			ctx.Assert(chunk.StartsWith("bash\n", StringComparison.Ordinal) && chunk.EndsWith("last line", StringComparison.Ordinal), "Digest: a line's range is exactly its chunk, under the tool's name with no call id");
+			ctx.AssertContains(chunk, longCommand, "Digest: the chunk has the whole command");
+			ctx.AssertContains(chunk,    "exit 1", "Digest: and the exit code");
+			ctx.AssertContains(ReadReference(log.FilePath, DigestLine(digest, "- review_work")), new string('r', 3000), "Digest: and the whole report, past its summary");
+			string polls = ReadReference(log.FilePath, DigestLine(digest, "- bash: Poll the tests"));
+			ctx.Assert(polls.StartsWith("bash\n", StringComparison.Ordinal) && polls.Contains("----------", StringComparison.Ordinal), "Digest: a collapsed line spans every repeat");
 
-			string cut = ((ToolResultMessage)rebuilt[2]).Content;
-			ctx.Assert(cut.StartsWith("exit 1\ntool call is in file ", StringComparison.Ordinal), $"Shell: the exit code and the pointer ({cut})");
-			ctx.Assert(                     !cut.Contains("last line", StringComparison.Ordinal), "Shell: long output is gone from the conversation");
-			string chunk = ReadReference(log.FilePath, cut);
-			ctx.Assert(chunk.StartsWith("bash\n", StringComparison.Ordinal) && chunk.EndsWith("last line", StringComparison.Ordinal), "Shell: the pointer's lines are exactly the chunk, under the tool's name with no call id");
-			ctx.AssertContains(chunk, longCommand, "Shell: the chunk has the whole command");
-			ctx.AssertContains(chunk,    "exit 1", "Shell: and the exit code");
-
-			ctx.AssertEqual("exit 0\na.txt", ((ToolResultMessage)rebuilt[3]).Content, "Shell: short output and a short command need no pointer");
-			string kept = ((ToolResultMessage)rebuilt[4]).Content;
-			ctx.Assert(kept.StartsWith("ok\ntool call is in file ", StringComparison.Ordinal), $"Shell: short output stays, a cut command still gets a pointer, and an unknown exit code is left out ({kept})");
-			ctx.AssertEqual("exit 0\n/workspace", ((ToolResultMessage)rebuilt[5]).Content, "Shell: a long note alone sends nothing to the log");
-
-			string secondChunk = ReadReference(log.FilePath, kept);
-			ctx.Assert(secondChunk.StartsWith("bash\n", StringComparison.Ordinal) && secondChunk.EndsWith("ok", StringComparison.Ordinal), "Shell: later chunks' lines are right too");
-			ctx.AssertContains(File.ReadAllText(log.FilePath), "----------", "Shell: chunks are divided");
-
-			// A later compaction leaves a record alone: its pointer is into a log that still exists.
+			// A later compaction keeps a digest as it is: it is already as short as it gets.
 			List<CanonicalMessage> again = MechanicalCompaction.Elide(rebuilt, string.Empty, NewLog(), NoSummaries);
-			ctx.AssertEqual(turn.ToolCalls[0].ArgumentsJson, ((AssistantMessage)again[1]).ToolCalls[0].ArgumentsJson, "Shell: a record survives a second pass unchanged");
-			ctx.AssertEqual(cut, ((ToolResultMessage)again[2]).Content, "Shell: and so does its result");
-			ctx.Assert(MechanicalCompaction.HasMemoryCalls(again), "Shell: the history can be asked whether it holds records");
+			ctx.AssertEqual(digest, ((UserMessage)again[1]).Text, "Digest: survives a second pass unchanged");
 
-			// A recent call stays real: only stale ones become records.
-			List<CanonicalMessage> fresh = new List<CanonicalMessage>
-			{
-				new UserMessage("go"),
-				new AssistantMessage("old", string.Empty, null),
-				new AssistantMessage("now", string.Empty, new List<SemanticToolCall> { new SemanticToolCall { Id = "f1", Name = "bash", ArgumentsJson = "{\"command\":\"ls\"}" } }),
-				new ToolResultMessage("f1", "a.txt", null, 0),
-				new AssistantMessage("next", string.Empty, null),
-				new AssistantMessage("done", string.Empty, null)
-			};
-			List<CanonicalMessage> tail = MechanicalCompaction.Elide(fresh, string.Empty, NewLog(), NoSummaries);
-			ctx.AssertEqual("bash", ((AssistantMessage)tail[2]).ToolCalls[0].Name, "Shell: a recent call stays as it was");
-
-			// Models copying a record get told, and nothing runs.
-			Dictionary<string, Tool> noTools = new Dictionary<string, Tool>();
-			ToolResult               copied  = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "c1", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = "{}" }, noTools, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
-			ctx.Assert(copied.ExitCode != 0 && copied.StdErr.Contains("not a tool", StringComparison.Ordinal), "Shell: calling a record explains itself");
-
-			// Declared, for a server that only lets declared tools be called, it says the same and still runs
-			// nothing; a copied record's arguments are no reason to refuse the turn.
-			Tool                     declared = MechanicalCompaction.MemoryTool();
-			Dictionary<string, Tool> withTool = new Dictionary<string, Tool> { [MechanicalCompaction.MemoryToolName] = declared };
-			ToolResult               answered = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "c2", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = turn.ToolCalls[0].ArgumentsJson }, withTool, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
-			ctx.AssertEqual(MechanicalCompaction.MemoryToolName, declared.Definition.Function.Name, "Shell: the record's name can be declared");
-			ctx.Assert(answered.ExitCode != 0 && answered.StdErr.Contains("not a tool", StringComparison.Ordinal), "Shell: a declared record explains itself too");
-			(JsonObject? copiedArgs, string? copiedError) = FixJson.TryParseWithSchema(turn.ToolCalls[0].ArgumentsJson, declared.Definition.Function, null);
-			ctx.Assert(copiedArgs != null && copiedError == null, "Shell: a copied record passes the declared schema");
-
-			string note = MechanicalCompaction.WithMemoryNote(string.Empty);
-			ctx.Assert(note.StartsWith(MechanicalCompaction.LedgerMarker, StringComparison.Ordinal), "Shell: the note counts as the ledger, so the next compaction replaces it");
+			// The note that heads the ledger says what digests are, and counts as the ledger.
+			string note = MechanicalCompaction.WithDigestNote(string.Empty);
+			ctx.Assert(note.StartsWith(MechanicalCompaction.LedgerMarker, StringComparison.Ordinal) && note.Contains(MechanicalCompaction.DigestMarker, StringComparison.Ordinal), "Digest: the note counts as the ledger, so the next compaction replaces it");
 
 			(JsonObject? noWhy, string? noWhyError) = FixJson.TryParseWithSchema("{\"command\":\"ls\"}", ShellSchema(), null);
 			ctx.Assert(noWhy != null && noWhyError == null, "Shell: a command with no note still runs");
 			(JsonObject? _, string? noCommandError) = FixJson.TryParseWithSchema("{\"why\":\"x\"}", ShellSchema(), null);
 			ctx.Assert(noCommandError != null, "Shell: a note with no command does not");
+		}
+		finally
+		{
+			File.Delete(log.FilePath);
+		}
+	}
+
+	// A Reviewer's report opens with the one line its caller's digest keeps. A summary left out costs no turn:
+	// the report's first line stands in, and an over-long one is cut.
+	private static void TestReportSummary(TestContext ctx)
+	{
+		Role                     reviewer = new RoleService(Environment.CurrentDirectory).Roles["Reviewer"];
+		List<string>             reports  = new List<string>();
+		Tool[]                   tools    = ToolFactory.BuildForRole(new SettingsService(), reviewer, null, null, null, false, null, null, null, null, (ok, text) => reports.Add(text), null);
+		Dictionary<string, Tool> byName   = new Dictionary<string, Tool>();
+		foreach (Tool tool in tools)
+		{
+			byName[tool.Definition.Function.Name] = tool;
+		}
+
+		string     tooLong = new string('s', MechanicalCompaction.kMaxSummaryChars + 44);
+		ToolResult given   = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "f1", Name = "finish_review", ArgumentsJson = new JsonObject { ["approved"] = false, ["comments"] = "Line 3 is wrong.\nMore detail.", ["summary"] = tooLong }.ToJsonString() }, byName, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+		ToolResult missing = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "f2", Name = "finish_review", ArgumentsJson = "{\"approved\":true,\"comments\":\"Approved: all good.\\nNotes follow.\"}" }, byName, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+
+		ctx.Assert(given.ExitCode == 0 && missing.ExitCode == 0, $"ReportSummary: both reviews finish ({given.StdErr}{missing.StdErr})");
+		ctx.AssertEqual(2, reports.Count, "ReportSummary: both reach the caller");
+		ctx.AssertEqual($"{MechanicalCompaction.SummaryPrefix}{new string('s', MechanicalCompaction.kMaxSummaryChars)}\n\nLine 3 is wrong.\nMore detail.", reports[0], "ReportSummary: the summary first, cut to size, then the whole report");
+		ctx.AssertEqual($"{MechanicalCompaction.SummaryPrefix}Approved: all good.\n\nApproved: all good.\nNotes follow.", reports[1], "ReportSummary: with none given, the report's first line stands in");
+	}
+
+	// A history written before digests holds tool_call_memory records. Until it compacts again its model may
+	// still copy one, so the record tool stays declared and explains itself; its next compaction folds them.
+	private static void TestDigestFoldsOldRecords(TestContext ctx)
+	{
+		string                 record   = "{\"tool\":\"bash\",\"why\":\"Old check\",\"command\":\"elided\"}";
+		List<CanonicalMessage> messages = new List<CanonicalMessage>
+		{
+			new UserMessage("go"),
+			new AssistantMessage("earlier", "[reasoning: /old.log lines 1 to 9]", new List<SemanticToolCall>
+			{
+				new SemanticToolCall { Id = "m1", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = record },
+				new SemanticToolCall { Id = "m2", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = "{\"tool\":\"edit_file\",\"file_path\":\"record.cs\"}" }
+			}),
+			new ToolResultMessage("m1", "exit 0\ntool call is in file /old.log lines 10 to 20", null, 0),
+			new ToolResultMessage("m2", "exit 0", null, 0)
+		};
+		AddFreshTurns(messages);
+		ctx.Assert(MechanicalCompaction.HasMemoryCalls(messages), "OldRecords: the history can be asked whether it holds records");
+
+		CompactionLog          log     = NewLog();
+		List<CanonicalMessage> rebuilt = MechanicalCompaction.Elide(messages, string.Empty, log, NoSummaries);
+		log.Save();
+		try
+		{
+			string digest = ((UserMessage)rebuilt[1]).Text;
+			ctx.Assert(!MechanicalCompaction.HasMemoryCalls(rebuilt), "OldRecords: none survive a compaction");
+			ctx.Assert(DigestLine(digest, "- bash: Old check (lines ").Length > 0, $"OldRecords: a record becomes a line for the tool it stood for ({digest})");
+			ctx.Assert(DigestLine(digest, "- edit_file: record.cs → exit 0 (lines ").Length > 0, "OldRecords: a file record keeps its path");
+			ctx.AssertContains(digest, "\nYou thought: [reasoning: /old.log lines 1 to 9]", "OldRecords: an old reasoning reference is kept as it was");
+			ctx.AssertContains(ReadReference(log.FilePath, DigestLine(digest, "- bash: Old check")), "/old.log lines 10 to 20", "OldRecords: the old pointer is in the new log");
+
+			// Models copying a record get told, and nothing runs.
+			Dictionary<string, Tool> noTools = new Dictionary<string, Tool>();
+			ToolResult               copied  = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "c1", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = "{}" }, noTools, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+			ctx.Assert(copied.ExitCode != 0 && copied.StdErr.Contains("not a tool", StringComparison.Ordinal), "OldRecords: calling a record explains itself");
+
+			// Declared, for a server that only lets declared tools be called, it says the same and still runs
+			// nothing; a copied record's arguments are no reason to refuse the turn.
+			Tool                     declared = MechanicalCompaction.MemoryTool();
+			Dictionary<string, Tool> withTool = new Dictionary<string, Tool> { [MechanicalCompaction.MemoryToolName] = declared };
+			ToolResult               answered = ToolDispatch.ExecuteToolAsync(new SemanticToolCall { Id = "c2", Name = MechanicalCompaction.MemoryToolName, ArgumentsJson = record }, withTool, "s", 100, new TransportSilent(), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+			ctx.Assert(answered.ExitCode != 0 && answered.StdErr.Contains("not a tool", StringComparison.Ordinal), "OldRecords: a declared record explains itself too");
+			(JsonObject? copiedArgs, string? copiedError) = FixJson.TryParseWithSchema(record, declared.Definition.Function, null);
+			ctx.Assert(copiedArgs != null && copiedError == null, "OldRecords: a copied record passes the declared schema");
 		}
 		finally
 		{
@@ -189,19 +278,20 @@ public static class MechanicalCompactionTests
 		return new FunctionDefinition { Name = "bash", Parameters = parameters };
 	}
 
-	private static void TestReasoningMoves(TestContext ctx)
+	// Stale reasoning is dropped, unless a summary of it is ready: then the summary is a line, and the log
+	// has the original. The turn in flight keeps its reasoning, which some protocols require.
+	private static void TestReasoning(TestContext ctx)
 	{
 		string                 longTrace   = "first thought\n" + new string('t', 2000);
 		string                 summedTrace = "summed thought\n" + new string('u', 2000);
-		string                 shortTrace  = "brief";
+		string                 freshTrace  = "thinking now";
 		List<CanonicalMessage> messages    = new List<CanonicalMessage>
 		{
 			new UserMessage("go"),
 			new AssistantMessage("one",     longTrace, null),
-			new AssistantMessage("two",    shortTrace, null),
-			new AssistantMessage("three", summedTrace, null)
+			new AssistantMessage("three", summedTrace, null),
+			new AssistantMessage("done",   freshTrace, null)
 		};
-		AddFreshTurns(messages);
 		Dictionary<string, string> summaries = new Dictionary<string, string> { { summedTrace, "Concluded the shader was wrong." } };
 
 		CompactionLog          log     = NewLog();
@@ -209,27 +299,14 @@ public static class MechanicalCompactionTests
 		log.Save();
 		try
 		{
-			string reference = ((AssistantMessage)rebuilt[1]).Thinking;
-			ctx.Assert(reference.StartsWith("[reasoning: ", StringComparison.Ordinal) && !reference.Contains("first thought", StringComparison.Ordinal), $"Reasoning: only a reference stays ({reference})");
-			ctx.AssertEqual("reasoning\n" + longTrace, ReadReference(log.FilePath, reference), "Reasoning: the log has the original");
+			string digest = ((UserMessage)rebuilt[1]).Text;
+			ctx.Assert(!digest.Contains("first thought", StringComparison.Ordinal) && !digest.Contains("summed thought", StringComparison.Ordinal), "Reasoning: no stale trace stays in the conversation");
 
-			ctx.AssertEqual(shortTrace, ((AssistantMessage)rebuilt[2]).Thinking, "Reasoning: a short trace stays intact");
-
-			string summed = ((AssistantMessage)rebuilt[3]).Thinking;
-			ctx.Assert(summed.StartsWith("Concluded the shader was wrong.\n[reasoning: ", StringComparison.Ordinal), $"Reasoning: a summary goes ahead of the reference ({summed})");
-			ctx.AssertEqual("reasoning\n" + summedTrace, ReadReference(log.FilePath, summed), "Reasoning: and the log still has the original");
-
-			List<CanonicalMessage> again = MechanicalCompaction.Elide(rebuilt, string.Empty, NewLog(), NoSummaries);
-			ctx.AssertEqual(summed, ((AssistantMessage)again[3]).Thinking, "Reasoning: a later compaction leaves a summary and reference alone");
-
-			// The cutoff is twice the replacement's size, summary included.
-			string                 worthIt  = new string('x', reference.Length * 2 + 8);
-			string                 notWorth = new string('y', reference.Length * 2 - 8);
-			List<CanonicalMessage> edge     = new List<CanonicalMessage> { new UserMessage("go"), new AssistantMessage("a", worthIt, null), new AssistantMessage("b", notWorth, null) };
-			AddFreshTurns(edge);
-			List<CanonicalMessage> edged = MechanicalCompaction.Elide(edge, string.Empty, NewLog(), NoSummaries);
-			ctx.Assert(((AssistantMessage)edged[1]).Thinking != worthIt, "Reasoning: at twice the reference it moves");
-			ctx.AssertEqual(notWorth, ((AssistantMessage)edged[2]).Thinking, "Reasoning: under twice the reference it stays");
+			string summed = DigestLine(digest, "You thought: Concluded the shader was wrong. (lines ");
+			ctx.Assert(summed.Length > 0, $"Reasoning: a ready summary is a line ({digest})");
+			ctx.AssertEqual("reasoning\n" + summedTrace, ReadReference(log.FilePath, summed), "Reasoning: and the log has the original");
+			ctx.Assert(!File.ReadAllText(log.FilePath).Contains("first thought", StringComparison.Ordinal), "Reasoning: a trace nothing points to is not logged either");
+			ctx.AssertEqual(freshTrace, ((AssistantMessage)rebuilt[2]).Thinking, "Reasoning: the turn in flight keeps its own");
 		}
 		finally
 		{
@@ -398,52 +475,31 @@ public static class MechanicalCompactionTests
 		List<CanonicalMessage>? rebuilt = MechanicalCompaction.TryBuild(messages, "keep going", kFullWindow, kFullWindow, false, 0, NewLog(), NoSummaries);
 		ctx.AssertNotNull(rebuilt, "TryBuild: elides a conversation dominated by stale tool traffic");
 
-		// System message dropped (the successor re-injects the role prompt), stale ledger and the
-		// nudge stripped, the real user message kept verbatim.
-		int userCount = 0;
+		// System message dropped (the successor re-injects the role prompt), stale ledger and the nudge
+		// stripped, the real user message kept verbatim, and everything else in one digest.
+		int    userCount = 0;
+		string digest    = string.Empty;
 		foreach (CanonicalMessage msg in rebuilt!)
 		{
 			ctx.Assert(!(msg is SystemMessage), "TryBuild: no system message in the rebuilt history");
-			if (msg is UserMessage um)
+			if (msg is UserMessage um && um.Text.StartsWith(MechanicalCompaction.DigestMarker, StringComparison.Ordinal))
+			{
+				digest = um.Text;
+			}
+			else if (msg is UserMessage real)
 			{
 				userCount++;
-				ctx.AssertEqual("do the thing", um.Text, "TryBuild: real user text kept verbatim");
+				ctx.AssertEqual("do the thing", real.Text, "TryBuild: real user text kept verbatim");
 			}
 		}
-		ctx.AssertEqual(1, userCount, "TryBuild: ledger and nudge user messages stripped");
+		ctx.AssertEqual(1,            userCount, "TryBuild: ledger and nudge user messages stripped");
+		ctx.AssertEqual(0, ToolTraffic(rebuilt), "TryBuild: no stale tool traffic is left");
 
-		// The stale big result is replaced with a note naming the call; the small one is untouched.
-		ToolResultMessage? big   = null;
-		ToolResultMessage? small = null;
-		foreach (CanonicalMessage msg in rebuilt)
-		{
-			if (msg is ToolResultMessage tr)
-			{
-				if (tr.ToolCallId == "id1")
-				{
-					big = tr;
-				}
-				else if (tr.ToolCallId == "id2")
-				{
-					small = tr;
-				}
-			}
-		}
-		ctx.AssertNotNull(big, "TryBuild: elided result still present (pairing intact)");
-		// The full note is pinned so any drift in what the model actually reads shows up in review.
-		// It identifies the call and states the size, and stops there: the note repeats once per
-		// elided result, so every extra word is space the pass just failed to reclaim.
-		ctx.Assert(      big!.Content.StartsWith("tool call is in file ", StringComparison.Ordinal), $"TryBuild: a stale read's contents become a pointer ({big.Content})");
-		ctx.Assert(small!.Content.StartsWith("ok\ntool call is in file ", StringComparison.Ordinal), $"TryBuild: a write's short result stays, with its pointer ({small.Content})");
-
-		// Thinking too short to be worth a reference stays, and stale file calls become records that keep
-		// their paths and read ranges and lose the contents.
-		AssistantMessage first = (AssistantMessage)rebuilt[1];
-		ctx.AssertEqual("private reasoning", first.Thinking, "TryBuild: short stale thinking stays");
-		ctx.AssertContains(first.ToolCalls[0].ArgumentsJson, "\"offset\":10", "TryBuild: a read record keeps its range");
-		ctx.AssertEqual(MechanicalCompaction.MemoryToolName, first.ToolCalls[1].Name, "TryBuild: an oversized write becomes a record");
-		ctx.AssertContains(first.ToolCalls[1].ArgumentsJson, "b.cs", "TryBuild: and keeps file_path");
-		ctx.Assert(first.ToolCalls[1].ArgumentsJson.Length < 100, "TryBuild: without its contents");
+		// A read keeps its path and range and loses the contents; a write its path and short result. Stale
+		// thinking with no summary ready is gone.
+		ctx.Assert(DigestLine(digest, "- read_file: a.cs from line 10, 500 lines (lines ").Length > 0, $"TryBuild: a stale read is its path and range ({digest})");
+		ctx.Assert(                  DigestLine(digest, "- write_file: b.cs → ok (lines ").Length > 0, "TryBuild: a stale write is its path and result");
+		ctx.Assert(                   !digest.Contains("private reasoning", StringComparison.Ordinal), "TryBuild: stale thinking is dropped");
 
 		// The protected tail is verbatim.
 		AssistantMessage last = (AssistantMessage)rebuilt[rebuilt.Count - 1];
@@ -472,9 +528,9 @@ public static class MechanicalCompactionTests
 		{
 			new UserMessage("do the thing"),
 			new AssistantMessage("working",          string.Empty, null),
-			new AssistantMessage("second",  new string('t', 9000), null),
+			new AssistantMessage("second",           string.Empty, null),
 			new AssistantMessage("third",            string.Empty, null),
-			new AssistantMessage("done",             string.Empty, null)
+			new AssistantMessage("done",    new string('t', 9000), null)
 		};
 		ctx.AssertNull(MechanicalCompaction.TryBuild(freshThought, string.Empty, kFullWindow, kFullWindow, true, 0, NewLog(), NoSummaries), "Projection: recent thinking stays, so it frees nothing");
 
@@ -535,9 +591,9 @@ public static class MechanicalCompactionTests
 			new AssistantMessage("b",               old, null),
 			new AssistantMessage("c",           "short", null),
 			new AssistantMessage("d",           reduced, null),
-			new AssistantMessage("second",        fresh, null),
+			new AssistantMessage("second", string.Empty, null),
 			new AssistantMessage("third",  string.Empty, null),
-			new AssistantMessage("done",   string.Empty, null)
+			new AssistantMessage("done",          fresh, null)
 		};
 		List<string> traces = MechanicalCompaction.StaleTraces(messages, 600);
 		ctx.AssertEqual(1, traces.Count, "StaleTraces: one long stale trace, once, without the short, reduced or recent ones");
@@ -587,60 +643,16 @@ public static class MechanicalCompactionTests
 		ctx.AssertEqual(MechanicalCompaction.LedgerMarker + "\nFiles this conversation has created or modified:\nrecord.cs",
 			MechanicalCompaction.BuildLedger(later), "BuildLedger: failed edits are out, and records carry through");
 
-		TestFileRecords(ctx);
-	}
-
-	// Stale file calls leave a note, a path and a range, with the contents in the log, unless that costs more.
-	private static void TestFileRecords(TestContext ctx)
-	{
-		string                 body     = new string('b', 3000);
-		List<CanonicalMessage> messages = new List<CanonicalMessage>
+		// A compacted history's earlier edits are digest lines now, so its own ledger carries them: listed first,
+		// each once, with the note that follows the list left behind.
+		List<CanonicalMessage> successor = new List<CanonicalMessage>
 		{
-			new UserMessage("go"),
-			new AssistantMessage("working", string.Empty, new List<SemanticToolCall>
-			{
-				new SemanticToolCall { Id = "r1", Name = "read_file", ArgumentsJson = "{\"file_path\":\"src/a.cs\",\"offset\":10,\"lines\":50}" },
-				new SemanticToolCall { Id = "e1", Name = "edit_file", ArgumentsJson = new JsonObject { ["why"] = "Fix the retry", ["file_path"] = "src/a.cs", ["old_text"] = new string('o', 400), ["new_text"] = "one\ntwo\nthree" }.ToJsonString() },
-				new SemanticToolCall { Id = "w1", Name = "write_file", ArgumentsJson = new JsonObject { ["why"] = "Add the notes", ["file_path"] = "src/b.cs", ["content"] = body }.ToJsonString() },
-				new SemanticToolCall { Id = "e2", Name = "edit_file", ArgumentsJson = "{\"file_path\":\"c\",\"old_text\":\"x\",\"new_text\":\"y\"}" },
-				new SemanticToolCall { Id = "e3", Name = "edit_file", ArgumentsJson = new JsonObject { ["why"] = "Try it", ["file_path"] = "src/d.cs", ["old_text"] = new string('o', 400), ["new_text"] = "z" }.ToJsonString() }
-			}),
-			new ToolResultMessage("r1", new string('r', 2000), null, 0),
-			new ToolResultMessage("e1", "Edit applied at line 40:\n" + new string('d', 300), null, 0),
-			new ToolResultMessage("w1", "Wrote src/b.cs",            null, 0),
-			new ToolResultMessage("e2", "ok",                        null, 0),
-			new ToolResultMessage("e3", "Error: old_text not found", null, 1)
+			new UserMessage(MechanicalCompaction.WithDigestNote($"{MechanicalCompaction.LedgerMarker}\nFiles this conversation has created or modified:\nold.cs\nb.cs")),
+			new AssistantMessage("", "", new List<SemanticToolCall> { new SemanticToolCall { Id = "n", Name = "edit_file", ArgumentsJson = "{\"file_path\":\"new.cs\",\"old_text\":\"x\",\"new_text\":\"y\"}" } }),
+			new AssistantMessage("", "",                      new List<SemanticToolCall> { new SemanticToolCall { Id = "b", Name = "write_file", ArgumentsJson = "{\"file_path\":\"b.cs\",\"content\":\"z\"}" } })
 		};
-		AddFreshTurns(messages);
-
-		CompactionLog          log     = NewLog();
-		List<CanonicalMessage> rebuilt = MechanicalCompaction.Elide(messages, string.Empty, log, NoSummaries);
-		log.Save();
-		try
-		{
-			AssistantMessage turn = (AssistantMessage)rebuilt[1];
-			ctx.AssertEqual("{\"tool\":\"read_file\",\"file_path\":\"src/a.cs\",\"offset\":10,\"lines\":50}",                    turn.ToolCalls[0].ArgumentsJson, "FileRecords: a read keeps its path and range, with no note");
-			ctx.AssertEqual("{\"tool\":\"edit_file\",\"why\":\"Fix the retry\",\"file_path\":\"src/a.cs\",\"lines\":\"40-42\"}", turn.ToolCalls[1].ArgumentsJson, "FileRecords: an edit keeps its note, path and rough lines");
-			ctx.AssertEqual("{\"tool\":\"write_file\",\"why\":\"Add the notes\",\"file_path\":\"src/b.cs\"}",                    turn.ToolCalls[2].ArgumentsJson, "FileRecords: a write keeps its note and path");
-			ctx.AssertEqual("edit_file", turn.ToolCalls[3].Name, "FileRecords: a call smaller than its record stays as it was");
-
-			string readResult = ((ToolResultMessage)rebuilt[2]).Content;
-			ctx.Assert(readResult.StartsWith("exit 0\ntool call is in file ", StringComparison.Ordinal), $"FileRecords: a read's contents are replaced by a pointer ({readResult})");
-			string chunk = ReadReference(log.FilePath, readResult);
-			ctx.Assert(chunk.StartsWith("read_file\n", StringComparison.Ordinal) && chunk.EndsWith(new string('r', 2000), StringComparison.Ordinal), "FileRecords: the pointer's lines hold what was read");
-
-			string writeChunk = ReadReference(log.FilePath, ((ToolResultMessage)rebuilt[4]).Content);
-			ctx.AssertContains(writeChunk,                  body, "FileRecords: the log has what was written");
-			ctx.AssertContains(writeChunk, "why:\nAdd the notes", "FileRecords: and the note");
-
-			ToolResultMessage failed = (ToolResultMessage)rebuilt[6];
-			ctx.Assert(failed.ExitCode == 1 && failed.Content.StartsWith("exit 1\n", StringComparison.Ordinal), "FileRecords: a failure stays visible");
-			ctx.AssertEqual("{\"tool\":\"edit_file\",\"why\":\"Try it\",\"file_path\":\"src/d.cs\"}", turn.ToolCalls[4].ArgumentsJson, "FileRecords: and claims no lines");
-		}
-		finally
-		{
-			File.Delete(log.FilePath);
-		}
+		ctx.AssertEqual(MechanicalCompaction.LedgerMarker + "\nFiles this conversation has created or modified:\nold.cs\nb.cs\nnew.cs",
+			MechanicalCompaction.BuildLedger(successor), "BuildLedger: an earlier ledger's files carry through compaction after compaction");
 	}
 
 	// Compaction fires mid-tool-round, so the elided history it hands over ends on tool results the
@@ -691,11 +703,18 @@ public static class MechanicalCompactionTests
 
 	// The successor exactly as CompactAsync seeds it: elided history headed by the ledger, with
 	// the role's system prompt at the front (Session's constructor performs that insert).
+	// Ends on a turn in flight with a call and its result, as compaction mid-tool-round leaves it.
 	private static List<CanonicalMessage> BuildSuccessorSeed()
 	{
 		List<CanonicalMessage> messages = BuildConversation(new string('x', 5000));
-		List<CanonicalMessage> rebuilt  = MechanicalCompaction.TryBuild(messages, "keep going", kFullWindow, kFullWindow, false, 0, NewLog(), NoSummaries)!;
-		rebuilt.Insert(0, new UserMessage(MechanicalCompaction.BuildLedger(messages)));
+		messages.Add(new AssistantMessage("checking the last file", string.Empty, new List<SemanticToolCall>
+		{
+			new SemanticToolCall { Id = "tail1", Name = "read_file", ArgumentsJson = "{\"file_path\":\"z.cs\"}" }
+		}));
+		messages.Add(new ToolResultMessage("tail1", "contents of z"));
+
+		List<CanonicalMessage> rebuilt = MechanicalCompaction.TryBuild(messages, "keep going", kFullWindow, kFullWindow, false, 0, NewLog(), NoSummaries)!;
+		rebuilt.Insert(0, new UserMessage(MechanicalCompaction.WithDigestNote(MechanicalCompaction.BuildLedger(messages))));
 		rebuilt.Insert(0, new SystemMessage("role prompt"));
 		return rebuilt;
 	}
@@ -707,12 +726,12 @@ public static class MechanicalCompactionTests
 		LlmModel      model = new LlmModel("test", "http://localhost", string.Empty, new List<JsonObject>(), new List<JsonObject>(), new ModelConfig());
 		ProtocolProxy proxy = new ProtocolProxy(model);
 
-		// Chat Completions: every tool-role message answers a known call, and the elided
-		// write_file arguments are still valid JSON on the wire.
+		// Chat Completions: every tool-role message answers a known call, and the digest is user text.
 		ProtocolChatCompletions cc       = proxy.EnsureProtocolChatCompletions(rebuilt);
 		JsonArray               ccNative = (JsonArray)Reflect.GetField(cc, "_native")!;
 		HashSet<string>         ccIds    = new HashSet<string>(StringComparer.Ordinal);
-		string?                 ccArgs   = null;
+		int                     ccTools  = 0;
+		bool                    ccDigest = false;
 		foreach (JsonNode? node in ccNative)
 		{
 			JsonArray? calls = node?["tool_calls"]?.AsArray();
@@ -721,30 +740,25 @@ public static class MechanicalCompactionTests
 				foreach (JsonNode? call in calls)
 				{
 					ccIds.Add(call!["id"]!.GetValue<string>());
-					if (call["function"]!["arguments"]!.GetValue<string>().Contains("write_file", StringComparison.Ordinal))
-					{
-						ccArgs = call["function"]!["arguments"]!.GetValue<string>();
-					}
 				}
 			}
 			if (node?["role"]?.GetValue<string>() == "tool")
 			{
+				ccTools++;
 				ctx.Assert(ccIds.Contains(node["tool_call_id"]!.GetValue<string>()), "Rehydrate CC: tool result answers a preceding call");
 			}
+			ccDigest = ccDigest || (node?["role"]?.GetValue<string>() == "user" && node["content"]!.ToJsonString().Contains(MechanicalCompaction.DigestMarker.Substring(1), StringComparison.Ordinal));
 		}
-		ctx.AssertNotNull(                 ccArgs, "Rehydrate CC: elided call present on the wire");
-		ctx.AssertNotNull(JsonNode.Parse(ccArgs!), "Rehydrate CC: elided arguments are valid JSON");
+		ctx.AssertEqual(1, ccTools, "Rehydrate CC: only the turn in flight carries tool traffic");
+		ctx.Assert(ccDigest, "Rehydrate CC: the digest is user text");
 
-		// Anthropic: strict role alternation must hold even with the nudge between assistant turns
-		// removed, tool_use/tool_result ids must pair exactly, and the elided arguments must parse
-		// into a real input object â€” ParseInput silently substitutes {} for garbage, so an empty
-		// object here would mean the stub was not actually valid JSON.
+		// Anthropic: strict role alternation must hold with the user's message, the ledger and the digest
+		// all user text in a row, and tool_use/tool_result ids must pair exactly.
 		ProtocolAnthropic anthropic = proxy.EnsureProtocolAnthropic(rebuilt);
 		JsonArray         anNative  = (JsonArray)Reflect.GetField(anthropic, "_native")!;
 		string            prevRole  = string.Empty;
 		HashSet<string>   useIds    = new HashSet<string>(StringComparer.Ordinal);
 		HashSet<string>   resultIds = new HashSet<string>(StringComparer.Ordinal);
-		JsonObject?       elided    = null;
 		foreach (JsonNode? msg in anNative)
 		{
 			string msgRole = msg!["role"]!.GetValue<string>();
@@ -756,10 +770,6 @@ public static class MechanicalCompactionTests
 				if (type == "tool_use")
 				{
 					useIds.Add(block["id"]!.GetValue<string>());
-					if (block["input"]!.ToJsonString().Contains("write_file", StringComparison.Ordinal))
-					{
-						elided = block["input"] as JsonObject;
-					}
 				}
 				else if (type == "tool_result")
 				{
@@ -767,8 +777,7 @@ public static class MechanicalCompactionTests
 				}
 			}
 		}
-		ctx.Assert(                      useIds.SetEquals(resultIds), "Rehydrate Anthropic: tool_use and tool_result ids pair exactly");
-		ctx.Assert(elided != null && elided.ContainsKey("file_path"), "Rehydrate Anthropic: elided arguments parsed into a real input object");
+		ctx.Assert(useIds.Count == 1 && useIds.SetEquals(resultIds), "Rehydrate Anthropic: tool_use and tool_result ids pair exactly");
 
 		// Responses: every function_call_output pairs with a preceding function_call by call_id.
 		ProtocolResponses responses = proxy.EnsureProtocolResponses(rebuilt);
@@ -788,7 +797,7 @@ public static class MechanicalCompactionTests
 				ctx.Assert(fnIds.Contains(item["call_id"]!.GetValue<string>()), "Rehydrate Responses: output pairs with a preceding function_call");
 			}
 		}
-		ctx.AssertEqual(2, outputs, "Rehydrate Responses: both tool results present");
+		ctx.AssertEqual(1, outputs, "Rehydrate Responses: the turn in flight's result is present");
 	}
 
 	private static void TestPersistRoundTrip(TestContext ctx)
@@ -803,21 +812,15 @@ public static class MechanicalCompactionTests
 		ctx.AssertNotNull(loaded, "PersistRoundTrip: deserializes");
 		ctx.AssertEqual(rebuilt.Count, loaded!.Messages.Count, "PersistRoundTrip: message count survives");
 
-		bool noteSurvived   = false;
 		bool ledgerSurvived = false;
 		foreach (CanonicalMessage msg in loaded.Messages)
 		{
-			if (msg is ToolResultMessage tr && tr.Content.Contains("tool call is in file ", StringComparison.Ordinal))
-			{
-				noteSurvived = true;
-			}
-
 			if (msg is UserMessage um && um.Text.StartsWith(MechanicalCompaction.LedgerMarker, StringComparison.Ordinal))
 			{
 				ledgerSurvived = true;
 			}
 		}
-		ctx.Assert(  noteSurvived, "PersistRoundTrip: elision note survives save/load");
+		ctx.Assert(MechanicalCompaction.HasDigest(loaded.Messages), "PersistRoundTrip: the digest survives save/load");
 		ctx.Assert(ledgerSurvived, "PersistRoundTrip: ledger message survives save/load");
 	}
 

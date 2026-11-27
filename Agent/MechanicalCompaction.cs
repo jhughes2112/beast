@@ -7,39 +7,48 @@ using System.Threading.Tasks;
 
 // First-pass compaction that rewrites history deterministically, with no LLM call at all. Tool
 // traffic is the bulk of most conversations and the most re-derivable content — a file can be
-// re-read, a command re-run — and the assistant's own following text usually states what it
-// concluded from a result. So stale, bulky tool results are replaced with a one-line note built
-// from the call's own arguments, oversized tool-call arguments (whole file bodies in write_file)
-// are elided to a small stub, stale reasoning traces move to the compaction log, and the whip messages
-// the system injected to keep the model working are dropped. Real user messages are ALWAYS kept verbatim:
-// user text is small and irreplaceable, tool output is huge and re-derivable.
+// re-read, a command re-run — and the assistant's own text usually states what it concluded from a
+// result. The successor is cold either way (nothing it is sent was cached), so the shape of the
+// history is not worth keeping: only what it says.
 //
-// Shell calls can change things, so re-running one is not a way to find out what it did. Each stale one
-// goes to the compaction log whole and leaves a tool_call_memory call in its place: the note the model
-// wrote when it ran the command, the exit code, and where the rest is. That tool runs nothing, so a
-// model copying the records it sees can never run anything: it is declared (MemoryTool) only so a server
-// that holds output to the declared tools can accept the copy, and all it does is say it is a record.
+// So everything before the last turn is rewritten. Real user messages are ALWAYS kept verbatim, as
+// messages of their own: user text is small and irreplaceable, and a model trusts instructions only
+// when they arrive as the user's. Each stretch between two of them becomes one digest, a message Beast
+// writes in its own voice (DigestMarker): the assistant's own words from that stretch as it wrote
+// them, and one line per tool call — the tool, the note the model gave for it (or the file it touched,
+// or the summary a subagent returned), a short or failed outcome, and the lines of the compaction log
+// that hold the call and its output in full. Repeats collapse into one line with a count. Stale
+// reasoning is dropped, or kept as a line when a summary of it is ready. The whip messages the system
+// injected to keep the model working are dropped.
 //
-// File calls become the same records, at any size, whenever the record is the smaller: a read keeps its
-// path and range, an edit its note, path and rough line range, a write its note and path. What they read or
-// wrote is in the log, and the file itself is there to read again.
+// There are no tool calls left in the rewritten part, so no pairing to keep and nothing for a model to
+// copy: the tool_call_memory records this pass used to leave in their place were copied, and called,
+// by some models. MemoryTool is still declared for a history written before this change that has
+// records in it; its next compaction folds them into a digest like any other call.
 //
-// The tool call/result pairing is never broken — a result is elided in place, its call retained —
-// so the rewritten history satisfies every protocol's pairing rules, and ProtocolAnthropic's
-// Rehydrate merges any same-role adjacency a dropped nudge leaves behind. The pass runs only when
-// it can reclaim a meaningful fraction of the conversation (measured before committing to it);
-// otherwise the caller falls through to the full staged summarization.
+// The pass runs only when it can reclaim a meaningful fraction of the conversation (measured before
+// committing to it); otherwise the caller falls through to the full staged summarization.
 public static class MechanicalCompaction
 {
 	// Marker prefix identifying the file-ledger user message, so repeated compactions strip the
 	// stale ledger and emit a fresh one instead of stacking them up.
 	public const string LedgerMarker = "[Beast file ledger]";
 
-	// The record a stale shell call becomes. Offered to a model only as MemoryTool, which runs nothing.
+	// How a digest starts: Beast's account of a stretch of earlier turns, never the user's words.
+	public const string DigestMarker = "[Beast: compacted history]";
+
+	// The name records made by earlier versions of this pass carry. Offered to a model only as MemoryTool,
+	// which runs nothing, and only while a history still holds one.
 	public const string MemoryToolName = "tool_call_memory";
 
 	// The required note on what a shell command, edit or write is for, which outlives the call.
 	public const string WhyArgument = "why";
+
+	// How a subagent's report to its caller starts: the one line it wrote for a list of results like a
+	// digest, ahead of the full report. Terminators add it (ToolFactory); a digest line keeps it.
+	// The model is asked for one brief sentence; past this it is cut, a backstop rather than the request.
+	public const string SummaryPrefix    = "Summary: ";
+	public const int    kMaxSummaryChars = 256;
 
 	private const int kMaxWhyChars = 128;
 
@@ -47,26 +56,15 @@ public static class MechanicalCompaction
 	// line stands in for it.
 	private const int kMaxFallbackWhyChars = 200;
 
-	// A short argument costs about what the word replacing it would, so it stays.
-	private const int kMaxVerbatimArgChars = 10;
+	// A result this short and on one line says more than a pointer to it would, so the digest states it.
+	private const int kMaxInlineResultChars = 120;
 
-	private const string kElidedArg = "elided";
-
-	// How a reasoning reference starts, so a later compaction can recognize one and leave it alone.
+	// How a reasoning reference from an earlier version of this pass starts.
 	private const string kReasoningMarker = "[reasoning: ";
 
-	// Assistant turns at the tail of the conversation whose whole span stays verbatim — the model
-	// may still be actively referencing its recent tool results mid-task.
-	private const int kFreshAssistantTurns = 3;
-
-	// Floors below which a block is never elided regardless of the conversation's size: the note
-	// replacing it costs chars too, and rewriting small blocks reclaims nothing worth the rewrite.
-	private const int kMinResultChars = 1024;
-	private const int kMinArgsChars   = 2048;
-
-	// A block must also be at least this fraction of the whole conversation (1/200 = 0.5%) so a
-	// long conversation of uniformly small results is not shredded for marginal savings.
-	private const int kSizeFractionDenominator = 200;
+	// Assistant turns at the tail of the conversation whose whole span stays verbatim: the turn in flight,
+	// with its calls and results, which the model is still acting on.
+	private const int kFreshAssistantTurns = 1;
 
 	// What "far enough" means for the mechanical pass: it stands in for a full summarization only if
 	// it leaves the conversation at or under this share of the window. Anything more than this and
@@ -123,127 +121,143 @@ public static class MechanicalCompaction
 	{
 		List<CanonicalMessage> rebuilt = new List<CanonicalMessage>(messages.Count);
 
+		// 0 protects everything: a conversation with a single turn has nothing stale to rewrite.
 		int protectStart = ProtectedStart(messages);
-		if (protectStart > 0)
+
+		Dictionary<string, ToolResultMessage> resultsById = new Dictionary<string, ToolResultMessage>(StringComparer.Ordinal);
+		foreach (CanonicalMessage msg in messages)
 		{
-			// A block must be a meaningful fraction of the whole to be worth eliding.
-			long totalChars = CountChars(messages, false);
-			long threshold  = totalChars / kSizeFractionDenominator;
-
-			// Tool results are elided only when their call is present to describe them.
-			Dictionary<string, SemanticToolCall>  callsById   = new Dictionary<string, SemanticToolCall>(StringComparer.Ordinal);
-			Dictionary<string, ToolResultMessage> resultsById = new Dictionary<string, ToolResultMessage>(StringComparer.Ordinal);
-			foreach (CanonicalMessage msg in messages)
+			if (msg is ToolResultMessage tr)
 			{
-				if (msg is AssistantMessage am)
-				{
-					foreach (SemanticToolCall tc in am.ToolCalls)
-					{
-						callsById[tc.Id] = tc;
-					}
-				}
-				else if (msg is ToolResultMessage tr)
-				{
-					resultsById[tr.ToolCallId] = tr;
-				}
-			}
-
-			// The calls this pass turned into records, whose results become the records' results.
-			HashSet<string> recorded = new HashSet<string>(StringComparer.Ordinal);
-
-			for (int i = 0; i < messages.Count; i++)
-			{
-				CanonicalMessage msg = messages[i];
-				if (msg is SystemMessage)
-				{
-					// The successor gets the role's system prompt re-injected at construction.
-					continue;
-				}
-				if (i >= protectStart)
-				{
-					rebuilt.Add(msg);
-					continue;
-				}
-
-				if (msg is UserMessage um)
-				{
-					// A stale ledger is stripped (a fresh one is emitted by the caller) and the
-					// system's whip messages carry nothing once their turn is past. Everything the
-					// user actually typed stays verbatim.
-					if (!um.Text.StartsWith(LedgerMarker, StringComparison.Ordinal) && !Nudges.IsNudge(um.Text, endOfTurnPrompt))
-					{
-						rebuilt.Add(um);
-					}
-				}
-				else if (msg is AssistantMessage am)
-				{
-					List<SemanticToolCall> calls = new List<SemanticToolCall>(am.ToolCalls.Count);
-					foreach (SemanticToolCall tc in am.ToolCalls)
-					{
-						resultsById.TryGetValue(tc.Id, out ToolResultMessage? callResult);
-						if (IsShellCall(tc) || FileRecordIsSmaller(tc, callResult, log))
-						{
-							recorded.Add(tc.Id);
-							calls.Add(new SemanticToolCall { Id = tc.Id, Name = MemoryToolName, ArgumentsJson = MemoryArguments(tc, callResult) });
-						}
-						else if (tc.ArgumentsJson.Length >= kMinArgsChars && tc.ArgumentsJson.Length >= threshold)
-						{
-							calls.Add(new SemanticToolCall { Id = tc.Id, Name = tc.Name, ArgumentsJson = ElideArguments(tc.ArgumentsJson) });
-						}
-						else
-						{
-							calls.Add(tc);
-						}
-					}
-					rebuilt.Add(new AssistantMessage(am.Text, ElideThinking(am.Thinking, log, reasoningSummaries), calls));
-				}
-				else if (msg is ToolResultMessage tr)
-				{
-					// A result carrying media is elided on size of the media, not its one-line text:
-					// the file is what fills the window, and the note keeps the path so the model
-					// can ask for it again.
-					bool bulky = tr.Content.Length >= kMinResultChars && tr.Content.Length >= threshold;
-					if (recorded.Contains(tr.ToolCallId) && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? recordedCall))
-					{
-						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, MemoryResult(recordedCall!, tr, log), null, tr.ExitCode));
-					}
-					else if (tr.Media != null && tr.Media.Count > 0 && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? mediaCall))
-					{
-						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, $"[elided media {MediaPaths(tr.Media)}: {mediaCall!.Name}({ArgSummary(mediaCall.ArgumentsJson)})]"));
-					}
-					else if (bulky && callsById.TryGetValue(tr.ToolCallId, out SemanticToolCall? call))
-					{
-						rebuilt.Add(new ToolResultMessage(tr.ToolCallId, ResultNote(call!, tr.Content.Length)));
-					}
-					else
-					{
-						rebuilt.Add(tr);
-					}
-				}
+				resultsById[tr.ToolCallId] = tr;
 			}
 		}
-		else
+
+		List<DigestLine> digest = new List<DigestLine>();
+		for (int i = 0; i < messages.Count; i++)
 		{
-			// Too short to have a stale span: nothing is safely elidable, so the history stands as
-			// it is (minus the system prompt, which the successor's role re-injects).
-			foreach (CanonicalMessage msg in messages)
+			CanonicalMessage msg = messages[i];
+			if (msg is SystemMessage)
 			{
-				if (!(msg is SystemMessage))
+				// The successor gets the role's system prompt re-injected at construction.
+				continue;
+			}
+
+			if (i >= protectStart)
+			{
+				FlushDigest(rebuilt, digest, log);
+				rebuilt.Add(msg);
+			}
+			else if (msg is UserMessage um)
+			{
+				// A stale ledger is stripped (a fresh one is emitted by the caller) and the system's whip
+				// messages carry nothing once their turn is past. Everything the user actually typed stays
+				// verbatim, and so does an earlier digest, which is already as short as it gets.
+				if (!um.Text.StartsWith(LedgerMarker, StringComparison.Ordinal) && !Nudges.IsNudge(um.Text, endOfTurnPrompt))
 				{
-					rebuilt.Add(msg);
+					FlushDigest(rebuilt, digest, log);
+					rebuilt.Add(um);
 				}
 			}
+			else if (msg is AssistantMessage am)
+			{
+				DigestTurn(am, resultsById, digest, log, reasoningSummaries);
+			}
+
+			// A tool result is folded into the digest with its call.
 		}
 
 		return rebuilt;
 	}
 
-	// Tells a successor what the records in its history are. Part of the ledger message, so a later
-	// compaction replaces it along with the ledger instead of stacking them up.
-	public static string WithMemoryNote(string ledger)
+	// One line of a digest. Text is what the line says before its log range; consecutive lines saying the
+	// same thing collapse into one with a count, spanning all their ranges.
+	private sealed class DigestLine
 	{
-		string note = $"{MemoryToolName} entries are records of earlier tool calls, not a tool: call the real tool instead. Each result gives the exit code and, when something was cut, where the full call is. Reasoning references point the same way. read_file reads those files, with offset and lines.";
+		public string Text = string.Empty;
+		public int    Count;
+		public int    First;
+		public int    Last;
+	}
+
+	// The assistant's words, its reasoning where a summary of it is ready, and a line for each call.
+	private static void DigestTurn(AssistantMessage am, Dictionary<string, ToolResultMessage> resultsById, List<DigestLine> digest, CompactionLog log, IReadOnlyDictionary<string, string> reasoningSummaries)
+	{
+		if (am.Thinking.Contains(kReasoningMarker, StringComparison.Ordinal))
+		{
+			// Reduced by an earlier version of this pass: what is left is the summary and its reference.
+			digest.Add(new DigestLine { Text = $"You thought: {am.Thinking.Trim()}" });
+		}
+		else if (reasoningSummaries.TryGetValue(am.Thinking, out string? summary))
+		{
+			(int first, int last) = log.Add("reasoning", am.Thinking);
+			digest.Add(new DigestLine { Text = $"You thought: {summary.Trim()}", Count = 1, First = first, Last = last });
+		}
+
+		if (!string.IsNullOrWhiteSpace(am.Text))
+		{
+			digest.Add(new DigestLine { Text = $"You: {am.Text.Trim()}" });
+		}
+
+		foreach (SemanticToolCall call in am.ToolCalls)
+		{
+			resultsById.TryGetValue(call.Id, out ToolResultMessage? result);
+			(int first, int last) = log.Add(RealToolName(call), LogBody(call, result));
+			string      text      = $"- {CallLine(call, result)}";
+			DigestLine? previous  = digest.Count > 0 ? digest[digest.Count - 1] : null;
+			if (previous != null && previous.Count > 0 && previous.Text == text)
+			{
+				previous.Count++;
+				previous.Last = last;
+			}
+			else
+			{
+				digest.Add(new DigestLine { Text = text, Count = 1, First = first, Last = last });
+			}
+		}
+	}
+
+	// Ends the current stretch: its lines become one digest message, headed by the log they point into.
+	private static void FlushDigest(List<CanonicalMessage> rebuilt, List<DigestLine> digest, CompactionLog log)
+	{
+		if (digest.Count > 0)
+		{
+			StringBuilder sb = new StringBuilder();
+			sb.Append(DigestMarker).Append(" Earlier turns, shortened. Full calls and output: ").Append(log.FilePath);
+			foreach (DigestLine line in digest)
+			{
+				sb.Append('\n').Append(line.Text);
+				if (line.Count > 1)
+				{
+					sb.Append($" (×{line.Count}, lines {line.First}-{line.Last})");
+				}
+				else if (line.Count == 1)
+				{
+					sb.Append($" (lines {line.First}-{line.Last})");
+				}
+			}
+
+			rebuilt.Add(new UserMessage(sb.ToString()));
+			digest.Clear();
+		}
+	}
+
+	// Tells a successor what its digests are. Part of the ledger message, so a later compaction replaces it
+	// along with the ledger instead of stacking them up.
+	public static string WithDigestNote(string ledger)
+	{
+		string note = $"Messages that begin {DigestMarker} are Beast's shortened account of earlier turns, not the user's words: what you wrote, and a line for each tool call you made. Each line ends with the lines of the named log file that hold that call and its output in full; read_file, grep and sed can all read it.";
 		return ledger.Length > 0 ? $"{ledger}\n\n{note}" : $"{LedgerMarker}\n{note}";
+	}
+
+	public static bool HasDigest(IReadOnlyList<CanonicalMessage> messages)
+	{
+		bool found = false;
+		foreach (CanonicalMessage msg in messages)
+		{
+			found = found || (msg is UserMessage um && um.Text.StartsWith(DigestMarker, StringComparison.Ordinal));
+		}
+		return found;
 	}
 
 	// The record's name as a tool a model can be shown, for a history that holds records. A model copies what
@@ -293,7 +307,8 @@ public static class MechanicalCompaction
 
 	// Builds the file ledger from the tool calls in the history: the files successfully created or modified,
 	// in first-changed order. Deterministic — the paths come straight from the recorded arguments, never
-	// from a model's guess. Returns string.Empty when the conversation changed no files.
+	// from a model's guess. A history that was compacted before has its earlier calls only as digest lines,
+	// so the files its own ledger listed come first. Returns string.Empty when the conversation changed no files.
 	public static string BuildLedger(IReadOnlyList<CanonicalMessage> messages)
 	{
 		HashSet<string> failed = new HashSet<string>(StringComparer.Ordinal);
@@ -309,7 +324,17 @@ public static class MechanicalCompaction
 		HashSet<string> seen  = new HashSet<string>(StringComparer.Ordinal);
 		foreach (CanonicalMessage msg in messages)
 		{
-			if (msg is AssistantMessage am)
+			if (msg is UserMessage um && um.Text.StartsWith(LedgerMarker, StringComparison.Ordinal))
+			{
+				foreach (string path in LedgerFiles(um.Text))
+				{
+					if (seen.Add(path))
+					{
+						order.Add(path);
+					}
+				}
+			}
+			else if (msg is AssistantMessage am)
 			{
 				foreach (SemanticToolCall tc in am.ToolCalls)
 				{
@@ -325,10 +350,34 @@ public static class MechanicalCompaction
 		string ledger = string.Empty;
 		if (order.Count > 0)
 		{
-			ledger = $"{LedgerMarker}\nFiles this conversation has created or modified:\n{string.Join("\n", order)}";
+			ledger = $"{LedgerMarker}\n{kLedgerHeading}\n{string.Join("\n", order)}";
 		}
 
 		return ledger;
+	}
+
+	private const string kLedgerHeading = "Files this conversation has created or modified:";
+
+	// The files a ledger message lists: the lines under its heading, up to the blank line before its note.
+	private static List<string> LedgerFiles(string ledger)
+	{
+		List<string> files = new List<string>();
+		int          at    = ledger.IndexOf(kLedgerHeading, StringComparison.Ordinal);
+		if (at >= 0)
+		{
+			string[] lines = ledger.Substring(at + kLedgerHeading.Length).Split('\n');
+			bool     ended = false;
+			foreach (string line in lines)
+			{
+				string path = line.Trim();
+				ended       = ended || (path.Length == 0 && files.Count > 0);
+				if (!ended && path.Length > 0)
+				{
+					files.Add(path);
+				}
+			}
+		}
+		return files;
 	}
 
 	// Splits history into the settled prefix compaction may rewrite and the in-flight tail it must
@@ -431,114 +480,161 @@ public static class MechanicalCompaction
 		return needs;
 	}
 
-	// ---- Shell call records ----
+	// ---- Digest lines ----
 
-	private static bool IsShellCall(SemanticToolCall call)
+	private static bool IsShellTool(string tool)
 	{
-		return string.Equals(call.Name, "bash", StringComparison.Ordinal) || string.Equals(call.Name, "readonly_bash", StringComparison.Ordinal) || string.Equals(call.Name, "host_command", StringComparison.Ordinal);
+		return string.Equals(tool, "bash", StringComparison.Ordinal) || string.Equals(tool, "readonly_bash", StringComparison.Ordinal) || string.Equals(tool, "host_command", StringComparison.Ordinal);
 	}
 
-	private static bool IsFileCall(SemanticToolCall call)
+	private static bool IsFileTool(string tool)
 	{
-		return string.Equals(call.Name, "read_file", StringComparison.Ordinal) || string.Equals(call.Name, "write_file", StringComparison.Ordinal) || string.Equals(call.Name, "edit_file", StringComparison.Ordinal);
+		return string.Equals(tool, "read_file", StringComparison.Ordinal) || string.Equals(tool, "write_file", StringComparison.Ordinal) || string.Equals(tool, "edit_file", StringComparison.Ordinal);
 	}
 
-	// A small file call stays as it is when its record would cost more. A result carrying media keeps its
-	// own elision, which names the file.
-	private static bool FileRecordIsSmaller(SemanticToolCall call, ToolResultMessage? result, CompactionLog log)
+	// The tool a call really was: a record from an earlier version of this pass names it in its arguments.
+	private static string RealToolName(SemanticToolCall call)
 	{
-		bool smaller = false;
-		if (IsFileCall(call) && result != null && (result.Media == null || result.Media.Count == 0))
+		string tool = call.Name;
+		if (string.Equals(call.Name, MemoryToolName, StringComparison.Ordinal))
 		{
-			(string text, bool _, string _, string _) = BuildMemoryResult(call, result, log);
-			smaller = MemoryArguments(call, result).Length + text.Length < call.ArgumentsJson.Length + result.Content.Length;
-		}
-		return smaller;
-	}
-
-	// The record's arguments: the tool it was, the note on why, and every other argument as itself if
-	// short or as "elided" if not. Empty ones are left out, having nothing to say. File calls keep their path
-	// and drop what they wrote, adding roughly where an edit landed.
-	private static string MemoryArguments(SemanticToolCall call, ToolResultMessage? result)
-	{
-		JsonObject memory = new JsonObject { ["tool"] = call.Name };
-		string     why    = WhyOf(call);
-		if (why.Length > 0)
-		{
-			memory[WhyArgument] = why;
-		}
-
-		JsonObject? args = ParseArguments(call.ArgumentsJson);
-		if (args != null)
-		{
-			foreach ((string key, JsonNode? value) in args)
+			JsonObject? args = ParseArguments(call.ArgumentsJson);
+			if (args != null && args.TryGetPropertyValue("tool", out JsonNode? node) && node != null)
 			{
-				string text = value?.ToString() ?? string.Empty;
-				if (IsFileCall(call) && (key == "content" || key == "old_text" || key == "new_text"))
-				{
-					continue;
-				}
-
-				bool verbatim = text.Length <= kMaxVerbatimArgChars || key == "file_path";
-				if (!string.Equals(key, WhyArgument, StringComparison.Ordinal) && text.Length > 0)
-				{
-					memory[key] = verbatim ? value!.DeepClone() : kElidedArg;
-				}
+				tool = node.ToString();
 			}
 		}
-
-		string edited = EditedLines(call, result);
-		if (edited.Length > 0)
-		{
-			memory["lines"] = edited;
-		}
-
-		return memory.ToJsonString();
+		return tool;
 	}
 
-	// The record's result: the exit code, the output if it is shorter than a pointer to it, and a pointer
-	// to the log whenever something was cut. A short command with short output loses nothing and needs none.
-	private static string MemoryResult(SemanticToolCall call, ToolResultMessage result, CompactionLog log)
+	// What a digest line says about a call, before its log range: the tool, what it was for, and how it went.
+	private static string CallLine(SemanticToolCall call, ToolResultMessage? result)
 	{
-		(string text, bool cut, string heading, string body) = BuildMemoryResult(call, result, log);
-		if (cut)
-		{
-			log.Add(heading, body);
-		}
-
-		return text;
+		string tool    = RealToolName(call);
+		string what    = Describe(call, tool, result);
+		string outcome = Outcome(tool, result);
+		return what.Length > 0 ? $"{tool}: {what}{outcome}" : $"{tool}{outcome}";
 	}
 
-	private static (string Text, bool Cut, string Heading, string Body) BuildMemoryResult(SemanticToolCall call, ToolResultMessage result, CompactionLog log)
+	// A file call by its path (and range, for a read or an edit) and its note; a subagent's report by the
+	// summary it gave; anything else by its note, or failing that a short form of its arguments.
+	private static string Describe(SemanticToolCall call, string tool, ToolResultMessage? result)
 	{
-		// The name alone: the model can read this log, and a call id differs on every run.
-		string heading    = call.Name;
-		string body       = IsFileCall(call) ? FileCallBody(call, result) : $"{WhyArgument}: {WhyOf(call)}\ncommand:\n{CommandOf(call.ArgumentsJson)}\n{ExitLine(result)}output:\n{result.Content}";
-		string pointer    = $"tool call is in file {log.ReferenceTo(heading, body)}";
-		bool   keepOutput = result.Content.Length <= pointer.Length;
-		bool   cut        = IsFileCall(call) || !keepOutput || CommandOf(call.ArgumentsJson).Length > kMaxVerbatimArgChars;
+		JsonObject? args    = ParseArguments(call.ArgumentsJson);
+		string      why     = WhyOf(call, tool);
+		string      summary = result != null ? ReportSummary(result.Content) : string.Empty;
 
-		List<string> lines = new List<string>();
-		if (result.ExitCode.HasValue)
+		string what;
+		if (IsFileTool(tool) && args != null && args.TryGetPropertyValue("file_path", out JsonNode? pathNode) && pathNode != null)
 		{
-			lines.Add($"exit {result.ExitCode.Value}");
+			string range = string.Equals(tool, "read_file", StringComparison.Ordinal) ? ReadRange(args) : EditedLinesNote(call, result);
+			what         = why.Length > 0 ? $"{pathNode}{range}, {why}" : $"{pathNode}{range}";
 		}
-
-		if (keepOutput && result.Content.Length > 0)
+		else if (summary.Length > 0)
 		{
-			lines.Add(result.Content);
+			what = summary;
 		}
-
-		if (cut)
+		else if (why.Length > 0)
 		{
-			lines.Add(pointer);
+			what = why;
 		}
-
-		return (string.Join("\n", lines), cut, heading, body);
+		else
+		{
+			what = ArgSummary(call.ArgumentsJson);
+		}
+		return what;
 	}
 
-	// A file call as the log keeps it, with each argument as plain text so its lines read as they were.
-	private static string FileCallBody(SemanticToolCall call, ToolResultMessage result)
+	// A failure always shows, with its first line unless a report's summary already says what happened.
+	// Otherwise a short one-line result is stated outright, unless it is a file's contents or a report.
+	// Media names its files.
+	private static string Outcome(string tool, ToolResultMessage? result)
+	{
+		string outcome = string.Empty;
+		if (result == null)
+		{
+			outcome = " → no result";
+		}
+		else if (result.Media != null && result.Media.Count > 0)
+		{
+			outcome = $" → media {MediaPaths(result.Media)}";
+		}
+		else
+		{
+			string content = result.Content.Trim();
+			string first   = FirstLine(content);
+			bool   report  = ReportSummary(content).Length > 0;
+			if (result.ExitCode.HasValue && result.ExitCode.Value != 0)
+			{
+				outcome = first.Length > 0 && !report ? $" → failed (exit {result.ExitCode.Value}): {Clip(first, kMaxInlineResultChars)}" : $" → failed (exit {result.ExitCode.Value})";
+			}
+			else if (content.Length > 0 && content.Length <= kMaxInlineResultChars && first.Length == content.Length
+				&& !string.Equals(tool, "read_file", StringComparison.Ordinal) && !report)
+			{
+				outcome = $" → {content}";
+			}
+		}
+		return outcome;
+	}
+
+	// The one line a subagent's report opens with (SummaryPrefix), or "" when it has none. A failed report
+	// arrives as error output, after the "stderr: " the result text gives it.
+	private static string ReportSummary(string content)
+	{
+		string text = content.TrimStart();
+		if (text.StartsWith("stderr: ", StringComparison.Ordinal))
+		{
+			text = text.Substring("stderr: ".Length).TrimStart();
+		}
+
+		string summary = string.Empty;
+		if (text.StartsWith(SummaryPrefix, StringComparison.Ordinal))
+		{
+			summary = Clip(FirstLine(text.Substring(SummaryPrefix.Length)).Trim(), kMaxSummaryChars);
+		}
+		return summary;
+	}
+
+	private static string ReadRange(JsonObject args)
+	{
+		string offset = args.TryGetPropertyValue("offset", out JsonNode? o) && o != null ? o.ToString() : string.Empty;
+		string lines  = args.TryGetPropertyValue("lines",  out JsonNode? l) && l != null ? l.ToString() : string.Empty;
+		string range  = string.Empty;
+		if (offset.Length > 0 && lines.Length > 0)
+		{
+			range = $" from line {offset}, {lines} lines";
+		}
+		else if (offset.Length > 0)
+		{
+			range = $" from line {offset}";
+		}
+		else if (lines.Length > 0)
+		{
+			range = $", {lines} lines";
+		}
+		return range;
+	}
+
+	private static string EditedLinesNote(SemanticToolCall call, ToolResultMessage? result)
+	{
+		string lines = EditedLines(call, result);
+		return lines.Length > 0 ? $" lines {lines}" : string.Empty;
+	}
+
+	private static string FirstLine(string text)
+	{
+		int newline = text.IndexOf('\n');
+		return (newline >= 0 ? text.Substring(0, newline) : text).TrimEnd();
+	}
+
+	private static string Clip(string text, int max)
+	{
+		return text.Length > max ? $"{text.Substring(0, max)}…" : text;
+	}
+
+	// A call as the log keeps it, with each argument as plain text so its lines read as they were, then its
+	// exit code and output.
+	private static string LogBody(SemanticToolCall call, ToolResultMessage? result)
 	{
 		StringBuilder sb   = new StringBuilder();
 		JsonObject?   args = ParseArguments(call.ArgumentsJson);
@@ -549,7 +645,19 @@ public static class MechanicalCompaction
 				sb.Append(key).Append(":\n").Append(value?.ToString() ?? string.Empty).Append('\n');
 			}
 		}
-		sb.Append(ExitLine(result)).Append("output:\n").Append(result.Content);
+		else
+		{
+			sb.Append("arguments:\n").Append(call.ArgumentsJson).Append('\n');
+		}
+
+		if (result != null)
+		{
+			sb.Append(ExitLine(result)).Append("output:\n").Append(result.Content);
+		}
+		else
+		{
+			sb.Append("output:\n(none: the call never returned)");
+		}
 		return sb.ToString();
 	}
 
@@ -559,7 +667,7 @@ public static class MechanicalCompaction
 	{
 		const string header = "Edit applied at line ";
 		string range = string.Empty;
-		if (string.Equals(call.Name, "edit_file", StringComparison.Ordinal) && result != null && result.Content.StartsWith(header, StringComparison.Ordinal))
+		if (string.Equals(RealToolName(call), "edit_file", StringComparison.Ordinal) && result != null && result.Content.StartsWith(header, StringComparison.Ordinal))
 		{
 			int colon = result.Content.IndexOf(':');
 			if (colon > 0 && int.TryParse(result.Content.Substring(header.Length, colon - header.Length), out int first))
@@ -597,7 +705,7 @@ public static class MechanicalCompaction
 		return args != null && args.TryGetPropertyValue("command", out JsonNode? node) && node != null ? node.ToString() : argsJson;
 	}
 
-	private static string WhyOf(SemanticToolCall call)
+	private static string WhyOf(SemanticToolCall call, string tool)
 	{
 		JsonObject? args = ParseArguments(call.ArgumentsJson);
 		string      why  = args != null && args.TryGetPropertyValue(WhyArgument, out JsonNode? node) && node != null ? node.ToString().Trim() : string.Empty;
@@ -607,7 +715,7 @@ public static class MechanicalCompaction
 		{
 			result = why.Length > kMaxWhyChars ? why.Substring(0, kMaxWhyChars) : why;
 		}
-		else if (IsShellCall(call))
+		else if (IsShellTool(tool))
 		{
 			string command = CommandOf(call.ArgumentsJson).TrimStart();
 			int    newline = command.IndexOf('\n');
@@ -637,38 +745,9 @@ public static class MechanicalCompaction
 		return traces;
 	}
 
-	// A stale reasoning trace goes to the log whole, and what stays is the reference to it, after a summary
-	// if one is ready. A trace under twice the size of that replacement stays as it is: swapping it would
-	// save next to nothing and lose the words. So does one a previous compaction already reduced.
-	private static string ElideThinking(string thinking, CompactionLog log, IReadOnlyDictionary<string, string> reasoningSummaries)
-	{
-		string result = thinking;
-		if (thinking.Length > 0 && !thinking.Contains(kReasoningMarker, StringComparison.Ordinal))
-		{
-			const string heading = "reasoning";
-			string reference   = $"{kReasoningMarker}{log.ReferenceTo(heading, thinking)}]";
-			string replacement = reasoningSummaries.TryGetValue(thinking, out string? summary) ? $"{summary}\n{reference}" : reference;
-			if (thinking.Length >= replacement.Length * 2)
-			{
-				log.Add(heading, thinking);
-				result = replacement;
-			}
-		}
-		return result;
-	}
+	// ---- Argument summaries ----
 
-	// ---- Elision notes ----
-
-	// The one-line note that replaces an elided tool result. Built from the call's own arguments, so
-	// it is always accurate. Deliberately terse: the note repeats once per elided result, and the
-	// model can already see the call itself right above it — restating what to do about it every
-	// time is the kind of filler that eats back the space the pass just reclaimed.
-	private static string ResultNote(SemanticToolCall call, int chars)
-	{
-		return $"[elided {chars} chars: {call.Name}({ArgSummary(call.ArgumentsJson)})]";
-	}
-
-	// The files a result showed, comma-separated, so the note says where to look again.
+	// The files a result showed, comma-separated, so the line says where to look again.
 	private static string MediaPaths(IReadOnlyList<MediaFile> media)
 	{
 		List<string> paths = new List<string>();
@@ -680,8 +759,8 @@ public static class MechanicalCompaction
 		return string.Join(", ", paths);
 	}
 
-	// Compact "key: value" rendering of a call's arguments for the elision note, with long values
-	// truncated so a note can never itself be bulky.
+	// Compact "key: value" rendering of a call's arguments for a digest line, with long values
+	// truncated so a line can never itself be bulky.
 	private static string ArgSummary(string argsJson)
 	{
 		string summary;
@@ -718,27 +797,6 @@ public static class MechanicalCompaction
 			summary = argsJson.Length > 60 ? argsJson.Substring(0, 60) + "…" : argsJson;
 		}
 		return summary;
-	}
-
-	// Replacement for oversized call arguments (whole file bodies in write_file, long edit texts).
-	// Stays valid JSON — protocols resend arguments verbatim and some providers parse them — and
-	// keeps file_path when present, since that is the part later turns actually refer back to.
-	private static string ElideArguments(string argsJson)
-	{
-		JsonObject stub   = new JsonObject();
-		stub["compacted"] = $"arguments elided ({argsJson.Length} chars)";
-		try
-		{
-			JsonNode? node = JsonNode.Parse(argsJson);
-			if (node is JsonObject obj && obj.TryGetPropertyValue("file_path", out JsonNode? pathNode) && pathNode != null)
-			{
-				stub["file_path"] = pathNode.ToString();
-			}
-		}
-		catch (System.Text.Json.JsonException)
-		{
-		}
-		return stub.ToJsonString();
 	}
 
 	// ---- Internals ----
@@ -831,15 +889,15 @@ public static class MechanicalCompaction
 		return total;
 	}
 
-	// The file a write or edit changed, or "" for any other call. A record made by an earlier compaction
-	// still counts, so the list carries through successive ones.
+	// The file a write or edit changed, or "" for any other call. A record made by an earlier version of this
+	// pass still counts, so the list carries through.
 	private static string ChangedPath(SemanticToolCall call)
 	{
 		string      path = string.Empty;
 		JsonObject? args = ParseArguments(call.ArgumentsJson);
 		if (args != null)
 		{
-			string tool    = string.Equals(call.Name, MemoryToolName, StringComparison.Ordinal) && args.TryGetPropertyValue("tool", out JsonNode? toolNode) && toolNode != null ? toolNode.ToString() : call.Name;
+			string tool    = RealToolName(call);
 			bool   changes = string.Equals(     tool,   "write_file", StringComparison.Ordinal) || string.Equals(tool, "edit_file", StringComparison.Ordinal);
 			if (changes && args.TryGetPropertyValue("file_path", out JsonNode? pathNode) && pathNode != null)
 			{

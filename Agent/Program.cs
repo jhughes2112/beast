@@ -117,6 +117,9 @@ public class Program
 		string lockdown = await Sandbox.LockDownAsync(cts.Token);
 		Console.Error.WriteLine($"[Sandbox] {lockdown}");
 
+		// Compacted sessions point their model at a copy of their compaction log its shell can read.
+		CompactionLog.MirrorAll();
+
 		// Decide once whether commits are possible here (a repo with a committer identity); roles that
 		// list commit_and_rebase only get it when they are.
 		await GitTools.ProbeAsync(cts.Token);

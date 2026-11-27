@@ -868,9 +868,9 @@ public class SessionHandler
 			if (seed != null)
 			{
 				string ledger = MechanicalCompaction.BuildLedger(_activeSession.Data.Messages);
-				if (File.Exists(logPath) || MechanicalCompaction.HasMemoryCalls(seed))
+				if (MechanicalCompaction.HasDigest(seed))
 				{
-					ledger = MechanicalCompaction.WithMemoryNote(ledger);
+					ledger = MechanicalCompaction.WithDigestNote(ledger);
 				}
 
 				if (ledger.Length > 0)

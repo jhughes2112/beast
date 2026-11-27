@@ -395,7 +395,8 @@ public static class Sandbox
 	// folder is off limits, and so is a .beast folder in the workspace (a project's own roles.json);
 	// allowAttachments opens one reading hole: the staged attachments the model is told it can
 	// inspect again, which live in the state folder (outside the workspace, in the container). The other
-	// is always open: the compaction logs, where a compacted conversation is told its old tool calls are.
+	// is always open: the compaction logs, where a compacted conversation is told its old tool calls are,
+	// both the originals and the copies its shell reads (CompactionLog.ReadableDir).
 	public static (string? Path, string Error) Confine(string path, bool write, bool allowAttachments)
 	{
 		string? resolved = null;
@@ -406,6 +407,7 @@ public static class Sandbox
 		string state      = ResolveLinks(System.IO.Path.GetFullPath(AgentState.Root));
 		string staged     = ResolveLinks(System.IO.Path.GetFullPath(MediaIntake.StagingFolder()));
 		string compaction = ResolveLinks(System.IO.Path.GetFullPath(AgentState.CompactionLogsDir));
+		string readable   = ResolveLinks(System.IO.Path.GetFullPath(CompactionLog.ReadableDir));
 		string beast      = System.IO.Path.Combine(root, ".beast");
 		string temp       = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetTempPath());
 
@@ -413,7 +415,7 @@ public static class Sandbox
 		{
 			resolved = real;
 		}
-		else if (!write && IsUnder(real, compaction))
+		else if (!write && (IsUnder(real, compaction) || IsUnder(real, readable)))
 		{
 			resolved = real;
 		}

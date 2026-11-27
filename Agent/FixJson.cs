@@ -811,6 +811,13 @@ public static class FixJson
 				continue;
 			}
 
+			// The same for a subagent's one-line summary: its report is worth more than the line, and the
+			// terminator takes the report's first line in its place (ToolFactory.WithSummary).
+			if (string.Equals(fieldName, ToolFactory.ReportSummaryArgument, StringComparison.Ordinal) && ToolFactory.IsReportTerminator(toolName))
+			{
+				continue;
+			}
+
 			if (!string.IsNullOrEmpty(fieldName) && !obj.ContainsKey(fieldName))
 			{
 				error = $"Error: Tool '{toolName}' missing required argument '{fieldName}'";
