@@ -296,12 +296,11 @@ public class SessionHandler
 	// or the run fails. Returns true when the context is full and the caller must compact.
 	private async Task<bool> RunTurnClusterAsync(Role role, bool windDown, LlmRegistry registry, RoleService roleService, SettingsService settings, ITransportServer transport, ISessionOrchestrator orchestrator, CancellationToken ct)
 	{
-		_toolsStale             = false;
-		Tool[]  tools           = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
-		string? forcedTool      = windDown ? _activeSession.TerminatorName : null;
-		bool    workToolsActive = _activeSession.WorkInProgress;
-		bool    contextFull     = false;
-		bool    turnComplete    = false;
+		_toolsStale          = false;
+		Tool[]  tools        = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
+		string? forcedTool   = windDown ? _activeSession.TerminatorName : null;
+		bool    contextFull  = false;
+		bool    turnComplete = false;
 
 		// Deleted ends the cluster immediately: MarkDeleted wakes a parked handler through the
 		// input signal, and without this check the wake would read as steering and run more turns.
@@ -317,9 +316,8 @@ public class SessionHandler
 				Role? reloaded = ResolveRole(roleService);
 				if (reloaded != null)
 				{
-					role            = reloaded;
-					workToolsActive = _activeSession.WorkInProgress;
-					tools           = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
+					role  = reloaded;
+					tools = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
 				}
 			}
 
@@ -454,13 +452,6 @@ public class SessionHandler
 				await DrainInput(roleService, registry, transport, ct);
 
 				turnComplete = TurnComplete(role, windDown, hasToolCalls);
-
-				// Rebuild the toolset when a tool toggled the work-in-progress state this round.
-				if (!turnComplete && _activeSession.WorkInProgress != workToolsActive)
-				{
-					workToolsActive = _activeSession.WorkInProgress;
-					tools           = BuildTools(role, windDown, settings, registry, roleService, orchestrator);
-				}
 
 				// The round's spend (its own completion, tool fees, children's rollups) reaches every
 				// ancestor now, not whenever this session next happens to reply or exit.
@@ -1424,6 +1415,12 @@ public class SessionHandler
 		return _activeSession.CallRole ?? roleService.GetRole(_activeSession.Role);
 	}
 
+	// The same tools on every turn of a session, whatever state it is in: Anthropic and OpenAI both throw away
+	// a cached prompt whose tools changed at all, so a list that grows and shrinks pays for the whole prompt
+	// again each time. What a state rules out is refused when called instead of being taken off the list:
+	// once the budget is spent every tool but the terminator answers with an error (the turn is also forced
+	// to the terminator where the protocol can force one), and a subagent that has already reported keeps its
+	// terminator, which then says so. A root session never has a terminator, which is just as steady.
 	private Tool[] BuildTools(Role role, bool windDown, SettingsService settings, LlmRegistry registry, RoleService roleService, ISessionOrchestrator orchestrator)
 	{
 		Tool[] full = ToolFactory.BuildForRole(
@@ -1432,33 +1429,44 @@ public class SessionHandler
 			registry,
 			roleService,
 			_activeSession,
-			_activeSession.WorkInProgress,
 			(roleName, displayName, prompt, maxWorkTurns, spawnCt) =>
 				orchestrator.SpawnChildAsync(_activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
 			(name, displayName, systemPrompt, userPrompt, jobTools, maxTurns, spawnCt) =>
 				orchestrator.RunSummarizerAsync(_activeSession, name, displayName, systemPrompt, userPrompt, jobTools, maxTurns, spawnCt),
 			() => _activeSession.BeginWork(),
 			() => _activeSession.EndWork(),
-			_activeSession.OwesReply ? Terminate : null,
+			_activeSession.IsSubagent ? Terminate : null,
 			orchestrator.HostCommands);
 		_lastToolChars = MechanicalCompaction.ToolDefinitionChars(full);
 
-		if (!windDown)
+		Tool[] offered = new Tool[full.Length];
+		for (int i = 0; i < full.Length; i++)
 		{
-			return full;
-		}
-
-		// Wind-down: restrict to the terminator tool only.
-		Tool? terminator = null;
-		foreach (Tool t in full)
-		{
-			if (string.Equals(t.Definition.Function.Name, _activeSession.TerminatorName, StringComparison.Ordinal))
+			bool terminator = ToolFactory.IsTerminator(full[i].Definition.Function.Name);
+			if (terminator && !_activeSession.OwesReply)
 			{
-				terminator = t;
-				break;
+				offered[i] = Refusing(full[i], "Error: this session has already reported to its caller, so there is nothing left to return. Answer in plain text instead.");
+			}
+			else if (windDown && !terminator)
+			{
+				offered[i] = Refusing(full[i], $"Error: your work budget is spent, so this call was not run. The only call left is {_activeSession.TerminatorName}: call it now with your report.");
+			}
+			else
+			{
+				offered[i] = full[i];
 			}
 		}
-		return terminator != null ? new Tool[] { terminator } : full;
+		return offered;
+	}
+
+	// The same tool as the model sees it, answering every call with the reason it cannot run now.
+	private static Tool Refusing(Tool tool, string reason)
+	{
+		return new Tool
+		{
+			Definition = tool.Definition,
+			Handler    = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) => Task.FromResult(new ToolResult(toolCallId, string.Empty, reason, 1, 0))
+		};
 	}
 
 	// A seeded run keeps to its sandbox: a command on the user's own machine sees another clock and another

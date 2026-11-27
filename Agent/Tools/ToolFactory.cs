@@ -27,7 +27,6 @@ public static class ToolFactory
 		LlmRegistry?          registry,
 		RoleService?          roleService,
 		Session?              session,
-		bool                  workInProgress,
 		SpawnSubagent?        spawnSubagent,
 		SpawnSummarizer?      spawnSummarizer,
 		Action?               onWorkAssigned,
@@ -352,9 +351,10 @@ public static class ToolFactory
 			});
 		}
 
-		// stop_work is exposed only while the delegation loop is active; paired with assign_work so a
-		// role that cannot delegate never sees it.
-		if (workInProgress && role.Tools.Contains("assign_work") && onStopWork != null)
+		// stop_work is paired with assign_work, so a role that cannot delegate never sees it. It is offered
+		// whether or not a delegation loop is running: a tool list that changes mid-conversation throws away
+		// the provider's cached prompt. Called with no loop to stop, it says so and changes nothing.
+		if (role.Tools.Contains("assign_work") && onStopWork != null)
 		{
 			ToolConfig tc = toolConfigs["stop_work"];
 			tools.Add(new Tool
@@ -372,6 +372,11 @@ public static class ToolFactory
 				},
 				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
+					if (session != null && !session.WorkInProgress)
+					{
+						return Task.FromResult(new ToolResult(toolCallId, string.Empty, "Error: no work loop is running, so there is nothing for stop_work to end; it ends a loop started with assign_work. Reply in plain text instead.", 1, 0));
+					}
+
 					string summary = Str(args, "summary");
 					onStopWork();
 					return Task.FromResult(new ToolResult(toolCallId, summary, string.Empty, 0, ToolDispatch.EstimateTokens(summary)));
@@ -547,6 +552,12 @@ public static class ToolFactory
 		}
 
 		return tools.ToArray();
+	}
+
+	// Every tool that ends a subagent's work and returns its reply. A role declares at most one.
+	public static bool IsTerminator(string toolName)
+	{
+		return toolName == "task_complete" || toolName == "finish_review" || toolName == "return_to_caller";
 	}
 
 	// The terminators that return a Developer's or Reviewer's report to its caller, and the one-line summary

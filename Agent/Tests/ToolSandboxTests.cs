@@ -162,7 +162,7 @@ public static class ToolSandboxTests
 
 			Role         reviewer = new RoleService(root).Roles["Reviewer"];
 			List<string> names    = new List<string>();
-			foreach (Tool tool in ToolFactory.BuildForRole(new SettingsService(), reviewer, null, null, null, false, null, null, null, null, null, null))
+			foreach (Tool tool in ToolFactory.BuildForRole(new SettingsService(), reviewer, null, null, null, null, null, null, null, null, null))
 			{
 				names.Add(tool.Definition.Function.Name);
 			}
@@ -778,7 +778,7 @@ public static class ToolSandboxTests
 		}
 
 		Role   role  = new Role("ToolTester", "drives the tools", RoleKind.Subagent, new List<string> { config.Id }, new List<string>(ToolNames), "test", string.Empty, string.Empty);
-		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, false, null, null, null, null, null, null);
+		Tool[] tools = ToolFactory.BuildForRole(settings, role, null, null, session, null, null, null, null, null, null);
 		return new Rig(session, service, tools, transport);
 	}
 

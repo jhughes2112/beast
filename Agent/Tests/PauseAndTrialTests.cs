@@ -38,6 +38,7 @@ public static class PauseAndTrialTests
 			await TestTrialAsync(ctx, server, cts.Token);
 			await TestReasoningSummaryAsync(ctx, server, cts.Token);
 			TestSummarizerRoles(ctx);
+			await TestToolListIsSteadyAsync(ctx, cts.Token);
 			await TestSummarizerCallAsync(ctx, server, cts.Token);
 		}
 		finally
@@ -718,6 +719,73 @@ public static class PauseAndTrialTests
 			}
 		}
 		return count;
+	}
+
+	// Anthropic and OpenAI drop a cached prompt whose tools changed at all, so a session's tools are the same on
+	// every turn: what a state rules out (a work loop not running, a spent budget, a reply already given) is
+	// refused when called, never taken off the list.
+	private static async Task TestToolListIsSteadyAsync(TestContext ctx, CancellationToken ct)
+	{
+		using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+		TestCaptureTransport transport         = new TestCaptureTransport();
+		RoleService          roles             = new RoleService(Environment.CurrentDirectory);
+		AgentOrchestrator    orchestrator      = new AgentOrchestrator(new LlmRegistry(), roles, new SettingsService(), transport, lifetime, true);
+		SettingsService      settings          = new SettingsService();
+		LlmRegistry          registry          = new LlmRegistry();
+		Type[]               types             = new Type[] { typeof(Role), typeof(bool), typeof(SettingsService), typeof(LlmRegistry), typeof(RoleService), typeof(ISessionOrchestrator) };
+
+		// The orchestrator's stop_work is there whether or not a work loop is running.
+		Role           lead     = roles.GetRole("Default")!;
+		Session        root     = NewSession(Guid.NewGuid().ToString("N"), transport);
+		SessionHandler rootLoop = new SessionHandler(root);
+		Tool[]         idle     = (Tool[])Reflect.Instance(rootLoop, "BuildTools", types, new object[] { lead, false, settings, registry, roles, orchestrator })!;
+		root.BeginWork();
+		Tool[] working = (Tool[])Reflect.Instance(rootLoop, "BuildTools", types, new object[] { lead, false, settings, registry, roles, orchestrator })!;
+		ctx.AssertEqual(Names(idle), Names(working), "SteadyTools: starting a work loop changes no tool");
+		ctx.Assert(Names(idle).Contains("stop_work", StringComparison.Ordinal) && !Names(idle).Contains("task_complete", StringComparison.Ordinal), $"SteadyTools: stop_work is always offered, and a root session has no terminator ({Names(idle)})");
+		root.EndWork();
+		ToolResult noLoop = await Find(idle, "stop_work").Handler(new JsonObject { ["summary"] = "done" }, "s1", ct, transport, root.Id, 100);
+		ctx.Assert(noLoop.ExitCode != 0 && noLoop.StdErr.Contains("no work loop is running", StringComparison.Ordinal), $"SteadyTools: stop_work with no loop running says so ({noLoop.StdErr})");
+
+		// A Developer subagent keeps every tool through its wind-down and after it has reported.
+		Role           developer = roles.GetRole("Developer")!;
+		BeastSession   data      = new BeastSession(Guid.NewGuid().ToString("N"), "dev", kModelId, "Developer", "task_complete", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+		Session        child     = new Session(data, "You are a test driver.", transport, true);
+		SessionHandler childLoop = new SessionHandler(child);
+		Tool[]         owing     = (Tool[])Reflect.Instance(childLoop, "BuildTools", types, new object[] { developer, false, settings, registry, roles, orchestrator })!;
+		Tool[]         spent     = (Tool[])Reflect.Instance(childLoop, "BuildTools", types, new object[] { developer, true,  settings, registry, roles, orchestrator })!;
+		ctx.AssertEqual(Names(owing), Names(spent), "SteadyTools: a spent budget takes no tool away");
+		ToolResult refused = await Find(spent, "bash").Handler(new JsonObject { ["command"] = "echo hi" }, "b1", ct, transport, child.Id, 100);
+		ctx.Assert(refused.ExitCode != 0 && refused.StdErr.Contains("only call left is task_complete", StringComparison.Ordinal), $"SteadyTools: past the budget a work tool names the terminator instead of running ({refused.StdErr})");
+
+		child.ClearReplyObligation();
+		Tool[] reported = (Tool[])Reflect.Instance(childLoop, "BuildTools", types, new object[] { developer, false, settings, registry, roles, orchestrator })!;
+		ctx.AssertEqual(Names(owing), Names(reported), "SteadyTools: reporting back takes no tool away either");
+		ToolResult again = await Find(reported, "task_complete").Handler(new JsonObject { ["results_of_review_work"] = "x", ["success"] = true }, "t1", ct, transport, child.Id, 100);
+		ctx.Assert(again.ExitCode != 0 && again.StdErr.Contains("already reported", StringComparison.Ordinal), $"SteadyTools: a terminator called after the reply says so ({again.StdErr})");
+	}
+
+	private static string Names(Tool[] tools)
+	{
+		List<string> names = new List<string>();
+		foreach (Tool tool in tools)
+		{
+			names.Add(tool.Definition.Function.Name);
+		}
+		return string.Join(",", names);
+	}
+
+	private static Tool Find(Tool[] tools, string name)
+	{
+		Tool? found = null;
+		foreach (Tool tool in tools)
+		{
+			if (found == null && tool.Definition.Function.Name == name)
+			{
+				found = tool;
+			}
+		}
+		return found!;
 	}
 
 	private static Session NewSession(string id, ITransportServer transport)
