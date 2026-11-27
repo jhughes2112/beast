@@ -44,6 +44,14 @@ public class RoleService
 	// repository's overrides into the home file, and the expanded set would bake in today's models.
 	private Dictionary<string, Role> _rawHomeRoles = new(StringComparer.OrdinalIgnoreCase);
 
+	// This session's own model priorities, set by /role: role name to the model ids in the order the user
+	// put them. Only order: which models a role has always comes from the roles.json files, so a model added
+	// or removed there still joins or leaves. Kept in the session's state folder (one per Beast session), so
+	// another session's /role leaves this one's order alone, and written only once /role has been used here;
+	// until then the session follows the global order.
+	private readonly string _sessionOrderPath;
+	private          Dictionary<string, List<string>> _sessionOrder;
+
 	public RoleService(string workDir) : this(workDir, string.Empty)
 	{
 	}
@@ -54,7 +62,69 @@ public class RoleService
 		_hostMachine      = hostMachine;
 		_workDirRolesPath = Path.Combine(workDir, ".beast", "roles.json");
 		_homeDirRolesPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".beast", "roles.json");
+		_sessionOrderPath = Path.Combine(AgentState.Root, "role-order.json");
+		_sessionOrder     = ReadSessionOrder(_sessionOrderPath);
 		LoadRoles();
+	}
+
+	private static Dictionary<string, List<string>> ReadSessionOrder(string path)
+	{
+		Dictionary<string, List<string>> order = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+		if (File.Exists(path))
+		{
+			try
+			{
+				Dictionary<string, List<string>>? saved = JsonSerializer.Deserialize(File.ReadAllText(path), BeastJson.Config.DictionaryStringListString);
+				if (saved != null)
+				{
+					foreach ((string role, List<string> models) in saved)
+					{
+						order[role] = models;
+					}
+				}
+			}
+			catch (Exception ex) when (ex is IOException || ex is JsonException || ex is UnauthorizedAccessException)
+			{
+				Console.Error.WriteLine($"[RoleService] Ignoring this session's model order at {path}: {ex.Message}");
+			}
+		}
+		return order;
+	}
+
+	// The roles with this session's order applied: each role's models the session put in order come first, in
+	// its order, and every other model it has follows in the global order. Models the session named that the
+	// role no longer has are passed over. Applying it twice changes nothing.
+	private Dictionary<string, Role> WithSessionOrder(Dictionary<string, Role> roles)
+	{
+		Dictionary<string, Role> ordered = new Dictionary<string, Role>(StringComparer.OrdinalIgnoreCase);
+		foreach ((string name, Role role) in roles)
+		{
+			ordered[name] = _sessionOrder.TryGetValue(name, out List<string>? first) ? role.WithModels(Prioritized(role.Models, first)) : role;
+		}
+		return ordered;
+	}
+
+	private static List<string> Prioritized(List<string> models, List<string> first)
+	{
+		List<string>    result = new List<string>(models.Count);
+		HashSet<string> taken  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		HashSet<string> has    = new HashSet<string>(models, StringComparer.OrdinalIgnoreCase);
+		foreach (string id in first)
+		{
+			if (id != "*" && has.Contains(id) && taken.Add(id))
+			{
+				result.Add(id);
+			}
+		}
+
+		foreach (string id in models)
+		{
+			if (taken.Add(id))
+			{
+				result.Add(id);
+			}
+		}
+		return result;
 	}
 
 	// The on-disk shape of roles.json: two blocks whose membership determines each role's kind.
@@ -163,7 +233,9 @@ public class RoleService
 			}
 			updated[name] = role.WithModels(expanded);
 		}
-		Roles = updated;
+
+		// The session's order again, now that '*' has become real models it can put first.
+		Roles = WithSessionOrder(updated);
 	}
 
 	// Names of the Subagent-kind roles — the only roles the subagent tool may target and the only
@@ -237,42 +309,32 @@ public class RoleService
 
 		// Published as a single reference swap: a reader racing a reload sees the complete old set
 		// or the complete new one, never a half-filled dictionary mid-rebuild.
-		Roles = fresh;
+		Roles = WithSessionOrder(fresh);
 	}
 
-	// Rewrites one role's model order and reloads. The edit lands in the file that OWNS the role's
-	// effective definition: when the project file overrides the role, the order is written into
-	// that override (leaving its prompts/tools intact and the rest of the project file untouched);
-	// otherwise it goes to the user's home file. Only the Models list ever changes — /role edits
-	// order, nothing else. A configured '*' is re-appended so models added later still join.
-	// Returns false when neither file owns the role (a project-only role whose file failed to
-	// read or write) so the caller never reports a save that did not happen.
+	// Sets one role's model order for this session (see _sessionOrder) and reloads. The roles.json files are
+	// left alone: they say which models a role has and the order every session starts with, and an order
+	// set in one session used to become every session's on its next start. Returns false when there is no
+	// such role or the session's file could not be written, so the caller never reports a save that did
+	// not happen.
 	public bool SaveRoleModelOrder(string roleName, List<string> modelIds)
 	{
-		bool written = TryUpdateProjectRoleOrder(roleName, modelIds);
-
-		if (!written && _rawHomeRoles.TryGetValue(roleName, out Role? raw))
+		bool written = false;
+		if (Roles.ContainsKey(roleName))
 		{
-			List<string> saved = new List<string>(modelIds);
-			if (raw.Models.Contains("*"))
+			Dictionary<string, List<string>> order = new Dictionary<string, List<string>>(_sessionOrder, StringComparer.OrdinalIgnoreCase);
+			order[roleName]                        = new List<string>(modelIds);
+			try
 			{
-				saved.Add("*");
+				Directory.CreateDirectory(Path.GetDirectoryName(_sessionOrderPath)!);
+				File.WriteAllText(_sessionOrderPath, JsonSerializer.Serialize(order, BeastJson.Persist.DictionaryStringListString));
+				_sessionOrder = order;
+				written       = true;
 			}
-
-			List<Role> all = new List<Role>();
-			foreach ((string name, Role role) in _rawHomeRoles)
+			catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
 			{
-				if (string.Equals(name, roleName, StringComparison.OrdinalIgnoreCase))
-				{
-					all.Add(role.WithModels(saved));
-				}
-				else
-				{
-					all.Add(role);
-				}
+				Console.Error.WriteLine($"[RoleService] Could not save this session's order for '{roleName}' at {_sessionOrderPath}: {ex.Message}");
 			}
-
-			written = WriteRolesFile(_homeDirRolesPath, all);
 		}
 
 		if (written)
@@ -415,59 +477,6 @@ public class RoleService
 		return written;
 	}
 
-	// Applies the new order inside the project file's own override of the role, when one exists.
-	// Returns false when the project defines no such role (the home file owns it) or the file
-	// cannot be read — writing to home would then be wrong only in the unreadable-file case, and
-	// that file was already failing the whole load loudly.
-	private bool TryUpdateProjectRoleOrder(string roleName, List<string> modelIds)
-	{
-		bool updated = false;
-		if (File.Exists(_workDirRolesPath))
-		{
-			try
-			{
-				string     json  = File.ReadAllText(_workDirRolesPath);
-				RolesFile? file  = JsonSerializer.Deserialize(json, BeastJson.Config.RolesFile);
-				bool       found = false;
-				if (file != null)
-				{
-					foreach (List<Role> block in new[] { file.Agents, file.Subagents })
-					{
-						for (int i = 0; i < block.Count; i++)
-						{
-							Role role = block[i];
-							if (!string.Equals(role.Name, roleName, StringComparison.OrdinalIgnoreCase))
-							{
-								continue;
-							}
-
-							List<string> saved = new List<string>(modelIds);
-							if (role.Models.Contains("*"))
-							{
-								saved.Add("*");
-							}
-
-							block[i] = role.WithModels(saved);
-							found    = true;
-						}
-					}
-				}
-
-				// updated flips only AFTER the write lands: a throw from WriteAllText must report
-				// failure, not a phantom save the file never received.
-				if (found)
-				{
-					File.WriteAllText(_workDirRolesPath, JsonSerializer.Serialize(file, BeastJson.Persist.RolesFile));
-					updated = true;
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.Error.WriteLine($"[RoleService] Could not update '{roleName}' in the project roles.json: {ex.Message}");
-			}
-		}
-		return updated;
-	}
 
 	// Serializes the current role set into roles.json, splitting it into the Agents and Subagents blocks
 	// by kind. The kind itself is not written — the block a role sits in carries it. Returns false when

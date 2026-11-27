@@ -30,10 +30,35 @@ public static class SessionProcesses
 		public int     InitPid;
 	}
 
-	// Holders by the session that owns them now; a successor takes its predecessor's.
-	private static readonly Dictionary<string, Holder> _holders = new Dictionary<string, Holder>(StringComparer.Ordinal);
-	private static readonly SemaphoreSlim              _gate    = new SemaphoreSlim(1, 1);
-	private static          bool                       _unavailable;
+	// A command started with run_in_background. Owner is the session it reports to: a compaction successor
+	// takes it over, so the notice reaches whichever session is carrying on the work.
+	private sealed class Job
+	{
+		public Session  Owner = null!;
+		public int      Number;
+		public Process  Process = null!;
+		public string   Command = string.Empty;
+		public string   Log     = string.Empty;
+		public string   Status  = string.Empty;
+		public int      Limit;
+		public DateTime Deadline;
+	}
+
+	// How often the running jobs' status files are looked at.
+	private static readonly TimeSpan kPollInterval = TimeSpan.FromSeconds(1);
+	private static          bool     _polling;
+
+	// Holders, running jobs and job counts by the session that owns them now; a successor takes its
+	// predecessor's. Jobs are numbered per session from 1, so a seeded run numbers them the same way.
+	private static readonly Dictionary<string, Holder>    _holders = new Dictionary<string, Holder>(StringComparer.Ordinal);
+	private static readonly Dictionary<string, List<Job>> _jobs    = new Dictionary<string, List<Job>>(StringComparer.Ordinal);
+	private static readonly Dictionary<string, int>       _counts  = new Dictionary<string, int>(StringComparer.Ordinal);
+	private static readonly SemaphoreSlim                 _gate    = new SemaphoreSlim(1, 1);
+	private static          bool _unavailable;
+
+	// The most of a finished job's output its notice carries; the rest is in its log.
+	private const int kNoticeTailLines = 20;
+	private const int kNoticeTailChars = 2000;
 
 	// How long a new holder may take to show its first process, and how often it is looked for.
 	private static readonly TimeSpan kStartTimeout = TimeSpan.FromSeconds(5);
@@ -75,15 +100,30 @@ public static class SessionProcesses
 		return init;
 	}
 
-	// A compaction successor takes over its predecessor's namespace, with whatever is running in it.
-	public static void Inherit(string successorId, string predecessorId)
+	// A compaction successor takes over its predecessor's namespace, with whatever is running in it, its
+	// background jobs (whose notices now go to it) and its job count.
+	public static void Inherit(Session successor, string predecessorId)
 	{
 		_gate.Wait();
 		try
 		{
 			if (_holders.Remove(predecessorId, out Holder? holder))
 			{
-				_holders[successorId] = holder;
+				_holders[successor.Id] = holder;
+			}
+
+			if (_jobs.Remove(predecessorId, out List<Job>? jobs))
+			{
+				foreach (Job job in jobs)
+				{
+					job.Owner = successor;
+				}
+				_jobs[successor.Id] = jobs;
+			}
+
+			if (_counts.Remove(predecessorId, out int count))
+			{
+				_counts[successor.Id] = count;
 			}
 		}
 		finally
@@ -92,18 +132,247 @@ public static class SessionProcesses
 		}
 	}
 
-	// The session's work is over: everything it started is killed with its namespace.
-	public static void End(string sessionId)
+	// The number the session's next background job gets.
+	public static int NextJob(string sessionId)
 	{
-		Holder? holder;
+		int next;
 		_gate.Wait();
 		try
 		{
-			_holders.Remove(sessionId, out holder);
+			next               = (_counts.TryGetValue(sessionId, out int count) ? count : 0) + 1;
+			_counts[sessionId] = next;
 		}
 		finally
 		{
 			_gate.Release();
+		}
+		return next;
+	}
+
+	// Whether the session has background jobs still running, which it may wait on rather than be prodded.
+	public static bool HasRunningJobs(string sessionId)
+	{
+		bool running;
+		_gate.Wait();
+		try
+		{
+			running = _jobs.TryGetValue(sessionId, out List<Job>? jobs) && jobs.Count > 0;
+		}
+		finally
+		{
+			_gate.Release();
+		}
+		return running;
+	}
+
+	// The shell text a background command runs as: its output to the log, the command in a subshell (so an
+	// exit inside it still reaches the next line), then its exit code to the status file, renamed into place
+	// so the file is never read half-written. The status file is how the job says it is done.
+	public static string Wrap(string command, string log, string status)
+	{
+		string q = Quote(log);
+		string s = Quote(status);
+		return $"exec > {q} 2>&1\n(\n{command}\n)\necho \"$?\" > {s}.tmp && mv {s}.tmp {s}\n";
+	}
+
+	private static string Quote(string path)
+	{
+		return $"'{path.Replace("'", "'\\''")}'";
+	}
+
+	// Starts a background job and has it watched: once a second the status files of the running jobs are
+	// looked at. A job whose file has appeared is done, with the exit code it wrote; one past its limit is
+	// stopped; one whose process is gone without a file (killed) has an unknown code. Each way its owner gets
+	// a notice with the end of its output, and wakes if it was waiting. Anything a job leaves behind belongs
+	// to the namespace, which names it after later commands and kills it with the session's work.
+	public static void Watch(Session owner, int number, ProcessStartInfo psi, string command, string log, string status, int limitSeconds)
+	{
+		Process process = new Process { StartInfo = psi };
+		process.Start();
+		Job  job   = new Job { Owner = owner, Number = number, Process = process, Command = command, Log = log, Status = status, Limit = limitSeconds, Deadline = DateTime.UtcNow.AddSeconds(limitSeconds) };
+		bool start = false;
+		_gate.Wait();
+		try
+		{
+			if (!_jobs.TryGetValue(owner.Id, out List<Job>? jobs))
+			{
+				jobs            = new List<Job>();
+				_jobs[owner.Id] = jobs;
+			}
+			jobs.Add(job);
+			start    = !_polling;
+			_polling = true;
+		}
+		finally
+		{
+			_gate.Release();
+		}
+
+		if (start)
+		{
+			_ = PollAsync();
+		}
+	}
+
+	// Runs while any job does: one look at every running job per interval, then the notices, outside the lock.
+	private static async Task PollAsync()
+	{
+		bool more = true;
+		while (more)
+		{
+			await Task.Delay(kPollInterval);
+			List<(Session Owner, string Notice)> notices = new List<(Session Owner, string Notice)>();
+			List<Job> ended = new List<Job>();
+			_gate.Wait();
+			try
+			{
+				foreach ((string _, List<Job> jobs) in _jobs)
+				{
+					for (int i = jobs.Count - 1; i >= 0; i--)
+					{
+						string notice = Check(jobs[i]);
+						if (notice.Length > 0)
+						{
+							notices.Add((jobs[i].Owner, notice));
+							ended.Add(jobs[i]);
+							jobs.RemoveAt(i);
+						}
+					}
+				}
+
+				more = false;
+				foreach ((string _, List<Job> jobs) in _jobs)
+				{
+					more = more || jobs.Count > 0;
+				}
+				_polling = more;
+			}
+			finally
+			{
+				_gate.Release();
+			}
+
+			foreach ((Session owner, string notice) in notices)
+			{
+				owner.AddUserMessage(notice);
+			}
+			foreach (Job job in ended)
+			{
+				job.Process.Dispose();
+			}
+		}
+	}
+
+	// The notice for a job that has ended, or "" while it is still running. No times or process ids: only
+	// what the job was and how it ended.
+	private static string Check(Job job)
+	{
+		string how = string.Empty;
+		if (File.Exists(job.Status))
+		{
+			how = $"finished with exit code {ReadStatus(job.Status)}";
+		}
+		else if (DateTime.UtcNow >= job.Deadline)
+		{
+			Stop(job);
+			how = $"was still running at its {job.Limit} second limit and was stopped";
+		}
+		else if (job.Process.HasExited)
+		{
+			how = "ended without reporting an exit code (it was killed)";
+		}
+
+		string notice = string.Empty;
+		if (how.Length > 0)
+		{
+			string tail   = Tail(job.Log);
+			string output = tail.Length > 0 ? $"\nLast of its output:\n{tail}" : "\nIt wrote no output.";
+			notice        = $"[Beast: background job {job.Number} (`{FirstLine(job.Command)}`) {how}. Full output: {job.Log}]{output}";
+		}
+		return notice;
+	}
+
+	private static string ReadStatus(string status)
+	{
+		string code = "unknown";
+		try
+		{
+			string text = File.ReadAllText(status).Trim();
+			code        = text.Length > 0 ? text : code;
+		}
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+		{
+		}
+		return code;
+	}
+
+	private static void Stop(Job job)
+	{
+		try
+		{
+			job.Process.Kill(true);
+		}
+		catch (InvalidOperationException)
+		{
+			// It finished as the limit came.
+		}
+	}
+
+	private static string FirstLine(string text)
+	{
+		string trimmed = text.Trim();
+		int    newline = trimmed.IndexOf('\n');
+		string first   = newline >= 0 ? $"{trimmed.Substring(0, newline).TrimEnd()} …" : trimmed;
+		return first.Length > kMaxCommandChars ? $"{first.Substring(0, kMaxCommandChars)}…" : first;
+	}
+
+	// The last lines of a job's log, bounded in lines and characters.
+	private static string Tail(string log)
+	{
+		string tail = string.Empty;
+		try
+		{
+			string[] lines = File.ReadAllText(log).TrimEnd().Split('\n');
+			int      start = Math.Max(0, lines.Length - kNoticeTailLines);
+			tail           = string.Join("\n", lines, start, lines.Length - start);
+			if (tail.Length > kNoticeTailChars)
+			{
+				tail = $"…{tail.Substring(tail.Length - kNoticeTailChars)}";
+			}
+		}
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+		{
+		}
+		return tail;
+	}
+
+	// The session's work is over: everything it started is killed with its namespace, background jobs
+	// included, and their notices are dropped, since there is no work left for them to report to.
+	public static void End(string sessionId)
+	{
+		Holder?    holder;
+		List<Job>? jobs;
+		_gate.Wait();
+		try
+		{
+			_holders.Remove(sessionId, out holder);
+			_jobs.Remove(sessionId, out jobs);
+			_counts.Remove(sessionId);
+		}
+		finally
+		{
+			_gate.Release();
+		}
+
+		// Taken off the running list above, so no notice comes for them. Outside a namespace (none could be
+		// made) killing the holder would reach nothing, so each job is stopped itself.
+		if (jobs != null)
+		{
+			foreach (Job job in jobs)
+			{
+				Stop(job);
+				job.Process.Dispose();
+			}
 		}
 
 		if (holder != null)
@@ -127,18 +396,26 @@ public static class SessionProcesses
 	// children), not what they started in turn, sorted and by command alone so the line repeats.
 	public static string StillRunningNote(string sessionId)
 	{
-		Holder? holder;
+		Holder?      holder;
+		List<string> jobs = new List<string>();
 		_gate.Wait();
 		try
 		{
 			_holders.TryGetValue(sessionId, out holder);
+			if (_jobs.TryGetValue(sessionId, out List<Job>? running))
+			{
+				foreach (Job job in running)
+				{
+					jobs.Add($"{job.Number} (`{FirstLine(job.Command)}`)");
+				}
+			}
 		}
 		finally
 		{
 			_gate.Release();
 		}
 
-		string note = string.Empty;
+		List<string> lines = new List<string>();
 		if (holder != null)
 		{
 			List<string> commands = LeftoverCommands(holder);
@@ -152,10 +429,15 @@ public static class SessionProcesses
 				}
 
 				string more = commands.Count > kMaxListed ? $" and {commands.Count - kMaxListed} more" : string.Empty;
-				note        = $"[Still running from earlier commands: {string.Join(", ", shown)}{more}. Everything this session started is stopped when its work ends; kill any you no longer need.]";
+				lines.Add($"[Still running from earlier commands: {string.Join(", ", shown)}{more}. Everything this session started is stopped when its work ends; kill any you no longer need.]");
 			}
 		}
-		return note;
+
+		if (jobs.Count > 0)
+		{
+			lines.Add($"[Background jobs still running: {string.Join(", ", jobs)}. A message comes when each one ends.]");
+		}
+		return string.Join("\n", lines);
 	}
 
 	private static async Task<Holder?> StartAsync(CancellationToken ct)

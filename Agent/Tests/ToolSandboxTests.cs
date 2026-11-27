@@ -79,6 +79,68 @@ public static class ToolSandboxTests
 		using CancellationTokenSource readOnlyCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
 		await ReadOnlyShellAsync(ctx, previous, readOnlyCts.Token);
 		await SessionNamespaceAsync(ctx, readOnlyCts.Token);
+		await BackgroundJobsAsync(ctx, readOnlyCts.Token);
+	}
+
+	private static Session TestSession(string id)
+	{
+		BeastSession data = new BeastSession(id, id, "m", "r", string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+		return new Session(data, string.Empty, new TestCaptureTransport(), false);
+	}
+
+	// The next line a session has waiting, within a time limit; "" when none comes.
+	private static async Task<string> NextNoticeAsync(Session session, TimeSpan wait, CancellationToken ct)
+	{
+		string   notice   = string.Empty;
+		DateTime deadline = DateTime.UtcNow + wait;
+		while (notice.Length == 0 && DateTime.UtcNow < deadline)
+		{
+			if (session.TryDequeuePending(out string? line) && line != null)
+			{
+				notice = line;
+			}
+			else
+			{
+				await Task.Delay(100, ct);
+			}
+		}
+		return notice;
+	}
+
+	// bash with run_in_background: the call returns at once, the job reports its own exit code through its
+	// status file, and its session gets a notice — when it finishes, when its limit stops it — but none once
+	// the session's work has ended, which stops the job too.
+	private static async Task BackgroundJobsAsync(TestContext ctx, CancellationToken ct)
+	{
+		Session session = TestSession("bg-test");
+		string  log     = Path.Combine(Path.GetTempPath(), "beast-job-bg-test-1.log");
+		try
+		{
+			ToolResult started = await ShellTools.BashInBackgroundAsync("bg1", "echo begin; sleep 1; echo done; exit 3", 30, false, session, ct);
+			ctx.Assert(started.ExitCode == 0 && started.StdOut.StartsWith("Started background job 1.", StringComparison.Ordinal), $"Background: the call returns at once ({started.StdOut} {started.StdErr})");
+			ctx.Assert(SessionProcesses.HasRunningJobs("bg-test"), "Background: the session knows it has a job running");
+			ToolResult meanwhile = await ShellTools.BashAsync("bg2", "echo meanwhile", null, "bg-test", ct);
+			ctx.AssertContains(meanwhile.StdOut, "[Background jobs still running: 1 (`echo begin; sleep 1; echo done; exit 3`).", "Background: a running job is named after later commands");
+
+			string finished = await NextNoticeAsync(session, TimeSpan.FromSeconds(15), ct);
+			ctx.AssertEqual($"[Beast: background job 1 (`echo begin; sleep 1; echo done; exit 3`) finished with exit code 3. Full output: {log}]\nLast of its output:\nbegin\ndone", finished,
+				"Background: the notice gives the job's own exit code and the end of its output, with no times or ids");
+			ctx.Assert(!SessionProcesses.HasRunningJobs("bg-test"), "Background: and the job is no longer running");
+
+			await ShellTools.BashInBackgroundAsync("bg3", "sleep 60", 2, false, session, ct);
+			string expired = await NextNoticeAsync(session, TimeSpan.FromSeconds(15), ct);
+			ctx.AssertContains(expired, "[Beast: background job 2 (`sleep 60`) was still running at its 2 second limit and was stopped.", "Background: a job past its limit is stopped and reported");
+
+			await ShellTools.BashInBackgroundAsync("bg4", "sleep 61", 30, false, session, ct);
+			SessionProcesses.End("bg-test");
+			string dropped = await NextNoticeAsync(session, TimeSpan.FromSeconds(3), ct);
+			ToolResult gone = await ShellTools.AgentBashAsync("bg5", "pgrep -f 'sleep 6[01]' || echo none", null, ct);
+			ctx.Assert(dropped.Length == 0 && gone.StdOut.Trim() == "none", $"Background: ending the work stops its jobs, with no notice ({dropped} {gone.StdOut})");
+		}
+		finally
+		{
+			SessionProcesses.End("bg-test");
+		}
 	}
 
 	// A session's commands share a PID namespace: what they leave running is named after later commands,
@@ -103,7 +165,7 @@ public static class ToolSandboxTests
 			ctx.AssertEqual("again\n[Still running from earlier commands: `sleep 300`, `sleep 301`. Everything this session started is stopped when its work ends; kill any you no longer need.]", later.StdOut,
 				"Namespace: what earlier commands left running is named, sorted, by command alone");
 
-			SessionProcesses.Inherit(successor, first);
+			SessionProcesses.Inherit(TestSession(successor), first);
 			ToolResult inherited = await ShellTools.BashAsync("ns3", "echo carried", null, successor, ct);
 			ctx.AssertContains(inherited.StdOut, "`sleep 301`", "Namespace: a compaction successor takes over the jobs");
 			ToolResult fresh = await ShellTools.BashAsync("ns4", "echo fresh", null, first, ct);

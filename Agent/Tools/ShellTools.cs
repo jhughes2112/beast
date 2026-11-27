@@ -117,6 +117,55 @@ public static class ShellTools
 		return new ToolResult(toolcallid, stdOut, stdErr, result.ExitCode, result.MeasuredOutputTokens);
 	}
 
+	// A job's limit when the call names none: how long the session may wait on it before it is stopped.
+	private const int kDefaultBackgroundSeconds = 3600;
+
+	// bash with run_in_background: the command starts in the session's namespace, its output goes to a log
+	// file, and the call returns at once. SessionProcesses watches it and tells the session when it ends or
+	// reaches its limit, so the model can end its turn and wait instead of polling. readOnlyUser runs it as
+	// the read-only roles' user. The restricted shell cannot redirect output, so it has no background jobs.
+	public static async Task<ToolResult> BashInBackgroundAsync(string toolcallid, string command, int? timeoutSeconds, bool readOnlyUser, Session owner, CancellationToken cancellationToken)
+	{
+		ToolResult result;
+		if (string.IsNullOrWhiteSpace(command))
+		{
+			result = new ToolResult(toolcallid, string.Empty, "Error: Command cannot be empty or whitespace.", 1, 0);
+		}
+		else if (RefusedInSeededRun(command))
+		{
+			result = new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
+		}
+		else
+		{
+			int    job    = SessionProcesses.NextJob(owner.Id);
+			int    limit  = timeoutSeconds.HasValue && timeoutSeconds.Value > 0 ? timeoutSeconds.Value : kDefaultBackgroundSeconds;
+			string log    = Path.Combine(Path.GetTempPath(), $"beast-job-{owner.Id}-{job}.log");
+			string status = $"{log}.exit";
+
+			// Job numbers start again with a new agent process, so a file a job of the same number left in an
+			// earlier run would read as this one having finished.
+			DeleteQuietly(log);
+			DeleteQuietly(status);
+			ProcessStartInfo psi = await ShellStartAsync(SessionProcesses.Wrap(command, log, status), false, true, readOnlyUser, owner.Id, cancellationToken);
+			SessionProcesses.Watch(owner, job, psi, command, log, status, limit);
+
+			string text = $"Started background job {job}. You will get a message when it finishes, or if it is still running after {limit} seconds, when it is stopped; until then you can end your turn and wait, or keep working. Its output goes to {log}.";
+			result      = new ToolResult(toolcallid, text, string.Empty, 0, ToolDispatch.EstimateTokens(text));
+		}
+		return result;
+	}
+
+	private static void DeleteQuietly(string path)
+	{
+		try
+		{
+			File.Delete(path);
+		}
+		catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+		{
+		}
+	}
+
 	// A shell for the agent's own work — creating and removing the worktree, commit_and_rebase, the
 	// sandbox lockdown, apt installs — which needs root. Never hand this a command the model wrote.
 	public static Task<ToolResult> AgentBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
@@ -227,6 +276,51 @@ public static class ShellTools
 		return text;
 	}
 
+	// How a shell command is started: bash (restricted or not) as the right user, inside the session's PID
+	// namespace when it has one. sessionId names that session; "" runs the command outside any.
+	private static async Task<ProcessStartInfo> ShellStartAsync(string command, bool restricted, bool asShellUser, bool readOnlyUser, string sessionId, CancellationToken cancellationToken)
+	{
+		// ArgumentList passes the command as a single argv entry — no quote escaping,
+		// so commands containing quotes, backslashes, or $ arrive at bash verbatim.
+		ProcessStartInfo psi = new ProcessStartInfo
+		{
+			FileName               = "/bin/bash",
+			WorkingDirectory       = Directory.GetCurrentDirectory(),
+			RedirectStandardOutput = true,
+			RedirectStandardError  = true,
+			UseShellExecute        = false,
+			CreateNoWindow         = true
+		};
+		// -r puts bash in restricted mode; PATH is narrowed so only the read-only allowlist resolves.
+		if (restricted)
+		{
+			psi.ArgumentList.Add("-r");
+			psi.Environment["PATH"] = ReadonlyBinDir;
+		}
+
+		psi.ArgumentList.Add("-c");
+		psi.ArgumentList.Add(command);
+
+		if (asShellUser)
+		{
+			Sandbox.RunAsShellUser(psi, restricted, readOnlyUser);
+
+			// Inside the session's own PID namespace, so nothing it starts outlives the session's work. The
+			// program nsenter runs is named by its full path: nsenter looks it up through the command's own
+			// PATH, which the restricted shell narrows to its allowlist.
+			int namespaceInit = await SessionProcesses.EnterAsync(sessionId, cancellationToken);
+			if (namespaceInit > 0)
+			{
+				psi.ArgumentList.Insert(0,      FullPath(psi.FileName));
+				psi.ArgumentList.Insert(0,                        "--");
+				psi.ArgumentList.Insert(0,                     "--pid");
+				psi.ArgumentList.Insert(0, $"--target={namespaceInit}");
+				psi.FileName = "nsenter";
+			}
+		}
+		return psi;
+	}
+
 	// sessionId names the session whose namespace the command runs in; "" runs it outside any (SessionProcesses).
 	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool asShellUser, bool readOnlyUser, string sessionId, CancellationToken cancellationToken)
 	{
@@ -240,49 +334,9 @@ public static class ShellTools
 				timeout = 120;
 			}
 
-			string cwd = Directory.GetCurrentDirectory();
-
 			try
 			{
-				// ArgumentList passes the command as a single argv entry — no quote escaping,
-				// so commands containing quotes, backslashes, or $ arrive at bash verbatim.
-				ProcessStartInfo psi = new ProcessStartInfo
-				{
-					FileName               = "/bin/bash",
-					WorkingDirectory       = cwd,
-					RedirectStandardOutput = true,
-					RedirectStandardError  = true,
-					UseShellExecute        = false,
-					CreateNoWindow         = true
-				};
-				// -r puts bash in restricted mode; PATH is narrowed so only the read-only allowlist resolves.
-				if (restricted)
-				{
-					psi.ArgumentList.Add("-r");
-					psi.Environment["PATH"] = ReadonlyBinDir;
-				}
-
-				psi.ArgumentList.Add("-c");
-				psi.ArgumentList.Add(command);
-
-				if (asShellUser)
-				{
-					Sandbox.RunAsShellUser(psi, restricted, readOnlyUser);
-
-					// Inside the session's own PID namespace, so nothing it starts outlives the session's work. The
-					// program nsenter runs is named by its full path: nsenter looks it up through the command's own
-					// PATH, which the restricted shell narrows to its allowlist.
-					int namespaceInit = await SessionProcesses.EnterAsync(sessionId, cancellationToken);
-					if (namespaceInit > 0)
-					{
-						psi.ArgumentList.Insert(0,      FullPath(psi.FileName));
-						psi.ArgumentList.Insert(0,                        "--");
-						psi.ArgumentList.Insert(0,                     "--pid");
-						psi.ArgumentList.Insert(0, $"--target={namespaceInit}");
-						psi.FileName = "nsenter";
-					}
-				}
-
+				ProcessStartInfo psi = await ShellStartAsync(command, restricted, asShellUser, readOnlyUser, sessionId, cancellationToken);
 				using (Process process = new Process { StartInfo = psi })
 				{
 					StringBuilder output = new StringBuilder();

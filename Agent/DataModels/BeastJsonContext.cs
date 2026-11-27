@@ -18,6 +18,7 @@ using System.Text.Json.Serialization;
 [JsonSerializable(typeof(RoleService.RolesFile))]
 [JsonSerializable(typeof(ToolService.ToolsFile))]
 [JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(Dictionary<string, List<string>>))]
 [JsonSerializable(typeof(ConfigEndpointsPayload))]
 [JsonSerializable(typeof(ConfigCatalogPayload))]
 [JsonSerializable(typeof(ConfigApplyPayload))]

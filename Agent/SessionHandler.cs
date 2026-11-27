@@ -527,8 +527,14 @@ public class SessionHandler
 			// Plain response with no tool calls: nudge and end the turn, unless fresh user input
 			// already drives the next one. Sessions that owe a reply are always steered back toward
 			// the terminator; other sessions only while their work loop is in progress.
+			// A session with background jobs running may end its turn to wait for them: their notices wake it,
+			// so a nudge now would only spend a turn polling.
 			string? nudge = null;
-			if (_activeSession.OwesReply)
+			if (SessionProcesses.HasRunningJobs(_activeSession.Id))
+			{
+				_activeSession.QueryLog.Note("[jobs] turn ended to wait on background jobs");
+			}
+			else if (_activeSession.OwesReply)
 			{
 				nudge = string.IsNullOrEmpty(role.EndOfTurnPrompt)
 					? Nudges.ContinueTask(_activeSession.TerminatorName)
@@ -933,9 +939,6 @@ public class SessionHandler
 					successorId = SessionService.AllocateRootId();
 				}
 
-				// The successor carries on the same work, so it takes over whatever the predecessor has running.
-				SessionProcesses.Inherit(successorId, predecessor.Id);
-
 				// The successor's history is seeded directly as its message list — the mechanical
 				// pass hands over the full elided conversation, the summarize path a single summary
 				// message, both possibly headed by the ledger. Seeding the list verbatim (rather
@@ -946,6 +949,11 @@ public class SessionHandler
 					seed, null, 0m, 0, 0, 0, predecessor.Ephemeral);
 				successorData.ConferredSeed = predecessor.Data.ConferredSeed;
 				Session successor           = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
+
+				// The successor carries on the same work, so it takes over whatever the predecessor has running,
+				// and the notices of its background jobs.
+				SessionProcesses.Inherit(successor, predecessor.Id);
+
 				successor.MarkCompactionSuccessor();
 				successor.SetMaxWorkTurns(maxWorkTurns);
 				successor.SetCallRole(predecessor.CallRole);

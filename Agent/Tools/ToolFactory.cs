@@ -50,12 +50,14 @@ public static class ToolFactory
 		if (role.Tools.Contains("bash"))
 		{
 			ToolConfig tc = toolConfigs["bash"];
-			Register(tools, "bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+			Register(tools, "bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"]), Opt("run_in_background", "boolean", tc.Parameters["run_in_background"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string command        = Str(args, "command");
 					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
-					return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
+					return BoolOpt(args, "run_in_background") == true
+						? await Background(toolCallId, command, timeoutSeconds, false, session, ct)
+						: await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
 				});
 		}
 
@@ -101,12 +103,14 @@ public static class ToolFactory
 		if (role.Tools.Contains("readonly_bash") && Sandbox.ReadOnlyShellAvailable && !role.Tools.Contains("bash"))
 		{
 			ToolConfig tc = toolConfigs["bash_read_only"];
-			Register(tools, "bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"])),
+			Register(tools, "bash", tc.Description, Params(Req(MechanicalCompaction.WhyArgument, "string", tc.Parameters[MechanicalCompaction.WhyArgument]), Req("command", "string", tc.Parameters["command"]), Opt("timeout_seconds", "integer", tc.Parameters["timeout_seconds"]), Opt("run_in_background", "boolean", tc.Parameters["run_in_background"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
 					string command        = Str(args, "command");
 					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
-					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
+					return BoolOpt(args, "run_in_background") == true
+						? await Background(toolCallId, command, timeoutSeconds, true, session, ct)
+						: await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
 				});
 		}
 		else if (role.Tools.Contains("readonly_bash"))
@@ -552,6 +556,15 @@ public static class ToolFactory
 		}
 
 		return tools.ToArray();
+	}
+
+	// bash with run_in_background: a job needs the session it reports back to. Tools built without one (a
+	// test, a tool list made for display) have no job to give a notice to, so they say so.
+	private static async Task<ToolResult> Background(string toolCallId, string command, int? timeoutSeconds, bool readOnlyUser, Session? session, CancellationToken ct)
+	{
+		return session != null
+			? await ShellTools.BashInBackgroundAsync(toolCallId, command, timeoutSeconds, readOnlyUser, session, ct)
+			: new ToolResult(toolCallId, string.Empty, "Error: run_in_background is not available here; run the command without it.", 1, 0);
 	}
 
 	// Every tool that ends a subagent's work and returns its reply. A role declares at most one.

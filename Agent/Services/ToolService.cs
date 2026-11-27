@@ -143,7 +143,8 @@ public class ToolService
 			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase, when available, records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
 			(MechanicalCompaction.WhyArgument,                   kWhyText),
 			(                       "command", "Shell command to execute"),
-			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
+			(               "timeout_seconds",               kTimeoutText),
+			(             "run_in_background",            kBackgroundText));
 
 		tools["host_command"] = Cfg(
 			"Runs a shell command on the user's own computer, outside your container. WARNING: this is their real machine. Do not use this tool unless the user has asked you to make changes to their machine, or their intent clearly implies it. Use bash for everything else, including finding out what is installed for your own work. When it does apply, it is for what only the host can do: its GPU, devices, installed apps and SDKs, or a build or launch the user wants run natively. Each command is checked for safety first and may be refused or put to the user for approval; a refused command must not be retried or reworded. The user watches the output live. CWD is the host folder that is mounted at /workspace, so use relative paths, never /workspace/.",
@@ -162,7 +163,8 @@ public class ToolService
 			"Standard bash, run as a user that can read the whole workspace and run any program but cannot change the workspace: a write there fails with Permission denied. Put scratch files under /tmp/. No sudo or apt-get; installed packages can be checked with dpkg-query and apt-cache. git can inspect (status, diff, log, show). CWD is the repo root at /workspace/.",
 			(MechanicalCompaction.WhyArgument,                   kWhyText),
 			(                       "command", "Shell command to execute"),
-			("timeout_seconds", "Timeout in seconds (default 120). Raise it for builds and test runs."));
+			(               "timeout_seconds",               kTimeoutText),
+			(             "run_in_background",            kBackgroundText));
 
 		tools["readonly_bash"] = Cfg(
 			"Read-only bash for inspecting the repo without changing it (grep, git diff/log/show, build output via the commands it allows). Runs in a restricted bash shell. Installed packages can be checked with dpkg-query and apt-cache. CWD is the repo root at /workspace/.",
@@ -259,6 +261,9 @@ public class ToolService
 
 		return tools;
 	}
+
+	private const string kTimeoutText    = "Timeout in seconds (default 120, or 3600 for a background job). Raise it for builds and test runs.";
+	private const string kBackgroundText = "True to start the command and return at once, for a build, a test suite or a server that takes a while. Its output goes to a log file, and a message arrives when it finishes (with its exit code and the end of its output) or when its timeout stops it, so end your turn and wait for that rather than polling or sleeping. Everything a session starts is stopped when its work ends.";
 
 	// The one line a subagent writes for its caller's list of results, kept when the full report is not.
 	private const string kSummaryDescription = "One brief sentence stating the outcome, for someone scanning a list of results: the verdict or what came of it, not the steps taken.";

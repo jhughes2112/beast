@@ -16,6 +16,61 @@ public static class ModelSettingsTests
 		TestSparseWhenUnset(ctx);
 		TestRoleFieldsRoundTrip(ctx);
 		TestWithoutReasoningKeepsTimeout(ctx);
+		TestSessionRoleOrder(ctx);
+	}
+
+	// /role sets a role's model order for its own session only: kept in that session's state folder, so a
+	// restart keeps it and another session is untouched. It is order alone — the role's models still come
+	// from roles.json, so one added there joins and one removed there leaves.
+	private static void TestSessionRoleOrder(TestContext ctx)
+	{
+		Type[]       types  = new Type[] { typeof(List<string>), typeof(List<string>) };
+		List<string> joined = (List<string>)Reflect.Static(typeof(RoleService), "Prioritized", types, new object[] { new List<string> { "a", "b", "c", "d" }, new List<string> { "c", "gone", "a" } })!;
+		ctx.AssertEqual("c,a,b,d", string.Join(",", joined), "SessionOrder: the session's models first in its order, the rest in the global order, missing ones passed over");
+		List<string> starred = (List<string>)Reflect.Static(typeof(RoleService), "Prioritized", types, new object[] { new List<string> { "a", "*" }, new List<string> { "*", "a" } })!;
+		ctx.AssertEqual("a,*", string.Join(",", starred), "SessionOrder: a wildcard is never put first");
+
+		string previous = AgentState.Root;
+		string mine     = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"beast-roleorder-{Guid.NewGuid():N}");
+		string other    = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"beast-roleorder-{Guid.NewGuid():N}");
+		List<(string Id, List<string> Outputs)> fakes = new List<(string Id, List<string> Outputs)> { ("order-a", new List<string> { "text" }), ("order-b", new List<string> { "text" }), ("order-c", new List<string> { "text" }) };
+		try
+		{
+			AgentState.Initialize(mine);
+			RoleService first = new RoleService(Environment.CurrentDirectory);
+			first.ExpandModelWildcards(fakes);
+			List<string> global = new List<string>(first.Roles["Developer"].Models);
+			if (global.Count < 2)
+			{
+				ctx.Log("    SKIP session role order: the Developer role has fewer than two models here");
+				return;
+			}
+
+			List<string> reversed = new List<string>(global);
+			reversed.Reverse();
+			ctx.Assert(                       first.SaveRoleModelOrder("Developer", reversed), "SessionOrder: a /role order is saved");
+			ctx.Assert(System.IO.File.Exists(System.IO.Path.Combine(mine, "role-order.json")), "SessionOrder: in the session's own state folder");
+
+			RoleService restarted = new RoleService(Environment.CurrentDirectory);
+			restarted.ExpandModelWildcards(fakes);
+			ctx.AssertEqual(string.Join(",", reversed), string.Join(",", restarted.Roles["Developer"].Models), "SessionOrder: a restart keeps it");
+
+			AgentState.Initialize(other);
+			RoleService elsewhere = new RoleService(Environment.CurrentDirectory);
+			elsewhere.ExpandModelWildcards(fakes);
+			ctx.AssertEqual(string.Join(",", global), string.Join(",", elsewhere.Roles["Developer"].Models), "SessionOrder: another session keeps the global order");
+		}
+		finally
+		{
+			AgentState.Initialize(previous == System.IO.Path.Combine(Environment.CurrentDirectory, ".beast") ? string.Empty : previous);
+			foreach (string dir in new string[] { mine, other })
+			{
+				if (System.IO.Directory.Exists(dir))
+				{
+					System.IO.Directory.Delete(dir, true);
+				}
+			}
+		}
 	}
 
 	private static void TestAutoModelRoundTrip(TestContext ctx)

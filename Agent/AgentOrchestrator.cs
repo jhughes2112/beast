@@ -1144,20 +1144,20 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 		if (payload != null && !string.IsNullOrWhiteSpace(payload.Role))
 		{
-			// Two honest failure modes: the save itself can fail (no file owns the role — its
-			// project file was unreadable), and a saved order can fail to APPLY (reload rejects
-			// the config). Claiming success in either case told the user an inactive order was live.
+			// Two honest failure modes: the save itself can fail (no such role, or the session's order file
+			// could not be written), and a saved order can fail to APPLY (reload rejects the config). Claiming
+			// success in either case told the user an inactive order was live.
 			if (!_roleService.SaveRoleModelOrder(payload.Role, payload.Models))
 			{
-				_transport.Error(sessionId, $"The {payload.Role} order could not be saved — no roles.json owns that role (see the agent log for the file error).");
+				_transport.Error(sessionId, $"The {payload.Role} order could not be saved for this session (see the agent log for the error).");
 			}
 			else if (await ReloadConfigurationAsync(sessionId, ct))
 			{
-				_transport.Status(sessionId, $"Saved model order for the {payload.Role} role.");
+				_transport.Status(sessionId, $"Saved model order for the {payload.Role} role in this session.");
 			}
 			else
 			{
-				_transport.Error(sessionId, $"The {payload.Role} order was saved to roles.json, but applying it failed — fix the reported problem, then /reload.");
+				_transport.Error(sessionId, $"The {payload.Role} order was saved for this session, but applying it failed — fix the reported problem, then /reload.");
 			}
 		}
 	}
