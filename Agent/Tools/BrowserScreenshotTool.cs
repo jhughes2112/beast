@@ -14,7 +14,7 @@ public static class BrowserScreenshotTool
 	private const string kOutputFolder   = "/tmp/";
 	private const int    kTimeoutSeconds = 180;
 
-	public static async Task<ToolResult> TakeAsync(string toolCallId, string page, string outputPath, string steps, string stepMs, int? width, int? height, CancellationToken ct)
+	public static async Task<ToolResult> TakeAsync(string toolCallId, string page, string outputPath, string steps, string stepMs, int? width, int? height, string sessionId, CancellationToken ct)
 	{
 		ToolResult result;
 		if (page.Length == 0)
@@ -30,7 +30,7 @@ public static class BrowserScreenshotTool
 			// Without libfaketime: its frozen wall clock made one 400-step capture take 89 s instead of 3 (Nov 9).
 			// The page needs no fake clock, since it runs on the browser's virtual time, and clockfs still dates the picture.
 			string size = width.HasValue && height.HasValue ? $" {width.Value} {height.Value}" : string.Empty;
-			result      = await ShellTools.BashAsync(toolCallId, $"env -u LD_PRELOAD node {kScriptPath} {Quote(page)} {Quote(Path.GetFullPath(outputPath))} {Quote(steps)} {Quote(stepMs)}{size}", kTimeoutSeconds, ct);
+			result      = await ShellTools.BashAsync(toolCallId, $"env -u LD_PRELOAD node {kScriptPath} {Quote(page)} {Quote(Path.GetFullPath(outputPath))} {Quote(steps)} {Quote(stepMs)}{size}", kTimeoutSeconds, sessionId, ct);
 		}
 		return result;
 	}

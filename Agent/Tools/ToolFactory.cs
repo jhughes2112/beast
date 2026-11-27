@@ -56,7 +56,7 @@ public static class ToolFactory
 				{
 					string command        = Str(args, "command");
 					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
-					return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, ct);
+					return await ShellTools.BashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
 				});
 		}
 
@@ -107,7 +107,7 @@ public static class ToolFactory
 				{
 					string command        = Str(args, "command");
 					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
-					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, ct);
+					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
 				});
 		}
 		else if (role.Tools.Contains("readonly_bash"))
@@ -118,7 +118,7 @@ public static class ToolFactory
 				{
 					string command        = Str(args, "command");
 					int?   timeoutSeconds = IntOpt(args, "timeout_seconds");
-					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, ct);
+					return await ShellTools.ReadonlyBashAsync(toolCallId, command, timeoutSeconds, sessionId, ct);
 				});
 		}
 
@@ -130,7 +130,7 @@ public static class ToolFactory
 					Opt("width", "integer", tc.Parameters["width"]), Opt("height", "integer", tc.Parameters["height"])),
 				async (args, toolCallId, ct, transport, sessionId) =>
 				{
-					return await BrowserScreenshotTool.TakeAsync(toolCallId, Str(args, "page"), Str(args, "output_path"), Str(args, "steps"), Str(args, "step_ms"), IntOpt(args, "width"), IntOpt(args, "height"), ct);
+					return await BrowserScreenshotTool.TakeAsync(toolCallId, Str(args, "page"), Str(args, "output_path"), Str(args, "steps"), Str(args, "step_ms"), IntOpt(args, "width"), IntOpt(args, "height"), sessionId, ct);
 				});
 		}
 

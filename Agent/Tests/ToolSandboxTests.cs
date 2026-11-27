@@ -78,6 +78,46 @@ public static class ToolSandboxTests
 
 		using CancellationTokenSource readOnlyCts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
 		await ReadOnlyShellAsync(ctx, previous, readOnlyCts.Token);
+		await SessionNamespaceAsync(ctx, readOnlyCts.Token);
+	}
+
+	// A session's commands share a PID namespace: what they leave running is named after later commands,
+	// by command alone, travels to a compaction successor, and dies with the session's work — a job that
+	// detached itself (nohup, setsid) included. Needs SYS_ADMIN (the container check runs with it).
+	private static async Task SessionNamespaceAsync(TestContext ctx, CancellationToken ct)
+	{
+		const string first     = "ns-test-first";
+		const string successor = "ns-test-successor";
+		if (await SessionProcesses.EnterAsync(first, ct) == 0)
+		{
+			ctx.Log("    SKIP session namespace: no PID namespaces here (run the container with --cap-add SYS_ADMIN)");
+			return;
+		}
+
+		try
+		{
+			ToolResult start = await ShellTools.BashAsync("ns1", "sleep 300 > /dev/null 2>&1 & nohup setsid sleep 301 > /dev/null 2>&1 & echo started", null, first, ct);
+			ctx.Assert(start.ExitCode == 0 && start.StdOut.StartsWith("started", StringComparison.Ordinal), $"Namespace: commands run in it ({start.StdOut} {start.StdErr})");
+
+			ToolResult later = await ShellTools.BashAsync("ns2", "echo again", null, first, ct);
+			ctx.AssertEqual("again\n[Still running from earlier commands: `sleep 300`, `sleep 301`. Everything this session started is stopped when its work ends; kill any you no longer need.]", later.StdOut,
+				"Namespace: what earlier commands left running is named, sorted, by command alone");
+
+			SessionProcesses.Inherit(successor, first);
+			ToolResult inherited = await ShellTools.BashAsync("ns3", "echo carried", null, successor, ct);
+			ctx.AssertContains(inherited.StdOut, "`sleep 301`", "Namespace: a compaction successor takes over the jobs");
+			ToolResult fresh = await ShellTools.BashAsync("ns4", "echo fresh", null, first, ct);
+			ctx.AssertEqual("fresh", fresh.StdOut, "Namespace: and the predecessor no longer has them");
+
+			SessionProcesses.End(successor);
+			ToolResult gone = await ShellTools.AgentBashAsync("ns5", "pgrep -f 'sleep 30[01]' || echo none", null, ct);
+			ctx.AssertEqual("none", gone.StdOut.Trim(), "Namespace: ending the work kills everything in it, detached jobs too");
+		}
+		finally
+		{
+			SessionProcesses.End(first);
+			SessionProcesses.End(successor);
+		}
 	}
 
 	// The read-only roles' plain bash, on a workspace mounted and locked down as a real container's is: it
@@ -103,21 +143,21 @@ public static class ToolSandboxTests
 			await Sandbox.LockDownAsync(ct);
 			ctx.Assert(Sandbox.ReadOnlyShellAvailable, $"ReadOnlyShell: available once the ownership mount is up ({mount})");
 
-			ToolResult read = await ShellTools.ReadonlyBashAsync("ro1", "cd src && cat a.txt > /tmp/beast-ro-copy.txt && cat /tmp/beast-ro-copy.txt && whoami", null, ct);
+			ToolResult read = await ShellTools.ReadonlyBashAsync("ro1", "cd src && cat a.txt > /tmp/beast-ro-copy.txt && cat /tmp/beast-ro-copy.txt && whoami", null, string.Empty, ct);
 			ctx.Assert(read.ExitCode == 0 && read.StdOut.Contains("original", StringComparison.Ordinal) && read.StdOut.Contains(Sandbox.ReadOnlyShellUser, StringComparison.Ordinal),
 				$"ReadOnlyShell: cd, redirection into /tmp and reading the workspace all work, as its own user ({read.StdOut} {read.StdErr})");
 
-			ToolResult edit = await ShellTools.ReadonlyBashAsync("ro2", "echo changed > src/a.txt", null, ct);
+			ToolResult edit = await ShellTools.ReadonlyBashAsync("ro2", "echo changed > src/a.txt", null, string.Empty, ct);
 			ctx.Assert(edit.ExitCode != 0 && edit.StdErr.Contains("Permission denied", StringComparison.Ordinal), $"ReadOnlyShell: editing a workspace file is refused ({edit.StdErr})");
-			ToolResult create = await ShellTools.ReadonlyBashAsync("ro3", "touch new.txt; mkdir newdir; touch src/new.txt; rm -f src/a.txt; ls", null, ct);
+			ToolResult create = await ShellTools.ReadonlyBashAsync("ro3", "touch new.txt; mkdir newdir; touch src/new.txt; rm -f src/a.txt; ls", null, string.Empty, ct);
 			ctx.Assert(!File.Exists(Path.Combine(root, "new.txt")) && !Directory.Exists(Path.Combine(root, "newdir")) && !File.Exists(Path.Combine(root, "src", "new.txt")),
 				$"ReadOnlyShell: nothing can be created, at the top or below it ({create.StdErr})");
 			ctx.AssertEqual("original\n", File.ReadAllText(Path.Combine(root, "src", "a.txt")), "ReadOnlyShell: nor changed or deleted");
 
-			ToolResult writer = await ShellTools.BashAsync("rw1", "echo changed > src/a.txt && touch made.txt; sleep 30 > /dev/null 2>&1 & echo $!", null, ct);
+			ToolResult writer = await ShellTools.BashAsync("rw1", "echo changed > src/a.txt && touch made.txt; sleep 30 > /dev/null 2>&1 & echo $!", null, string.Empty, ct);
 			sleeper = writer.StdOut.Trim();
 			ctx.Assert(writer.ExitCode == 0 && File.Exists(Path.Combine(root, "made.txt")) && File.ReadAllText(Path.Combine(root, "src", "a.txt")) == "changed\n", $"ReadOnlyShell: the writer's bash still writes ({writer.StdErr})");
-			ToolResult kill = await ShellTools.ReadonlyBashAsync("ro4", $"kill {sleeper}", null, ct);
+			ToolResult kill = await ShellTools.ReadonlyBashAsync("ro4", $"kill {sleeper}", null, string.Empty, ct);
 			ctx.Assert(kill.ExitCode != 0 && kill.StdErr.Contains("not permitted", StringComparison.Ordinal), $"ReadOnlyShell: the writer's processes cannot be signalled ({kill.StdErr})");
 
 			Role         reviewer = new RoleService(root).Roles["Reviewer"];
@@ -246,7 +286,7 @@ public static class ToolSandboxTests
 		ctx.Assert(list1.Contains(first + "/text.txt", StringComparison.Ordinal) && list1.Contains(first + "/outline.html", StringComparison.Ordinal), $"Fetch: and the page's text and outline beside it — {list1}");
 		ctx.AssertEqual("Visitors: 2 Thanks", File.ReadAllText(first + "/text.txt"), "Fetch: the text view is the page's words");
 
-		ToolResult wrote = await ShellTools.BashAsync("fetch_write", $"echo text > '{first}/extracted.txt' && id -un", null, ct);
+		ToolResult wrote = await ShellTools.BashAsync("fetch_write", $"echo text > '{first}/extracted.txt' && id -un", null, string.Empty, ct);
 		ctx.AssertEqual(0, wrote.ExitCode, $"Fetch: the shell can write extracted text beside the page ({wrote.StdErr})");
 		ctx.AssertEqual("beast", wrote.StdOut.Trim(), "Fetch: and that shell is the shell user, not root");
 
@@ -349,7 +389,7 @@ public static class ToolSandboxTests
 		ctx.AssertEqual((first - 60).ToString(), FileTime(parent, ct), "File clock: the first round stamps the workspace's parent with the date itself");
 
 		// Read within the same call, which stamping after the fact could never cover.
-		ToolResult same  = await ShellTools.BashAsync("clock1", "echo a > clock_bash.txt; stat -c %Y clock_bash.txt; date +%s; touch clock_touch.txt; stat -c %Y clock_touch.txt; ls", null, ct);
+		ToolResult same  = await ShellTools.BashAsync("clock1", "echo a > clock_bash.txt; stat -c %Y clock_bash.txt; date +%s; touch clock_touch.txt; stat -c %Y clock_touch.txt; ls", null, string.Empty, ct);
 		string[]   lines = same.StdOut.Split('\n');
 		ctx.Assert(same.ExitCode == 0, $"File clock: bash runs under it — exit {same.ExitCode}: {same.StdErr}");
 		ctx.AssertEqual(first.ToString(), lines.Length > 0 ? lines[0].Trim() : string.Empty, "File clock: a file reads as counted in the call that made it");
@@ -371,10 +411,10 @@ public static class ToolSandboxTests
 		await FileTools.WriteFileAsync("clock5", tempFile, "c\n", ct);
 		ctx.AssertEqual(second.ToString(), FileTime(tempFile, ct), "File clock: write_file in the temp folder takes the round's time");
 		ToolResult temp = await ShellTools.BashAsync("clock6",
-			$"echo d > '{tempFile}.sh'; stat -c %Y '{tempFile}.sh' /tmp/..; python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); s.bind('{tempFile}.sock'); s.listen(1); c=socket.socket(socket.AF_UNIX); c.connect('{tempFile}.sock'); print('socket ok')\"; rm -f '{tempFile}' '{tempFile}.sh' '{tempFile}.sock'", null, ct);
+			$"echo d > '{tempFile}.sh'; stat -c %Y '{tempFile}.sh' /tmp/..; python3 -c \"import socket; s=socket.socket(socket.AF_UNIX); s.bind('{tempFile}.sock'); s.listen(1); c=socket.socket(socket.AF_UNIX); c.connect('{tempFile}.sock'); print('socket ok')\"; rm -f '{tempFile}' '{tempFile}.sh' '{tempFile}.sock'", null, string.Empty, ct);
 		ctx.Assert(temp.StdOut.StartsWith(second.ToString(), StringComparison.Ordinal) && temp.StdOut.Contains("socket ok", StringComparison.Ordinal), $"File clock: the shell's temp files are counted and sockets work there — {temp.StdOut} {temp.StdErr}");
 
-		ToolResult caps = await ShellTools.BashAsync("clock4", "grep CapBnd /proc/self/status", null, ct);
+		ToolResult caps = await ShellTools.BashAsync("clock4", "grep CapBnd /proc/self/status", null, string.Empty, ct);
 		bool       read = long.TryParse(caps.StdOut.Replace("CapBnd:", string.Empty).Trim(), System.Globalization.NumberStyles.HexNumber, null, out long bnd);
 		ctx.Assert(read && (bnd & (1L << 21)) == 0, $"File clock: the shell cannot hold SYS_ADMIN — {caps.StdOut} {caps.StdErr}");
 
@@ -382,7 +422,7 @@ public static class ToolSandboxTests
 		const string realDate = "Fri, 06 Nov 2026 16:39:45 GMT";
 		string     countedDate = DateTimeOffset.FromUnixTimeSeconds(second).ToString("ddd, dd MMM yyyy HH:mm:ss 'GMT'", System.Globalization.CultureInfo.InvariantCulture);
 		ToolResult headers     = await ShellTools.BashAsync("clock7",
-			$"printf 'HTTP/2 200 \\r\\ndate: {realDate}\\r\\nDate: {realDate}\\r\\nlast-modified: {realDate}\\r\\nupdate: {realDate}\\r\\n'; printf '< date: {realDate}\\n' >&2", null, ct);
+			$"printf 'HTTP/2 200 \\r\\ndate: {realDate}\\r\\nDate: {realDate}\\r\\nlast-modified: {realDate}\\r\\nupdate: {realDate}\\r\\n'; printf '< date: {realDate}\\n' >&2", null, string.Empty, ct);
 		ctx.Assert(headers.StdOut.Contains($"\ndate: {countedDate}\r\nDate: {countedDate}\r\n", StringComparison.Ordinal), $"File clock: a Date header reads the counted time, in either case — {headers.StdOut}");
 		ctx.Assert(headers.StdOut.Contains($"last-modified: {realDate}", StringComparison.Ordinal) && headers.StdOut.Contains($"update: {realDate}", StringComparison.Ordinal), $"File clock: other lines with a date are left alone — {headers.StdOut}");
 		ctx.Assert(headers.StdErr.Contains($"< date: {countedDate}", StringComparison.Ordinal), $"File clock: curl -v's form on stderr too — {headers.StdErr}");
@@ -399,17 +439,17 @@ public static class ToolSandboxTests
 		string lsPlain = $"{counted.ToString("MMM", invariant)} {counted.Day,2} {counted.ToString("HH:mm", invariant)} clock_old.txt";
 		string lsIso   = $"{counted.ToString("yyyy-MM-dd HH:mm", invariant)} clock_old.txt";
 		string lsFull  = $"{counted.ToString("yyyy-MM-dd HH:mm:ss", invariant)}.000000000 +0000 clock_old.txt";
-		ToolResult listed = await ShellTools.BashAsync("clock8", "ls -l clock_old.txt; ls -lh clock_old.txt; ls -l --time-style=long-iso clock_old.txt; ls -l --full-time clock_old.txt; echo 'Sep  9 2001 is not a listing'", null, ct);
+		ToolResult listed = await ShellTools.BashAsync("clock8", "ls -l clock_old.txt; ls -lh clock_old.txt; ls -l --time-style=long-iso clock_old.txt; ls -l --full-time clock_old.txt; echo 'Sep  9 2001 is not a listing'", null, string.Empty, ct);
 		ctx.Assert(!listed.StdOut.Contains("2001-09", StringComparison.Ordinal) && !listed.StdOut.Contains("Sep  9  2001", StringComparison.Ordinal), $"File clock: no ls -l style shows the real date — {listed.StdOut}");
 		ctx.Assert(listed.StdOut.Contains(lsPlain, StringComparison.Ordinal) && listed.StdOut.Contains(lsIso, StringComparison.Ordinal) && listed.StdOut.Contains(lsFull, StringComparison.Ordinal), $"File clock: ls -l reads the counted time in its own format — {listed.StdOut}");
 		ctx.Assert(listed.StdOut.Contains("Sep  9 2001 is not a listing", StringComparison.Ordinal), $"File clock: a date outside a listing is left alone — {listed.StdOut}");
-		ToolResult readonlyListed = await ShellTools.ReadonlyBashAsync("clock9", "ls -l clock_old.txt", null, ct);
+		ToolResult readonlyListed = await ShellTools.ReadonlyBashAsync("clock9", "ls -l clock_old.txt", null, string.Empty, ct);
 		ctx.Assert(readonlyListed.StdOut.Contains(lsPlain, StringComparison.Ordinal), $"File clock: readonly_bash too — {readonlyListed.StdOut}");
 		ctx.AssertEqual("1000000000", FileTime(Path.Combine(root, "clock_old.txt"), ct), "File clock: rewriting a listing leaves the file's real time alone");
 
 		// Chromium's graphics context address reads the same on every run; other hex is left alone.
 		const string glMessage = "gl_utils.cc:430] [.WebGL-0x3db400156600]GL Driver Message";
-		ToolResult tagged = await ShellTools.BashAsync("clock10", $"echo '{glMessage}'; echo 'sha 0x3db400156600'; echo '[.WebGPU-0x36f400155a00]x' >&2", null, ct);
+		ToolResult tagged = await ShellTools.BashAsync("clock10", $"echo '{glMessage}'; echo 'sha 0x3db400156600'; echo '[.WebGPU-0x36f400155a00]x' >&2", null, string.Empty, ct);
 		ctx.Assert(tagged.StdOut.Contains("gl_utils.cc:430] [.WebGL-0x0]GL Driver Message", StringComparison.Ordinal) && tagged.StdOut.Contains("sha 0x3db400156600", StringComparison.Ordinal), $"File clock: a WebGL context's address is fixed and other hex stays — {tagged.StdOut}");
 		ctx.Assert(tagged.StdErr.Contains("[.WebGPU-0x0]x", StringComparison.Ordinal), $"File clock: so is a WebGPU context's, on stderr — {tagged.StdErr}");
 
@@ -483,18 +523,18 @@ public static class ToolSandboxTests
 	private static async Task ScreenshotWithoutSeedAsync(TestContext ctx, string folder, CancellationToken ct)
 	{
 		string     flagFile = $"{folder}/flag.png";
-		ToolResult flag     = await ShellTools.BashAsync("flag", $"chromium --headless --screenshot={flagFile} file://$PWD/shot_page.html", null, ct);
+		ToolResult flag     = await ShellTools.BashAsync("flag", $"chromium --headless --screenshot={flagFile} file://$PWD/shot_page.html", null, string.Empty, ct);
 		ctx.Assert(File.Exists(flagFile), $"Screenshot: without a seed, --screenshot works — {flag.StdOut} {flag.StdErr}");
-		ToolResult flagReadonly = await ShellTools.ReadonlyBashAsync("flag2", $"chromium --headless --screenshot={folder}/flag2.png file://$PWD/shot_page.html", null, ct);
+		ToolResult flagReadonly = await ShellTools.ReadonlyBashAsync("flag2", $"chromium --headless --screenshot={folder}/flag2.png file://$PWD/shot_page.html", null, string.Empty, ct);
 		ctx.Assert(File.Exists($"{folder}/flag2.png"), $"Screenshot: so does readonly_bash's — {flagReadonly.StdOut} {flagReadonly.StdErr}");
 
 		foreach ((string name, string command, int captures) in new[] { ("Node Playwright", "node shot_lib.js playwright", 3), ("Puppeteer", "node shot_lib.js puppeteer", 2), ("Python Playwright", "python3 shot_lib.py", 3) })
 		{
-			ToolResult library = await ShellTools.BashAsync("library", command, null, ct);
+			ToolResult library = await ShellTools.BashAsync("library", command, null, string.Empty, ct);
 			ctx.AssertEqual(captures, library.StdOut.Split("captured").Length - 1, $"Screenshot: without a seed, {name}'s screenshot calls all work — {library.StdOut} {library.StdErr}");
 		}
 
-		ToolResult tool = await BrowserScreenshotTool.TakeAsync("tool", "shot_page.html", $"{folder}/tool.png", "5", "10", null, null, ct);
+		ToolResult tool = await BrowserScreenshotTool.TakeAsync("tool", "shot_page.html", $"{folder}/tool.png", "5", "10", null, null, string.Empty, ct);
 		ctx.Assert(tool.ExitCode == 0 && File.Exists($"{folder}/tool.png"), $"Screenshot: without a seed, the tool works too — {tool.StdOut} {tool.StdErr}");
 
 		await ShellTools.AgentBashAsync("shot_cleanup", $"rm -rf '{folder}' shot_page.html shot_broken.html shot_shader.html shot_lib.js shot_lib.py", null, ct);
@@ -509,7 +549,7 @@ public static class ToolSandboxTests
 		async Task<(ToolResult Result, string Hash)> Shot(string name, string steps, string stepMs)
 		{
 			string     output = $"{folder}/{name}.png";
-			ToolResult result = await BrowserScreenshotTool.TakeAsync(name, "shot_page.html", output, steps, stepMs, 320, 200, ct);
+			ToolResult result = await BrowserScreenshotTool.TakeAsync(name, "shot_page.html", output, steps, stepMs, 320, 200, string.Empty, ct);
 			return (result, File.Exists(output) ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(output))) : string.Empty);
 		}
 
@@ -525,26 +565,26 @@ public static class ToolSandboxTests
 		ctx.Assert((await Shot("later", "31", "16.7")).Hash != firstHash, "Screenshot: one more step is another moment");
 		ctx.Assert((await Shot("longer", "30", "16.8")).Hash != firstHash, "Screenshot: a longer step is another moment");
 
-		ToolResult broken = await BrowserScreenshotTool.TakeAsync("broken", "shot_broken.html", $"{folder}/broken.png", "5", "10", null, null, ct);
+		ToolResult broken = await BrowserScreenshotTool.TakeAsync("broken", "shot_broken.html", $"{folder}/broken.png", "5", "10", null, null, string.Empty, ct);
 		ctx.Assert(broken.ExitCode == 0 && broken.StdOut.Contains("shot boom", StringComparison.Ordinal) && broken.StdOut.Contains("shot note", StringComparison.Ordinal) && broken.StdOut.Contains("shot_gone.png", StringComparison.Ordinal), $"Screenshot: a plain page is captured, with its errors, console messages and failed files listed — {broken.StdOut} {broken.StdErr}");
 		// three.js logs a shader that fails to compile in full, numbered: only the error and the lines around it come back.
 		File.WriteAllText("shot_shader.html", "<!doctype html><script>const src = []; for (let i = 1; i <= 1400; i++) src.push(i + ': float line' + i + ' = 0.0;'); console.error('THREE.WebGLProgram: shader error\\nERROR: 0:1201: \\'getShadowMask\\' : no matching overloaded function found\\n' + src.join('\\n'));</script>");
-		ToolResult shader = await BrowserScreenshotTool.TakeAsync("shader", "shot_shader.html", $"{folder}/shader.png", "2", "10", null, null, ct);
+		ToolResult shader = await BrowserScreenshotTool.TakeAsync("shader", "shot_shader.html", $"{folder}/shader.png", "2", "10", null, null, string.Empty, ct);
 		ctx.Assert(shader.ExitCode == 0 && shader.StdOut.Contains("ERROR: 0:1201", StringComparison.Ordinal) && shader.StdOut.Contains("1201: float line1201", StringComparison.Ordinal) && shader.StdOut.Contains("1197: float", StringComparison.Ordinal) && !shader.StdOut.Contains("1196: float", StringComparison.Ordinal) && !shader.StdOut.Contains("700: float", StringComparison.Ordinal) && shader.StdOut.Length < 3000,
 			$"Screenshot: a shader error keeps the error and the source lines around it, not the whole shader ({shader.StdOut.Length} characters) — {shader.StdOut[..Math.Min(600, shader.StdOut.Length)]}");
-		ToolResult missing = await BrowserScreenshotTool.TakeAsync("missing", "shot_gone.html", $"{folder}/gone.png", "1", "10", null, null, ct);
+		ToolResult missing = await BrowserScreenshotTool.TakeAsync("missing", "shot_gone.html", $"{folder}/gone.png", "1", "10", null, null, string.Empty, ct);
 		ctx.Assert(missing.ExitCode != 0 && missing.StdErr.Contains("no file at", StringComparison.Ordinal), $"Screenshot: a missing page says so — {missing.StdErr}");
-		ToolResult rough = await BrowserScreenshotTool.TakeAsync("rough", "shot_page.html", $"{folder}/rough.png", "1", "16.67", null, null, ct);
+		ToolResult rough = await BrowserScreenshotTool.TakeAsync("rough", "shot_page.html", $"{folder}/rough.png", "1", "16.67", null, null, string.Empty, ct);
 		ctx.Assert(rough.ExitCode != 0 && rough.StdErr.Contains("1 decimal", StringComparison.Ordinal), $"Screenshot: a step finer than a tenth of a millisecond is refused — {rough.StdErr}");
-		ToolResult outside = await BrowserScreenshotTool.TakeAsync("outside", "shot_page.html", "/tmp/../workspace/out.png", "1", "10", null, null, ct);
+		ToolResult outside = await BrowserScreenshotTool.TakeAsync("outside", "shot_page.html", "/tmp/../workspace/out.png", "1", "10", null, null, string.Empty, ct);
 		ctx.Assert(outside.ExitCode != 0 && outside.StdErr.Contains("under /tmp/", StringComparison.Ordinal), $"Screenshot: its picture goes under /tmp only — {outside.StdErr}");
 
 		string     refusedFile = $"{folder}/refused.png";
-		ToolResult refused     = await ShellTools.BashAsync("refused", $"touch {refusedFile}; chromium --headless --screenshot={refusedFile} shot_page.html", null, ct);
+		ToolResult refused     = await ShellTools.BashAsync("refused", $"touch {refusedFile}; chromium --headless --screenshot={refusedFile} shot_page.html", null, string.Empty, ct);
 		ctx.Assert(refused.ExitCode != 0 && refused.StdErr.Contains("browser_screenshot", StringComparison.Ordinal) && !File.Exists(refusedFile), $"Screenshot: bash refuses --screenshot and runs nothing, naming the tool — {refused.StdErr}");
-		ToolResult refusedReadonly = await ShellTools.ReadonlyBashAsync("refused2", "chromium --screenshot shot_page.html", null, ct);
+		ToolResult refusedReadonly = await ShellTools.ReadonlyBashAsync("refused2", "chromium --screenshot shot_page.html", null, string.Empty, ct);
 		ctx.Assert(refusedReadonly.ExitCode != 0 && refusedReadonly.StdErr.Contains("browser_screenshot", StringComparison.Ordinal), $"Screenshot: so does readonly_bash — {refusedReadonly.StdErr}");
-		ToolResult lookalike = await ShellTools.BashAsync("lookalike", "echo --screenshots-dir my--screenshot screenshot", null, ct);
+		ToolResult lookalike = await ShellTools.BashAsync("lookalike", "echo --screenshots-dir my--screenshot screenshot", null, string.Empty, ct);
 		ctx.Assert(lookalike.ExitCode == 0 && lookalike.StdOut.Contains("--screenshots-dir", StringComparison.Ordinal), $"Screenshot: words that only look like the flag are left alone — {lookalike.StdOut} {lookalike.StdErr}");
 
 		// The libraries' own screenshot calls fail, naming the tool, and the rest of each library still works.
@@ -581,7 +621,7 @@ public static class ToolSandboxTests
 			""");
 		foreach ((string name, string command, int refusals) in new[] { ("Node Playwright", "node shot_lib.js playwright", 3), ("Puppeteer", "node shot_lib.js puppeteer", 2), ("Python Playwright", "python3 shot_lib.py", 3) })
 		{
-			ToolResult library = await ShellTools.BashAsync("library", command, null, ct);
+			ToolResult library = await ShellTools.BashAsync("library", command, null, string.Empty, ct);
 			int        refused2 = library.StdOut.Split("refused").Length - 1;
 			ctx.Assert(library.StdOut.Contains("works 2", StringComparison.Ordinal) && refused2 == refusals && !library.StdOut.Contains("captured", StringComparison.Ordinal) && !File.Exists($"{folder}/lib.png") && library.StdOut.Contains("browser_screenshot", StringComparison.Ordinal) && library.StdErr.Contains("browser_screenshot", StringComparison.Ordinal),
 				$"Screenshot: {name} refuses its screenshot calls, logging why, and still works — {library.StdOut} {library.StdErr}");

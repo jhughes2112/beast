@@ -164,16 +164,16 @@ public static class SandboxTests
 			ctx.AssertEqual("workspace ownership mounted", mount, "Ownership: the workspace is mounted");
 			await Sandbox.LockDownAsync(CancellationToken.None);
 
-			ToolResult edit = await ShellTools.BashAsync("o1", "echo b >> src/a.txt && chmod +x src/a.txt && echo c > src/new.txt", null, CancellationToken.None);
+			ToolResult edit = await ShellTools.BashAsync("o1", "echo b >> src/a.txt && chmod +x src/a.txt && echo c > src/new.txt", null, string.Empty, CancellationToken.None);
 			ctx.AssertEqual(0, edit.ExitCode, $"Ownership: the shell edits and chmods a file that is really root's 644 {edit.StdErr}");
 
-			ToolResult git  = await ShellTools.BashAsync("o2", "echo evil >> .git/config || echo evil > .git/hooks/post-checkout || ln .git/config src/cfg || mv .git gitx", null, CancellationToken.None);
+			ToolResult git  = await ShellTools.BashAsync("o2", "echo evil >> .git/config || echo evil > .git/hooks/post-checkout || ln .git/config src/cfg || mv .git gitx", null, string.Empty, CancellationToken.None);
 			ToolResult kept = await ShellTools.AgentBashAsync("o3", "cat .git/config; ls .git/hooks src | grep -c -e post-checkout -e cfg; ls -d gitx 2>/dev/null | wc -l", null, CancellationToken.None);
 			ctx.Assert(git.ExitCode != 0 && kept.StdOut.Trim() == "cfg\n0\n0", $"Ownership: .git cannot be written, planted in, linked out of or moved — {kept.StdOut.Replace('\n', '|')}");
 
 			// bash seals what the command made before it returns, and says so.
-			ToolResult made = await ShellTools.BashAsync("o4", "mkdir .venv && echo 1 > .venv/x && cat .venv/x", null, CancellationToken.None);
-			ToolResult late = await ShellTools.BashAsync("o5", "echo 2 >> .venv/x", null, CancellationToken.None);
+			ToolResult made = await ShellTools.BashAsync("o4", "mkdir .venv && echo 1 > .venv/x && cat .venv/x", null, string.Empty, CancellationToken.None);
+			ToolResult late = await ShellTools.BashAsync("o5", "echo 2 >> .venv/x", null, string.Empty, CancellationToken.None);
 			ctx.Assert(made.ExitCode == 0 && made.StdErr.Contains(".venv", StringComparison.Ordinal) && late.ExitCode != 0, $"Ownership: a dot-folder the shell made is sealed, even a file it already opened — {made.StdErr}");
 		}
 		else
@@ -236,26 +236,26 @@ public static class SandboxTests
 		// The workspace root as the lockdown leaves it: root's, sticky, open to the shell user.
 		await ShellTools.AgentBashAsync("u0", $"chmod 1777 '{workspace}'", null, CancellationToken.None);
 
-		ToolResult bash = await ShellTools.BashAsync("u1", "id -un; echo $HOME", null, CancellationToken.None);
+		ToolResult bash = await ShellTools.BashAsync("u1", "id -un; echo $HOME", null, string.Empty, CancellationToken.None);
 		ctx.AssertEqual($"{Sandbox.ShellUser}\n{Sandbox.ShellHome}", bash.StdOut.Trim(), "ShellUser: bash runs as the shell user with its home");
 
-		ToolResult restricted = await ShellTools.ReadonlyBashAsync("u2", "whoami", null, CancellationToken.None);
+		ToolResult restricted = await ShellTools.ReadonlyBashAsync("u2", "whoami", null, string.Empty, CancellationToken.None);
 		ctx.AssertEqual(Sandbox.ShellUser, restricted.StdOut.Trim(), "ShellUser: readonly_bash too");
 
 		ToolResult agent = await ShellTools.AgentBashAsync("u3", "id -un", null, CancellationToken.None);
 		ctx.AssertEqual("root", agent.StdOut.Trim(), "ShellUser: the agent's own shell stays root");
 
-		ToolResult keys = await ShellTools.BashAsync("u4", "ls /root", null, CancellationToken.None);
+		ToolResult keys = await ShellTools.BashAsync("u4", "ls /root", null, string.Empty, CancellationToken.None);
 		ctx.Assert(keys.ExitCode != 0, "ShellUser: /root (the API keys) cannot be read");
 
-		ToolResult apt = await ShellTools.BashAsync("u5", "apt-get install -y --no-install-recommends cowsay", 120, CancellationToken.None);
+		ToolResult apt = await ShellTools.BashAsync("u5", "apt-get install -y --no-install-recommends cowsay", 120, string.Empty, CancellationToken.None);
 		ctx.Assert(apt.ExitCode != 0, "ShellUser: apt-get itself does not work for the model's shell");
 
 		await FileTools.WriteFileAsync("u6", "made/by/tool.txt", "x", CancellationToken.None);
 		ToolResult owner = await ShellTools.AgentBashAsync("u7", $"stat -c %U '{Path.Combine(workspace, "made", "by", "tool.txt")}' '{Path.Combine(workspace, "made")}'", null, CancellationToken.None);
 		ctx.AssertEqual($"{Sandbox.ShellUser}\n{Sandbox.ShellUser}", owner.StdOut.Trim(), "ShellUser: files and folders write_file creates belong to the shell user");
 
-		ToolResult edit = await ShellTools.BashAsync("u8", "echo more >> made/by/tool.txt && rm -r made", null, CancellationToken.None);
+		ToolResult edit = await ShellTools.BashAsync("u8", "echo more >> made/by/tool.txt && rm -r made", null, string.Empty, CancellationToken.None);
 		ctx.AssertEqual(0, edit.ExitCode, "ShellUser: so the model's shell can change and delete them");
 	}
 
@@ -282,10 +282,10 @@ public static class SandboxTests
 			await Sandbox.LockDownAsync(CancellationToken.None);
 
 			// The model works in the files; its git can look but not change anything.
-			ToolResult work = await ShellTools.BashAsync("g1", "echo change > feature.txt && git status --short", null, CancellationToken.None);
+			ToolResult work = await ShellTools.BashAsync("g1", "echo change > feature.txt && git status --short", null, string.Empty, CancellationToken.None);
 			ctx.Assert(work.ExitCode == 0 && work.StdOut.Contains("feature.txt", StringComparison.Ordinal), $"Integrate: the shell user edits and git status sees it {work.StdErr}");
 
-			ToolResult commit = await ShellTools.BashAsync("g2", "git add -A && git commit -qm 'model commit'", null, CancellationToken.None);
+			ToolResult commit = await ShellTools.BashAsync("g2", "git add -A && git commit -qm 'model commit'", null, string.Empty, CancellationToken.None);
 			ctx.Assert(commit.ExitCode != 0, "Integrate: the shell user cannot commit — the repository is the agent's");
 
 			string     gitdir  = Path.Combine(main, ".git");
@@ -293,11 +293,11 @@ public static class SandboxTests
 				$"echo /tmp/evil > '{gitdir}/commondir'; echo evil > '{gitdir}/hooks/post-checkout'; git config core.fsmonitor evil; " +
 				"git update-ref refs/heads/main HEAD~0; echo evil | git hash-object -w --stdin; " +
 				$"ls '{gitdir}' | grep -c commondir; ls '{gitdir}/hooks' | grep -vc sample",
-				null, CancellationToken.None);
+				null, string.Empty, CancellationToken.None);
 			ToolResult planted = await ShellTools.AgentBashAsync("g4", $"ls '{gitdir}/commondir' '{gitdir}/hooks/post-checkout' 2>/dev/null | wc -l; git -C '{main}' config core.fsmonitor || true", null, CancellationToken.None);
 			ctx.AssertEqual("0", planted.StdOut.Trim(), $"Integrate: nothing can be planted in .git (commondir, hooks, config) — {attacks.StdErr}");
 
-			ToolResult peek = await ShellTools.BashAsync("g5", $"cat '{main}/README.md' || ls '{main}'", null, CancellationToken.None);
+			ToolResult peek = await ShellTools.BashAsync("g5", $"cat '{main}/README.md' || ls '{main}'", null, string.Empty, CancellationToken.None);
 			ctx.Assert(peek.ExitCode != 0, "Integrate: the main checkout is out of the shell user's reach");
 
 			(bool ok, string transcript) = await GitTools.CommitAndRebaseAsync("more work", CancellationToken.None);
@@ -310,11 +310,11 @@ public static class SandboxTests
 			// A conflict: main moves on underneath, the model's next change collides with it, the agent
 			// stops and says so, the model fixes the file, and the agent's next call finishes the job.
 			await ShellTools.AgentBashAsync("g7", $"cd '{main}' && echo 'from main' > README.md && git commit -qam 'main edit'", null, CancellationToken.None);
-			await ShellTools.BashAsync("g8", "echo 'from worktree' > README.md", null, CancellationToken.None);
+			await ShellTools.BashAsync("g8", "echo 'from worktree' > README.md", null, string.Empty, CancellationToken.None);
 			(bool clash, string stopped) = await GitTools.CommitAndRebaseAsync("worktree edit", CancellationToken.None);
 			ctx.Assert(!clash && stopped.Contains("stopped on conflicts", StringComparison.Ordinal), $"Integrate: a rebase conflict stops and names the files — {stopped}");
 
-			ToolResult resolve = await ShellTools.BashAsync("g9", "printf 'from both\\n' > README.md", null, CancellationToken.None);
+			ToolResult resolve = await ShellTools.BashAsync("g9", "printf 'from both\\n' > README.md", null, string.Empty, CancellationToken.None);
 			ctx.AssertEqual(0, resolve.ExitCode, $"Integrate: the shell user can edit the files the rebase wrote {resolve.StdErr}");
 			(bool resumed, string continued) = await GitTools.CommitAndRebaseAsync("worktree edit", CancellationToken.None);
 			ctx.Assert(resumed, $"Integrate: calling again continues the rebase and integrates — {continued}");

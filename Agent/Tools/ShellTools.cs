@@ -42,8 +42,9 @@ public static class ShellTools
 		string target  = string.IsNullOrWhiteSpace(folder) ? "." : folder;
 		string escaped = target.Replace("'", "'\\''");
 		string command = $"ls -1Ap -- '{escaped}' | awk '{{print ($0 ~ /\\/$/) \"\\t\" $0}}' | sort | cut -f2-";
-		// The shell user's shell, but without BashAsync's dot-folder sweep: a listing creates nothing.
-		ToolResult result = await RunBashAsync(toolCallId, command, null, false, true, false, cancellationToken);
+		// The shell user's shell, but without BashAsync's dot-folder sweep or a namespace: a listing creates
+		// nothing and starts nothing that could linger.
+		ToolResult result = await RunBashAsync(toolCallId, command, null, false, true, false, string.Empty, cancellationToken);
 
 		if (result.ExitCode != 0 || string.IsNullOrEmpty(result.StdOut))
 		{
@@ -95,17 +96,18 @@ public static class ShellTools
 	// A shell for anything the model can cause to run: it runs as the sandbox's shell user, which
 	// cannot read the API keys or the agent's state and cannot touch the git repository. A top-level
 	// dot-folder the command created is handed to root before the result goes back, and the model is
-	// told so — otherwise it would only find out when its next write there failed.
-	public static async Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
+	// told so — otherwise it would only find out when its next write there failed. It runs in the session's
+	// own PID namespace (SessionProcesses), and what earlier commands left running is named after the output.
+	public static async Task<ToolResult> BashAsync(string toolcallid, string command, int? timeoutSeconds, string sessionId, CancellationToken cancellationToken)
 	{
 		if (RefusedInSeededRun(command))
 		{
 			return new ToolResult(toolcallid, string.Empty, kScreenshotRefusal, 1, 0);
 		}
 
-		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, false, cancellationToken);
+		ToolResult result     = await RunBashAsync(toolcallid, command, timeoutSeconds, false, true, false, sessionId, cancellationToken);
 		string     sealedNote = await Sandbox.SealNewDotFoldersAsync(cancellationToken);
-		string     stdOut     = Sandbox.SteadyShellOutput(result.StdOut);
+		string     stdOut     = WithStillRunning(Sandbox.SteadyShellOutput(result.StdOut), sessionId);
 		string     stdErr     = Sandbox.SteadyShellOutput(result.StdErr);
 		if (sealedNote.Length > 0)
 		{
@@ -119,7 +121,32 @@ public static class ShellTools
 	// sandbox lockdown, apt installs — which needs root. Never hand this a command the model wrote.
 	public static Task<ToolResult> AgentBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
 	{
-		return RunBashAsync(toolcallid, command, timeoutSeconds, false, false, false, cancellationToken);
+		return RunBashAsync(toolcallid, command, timeoutSeconds, false, false, false, string.Empty, cancellationToken);
+	}
+
+	// A program's full path, found through the agent's own PATH; a path already given is returned as it is.
+	private static string FullPath(string program)
+	{
+		string found = program;
+		if (!Path.IsPathRooted(program))
+		{
+			foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator))
+			{
+				string candidate = Path.Combine(dir, program);
+				if (found == program && dir.Length > 0 && File.Exists(candidate))
+				{
+					found = candidate;
+				}
+			}
+		}
+		return found;
+	}
+
+	// A command's output with the session's still-running note after it, when there is one.
+	private static string WithStillRunning(string stdOut, string sessionId)
+	{
+		string note = sessionId.Length > 0 ? SessionProcesses.StillRunningNote(sessionId) : string.Empty;
+		return note.Length == 0 ? stdOut : (stdOut.Length > 0 ? $"{stdOut}\n{note}" : note);
 	}
 
 	// The read-only roles' bash. Where the sandbox can enforce it (Sandbox.ReadOnlyShellAvailable) this is a
@@ -129,7 +156,7 @@ public static class ShellTools
 	// (no output redirection, no cd, no running a program by an explicit path) with PATH narrowed to
 	// ReadonlyBinDir, whose symlinks are a curated set of read-only programs. Both are guardrails for a
 	// cooperative (or worst case, prompt-poisoned) agent, not a hardened sandbox against a determined human.
-	public static async Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, CancellationToken cancellationToken)
+	public static async Task<ToolResult> ReadonlyBashAsync(string toolcallid, string command, int? timeoutSeconds, string sessionId, CancellationToken cancellationToken)
 	{
 		if (RefusedInSeededRun(command))
 		{
@@ -137,8 +164,8 @@ public static class ShellTools
 		}
 
 		bool       readOnlyUser = Sandbox.ReadOnlyShellAvailable;
-		ToolResult result       = await RunBashAsync(toolcallid, command, timeoutSeconds, !readOnlyUser, true, readOnlyUser, cancellationToken);
-		return new ToolResult(toolcallid, Sandbox.SteadyShellOutput(result.StdOut), Sandbox.SteadyShellOutput(result.StdErr), result.ExitCode, result.MeasuredOutputTokens);
+		ToolResult result       = await RunBashAsync(toolcallid, command, timeoutSeconds, !readOnlyUser, true, readOnlyUser, sessionId, cancellationToken);
+		return new ToolResult(toolcallid, WithStillRunning(Sandbox.SteadyShellOutput(result.StdOut), sessionId), Sandbox.SteadyShellOutput(result.StdErr), result.ExitCode, result.MeasuredOutputTokens);
 	}
 
 	// Drains a redirected stream into a capped builder in fixed-size chunks; returns true when the
@@ -200,7 +227,8 @@ public static class ShellTools
 		return text;
 	}
 
-	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool asShellUser, bool readOnlyUser, CancellationToken cancellationToken)
+	// sessionId names the session whose namespace the command runs in; "" runs it outside any (SessionProcesses).
+	private static async Task<ToolResult> RunBashAsync(string toolcallid, string command, int? timeoutSeconds, bool restricted, bool asShellUser, bool readOnlyUser, string sessionId, CancellationToken cancellationToken)
 	{
 		ToolResult finalResult;
 
@@ -240,6 +268,19 @@ public static class ShellTools
 				if (asShellUser)
 				{
 					Sandbox.RunAsShellUser(psi, restricted, readOnlyUser);
+
+					// Inside the session's own PID namespace, so nothing it starts outlives the session's work. The
+					// program nsenter runs is named by its full path: nsenter looks it up through the command's own
+					// PATH, which the restricted shell narrows to its allowlist.
+					int namespaceInit = await SessionProcesses.EnterAsync(sessionId, cancellationToken);
+					if (namespaceInit > 0)
+					{
+						psi.ArgumentList.Insert(0,      FullPath(psi.FileName));
+						psi.ArgumentList.Insert(0,                        "--");
+						psi.ArgumentList.Insert(0,                     "--pid");
+						psi.ArgumentList.Insert(0, $"--target={namespaceInit}");
+						psi.FileName = "nsenter";
+					}
 				}
 
 				using (Process process = new Process { StartInfo = psi })

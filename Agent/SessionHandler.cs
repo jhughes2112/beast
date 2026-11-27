@@ -942,6 +942,9 @@ public class SessionHandler
 					successorId = SessionService.AllocateRootId();
 				}
 
+				// The successor carries on the same work, so it takes over whatever the predecessor has running.
+				SessionProcesses.Inherit(successorId, predecessor.Id);
+
 				// The successor's history is seeded directly as its message list — the mechanical
 				// pass hands over the full elided conversation, the summarize path a single summary
 				// message, both possibly headed by the ledger. Seeding the list verbatim (rather
@@ -1777,6 +1780,10 @@ public class SessionHandler
 			RollUpCost(orchestrator);
 			_activeSession.ClearReplyObligation();
 			RollUpCost(orchestrator);
+
+			// Its work is over, so is everything it left running: a background job, a server, a browser.
+			SessionProcesses.End(_activeSession.Id);
+
 			orchestrator.CompleteSession(_activeSession.Id, ok, output, tokens);
 			if (!_activeSession.Ephemeral)
 			{

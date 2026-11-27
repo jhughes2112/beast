@@ -1483,6 +1483,7 @@ public class Session
 		_deleted = true;
 		Interrupt();
 		Signal();
+		SessionProcesses.End(Id);
 	}
 
 	// ---- Private logic ----

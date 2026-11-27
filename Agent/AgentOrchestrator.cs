@@ -1914,7 +1914,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 		}
 
-		ToolResult check = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
+		ToolResult check = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, string.Empty, ct);
 		string[]   lines = check.StdOut.Trim().Length == 0
 			? Array.Empty<string>()
 			: check.StdOut.Trim().Split('\n');
@@ -1946,7 +1946,7 @@ public class AgentOrchestrator : ISessionOrchestrator
 			return;
 		}
 
-		ToolResult recheck      = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, ct);
+		ToolResult recheck      = await ShellTools.BashAsync("finish_check", FinishCheckScript, null, string.Empty, ct);
 		string[]   recheckLines = recheck.StdOut.Trim().Length == 0
 			? Array.Empty<string>()
 			: recheck.StdOut.Trim().Split('\n');
