@@ -31,8 +31,10 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 	private const string kServerName = "beast";
 	private const string kToolPrefix = "mcp__beast__";
 
-	// A held MCP call can wait as long as any Beast tool runs — a subagent can take hours.
-	private const string kToolTimeoutMs = "86400000";
+	// A held MCP call can wait as long as any Beast tool runs — a subagent can take hours. The server's
+	// "timeout" sets both the call's ceiling and its silence limit; without it an HTTP server's call is
+	// abandoned after 300 s with no answer, while Beast goes on to commit the result the model never sees.
+	private const int kToolTimeoutMs = 86400000;
 
 	// A process nobody has driven for this long is ended; the next turn reseeds a fresh one. This is
 	// what reclaims the process of a finished subagent, whose last call is never answered.
@@ -269,7 +271,7 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 		_promptPath       = $"{stem}-system.txt";
 		JsonObject config = new JsonObject
 		{
-			["mcpServers"] = new JsonObject { [kServerName] = new JsonObject { ["type"] = "http", ["url"] = _routeUrl } }
+			["mcpServers"] = new JsonObject { [kServerName] = new JsonObject { ["type"] = "http", ["url"] = _routeUrl, ["timeout"] = kToolTimeoutMs } }
 		};
 		WritePrivateFile(_configPath, config.ToJsonString());
 		WritePrivateFile(_promptPath,               _system);
@@ -302,8 +304,7 @@ public sealed class ProtocolClaudeDashP : IMcpToolHost
 			args.Add(effort);
 		}
 
-		ProcessStartInfo psi                = ClaudeCode.StartInfo(args, model.ApiKey);
-		psi.Environment["MCP_TOOL_TIMEOUT"] = kToolTimeoutMs;
+		ProcessStartInfo psi = ClaudeCode.StartInfo(args, model.ApiKey);
 
 		Process process = new Process { StartInfo = psi };
 		bool    started = false;

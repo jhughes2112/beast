@@ -391,12 +391,21 @@ internal static class BlockRenderer
 		foreach (RenderLine mdLine in mdLines)
 		{
 			string full = firstLine ? prefix + mdLine.Text : mdLine.Text;
-			firstLine   = false;
 			if (mdLine.NoWrap)
 			{
-				result.Add(full);
+				// A table or code block is laid out to the full width, so a prefix gets its own row rather
+				// than pushing the first row past the edge.
+				if (firstLine && prefix.Length > 0)
+				{
+					result.Add(prefix);
+				}
+
+				firstLine = false;
+				result.Add(mdLine.Text);
 				continue;
 			}
+
+			firstLine                 = false;
 			List<string> wrappedLines = wordWrap ? AnsiString.WordWrapIndented(full, wrapW) : AnsiString.Wrap(full, wrapW);
 			foreach (string wrapped in wrappedLines)
 			{

@@ -16,6 +16,52 @@ public static class MarkdownBlockTests
 		TestRandomChunksMatchWholePush(ctx);
 		TestPushCostStaysFlat(ctx);
 		TestFollowsAppendsNotRewrites(ctx);
+		TestProseFitsTheViewport(ctx);
+	}
+
+	// Prose reflows to the viewport, so with no code block or table nothing renders wider than it: a wider
+	// Screen is text hidden under whatever sits to the right of the history (the F10 panel).
+	private static void TestProseFitsTheViewport(TestContext ctx)
+	{
+		string prose = "This sentence is long enough that it has to wrap, which is the point, and it keeps going for a while longer.";
+		List<(string Name, string Text)> docs = new List<(string Name, string Text)>();
+		docs.Add(("paragraph", prose));
+		docs.Add(("headings", $"# Title\n\n{prose}\n\n## Sub\n\n{prose}\n\n### Deep\n\n{prose}"));
+		docs.Add(("list", $"- {prose}\n- **Bold lead:** {prose}\n  1. {prose}"));
+		docs.Add(("quote", $"> {prose}"));
+		docs.Add(("inline", $"**{prose}** and `some code` then *{prose}*"));
+		docs.Add(("mixed", $"## Plan\n\n- **Step:** {prose}\n\n> {prose}\n\n{prose}"));
+		docs.Add(("table", $"| Step | What | Why |\n|---|---|---|\n| 1 | {prose} | {prose} |\n| 2 | short | {prose} |"));
+		docs.Add(("subTable", $"## Results\n\n| Name | Notes |\n|---|---|\n| GemmBench | {prose} |"));
+
+		foreach ((string name, string text) in docs)
+		{
+			foreach (FrameType type in new FrameType[] { FrameType.Thinking, FrameType.Output, FrameType.User })
+			{
+				foreach (int w in new int[] { 30, 47, 61, 100 })
+				{
+					DisplayMessage msg   = new DisplayMessage(0, type, text);
+					MarkdownBlock  block = new MarkdownBlock(msg, w);
+					Screen         s     = block.Build(msg).Expanded;
+					ctx.Assert(s.W == w, $"MarkdownBlock: {name} {type} w={w} renders {s.W} wide");
+				}
+			}
+		}
+
+		// A table with more columns than fit even at the floor keeps its width and scrolls.
+		DisplayMessage wideMsg   = new DisplayMessage(0, FrameType.Output, "| a | b | c | d | e | f | g | h | i | j |\n|---|---|---|---|---|---|---|---|---|---|\n| wide | wide | wide | wide | wide | wide | wide | wide | wide | wide |");
+		Screen         wideTable = new MarkdownBlock(wideMsg, 30).Build(wideMsg).Expanded;
+		ctx.Assert(wideTable.W > 30, $"MarkdownBlock: a table too wide to fit scrolls, {wideTable.W} wide");
+
+		foreach (FrameType type in new FrameType[] { FrameType.System, FrameType.Error, FrameType.Alert, FrameType.Tool, FrameType.Host, FrameType.Debug, FrameType.ToolResponse })
+		{
+			foreach (int w in new int[] { 30, 47, 61, 100 })
+			{
+				DisplayMessage msg   = new DisplayMessage(0, type, $"{prose} {prose}");
+				BlockLayer     layer = BlockRenderer.Build(msg, w);
+				ctx.Assert(layer.Expanded.W == w && layer.Collapsed.W == w, $"BlockRenderer: {type} w={w} renders {layer.Expanded.W}/{layer.Collapsed.W} wide");
+			}
+		}
 	}
 
 	// A render keeps following a message that is only appended to, and lets go of one that is rewritten —

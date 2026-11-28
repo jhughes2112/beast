@@ -53,7 +53,7 @@ public static class MarkdownAnsi
 
 	// Returns rendered lines for display in the history panel. Each RenderLine is one logical display line
 	// (may contain ANSI codes) tagged with whether the caller may word-wrap it. w is the viewport width: it
-	// sets the natural-width clamp for code blocks and tables (w + MaxOverscan); prose is not wrapped here —
+	// sets the natural-width clamp for code blocks (w + MaxOverscan) and the width tables fit; prose is not wrapped here —
 	// the caller wraps the wrappable lines to its own width.
 	public static List<RenderLine> Render(string markdown, FrameType type, int w)
 	{
@@ -233,9 +233,9 @@ public static class MarkdownAnsi
 		}
 	}
 
-	// Renders a markdown table with pipe-delimited columns and a header separator row. The table renders at
-	// its natural width (rows tagged NoWrap) so wide tables scroll horizontally rather than reflow; only a
-	// pathological width past the overscan clamp gets its columns shaved to bound memory.
+	// Renders a markdown table with pipe-delimited columns and a header separator row. Columns shrink to fit
+	// the viewport, their cells word-wrapping; rows are tagged NoWrap, so a table with too many columns to
+	// fit even at the floor keeps that width and scrolls horizontally rather than reflowing.
 	private static void RenderTable(Table table, List<RenderLine> lines, string indent, FrameType type, int w)
 	{
 		// First pass: extract cell text and measure column widths.
@@ -304,11 +304,12 @@ public static class MarkdownAnsi
 			}
 		}
 
-		// Clamp only against the natural-width overscan (not the viewport) so the table keeps its column
-		// widths and scrolls; the layout is the leading border plus, per column, a leading space, the content,
-		// a trailing space and a closing border — 1 + Σ(width + 3). Past the clamp (only reachable with many
-		// columns now that each is capped), shave the widest columns first so narrow data columns keep width.
-		int clamp = Math.Max(8, w + MaxOverscan - indent.Length);
+		// Fit the viewport: the layout is the leading border plus, per column, a leading space, the content,
+		// a trailing space and a closing border — 1 + Σ(width + 3), which the third-of-the-viewport cap above
+		// leaves out, so three capped columns ran about ten cells past the edge and under the F10 panel. Cells
+		// word-wrap, so shaving the widest columns first costs rows, not text, and narrow data columns keep
+		// their width. Only a table that still overflows with every column at the floor scrolls horizontally.
+		int clamp = Math.Max(8, w - indent.Length);
 		FitColumns(colWidths, clamp);
 
 		// Second pass: emit rows. Each cell is word-wrapped to its column width, so a tall cell spans several
