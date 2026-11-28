@@ -13,6 +13,28 @@ public static class TitleBarTests
 		TestWaitingOrder(ctx);
 		TestPlayAction(ctx);
 		TestRows(ctx);
+		TestSeparatorAnimation(ctx);
+	}
+
+	// The busy label draws the whole animation frame, every cell of it, and the count only adds to the end.
+	private static void TestSeparatorAnimation(TestContext ctx)
+	{
+		Screen sep   = SeparatorLayer.Build(80, true, Environment.TickCount64, 0, 0, "Developer", 1, 1, 3);
+		string label = string.Empty;
+		for (int x = 0; x < 40; x++)
+		{
+			label += sep.Get(x, 0).Ch;
+		}
+		ctx.Assert(label.StartsWith(" ●∙∙∙ ", StringComparison.Ordinal), $"Separator: a four-cell animation draws all four cells ({label})");
+		ctx.AssertContains(label, "(3 processes)", "Separator: the process count follows the timer");
+
+		// What reaches the terminal between two frames: each cell of the new frame placed at its own column.
+		long                      now    = Environment.TickCount64;
+		Screen                    first  = SeparatorLayer.Build(80, true,       now, 0, 0, "Developer", 1, 1, 0);
+		Screen                    second = SeparatorLayer.Build(80, true, now - 130, 0, 0, "Developer", 1, 1, 0);
+		System.Text.StringBuilder buf    = new System.Text.StringBuilder();
+		ScreenAnsiWriter.WriteDiff(buf, second, first, 1, 1);
+		ctx.AssertContains(buf.ToString(), "∙\x1b[3G●\x1b[4G∙\x1b[5G∙", "Separator: the next frame reaches the terminal cell by cell, at its own columns");
 	}
 
 	private static void TestTitle(TestContext ctx)

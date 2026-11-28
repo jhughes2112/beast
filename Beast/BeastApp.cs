@@ -747,9 +747,10 @@ state.StatsContextTokens, state.StatsCachedTokens);
 		{
 			case FrameType.Busy:
 				// Record the turn start on the first Busy of a turn so the duration reflects the
-				// session's own working time, not when the user switched to view it. A session already
-				// showing busy for its running processes keeps the time they started.
-				if (!ShowsBusy(effectiveId, session))
+				// session's own working time, not when the user switched to view it. That holds even when
+				// running processes kept the label up since the last turn: a new turn is a new stretch,
+				// with its own time and its own animation.
+				if (!_busySessions.Contains(effectiveId))
 				{
 					session.BusyStartTick = Environment.TickCount64;
 				}
@@ -770,7 +771,16 @@ state.StatsContextTokens, state.StatsCachedTokens);
 			case FrameType.Idle:
 				_busySessions.Remove(effectiveId);
 				// Processes still running keep it showing busy: the agent loop is idle, the session is not.
-				if (!ShowsBusy(effectiveId, session))
+				// Waiting on them is a stretch of its own, timed from now, with a fresh animation.
+				if (ShowsBusy(effectiveId, session))
+				{
+					session.BusyStartTick = Environment.TickCount64;
+					if (isActive)
+					{
+						_display.SetAgentBusy(true, session.BusyStartTick);
+					}
+				}
+				else
 				{
 					session.BusyStartTick = 0;
 					if (isActive)

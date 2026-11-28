@@ -602,15 +602,27 @@ public static class SessionProcesses
 		return grouped;
 	}
 
+	// The namespace gets a /proc of its own (--mount-proc, in a mount namespace of its own): with the
+	// container's, a process inside finds a different id for itself there than it has, so ps dies with
+	// "lookup self" and .NET's Process.Kill(true) cannot find its children. Mounts made after the namespace
+	// (the clock a seeded run mounts over the workspace and /tmp) must still reach it, so the container's
+	// mounts are made shared once and the namespace receives them (--propagation slave), sending none back.
+	private static bool _mountsShared;
+
 	private static async Task<Holder?> StartAsync(CancellationToken ct)
 	{
+		if (!_mountsShared)
+		{
+			_mountsShared = await ShareMountsAsync(ct);
+		}
+
 		Holder? holder  = null;
 		Process unshare = new Process
 		{
 			StartInfo = new ProcessStartInfo
 			{
 				FileName               = "unshare",
-				ArgumentList           = { "--pid", "--fork", "--kill-child", "sleep", "infinity" },
+				ArgumentList           = { "--pid", "--fork", "--kill-child", "--mount-proc", "--propagation", "slave", "sleep", "infinity" },
 				UseShellExecute        = false,
 				RedirectStandardOutput = true,
 				RedirectStandardError  = true,
@@ -655,6 +667,18 @@ public static class SessionProcesses
 			unshare.Dispose();
 		}
 		return holder;
+	}
+
+	// Marks every mount in the container shared, so a namespace made afterwards receives mounts made after it.
+	// Returns false when it could not (no SYS_ADMIN), and the holder's own start then fails the same way.
+	private static async Task<bool> ShareMountsAsync(CancellationToken ct)
+	{
+		ToolResult result = await ShellTools.AgentBashAsync("share_mounts", "mount --make-rshared /", 30, ct);
+		if (result.ExitCode != 0)
+		{
+			Console.Error.WriteLine($"[SessionProcesses] Could not make the container's mounts shared: {result.StdErr}");
+		}
+		return result.ExitCode == 0;
 	}
 
 	// The program names of the namespace's own children (jobs a finished command left behind), zombies aside,

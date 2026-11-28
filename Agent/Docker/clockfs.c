@@ -70,6 +70,10 @@ static int is_sealed(const char *path)
 // Nothing reports a group or other write bit: only its owner may change a file. A host mount reads as
 // writable by all (Docker Desktop's Windows binds report 0777), and the sandbox's read-only shell user,
 // which is neither the owner nor in its group, must not be able to write the workspace through that.
+// What the owner may read or enter, group and other may too: the read-only user reads everything the
+// shell user can, whatever modes a file carries on the host (an earlier lockdown's main checkout leaves
+// its folders 0711 and its files owner-only, stored on the host and seen by every container after).
+// A sealed entry keeps its own read bits, so a folder kept from the shell user stays kept from both.
 static void report_owner(const char *path, struct stat *st)
 {
 	if (path[1] == '\0')
@@ -81,8 +85,10 @@ static void report_owner(const char *path, struct stat *st)
 	}
 	else
 	{
-		st->st_uid = g_uid;
-		st->st_gid = g_gid;
+		mode_t readable = st->st_mode & (S_IRUSR | S_IXUSR);
+		st->st_uid      = g_uid;
+		st->st_gid      = g_gid;
+		st->st_mode     = (st->st_mode & ~(mode_t)(S_IRWXG | S_IRWXO)) | (readable >> 3) | (readable >> 6);
 	}
 	st->st_mode &= ~(mode_t)(S_IWGRP | S_IWOTH);
 }

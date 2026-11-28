@@ -488,6 +488,13 @@ public class DisplayScreen : IDisplay
 					_busyWordIndex++;
 					_currentAnimationIndex = Random.Shared.Next(SeparatorLayer.AnimationCount);
 				}
+				else if (startTick != _busyStartTick)
+				{
+					// A new stretch of work while the label never went down (processes kept it up between
+					// turns): a fresh animation, as a label coming up would get.
+					_busyWordIndex++;
+					_currentAnimationIndex = Random.Shared.Next(SeparatorLayer.AnimationCount);
+				}
 				else
 				{
 					// New activity while already busy — advance the word.
@@ -1156,9 +1163,10 @@ public class DisplayScreen : IDisplay
 		int panelW   = _sessionTreeOpen ? Math.Min(52, Math.Max(36, w / 3)) : 0;
 		int historyW = w - panelW;
 
-		// The scrollbar paints over the last ScrollbarGutter columns of the history area, so text is laid
-		// out in the columns before it: a long line ends beside the scrollbar instead of under it.
-		int layoutW   = Math.Max(1, historyW - ScrollbarGutter);
+		// Text is laid out across the whole history area. The scrollbar paints over its last ScrollbarGutter
+		// columns only while it shows (it fades out a moment after scrolling stops), and dims only their
+		// background, so text running under it stays readable and no column is given up to it.
+		int layoutW   = Math.Max(1, historyW);
 		_layoutWidth  = layoutW;
 		_historyWidth = historyW;
 
@@ -1326,8 +1334,8 @@ public class DisplayScreen : IDisplay
 			}
 		}
 
-		// The history window is layoutW wide; the frame is where it meets the scrollbar gutter, so the
-		// composite is made first and the scrollbar is tinted onto the frame.
+		// The history window is the full history width; the composite is made first and the scrollbar is
+		// tinted onto the frame over its last columns.
 		Screen frame = new Screen(w, h, bgCell);
 		frame.Blit(historyView, 0, 0, BlendMode.Normal, null);
 
@@ -1336,18 +1344,26 @@ public class DisplayScreen : IDisplay
 		float scrollbarOpacity = ComputeScrollbarOpacity() * ScrollbarMaxOpacity;
 		int   thumbH           = 0;
 		int   thumbTop         = 0;
+
+		// Background only, so the gutter's text keeps its characters and colors and a line running under
+		// the scrollbar stays readable. The dim track stays whenever there is anything to scroll; only the
+		// thumb fades in while scrolling and out a moment after.
+		if (maxOffset > 0)
+		{
+			Rect trackRect = new Rect(historyW - ScrollbarGutter, 0, ScrollbarGutter, historyH);
+			new BackgroundTintEffect(Palette.ScrollTrack, ScrollbarMaxOpacity).Apply(frame, trackRect);
+		}
+
 		if (maxOffset > 0 && scrollbarOpacity > 0.01f)
 		{
 			thumbH   = Math.Max(1, (int)Math.Round((double)historyH * historyH / Math.Max(1, totalRows)));
 			thumbTop = (int)Math.Round((double)(maxOffset - _historyScrollOffset) / maxOffset * (historyH - thumbH));
 			thumbTop = Math.Max(0, Math.Min(historyH - thumbH, thumbTop));
 
-			Rect trackRect = new Rect(historyW - ScrollbarGutter, 0, ScrollbarGutter, historyH);
-			new TintEffect(Palette.ScrollTrack, scrollbarOpacity).Apply(frame, trackRect);
 			if (thumbH > 0)
 			{
 				Rect thumbRect = new Rect(historyW - ScrollbarGutter, thumbTop, ScrollbarGutter, thumbH);
-				new TintEffect(Palette.ScrollThumb, scrollbarOpacity).Apply(frame, thumbRect);
+				new BackgroundTintEffect(Palette.ScrollThumb, scrollbarOpacity).Apply(frame, thumbRect);
 			}
 		}
 
@@ -2269,6 +2285,17 @@ public class DisplayScreen : IDisplay
 					// content moves under a stationary mouse so the highlight should track it.
 					bool wheelOverPanel = _sessionTreeOpen && inputEv.Col >= _historyWidth;
 					_hoverSlot          = wheelOverPanel ? -1 : (SlotAtTerminalRow(inputEv.Row) ?? -1);
+
+					// Over the F10 panel the wheel scrolls its list (its header and button take a row each); the
+					// selection stays where it is, and the history behind does not move.
+					if (wheelOverPanel)
+					{
+						int rows           = Math.Max(1,    _lastHistoryHeight - 2);
+						int most           = Math.Max(0, _sessionList.Count - rows);
+						_sessionTreeScroll = Math.Clamp(_sessionTreeScroll + (inputEv.WheelDelta > 0 ? -3 : 3), 0, most);
+						Redraw();
+						continue;
+					}
 
 					// A horizontal wheel (tilt / trackpad) or Shift+wheel pans the hovered block sideways;
 					// positive delta scrolls right. If the block has nothing hidden to the side, fall through

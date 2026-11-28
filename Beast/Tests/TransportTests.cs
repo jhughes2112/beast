@@ -13,32 +13,33 @@ file sealed class NullDisplay : IDisplay
 {
 	public readonly List<(int Slot, FrameType Type)> StreamStarts = new List<(int Slot, FrameType Type)>();
 
-	public void Attach                  (ConversationModel model) { }
-	public void SetStatus               (string text)             { }
-	public void SetStatsInfo            (string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens) { }
-	public void SetActiveTime           (long activeMs)                     { }
-	public void SetCompletions          (IReadOnlyList<string> completions) { }
-	public void OnStreamStart           (int streamIndex, FrameType type)   { StreamStarts.Add((streamIndex, type)); }
-	public void OnStreamChunk           (string chunk)                      { }
-	public void OnStreamEnd             ()                                  { }
-	public void SetAgentBusy            (bool busy, long startTick)         { }
-	public void SetProcessCount         (int processes)                     { }
-	public void SetSendAsync            (Func<string, Task> sendAsync)      { }
-	public void SetRequestExit          (Action requestExit)                { }
-	public void AskChoice               (string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice) { onChoice(defaultIndex); }
-	public void SetFrameDrain           (Action drain)          { }
-	public void SetSessionCounts        (int active, int total) { }
-	public void SetSessionList          (IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
-	public void SetSessionSwitchCallback(Action<string> switchTo)                                     { }
-	public void SetSessionDeleteCallback(Action<string> deleteSession)                                { }
-	public void ClearPendingGhost       (string sessionId)                       { }
-	public void SetPendingGhost         (string sessionId, string[] lines)       { }
-	public void OnUnqueued              (string text)                            { }
-	public void OnConfigFrame           (string json)                            { }
-	public void SetAgentStateDir        (string stateDir)                        { }
-	public void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }
-	public void OnConfigError           (string text)                            { }
-	public bool IsAutoTrackSuppressed   ()
+	public          void Attach        (ConversationModel model) { }
+	public          void SetStatus     (string text)             { }
+	public          void SetStatsInfo  (string model, string role, int promptTokens, int completionTokens, decimal totalCost, int maxContext, int contextTokens, int cachedTokens) { }
+	public          void SetActiveTime (long activeMs)                     { }
+	public          void SetCompletions(IReadOnlyList<string> completions) { }
+	public          void OnStreamStart (int streamIndex, FrameType type)   { StreamStarts.Add((streamIndex, type)); }
+	public          void OnStreamChunk (string chunk)                      { }
+	public          void OnStreamEnd   ()                                  { }
+	public readonly List<(bool Busy, long StartTick)> BusyCalls = new List<(bool Busy, long StartTick)>();
+	public          void SetAgentBusy            (bool busy, long startTick)    { BusyCalls.Add((busy, startTick)); }
+	public          void SetProcessCount         (int processes)                { }
+	public          void SetSendAsync            (Func<string, Task> sendAsync) { }
+	public          void SetRequestExit          (Action requestExit)           { }
+	public          void AskChoice               (string title, List<string> lines, List<string> labels, int defaultIndex, int escapeIndex, Action<int> onChoice) { onChoice(defaultIndex); }
+	public          void SetFrameDrain           (Action drain)          { }
+	public          void SetSessionCounts        (int active, int total) { }
+	public          void SetSessionList          (IReadOnlyList<SessionDisplayInfo> sessions, string activeId) { }
+	public          void SetSessionSwitchCallback(Action<string> switchTo)                                     { }
+	public          void SetSessionDeleteCallback(Action<string> deleteSession)                                { }
+	public          void ClearPendingGhost       (string sessionId)                       { }
+	public          void SetPendingGhost         (string sessionId, string[] lines)       { }
+	public          void OnUnqueued              (string text)                            { }
+	public          void OnConfigFrame           (string json)                            { }
+	public          void SetAgentStateDir        (string stateDir)                        { }
+	public          void SetSendToAsync          (Func<string, string, Task> sendToAsync) { }
+	public          void OnConfigError           (string text)                            { }
+	public          bool IsAutoTrackSuppressed   ()
 	{
 		return false;
 	}
@@ -73,6 +74,39 @@ public static class TransportTests
 		TestConversationModelCollapseMode(ctx);
 		TestAgentTransportProcessing(ctx);
 		TestStreamSurvivesSessionSwitch(ctx);
+		TestBusyLabelIsSteady(ctx);
+	}
+
+	// The busy label's animation and timer run from the start tick it is given, so a turn that only changes
+	// what it is doing (receiving, a command, receiving again) must not hand the display a new one: each new
+	// tick restarts the animation at its first frame.
+	private static void TestBusyLabelIsSteady(TestContext ctx)
+	{
+		NullDisplay display = new NullDisplay();
+		BeastApp    app     = new BeastApp(new LaunchDebug(), new List<string>(), display, new ClientLog(false), "beast_test", null);
+		ProcessFrame(app, FrameType.Output, "A", "hello");
+
+		ProcessFrame(app,        FrameType.Busy, "A",        string.Empty);
+		ProcessFrame(app,    FrameType.Activity, "A",         "waiting 0");
+		ProcessFrame(app,    FrameType.Activity, "A",       "receiving 0");
+		ProcessFrame(app, FrameType.StreamStart, "A", StreamTag.Assistant);
+		ProcessFrame(app, FrameType.StreamChunk, "A",     "working on it");
+		ProcessFrame(app,   FrameType.StreamEnd, "A", StreamTag.Assistant);
+		ProcessFrame(app,    FrameType.Activity, "A",         "waiting 0");
+		ProcessFrame(app,    FrameType.Activity, "A",         "working 1");
+		ProcessFrame(app,    FrameType.Activity, "A",         "waiting 0");
+		ProcessFrame(app,    FrameType.Activity, "A",       "receiving 0");
+		ProcessFrame(app,    FrameType.Activity, "A",         "working 1");
+
+		List<long> ticks = new List<long>();
+		foreach ((bool busy, long tick) in display.BusyCalls)
+		{
+			if (busy && !ticks.Contains(tick))
+			{
+				ticks.Add(tick);
+			}
+		}
+		ctx.AssertEqual(1, ticks.Count, $"BusyLabel: one turn keeps one start tick, however its activity changes ({display.BusyCalls.Count} calls)");
 	}
 
 	// Auto-track switching away from a streaming session and back must tell the display the stream is still

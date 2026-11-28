@@ -149,7 +149,14 @@ public static class ToolSandboxTests
 			ctx.AssertEqual($"[Beast: background job 1 finished with exit code 3. Full output: {log}]\nLast of its output:\nbegin\ndone", finished,
 				"Background: the notice gives the job's own exit code and the end of its output, with no times or ids");
 			ctx.Assert(!SessionProcesses.HasRunningJobs("bg-test"), "Background: and the job is no longer running");
+			// The job writes its status just before its shell exits, so the count can lag the notice by a
+			// moment; the next refresh (once a second) settles it.
 			List<string> activity = Activities(transport);
+			for (int i = 0; i < 50 && activity[activity.Count - 1] != "idle 0"; i++)
+			{
+				await Task.Delay(100, ct);
+				activity = Activities(transport);
+			}
 			ctx.AssertEqual("idle 0", activity[activity.Count - 1], "Background: and the client is told the session is idle again");
 
 			await ShellTools.BashInBackgroundAsync("bg3", "sleep 60", 2, false, session, ct);
@@ -187,6 +194,18 @@ public static class ToolSandboxTests
 			ToolResult start = await ShellTools.BashAsync("ns1", "sleep 300 > /dev/null 2>&1 & nohup setsid sleep 301 > /dev/null 2>&1 & echo started", null, first, ct);
 			ctx.Assert(start.ExitCode == 0 && start.StdOut.StartsWith("started", StringComparison.Ordinal), $"Namespace: commands run in it ({start.StdOut} {start.StdErr})");
 
+			// Its own /proc: ps works and sees the session's processes, which is what Process.Kill(true) and
+			// any other child lookup reads.
+			ToolResult ps = await ShellTools.BashAsync("ns1b", "ps -e -o comm= | sort | uniq -c | grep -c sleep", null, first, ct);
+			ctx.Assert(ps.ExitCode == 0 && ps.StdOut.StartsWith("1", StringComparison.Ordinal), $"Namespace: ps works inside it and sees the session's own processes ({ps.StdOut} {ps.StdErr})");
+
+			// A mount made after the namespace (as a seeded run's clock is) still reaches it.
+			string late = Path.Combine(Path.GetTempPath(), $"beast-late-{Guid.NewGuid():N}");
+			await ShellTools.AgentBashAsync("ns1c", $"mkdir -p '{late}' && mount -t tmpfs none '{late}' && touch '{late}/seen'", null, ct);
+			ToolResult seen = await ShellTools.BashAsync("ns1d", $"ls '{late}'", null, first, ct);
+			await ShellTools.AgentBashAsync("ns1e", $"umount '{late}'; rmdir '{late}'", null, ct);
+			ctx.Assert(seen.StdOut.StartsWith("seen", StringComparison.Ordinal), $"Namespace: a mount made after it is seen inside ({seen.StdOut} {seen.StdErr})");
+
 			ToolResult later = await ShellTools.BashAsync("ns2", "echo again", null, first, ct);
 			ctx.AssertEqual("again\n[Still running: left behind by earlier commands: sleep ×2. Everything this session started stops when its work ends.]", later.StdOut,
 				"Namespace: what earlier commands left running is named by program, as ps shows it, with repeats counted");
@@ -222,6 +241,11 @@ public static class ToolSandboxTests
 		string root = Path.Combine(previous, $"beast-rotest-{Guid.NewGuid():N}");
 		Directory.CreateDirectory(Path.Combine(root, "src"));
 		File.WriteAllText(Path.Combine(root, "src", "a.txt"), "original\n");
+
+		// As an earlier lockdown leaves a main checkout on the host: a folder only passable, its files owner-only.
+		Directory.CreateDirectory(Path.Combine(root, "checkout"));
+		File.WriteAllText(Path.Combine(root, "checkout", "notes.txt"), "kept close\n");
+		await ShellTools.AgentBashAsync("ro_modes", $"chmod 711 '{root}/checkout' && chmod 600 '{root}/checkout/notes.txt'", null, ct);
 		string sleeper = string.Empty;
 		try
 		{
@@ -234,6 +258,12 @@ public static class ToolSandboxTests
 			ToolResult read = await ShellTools.ReadonlyBashAsync("ro1", "cd src && cat a.txt > /tmp/beast-ro-copy.txt && cat /tmp/beast-ro-copy.txt && whoami", null, string.Empty, ct);
 			ctx.Assert(read.ExitCode == 0 && read.StdOut.Contains("original", StringComparison.Ordinal) && read.StdOut.Contains(Sandbox.ReadOnlyShellUser, StringComparison.Ordinal),
 				$"ReadOnlyShell: cd, redirection into /tmp and reading the workspace all work, as its own user ({read.StdOut} {read.StdErr})");
+
+			ToolResult closed = await ShellTools.ReadonlyBashAsync("ro1b", "ls checkout && cat checkout/notes.txt", null, string.Empty, ct);
+			ctx.Assert(closed.ExitCode == 0 && closed.StdOut.Contains("notes.txt", StringComparison.Ordinal) && closed.StdOut.Contains("kept close", StringComparison.Ordinal),
+				$"ReadOnlyShell: what the shell user can read it reads too, whatever modes the host keeps ({closed.StdOut} {closed.StdErr})");
+			ToolResult closedEdit = await ShellTools.ReadonlyBashAsync("ro1c", "echo changed > checkout/notes.txt", null, string.Empty, ct);
+			ctx.Assert(closedEdit.ExitCode != 0 && File.ReadAllText(Path.Combine(root, "checkout", "notes.txt")) == "kept close\n", $"ReadOnlyShell: and still writes none of it ({closedEdit.StdErr})");
 
 			ToolResult edit = await ShellTools.ReadonlyBashAsync("ro2", "echo changed > src/a.txt", null, string.Empty, ct);
 			ctx.Assert(edit.ExitCode != 0 && edit.StdErr.Contains("Permission denied", StringComparison.Ordinal), $"ReadOnlyShell: editing a workspace file is refused ({edit.StdErr})");

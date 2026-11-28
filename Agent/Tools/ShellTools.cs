@@ -330,15 +330,19 @@ public static class ShellTools
 		{
 			Sandbox.RunAsShellUser(psi, restricted, readOnlyUser);
 
-			// Inside the session's own PID namespace, so nothing it starts outlives the session's work. The
-			// program nsenter runs is named by its full path: nsenter looks it up through the command's own
-			// PATH, which the restricted shell narrows to its allowlist.
+			// Inside the session's own PID namespace, so nothing it starts outlives the session's work, and its
+			// mount namespace, whose /proc shows that namespace (ps and child lookups need it). The working
+			// folder is named again so it resolves inside, on the same mounts. The program nsenter runs is
+			// named by its full path: nsenter looks it up through the command's own PATH, which the restricted
+			// shell narrows to its allowlist.
 			int namespaceInit = await SessionProcesses.EnterAsync(sessionId, cancellationToken);
 			if (namespaceInit > 0)
 			{
-				psi.ArgumentList.Insert(0,      FullPath(psi.FileName));
-				psi.ArgumentList.Insert(0,                        "--");
-				psi.ArgumentList.Insert(0,                     "--pid");
+				psi.ArgumentList.Insert(0, FullPath(psi.FileName));
+				psi.ArgumentList.Insert(0,                   "--");
+				psi.ArgumentList.Insert(0, $"--wd={psi.WorkingDirectory}");
+				psi.ArgumentList.Insert(0, "--mount");
+				psi.ArgumentList.Insert(0, "--pid");
 				psi.ArgumentList.Insert(0, $"--target={namespaceInit}");
 				psi.FileName = "nsenter";
 			}
