@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 // file is loaded over the defaults, so hand edits to a description or parameter take effect.
 public class ToolService
 {
-	private const int Version = 19;
+	private const int Version = 20;
 
 	private readonly string _toolsPath;
 
@@ -140,7 +140,7 @@ public class ToolService
 		Dictionary<string, ToolConfig> tools = new Dictionary<string, ToolConfig>();
 
 		tools["bash"] = Cfg(
-			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase, when available, records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). CWD is the repo root at /workspace/.",
+			"Standard bash, run as an unprivileged user. No sudo or apt-get: use apt_install for system packages; pip, npm, cargo, and go install into your home folder. git can inspect (status, diff, log) but not change the repository; commit_and_rebase, when available, records your work. Top-level folders whose names start with '.' (.git, .github, .vscode, ...) are read-only, including any you create, so use names without the dot (venv/, not .venv/). Run anything that takes more than a minute or so (a build, a test suite, a server) with run_in_background, so you can keep working while it runs. CWD is the repo root at /workspace/.",
 			(MechanicalCompaction.WhyArgument,                   kWhyText),
 			(                       "command", "Shell command to execute"),
 			(               "timeout_seconds",               kTimeoutText),
@@ -160,7 +160,7 @@ public class ToolService
 		// The bash a read-only role gets where the sandbox can keep it from changing the workspace; offered to
 		// the model under the name bash. readonly_bash below is the restricted shell used where it cannot.
 		tools["bash_read_only"] = Cfg(
-			"Standard bash, run as a user that can read the whole workspace and run any program but cannot change the workspace: a write there fails with Permission denied. Put scratch files under /tmp/. No sudo or apt-get; installed packages can be checked with dpkg-query and apt-cache. git can inspect (status, diff, log, show). CWD is the repo root at /workspace/.",
+			"Standard bash, run as a user that can read the whole workspace and run any program but cannot change the workspace: a write there fails with Permission denied. Put scratch files under /tmp/. No sudo or apt-get; installed packages can be checked with dpkg-query and apt-cache. git can inspect (status, diff, log, show). Run anything that takes more than a minute or so with run_in_background, so you can keep working while it runs. CWD is the repo root at /workspace/.",
 			(MechanicalCompaction.WhyArgument,                   kWhyText),
 			(                       "command", "Shell command to execute"),
 			(               "timeout_seconds",               kTimeoutText),
@@ -226,7 +226,8 @@ public class ToolService
 			("goal", "Provide a clear prompt to an agent so that it can appropriately filter down the results to what is relevant, not the complete content of the page. If you know exactly what you're looking for ask for it here."));
 
 		tools["assign_work"] = Cfg(
-			"Hand one concrete unit of work to the Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and returns a report. The Developer has none of this conversation, so the prompt must stand alone. Each assignment should be one task (or a few that share context) from your spec; name the task numbers in the prompt. Every assignment has a hard budget of turns: the Developer is told its budget, warned as it is spent, and cut off when it runs out, reporting whatever state the work is in. After this, you stay in a work loop — you are re-prompted each turn to assign the next unit of work — until you call stop_work.",
+			"Hand one concrete unit of work to a new Developer subagent. It works in a git worktree, gets the change reviewed and integrated, and reports back. This returns at once and the Developer works on its own, so end your turn after calling it: you are told when its report is ready, and collect_report gives it to you. Only one assignment can be out at a time. The Developer has none of this conversation, so the prompt must stand alone. Each assignment should be one task (or a few that share context) from your spec; name the task numbers in the prompt. Every assignment has a hard budget of turns: the Developer is told its budget, warned as it is spent, and cut off when it runs out, reporting whatever state the work is in. After this, you stay in a work loop — once you have collected a report you are re-prompted to assign the next unit of work — until you call stop_work.",
+			(ToolFactory.kNameArgument, kDelegateNameText),
 			("prompt", "The Developer's complete brief, written to a capable colleague who has never seen this conversation: the goal and why it matters, the files or areas involved, constraints that must hold, how to verify it works, and what is explicitly out of scope. State what 'done' looks like so there is nothing to tweak after that."),
 			("effort", "How much work this unit warrants. Omit for the default size. Choose the smallest that fits and split bigger goals into separate assignments; a unit that runs out of budget is cut off and comes back unfinished."));
 
@@ -235,8 +236,16 @@ public class ToolService
 			("summary", "What was accomplished across the delegated work, what remains undone and why, and any question the user must answer before work can continue. Brief and factual."));
 
 		tools["review_work"] = Cfg(
-			"Ask a fresh Reviewer session with no prior context to inspect your changes for correctness and scope. The Reviewer has a small fixed budget of turns and reports approved or rejected with comments; only blocking problems reject. The review does not commit anything. Expect to use this at most twice: once approved, fix any requested issues and integrate with commit_and_rebase without asking for another review.",
+			"Ask a fresh Reviewer session with no prior context to inspect your changes for correctness and scope. This returns at once and the Reviewer works on its own, so end your turn after calling it: you are told when its verdict is ready, and collect_report gives it to you. The Reviewer has a small fixed budget of turns and reports approved or rejected with comments; only blocking problems reject. The review does not commit anything. Expect to use this at most twice: once approved, fix any requested issues and integrate with commit_and_rebase without asking for another review.",
+			(ToolFactory.kNameArgument, kDelegateNameText),
 			("prompt", "Everything a reviewer needs to start without exploring: the goal, what you changed and why, the exact command that shows the diff (e.g. git diff <base>...HEAD), how you verified it, and which changes in the tree are unrelated and should be ignored. On a second round, list what you changed in response to the first. Inform a peer unfamiliar with the codebase; do not try to convince."));
+
+		tools["collect_report"] = Cfg(
+			"Read the report of the work you handed out with assign_work or review_work, once you have been told it is ready. It returns the report exactly as it was given and empties the mailbox, so new work can be handed out.");
+
+		tools["continue_work"] = Cfg(
+			"Set the agent working on what you handed out going again when it has stopped without reporting: after a pause, an interruption or a restart, or when the user says it is stuck. Do not use this to check on progress; you are told when the report is ready.",
+			("message", "Optional. Something to tell the agent before it carries on, such as an answer it needs or a correction. It reads it as a message from you."));
 
 		tools["commit_and_rebase"] = Cfg(
 			"Runs a script to check in all changes in the worktree and integrate them. The workflow is always to rebase commits on the current branch onto the parent branch (linear history, no merge commit), and fast-forward the base onto this branch. Call this after an approved review. This is the only way your work gets committed: your own git is read-only. On a conflict, the rebase stops with the conflicted files listed; resolve the conflict markers in those files, then call this again and it continues the rebase and finishes. Changes inside top-level folders whose names start with '.' (.github, .vscode, ...) are refused; only a human may make those.",
@@ -264,6 +273,8 @@ public class ToolService
 
 	private const string kTimeoutText    = "Timeout in seconds (default 120, or 3600 for a background job). Raise it for builds and test runs.";
 	private const string kBackgroundText = "True to start the command and return at once, for a build, a test suite or a server that takes a while. A message arrives when it finishes (with its exit code, the end of its output and where the rest is) or when its timeout stops it. Do not poll or sleep for it: keep working, or end your turn and wait. Everything a session starts is stopped when its work ends.";
+
+	private const string kDelegateNameText = "A short snake_case name for this piece of work, two to four words, such as gemm_bench. It names the agent in the session list and in the messages about it.";
 
 	// The one line a subagent writes for its caller's list of results, kept when the full report is not.
 	private const string kSummaryDescription = "One brief sentence stating the outcome, for someone scanning a list of results: the verdict or what came of it, not the steps taken.";

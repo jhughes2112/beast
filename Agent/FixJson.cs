@@ -818,6 +818,12 @@ public static class FixJson
 				continue;
 			}
 
+			// The same for the name of a delegate: one is made from the prompt (ToolFactory.Delegate).
+			if (string.Equals(fieldName, ToolFactory.kNameArgument, StringComparison.Ordinal) && (toolName == "assign_work" || toolName == "review_work"))
+			{
+				continue;
+			}
+
 			if (!string.IsNullOrEmpty(fieldName) && !obj.ContainsKey(fieldName))
 			{
 				error = $"Error: Tool '{toolName}' missing required argument '{fieldName}'";

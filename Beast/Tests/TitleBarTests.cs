@@ -129,10 +129,14 @@ public static class TitleBarTests
 		ctx.Assert(!Same(panel.Get(3, 3).Fg, panel.Get(3, 4).Fg), "Row: a session Play could continue and a finished one differ in color");
 		ctx.Assert(!Same(panel.Get(3, 5).Fg, panel.Get(3, 3).Fg), "Row: a delivered result differs from one Play could continue");
 
-		ctx.Assert(ButtonText(Build(rows, 0)).Contains("Pause", StringComparison.Ordinal), "Button: Pause on a running session");
-		ctx.Assert( ButtonText(Build(rows, 2)).Contains("Play", StringComparison.Ordinal), "Button: Play on a paused session");
-		ctx.AssertEqual(string.Empty, ButtonText(Build(rows, 3)).Trim(), "Button: hidden on a finished session");
-		ctx.AssertEqual(string.Empty, ButtonText(Build(rows, 4)).Trim(), "Button: hidden on a delivered result");
+		// The button acts on the whole tree, whichever row is selected: Pause while anything works, Play while
+		// anything is paused or has a turn to send, nothing once all of it is finished.
+		ctx.Assert(ButtonText(Build(rows, 0)).Contains("Pause all", StringComparison.Ordinal), "Button: Pause all while anything is working");
+		ctx.Assert(ButtonText(Build(rows, 3)).Contains("Pause all", StringComparison.Ordinal), "Button: whichever row is selected");
+		List<SessionDisplayInfo> stopped = new List<SessionDisplayInfo> { paused, finished, success };
+		ctx.Assert(ButtonText(Build(stopped, 1)).Contains("Play all", StringComparison.Ordinal), "Button: Play all once nothing works and something can carry on");
+		ctx.AssertEqual(string.Empty, ButtonText(Build(new List<SessionDisplayInfo> { finished, success }, 0)).Trim(), "Button: hidden once everything is finished");
+		ctx.AssertEqual(PlayAction.Pause, SessionTreeLayer.TreeAction(rows), "F9: the tree pauses while anything works");
 	}
 
 	private static Screen Build(List<SessionDisplayInfo> rows, int selected)

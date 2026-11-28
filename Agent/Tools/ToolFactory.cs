@@ -27,12 +27,12 @@ public static class ToolFactory
 		LlmRegistry?          registry,
 		RoleService?          roleService,
 		Session?              session,
-		SpawnSubagent?        spawnSubagent,
 		SpawnSummarizer?      spawnSummarizer,
 		Action?               onWorkAssigned,
 		Action?               onStopWork,
 		Action<bool, string>? onTerminate,
-		HostCommands?         hostCommands)
+		HostCommands?         hostCommands,
+		ISessionOrchestrator? orchestrator)
 	{
 		List<Tool> tools = new List<Tool>();
 
@@ -300,7 +300,7 @@ public static class ToolFactory
 			}
 		}
 
-		if (role.Tools.Contains("assign_work") && spawnSubagent != null && onWorkAssigned != null)
+		if (role.Tools.Contains("assign_work") && orchestrator != null && session != null && onWorkAssigned != null)
 		{
 			ToolConfig tc = toolConfigs["assign_work"];
 
@@ -308,8 +308,8 @@ public static class ToolFactory
 			// its text lists them, so the numbers live in roles.json alone.
 			Role?      worker     = roleService?.GetRole("Developer");
 			JsonObject assignArgs = worker != null && worker.TurnBudgets.Count > 0
-				? Params(Req("prompt", "string", tc.Parameters["prompt"]), Opt("effort", "string", $"{tc.Parameters["effort"]} Sizes: {EffortSizes(worker)}."))
-				: Params(Req("prompt", "string", tc.Parameters["prompt"]));
+				? Params(Req(kNameArgument, "string", tc.Parameters[kNameArgument]), Req("prompt", "string", tc.Parameters["prompt"]), Opt("effort", "string", $"{tc.Parameters["effort"]} Sizes: {EffortSizes(worker)}."))
+				: Params(Req(kNameArgument, "string", tc.Parameters[kNameArgument]), Req("prompt", "string", tc.Parameters["prompt"]));
 			tools.Add(new Tool
 			{
 				Definition = new ToolDefinition
@@ -322,12 +322,12 @@ public static class ToolFactory
 						Parameters  = assignArgs
 					}
 				},
-				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
 					string prompt = Str(args, "prompt");
 					if (string.IsNullOrWhiteSpace(prompt))
 					{
-						return new ToolResult(toolCallId, string.Empty, "Error: assign_work requires a 'prompt'.", 1, 0);
+						return Task.FromResult(new ToolResult(toolCallId, string.Empty, "Error: assign_work requires a 'prompt'.", 1, 0));
 					}
 
 					string effort = Str(args, "effort");
@@ -338,19 +338,12 @@ public static class ToolFactory
 						Role? live = roleService?.GetRole("Developer");
 						if (live == null || !TryEffortTurns(live, effort, out turns))
 						{
-							return new ToolResult(toolCallId, string.Empty, $"Error: effort must be one of: {EffortSizes(live)}. Got '{effort}'.", 1, 0);
+							return Task.FromResult(new ToolResult(toolCallId, string.Empty, $"Error: effort must be one of: {EffortSizes(live)}. Got '{effort}'.", 1, 0));
 						}
 					}
 
 					onWorkAssigned();
-
-					(bool ok, string text, int responseTokens) = await spawnSubagent("Developer", null, prompt, turns, ct);
-					if (!ok)
-					{
-						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
-					}
-
-					return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
+					return Task.FromResult(Delegate(orchestrator, session, "Developer", Str(args, kNameArgument), prompt, turns, toolCallId, "report"));
 				}
 			});
 		}
@@ -388,7 +381,7 @@ public static class ToolFactory
 			});
 		}
 
-		if (role.Tools.Contains("review_work") && spawnSubagent != null)
+		if (role.Tools.Contains("review_work") && orchestrator != null && session != null)
 		{
 			ToolConfig tc = toolConfigs["review_work"];
 			tools.Add(new Tool
@@ -401,24 +394,66 @@ public static class ToolFactory
 						Name        = "review_work",
 						Description = tc.Description,
 						Parameters  = Params(
-							Req("prompt", "string", tc.Parameters["prompt"]))
+							Req(kNameArgument, "string", tc.Parameters[kNameArgument]),
+							Req(     "prompt", "string",      tc.Parameters["prompt"]))
 					}
 				},
-				Handler = async (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
 				{
 					string prompt = Str(args, "prompt");
 					if (string.IsNullOrWhiteSpace(prompt))
 					{
-						return new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0);
+						return Task.FromResult(new ToolResult(toolCallId, string.Empty, "Error: review_work requires a 'prompt'.", 1, 0));
 					}
 
-					(bool ok, string text, int responseTokens) = await spawnSubagent("Reviewer", null, prompt, 0, ct);
-					if (!ok)
+					return Task.FromResult(Delegate(orchestrator, session, "Reviewer", Str(args, kNameArgument), prompt, 0, toolCallId, "verdict"));
+				}
+			});
+		}
+
+		// The mailbox that assign_work and review_work open: collect_report reads what came back, and
+		// continue_work sets a delegate that stopped working again. Both are always offered with either,
+		// so the tool list never changes, and refuse when there is nothing for them to do.
+		if ((role.Tools.Contains("assign_work") || role.Tools.Contains("review_work")) && orchestrator != null && session != null)
+		{
+			ToolConfig collectTc = toolConfigs["collect_report"];
+			tools.Add(new Tool
+			{
+				Definition = new ToolDefinition
+				{
+					Type     = "function",
+					Function = new FunctionDefinition
 					{
-						return new ToolResult(toolCallId, string.Empty, text, 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
+						Name        = "collect_report",
+						Description = collectTc.Description,
+						Parameters  = Params()
 					}
+				},
+				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+				{
+					return Task.FromResult(CollectReport(session, toolCallId));
+				}
+			});
 
-					return new ToolResult(toolCallId, text, string.Empty, 0, Math.Max(1, responseTokens));
+			ToolConfig continueTc = toolConfigs["continue_work"];
+			tools.Add(new Tool
+			{
+				Definition = new ToolDefinition
+				{
+					Type     = "function",
+					Function = new FunctionDefinition
+					{
+						Name        = "continue_work",
+						Description = continueTc.Description,
+						Parameters  = Params(Opt("message", "string", continueTc.Parameters["message"]))
+					}
+				},
+				Handler = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+				{
+					(bool ok, string text) = orchestrator.ContinueDelegate(session, Str(args, "message").Trim());
+					return Task.FromResult(ok
+						? new ToolResult(toolCallId, text, string.Empty, 0, ToolDispatch.EstimateTokens(text))
+						: new ToolResult(toolCallId, string.Empty, $"Error: {text}", 1, 0));
 				}
 			});
 		}
@@ -556,6 +591,50 @@ public static class ToolFactory
 		}
 
 		return tools.ToArray();
+	}
+
+	// The short name assign_work and review_work take for the agent they start, shown in the session tree.
+	public const string kNameArgument = "name";
+
+	// Starts a delegate and returns at once; its report comes through the mailbox (collect_report). A name
+	// left out is made from the prompt's first line rather than refused, which would cost a turn.
+	private static ToolResult Delegate(ISessionOrchestrator orchestrator, Session session, string roleName, string name, string prompt, int turns, string toolCallId, string replyKind)
+	{
+		string shortName = AgentOrchestrator.SnakeName(name);
+		if (shortName.Length == 0)
+		{
+			int newline = prompt.IndexOf('\n');
+			shortName   = AgentOrchestrator.SnakeName(newline >= 0 ? prompt.Substring(0, newline) : prompt);
+		}
+
+		(bool ok, string text) = orchestrator.StartDelegate(session, roleName, shortName.Length > 0 ? shortName : "task", prompt, turns);
+		string started         = $"{text} has started. It works on its own, and its {replyKind} comes to you when it finishes: end your turn now. You will be told when the {replyKind} is ready, and then call collect_report to read it.";
+		return ok
+			? new ToolResult(toolCallId,      started,     string.Empty, 0,           ToolDispatch.EstimateTokens(started))
+			: new ToolResult(toolCallId, string.Empty, $"Error: {text}", 1, Math.Max(1, ToolDispatch.EstimateTokens(text)));
+	}
+
+	// Hands over a delegate's report exactly as it gave it, and empties the mailbox.
+	private static ToolResult CollectReport(Session session, string toolCallId)
+	{
+		Mailbox?   waiting = session.Mailbox;
+		Mailbox?   mail    = session.TakeMail();
+		ToolResult result;
+		if (mail != null)
+		{
+			result = mail.Success
+				? new ToolResult(toolCallId, mail.Report, string.Empty, 0, Math.Max(1, mail.Tokens))
+				: new ToolResult(toolCallId, string.Empty, mail.Report, 1, Math.Max(1, ToolDispatch.EstimateTokens(mail.Report)));
+		}
+		else if (waiting != null)
+		{
+			result = new ToolResult(toolCallId, string.Empty, $"Error: {waiting.Name} is still working, so there is no report yet. End your turn and wait: you will be told when it is ready.", 1, 0);
+		}
+		else
+		{
+			result = new ToolResult(toolCallId, string.Empty, "Error: no report is waiting. Reports arrive from work handed out with assign_work or review_work.", 1, 0);
+		}
+		return result;
 	}
 
 	// bash with run_in_background: a job needs the session it reports back to. Tools built without one (a

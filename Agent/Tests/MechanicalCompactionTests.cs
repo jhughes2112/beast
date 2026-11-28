@@ -199,7 +199,7 @@ public static class MechanicalCompactionTests
 	{
 		Role                     reviewer = new RoleService(Environment.CurrentDirectory).Roles["Reviewer"];
 		List<string>             reports  = new List<string>();
-		Tool[]                   tools    = ToolFactory.BuildForRole(new SettingsService(), reviewer, null, null, null, null, null, null, null, (ok, text) => reports.Add(text), null);
+		Tool[]                   tools    = ToolFactory.BuildForRole(new SettingsService(), reviewer, null, null, null, null, null, null, (ok, text) => reports.Add(text), null, null);
 		Dictionary<string, Tool> byName   = new Dictionary<string, Tool>();
 		foreach (Tool tool in tools)
 		{

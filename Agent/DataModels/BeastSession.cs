@@ -132,6 +132,18 @@ public class BeastSession
 	[JsonPropertyName("terminalStatus")]
 	public string TerminalStatus { get; internal set; }
 
+	// The delegated work this session is waiting on, if any (see Mailbox). At most one.
+	[JsonInclude]
+	[JsonPropertyName("mailbox")]
+	[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+	public Mailbox? Mailbox { get; internal set; }
+
+	// How many compactions this conversation has been through before this session. A compaction renames the
+	// session it leaves behind with the next number, and the successor carries on under the plain name.
+	[JsonInclude]
+	[JsonPropertyName("compactions")]
+	public int Compactions { get; internal set; }
+
 	// Creation order for sorting: for root sessions, a global counter assigned at creation.
 	// For child sessions, the child number (N in parentId_N).
 	[JsonInclude]

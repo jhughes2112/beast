@@ -157,6 +157,10 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			session.MarkDeleted();
 		}
+		else
+		{
+			ClaimUndelivered(session);
+		}
 	}
 
 	// Registration for the restore pass only: bypasses the parent-alive rule so an orphaned child
@@ -175,26 +179,6 @@ public class AgentOrchestrator : ISessionOrchestrator
 		{
 			_allSessions.Remove(sessionId);
 		}
-	}
-
-	// Spawns a child session under parent for the named role, runs it via a SessionHandler until
-	// it answers, and returns the result through the OnComplete callback. One entry point for
-	// every subagent — Developer, Reviewer, and the helper roles (Explorer, WebFetch) alike.
-	public async Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(
-		Session           parent,
-		string            roleName,
-		string?           displayName,
-		string            prompt,
-		int               maxWorkTurns,
-		CancellationToken ct)
-	{
-		Role? role = _roleService.GetRole(roleName);
-		if (role == null)
-		{
-			return (false, $"Unknown role '{roleName}'.", 0);
-		}
-
-		return await StartChildAsync(parent, role, displayName, prompt, maxWorkTurns, false, ct);
 	}
 
 	public async Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(
@@ -228,97 +212,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 	{
 		string roleName = role.Name;
 
-		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
-		// user deleted this tree — either way new work would race the teardown.
-		if (parent.Deleted || _quiescing)
+		(Session? subSession, string error) = CreateChild(parent, role, displayName, prompt, maxWorkTurns, callRole);
+		if (subSession == null)
 		{
-			return (false, "The calling session is shutting down; no new subagents may start.", 0);
+			return (false, error, 0);
 		}
-
-		if (role.Kind != RoleKind.Subagent)
-		{
-			return (false, $"Role '{roleName}' is not a subagent role.", 0);
-		}
-
-		// A subagent is a conversation; a role whose models answer decisions (HallMonitor) cannot hold one.
-		if (!string.Equals(role.Produces, OutputModality.Text, StringComparison.OrdinalIgnoreCase))
-		{
-			return (false, $"Role '{roleName}' produces {role.Produces}, not text, so it cannot run as a subagent.", 0);
-		}
-
-		long?       seed    = _registry.SeedOf(parent);
-		LlmService? service = _registry.CreateService(role, string.Empty, 0, false, seed);
-		if (service == null)
-		{
-			return (false, $"No model available for role '{roleName}'.", 0);
-		}
-
-		// Its protocol has no seed to pass on, so this part of the run can differ.
-		if (seed.HasValue && !service.Seeded)
-		{
-			string unseeded = $"This run is seeded, but {roleName} is using {service.Model.Config.Name}, whose protocol has no seed. Runs can differ from here.";
-			_transport.Status(parent.Id, unseeded);
-			parent.QueryLog.Note(unseeded);
-		}
-
-		// No caller-supplied name: build one from the first line of the prompt.
-		if (displayName == null)
-		{
-			int    nl   = prompt.IndexOf('\n');
-			string head = (nl >= 0 ? prompt.Substring(0, nl) : prompt).Trim();
-			if (head.Length > 60)
-			{
-				head = head.Substring(0, 60);
-			}
-
-			displayName = head.Length > 0 ? $"{role.Name} {head}" : role.Name;
-		}
-
-		// Allocate child ID and persist the parent counter so it survives a reload.
-		string childId = parent.AllocateChildId();
-		if (!parent.Ephemeral)
-		{
-			SessionService.Save(parent.Data);
-		}
-
-		string seededPrompt = prompt;
-
-		// The caller may pick the budget (assign_work effort); otherwise the role's own max_turns applies.
-		// A budgeted child is told its limit up front so it can pace itself before the warnings arrive.
-		int turnBudget = maxWorkTurns > 0 ? maxWorkTurns : role.MaxTurns;
-		if (turnBudget > 0)
-		{
-			seededPrompt = $"{seededPrompt}\n\n{Nudges.BudgetNotice(turnBudget)}";
-		}
-
-		// The reply obligation is written onto the session itself so it survives save/load and can
-		// travel to a compaction successor: the child knows which tool answers the caller. It carries
-		// no output budget — the child answers at whatever size the work warrants, and the caller
-		// compacts if that no longer fits.
-		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
-			role.TerminatorName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
-		subData.ConferredSeed = seed;
-		Session subSession    = new Session(subData, role.SystemPrompt, _transport, true);
-		if (callRole)
-		{
-			subSession.SetCallRole(role);
-		}
-		// Claim the session before registering it so no Deliver can slip in and start a second,
-		// generic handler ahead of the configured one below.
-		subSession.TryAttachHandler();
-		subSession.UpdateModel(service.Model);
-		subSession.AnnounceToClient();
-		parent.AddChild(subSession);
-		RegisterSession(subSession);
-		subSession.AddUserMessage(seededPrompt);
 
 		TaskCompletionSource<(bool ok, string text, int responseTokens)> tcs =
 			new TaskCompletionSource<(bool, string, int)>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-		// The work-turn budget rides on the session with the rest of the reply obligation; the live
-		// callback that resolves this caller is registered against the session id (and follows the
-		// obligation to a compaction successor via TransferCompletion).
-		subSession.SetMaxWorkTurns(turnBudget);
+		// The live callback that resolves this caller is registered against the session id (and follows
+		// the obligation to a compaction successor via TransferCompletion).
 		lock (_sessionLock)
 		{
 			_completions[subSession.Id] = (ok, text, tokens) =>
@@ -382,6 +286,370 @@ public class AgentOrchestrator : ISessionOrchestrator
 				tcs.TrySetResult((false, "The subagent finished without returning a result.", 0));
 			}
 		}
+	}
+
+	// Builds, registers and seeds a child session under parent, ready for a handler. Null with the reason
+	// when it cannot start.
+	private (Session? child, string error) CreateChild(Session parent, Role role, string? displayName, string prompt, int maxWorkTurns, bool callRole)
+	{
+		string roleName = role.Name;
+
+		// A deleted/quiesced parent must not spawn: /finish is tearing the worktree down, or the
+		// user deleted this tree — either way new work would race the teardown.
+		if (parent.Deleted || _quiescing)
+		{
+			return (null, "The calling session is shutting down; no new subagents may start.");
+		}
+
+		if (role.Kind != RoleKind.Subagent)
+		{
+			return (null, $"Role '{roleName}' is not a subagent role.");
+		}
+
+		// A subagent is a conversation; a role whose models answer decisions (HallMonitor) cannot hold one.
+		if (!string.Equals(role.Produces, OutputModality.Text, StringComparison.OrdinalIgnoreCase))
+		{
+			return (null, $"Role '{roleName}' produces {role.Produces}, not text, so it cannot run as a subagent.");
+		}
+
+		long?       seed    = _registry.SeedOf(parent);
+		LlmService? service = _registry.CreateService(role, string.Empty, 0, false, seed);
+		if (service == null)
+		{
+			return (null, $"No model available for role '{roleName}'.");
+		}
+
+		// Its protocol has no seed to pass on, so this part of the run can differ.
+		if (seed.HasValue && !service.Seeded)
+		{
+			string unseeded = $"This run is seeded, but {roleName} is using {service.Model.Config.Name}, whose protocol has no seed. Runs can differ from here.";
+			_transport.Status(parent.Id, unseeded);
+			parent.QueryLog.Note(unseeded);
+		}
+
+		// No caller-supplied name: build one from the first line of the prompt.
+		if (displayName == null)
+		{
+			int    nl   = prompt.IndexOf('\n');
+			string head = (nl >= 0 ? prompt.Substring(0, nl) : prompt).Trim();
+			if (head.Length > 60)
+			{
+				head = head.Substring(0, 60);
+			}
+
+			displayName = head.Length > 0 ? $"{role.Name} {head}" : role.Name;
+		}
+
+		// Allocate child ID and persist the parent counter so it survives a reload.
+		string childId = parent.AllocateChildId();
+		if (!parent.Ephemeral)
+		{
+			SessionService.Save(parent.Data);
+		}
+
+		string seededPrompt = prompt;
+
+		// The caller may pick the budget (assign_work effort); otherwise the role's own max_turns applies.
+		// A budgeted child is told its limit up front so it can pace itself before the warnings arrive.
+		int turnBudget = maxWorkTurns > 0 ? maxWorkTurns : role.MaxTurns;
+		if (turnBudget > 0)
+		{
+			seededPrompt = $"{seededPrompt}\n\n{Nudges.BudgetNotice(turnBudget)}";
+		}
+
+		// The reply obligation is written onto the session itself so it survives save/load and can
+		// travel to a compaction successor: the child knows which tool answers the caller. It carries
+		// no output budget — the child answers at whatever size the work warrants, and the caller
+		// compacts if that no longer fits.
+		BeastSession subData = new BeastSession(childId, displayName, service.Model.ConfigId, role.Name,
+			role.TerminatorName, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, parent.Ephemeral);
+		subData.ConferredSeed = seed;
+		Session subSession    = new Session(subData, role.SystemPrompt, _transport, true);
+		if (callRole)
+		{
+			subSession.SetCallRole(role);
+		}
+		// Claim the session before registering it so no Deliver can slip in and start a second,
+		// generic handler ahead of the configured one below.
+		subSession.TryAttachHandler();
+		subSession.UpdateModel(service.Model);
+		subSession.AnnounceToClient();
+		parent.AddChild(subSession);
+		RegisterSession(subSession);
+		subSession.AddUserMessage(seededPrompt);
+
+		// The work-turn budget rides on the session with the rest of the reply obligation.
+		subSession.SetMaxWorkTurns(turnBudget);
+		return (subSession, string.Empty);
+	}
+
+	// ---- Delegated work (mailboxes) ----
+
+	// Reports that finished while no session was holding the mailbox waiting on them: the moment between a
+	// compacting session letting go of its mailbox and its successor registering. Keyed by the delegate.
+	// Guarded by _sessionLock.
+	private readonly Dictionary<string, (bool Ok, string Text, int Tokens)> _undelivered = new Dictionary<string, (bool Ok, string Text, int Tokens)>(StringComparer.Ordinal);
+
+	public (bool ok, string text) StartDelegate(Session parent, string roleName, string name, string prompt, int maxWorkTurns)
+	{
+		(bool ok, string text) started;
+		Mailbox? open = parent.Mailbox;
+		Role?    role = _roleService.GetRole(roleName);
+		if (open != null)
+		{
+			started = (false, open.Delivered
+				? $"{open.Name}'s report is waiting for you: call collect_report before handing out more work."
+				: $"{open.Name} is still working on what you gave it, and only one piece of work can be out at a time. End your turn and wait for its report, or call continue_work if it has stopped.");
+		}
+		else if (role == null)
+		{
+			started = (false, $"Unknown role '{roleName}'.");
+		}
+		else
+		{
+			bool naming                    = parent.AwaitsName;
+			(Session? child, string error) = CreateChild(parent, role, $"{role.Name} {name}", prompt, maxWorkTurns, false);
+			if (child == null)
+			{
+				started = (false, error);
+			}
+			else
+			{
+				// Opened before the child runs, so its report always finds the mailbox waiting.
+				parent.OpenMailbox(child.Id, child.DisplayName);
+				if (!parent.Ephemeral)
+				{
+					SessionService.Save(parent.Data);
+				}
+
+				RunDelegate(child);
+				if (naming)
+				{
+					_ = NameRootAsync(parent, prompt);
+				}
+
+				started = (true, child.DisplayName);
+			}
+		}
+		return started;
+	}
+
+	// Runs a delegate's handler for the life of the agent. Its terminator reaches the parent through
+	// CompleteSession and the mailbox, never through this call.
+	private void RunDelegate(Session child)
+	{
+		SessionHandler handler = new SessionHandler(child);
+
+		// The delegate keeps its own time; it must not inherit the clock of the call that started it.
+		ToolClock? callerClock = ToolClock.Current;
+		ToolClock.Current      = null;
+		_                      = RunDelegateAsync();
+		ToolClock.Current      = callerClock;
+
+		async Task RunDelegateAsync()
+		{
+			try
+			{
+				await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: false, _cancellationTokenSource.Token);
+			}
+			catch (OperationCanceledException)
+			{
+			}
+			catch (Exception ex)
+			{
+				Console.Error.WriteLine($"[Orchestrator] Delegate session {child.Id} handler failed: {ex}");
+			}
+		}
+	}
+
+	public (bool ok, string text) ContinueDelegate(Session parent, string message)
+	{
+		(bool ok, string text) result;
+		Mailbox? mailbox = parent.Mailbox;
+		Session? child   = mailbox != null ? Registered(mailbox.ChildId) : null;
+		if (mailbox == null)
+		{
+			result = (false, "No work is out, so there is nothing to continue.");
+		}
+		else if (mailbox.Delivered)
+		{
+			result = (false, $"{mailbox.Name} has already reported: call collect_report to read it.");
+		}
+		else if (child == null || child.Deleted)
+		{
+			// Nothing will ever report, so the mailbox gets a failure the parent can read and move past.
+			DeliverMail(mailbox.ChildId, false, $"{mailbox.Name} no longer exists, so its work did not finish.", 0);
+			result = (false, $"{mailbox.Name} no longer exists. Its mailbox now says so: call collect_report.");
+		}
+		else
+		{
+			WakeDelegate(child, parent, message);
+			result = (true, message.Length > 0 ? $"Your message was given to {mailbox.Name}, which is working again." : $"{mailbox.Name} is working again.");
+		}
+		return result;
+	}
+
+	// Gets a delegate moving again, whatever stopped it: a pause, a /cancel, a failure it was parked on, or a
+	// restart. One already working, or waiting on work of its own, is only unpaused.
+	private void WakeDelegate(Session child, Session parent, string message)
+	{
+		child.UnpauseSelf();
+		if (message.Length > 0)
+		{
+			child.AddUserMessage($"[Beast: message from {parent.DisplayName}]\n{message}");
+		}
+		else if (child.IsBusy || child.HasPending || child.MailboxWaiting || SessionProcesses.HasRunningJobs(child.Id))
+		{
+		}
+		else if (child.CanSend)
+		{
+			child.Resume();
+		}
+		else
+		{
+			child.AddUserMessage(Nudges.ContinueTask(child.TerminatorName));
+		}
+
+		EnsureHandler(child);
+	}
+
+	private Session? Registered(string sessionId)
+	{
+		Session? session;
+		lock (_sessionLock)
+		{
+			_allSessions.TryGetValue(sessionId, out session);
+		}
+		return session;
+	}
+
+	// Files a delegate's report with the session waiting on it and wakes that session to collect it.
+	private void DeliverMail(string childId, bool ok, string text, int tokens)
+	{
+		Session? holder = null;
+		lock (_sessionLock)
+		{
+			foreach (Session s in _allSessions.Values)
+			{
+				Mailbox? mailbox = s.Mailbox;
+				if (mailbox != null && !mailbox.Delivered && mailbox.ChildId == childId)
+				{
+					holder = s;
+					break;
+				}
+			}
+
+			if (holder == null)
+			{
+				_undelivered[childId] = (ok, text, tokens);
+			}
+		}
+
+		if (holder != null)
+		{
+			FillAndNotify(holder, childId, ok, text, tokens);
+		}
+	}
+
+	private void FillAndNotify(Session holder, string childId, bool ok, string text, int tokens)
+	{
+		if (holder.FillMailbox(childId, ok, text, tokens))
+		{
+			string name = holder.Mailbox?.Name ?? childId;
+			holder.QueryLog.Note($"[mailbox] report from {name} delivered");
+			holder.AddUserMessage(Session.MailNotice(name));
+			if (!holder.Ephemeral && !holder.Deleted)
+			{
+				SessionService.Save(holder.Data);
+			}
+
+			EnsureHandler(holder);
+		}
+	}
+
+	// A report that finished while nobody held its mailbox goes to the session that just took it on.
+	private void ClaimUndelivered(Session session)
+	{
+		Mailbox? mailbox = session.Mailbox;
+		bool     found   = false;
+		(bool Ok, string Text, int Tokens) report = (false, string.Empty, 0);
+		if (mailbox != null && !mailbox.Delivered)
+		{
+			lock (_sessionLock)
+			{
+				found = _undelivered.TryGetValue(mailbox.ChildId, out report);
+				_undelivered.Remove(mailbox.ChildId);
+			}
+		}
+
+		if (found)
+		{
+			FillAndNotify(session, mailbox!.ChildId, report.Ok, report.Text, report.Tokens);
+		}
+	}
+
+	// Names a root from its conversation the first time it hands out work; until then it is just its role.
+	// Runs beside the work, and a failure leaves the role name in place.
+	private async Task NameRootAsync(Session root, string task)
+	{
+		try
+		{
+			string system                 = "You name conversations. Reply with only a short snake_case name of two to four words for what this conversation is working toward, such as gpu_kernel_latency. No other text.";
+			string user                   = $"The conversation's first message:\n{Clip(root.FirstUserText(), 2000)}\n\nThe first piece of work it handed out:\n{Clip(task, 2000)}";
+			(bool ok, string text, int _) = await RunSummarizerAsync(root, "Namer", "Summarizer naming", system, user, new List<string>(), 1, _cancellationTokenSource.Token);
+			string name                   = SnakeName(text);
+			if (ok && name.Length > 0 && root.AwaitsName)
+			{
+				root.Rename($"{root.Role} {name}");
+				if (!root.Ephemeral)
+				{
+					SessionService.Save(root.Data);
+				}
+			}
+		}
+		catch (OperationCanceledException)
+		{
+		}
+		catch (Exception ex)
+		{
+			Console.Error.WriteLine($"[Orchestrator] Naming session {root.Id} failed: {ex.Message}");
+		}
+	}
+
+	private static string Clip(string text, int max)
+	{
+		return text.Length > max ? text.Substring(0, max) : text;
+	}
+
+	// A short snake_case name: lower-case letters and digits joined by single underscores, at most 40
+	// characters. Empty when the text has none.
+	public static string SnakeName(string text)
+	{
+		System.Text.StringBuilder name = new System.Text.StringBuilder();
+		bool                      gap  = false;
+		foreach (char c in text.Trim())
+		{
+			if (char.IsAsciiLetterOrDigit(c))
+			{
+				if (gap && name.Length > 0)
+				{
+					name.Append('_');
+				}
+
+				name.Append(char.ToLowerInvariant(c));
+				gap = false;
+			}
+			else
+			{
+				gap = true;
+			}
+
+			if (name.Length >= 40)
+			{
+				break;
+			}
+		}
+		return name.ToString().TrimEnd('_');
 	}
 
 	// Routes a message to the session identified by sessionId. Every registered session normally
@@ -533,9 +801,11 @@ public class AgentOrchestrator : ISessionOrchestrator
 		return parent;
 	}
 
-	// Moves a waiting caller's callback to the compaction successor that inherited the obligation.
+	// Moves a waiting caller's callback to the compaction successor that inherited the obligation, and
+	// points the mailbox waiting on the compacted delegate at its successor.
 	public void TransferCompletion(string fromSessionId, string toSessionId)
 	{
+		List<Session> holders = new List<Session>();
 		lock (_sessionLock)
 		{
 			if (_completions.TryGetValue(fromSessionId, out Action<bool, string, int>? callback))
@@ -543,11 +813,28 @@ public class AgentOrchestrator : ISessionOrchestrator
 				_completions.Remove(fromSessionId);
 				_completions[toSessionId] = callback;
 			}
+
+			foreach (Session s in _allSessions.Values)
+			{
+				if (s.RetargetMailbox(fromSessionId, toSessionId))
+				{
+					holders.Add(s);
+				}
+			}
+		}
+
+		foreach (Session holder in holders)
+		{
+			if (!holder.Ephemeral && !holder.Deleted)
+			{
+				SessionService.Save(holder.Data);
+			}
 		}
 	}
 
-	// Fires and clears the callback waiting on this session, if any. A no-op for sessions with no
-	// live caller (roots, restored sessions, sessions that already answered).
+	// Fires and clears the callback waiting on this session, if any; otherwise files its reply in the
+	// mailbox waiting on it, if any. A no-op for sessions nobody is waiting on (roots, sessions that
+	// already answered).
 	public void CompleteSession(string sessionId, bool ok, string text, int responseTokens)
 	{
 		Action<bool, string, int>? callback;
@@ -558,7 +845,15 @@ public class AgentOrchestrator : ISessionOrchestrator
 				_completions.Remove(sessionId);
 			}
 		}
-		callback?.Invoke(ok, text, responseTokens);
+
+		if (callback != null)
+		{
+			callback.Invoke(ok, text, responseTokens);
+		}
+		else
+		{
+			DeliverMail(sessionId, ok, text, responseTokens);
+		}
 	}
 
 	// ---- Root session loop ----
@@ -567,9 +862,13 @@ public class AgentOrchestrator : ISessionOrchestrator
 	// registered by the SessionHandler itself; the handler simply advances along the chain.
 	private async Task RunRootHandlerAsync(Session initial, CancellationToken ct)
 	{
+		// A report delivered during the restore may already have started its handler (EnsureHandler); one
+		// session never gets two.
 		SessionHandler handler = new SessionHandler(initial);
-		initial.TryAttachHandler();
-		await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: false, ct);
+		if (initial.TryAttachHandler())
+		{
+			await handler.RunAsync(_registry, _roleService, _settings, _transport, this, replayOnStart: false, ct);
+		}
 	}
 
 	// ---- Session initialization ----
@@ -714,6 +1013,17 @@ public class AgentOrchestrator : ISessionOrchestrator
 			DfsAddToOrdered(resumedRoot, childrenMap, ordered);
 		}
 
+		// The delegates a saved mailbox is still waiting on: their parent is, across the restart.
+		HashSet<string> delegated = new HashSet<string>(StringComparer.Ordinal);
+		foreach (SessionService.SessionFileInfo info in allSessions)
+		{
+			Mailbox? mailbox = info.Session.Mailbox;
+			if (mailbox != null && !mailbox.Delivered)
+			{
+				delegated.Add(mailbox.ChildId);
+			}
+		}
+
 		foreach (SessionService.SessionFileInfo info in ordered)
 		{
 			// The resumed root already has a live, registered Session; its handler replays it.
@@ -723,19 +1033,24 @@ public class AgentOrchestrator : ISessionOrchestrator
 				continue;
 			}
 
-			Session session = new Session(info.Session, string.Empty, _transport, info.Session.Id.Contains('_'));
+			Session session   = new Session(info.Session, string.Empty, _transport, info.Session.Id.Contains('_'));
+			bool    continues = delegated.Contains(session.Id) && session.OwesReply;
 
-			// Whoever spawned this session cannot be waiting across a process restart; without a
-			// caller the reply obligation is meaningless and would only steer a revived session
-			// toward answering into the void. A session unloaded before it delivered its reply is
-			// marked Incomplete first, so the tree shows its work was cut short rather than
-			// blending it in with ordinary conversations.
-			if (session.OwesReply && session.Status == SessionStatus.Ongoing)
+			// A caller started with assign_work or review_work waits through its mailbox, which survives
+			// the restart, so that delegate keeps its obligation and carries on below. Any other caller
+			// cannot be waiting across a process restart; without a caller the reply obligation is
+			// meaningless and would only steer a revived session toward answering into the void. A
+			// session unloaded before it delivered its reply is marked Incomplete first, so the tree
+			// shows its work was cut short rather than blending it in with ordinary conversations.
+			if (!continues)
 			{
-				session.SetTerminationStatus(SessionStatus.Incomplete);
-			}
+				if (session.OwesReply && session.Status == SessionStatus.Ongoing)
+				{
+					session.SetTerminationStatus(SessionStatus.Incomplete);
+				}
 
-			session.ClearReplyObligation();
+				session.ClearReplyObligation();
+			}
 
 			session.AnnounceToClient();
 			session.SendStats();
@@ -743,14 +1058,60 @@ public class AgentOrchestrator : ISessionOrchestrator
 
 			// Park the session until real user input arrives: an interrupted save can end with
 			// dangling tool calls, and a fleet of restored sessions must not start running turns
-			// (and spending tokens) on their own at startup.
-			session.MarkInterrupted();
+			// (and spending tokens) on their own at startup. A delegate still owed is the exception.
+			if (!continues)
+			{
+				session.MarkInterrupted();
+			}
 
 			// Every session that exists is serviced: register it and start its handler immediately.
 			// The handler sits in the idle wait until the user talks to it. The restore-only
 			// registration skips the parent-alive rule so orphaned child files still come back.
+			// Linked under its parent, so a pause or a resume walking the tree reaches it.
 			RegisterRestoredSession(session);
+			FindParent(session)?.AddChild(session);
 			EnsureHandler(session);
+		}
+
+		ResumeMailboxes();
+	}
+
+	// After a restart, the work saved mailboxes are waiting on carries on, and a report that came in but was
+	// never announced is announced. A delegate that did not come back is reported as such.
+	private void ResumeMailboxes()
+	{
+		List<Session> holders = new List<Session>();
+		lock (_sessionLock)
+		{
+			foreach (Session s in _allSessions.Values)
+			{
+				if (s.Mailbox != null)
+				{
+					holders.Add(s);
+				}
+			}
+		}
+
+		foreach (Session holder in holders)
+		{
+			Mailbox  mailbox = holder.Mailbox!;
+			Session? child   = Registered(mailbox.ChildId);
+			string   notice  = Session.MailNotice(mailbox.Name);
+			if (mailbox.Delivered)
+			{
+				if (!holder.HasUserText(notice))
+				{
+					holder.AddUserMessage(notice);
+				}
+			}
+			else if (child == null || !child.OwesReply)
+			{
+				DeliverMail(mailbox.ChildId, false, $"{mailbox.Name} did not come back after a restart, so its work did not finish.", 0);
+			}
+			else
+			{
+				WakeDelegate(child, holder, string.Empty);
+			}
 		}
 	}
 
@@ -873,7 +1234,16 @@ public class AgentOrchestrator : ISessionOrchestrator
 				continue;
 			}
 
-			if (pipe >= 0)
+			// Pause and resume act on every agent, from the orchestrator down, whichever session sent them.
+			if (content.Equals("/pause", StringComparison.OrdinalIgnoreCase))
+			{
+				PauseTree();
+			}
+			else if (content.Equals("/resume", StringComparison.OrdinalIgnoreCase))
+			{
+				ResumeTree();
+			}
+			else if (pipe >= 0)
 			{
 				Deliver(line.Substring(0, pipe), content);
 			}
@@ -893,6 +1263,82 @@ public class AgentOrchestrator : ISessionOrchestrator
 				}
 			}
 		}
+	}
+
+	// Stops every agent at the end of its current turn: the orchestrator, every session still working for
+	// a caller or waiting on one, and anything else mid-turn. Finished sessions sitting idle are left alone.
+	private void PauseTree()
+	{
+		List<Session> all  = LiveSessions();
+		Session?      root = CurrentRoot(all);
+		foreach (Session s in all)
+		{
+			if (s == root || s.OwesReply || s.MailboxWaiting || s.IsBusy || s.HasPending)
+			{
+				s.PauseSelf();
+			}
+		}
+	}
+
+	// Starts every agent again: everything paused is let go, the orchestrator is resumed, and every delegate a
+	// mailbox is waiting on is set working, whatever had stopped it.
+	private void ResumeTree()
+	{
+		List<Session> all  = LiveSessions();
+		Session?      root = CurrentRoot(all);
+		foreach (Session s in all)
+		{
+			s.UnpauseSelf();
+		}
+
+		root?.Resume();
+		foreach (Session holder in all)
+		{
+			Mailbox? mailbox = holder.Mailbox;
+			Session? child   = mailbox != null && !mailbox.Delivered ? Registered(mailbox.ChildId) : null;
+			if (child != null && !child.Deleted)
+			{
+				WakeDelegate(child, holder, string.Empty);
+			}
+		}
+
+		if (root != null)
+		{
+			EnsureHandler(root);
+		}
+	}
+
+	private List<Session> LiveSessions()
+	{
+		List<Session> live = new List<Session>();
+		lock (_sessionLock)
+		{
+			foreach (Session s in _allSessions.Values)
+			{
+				if (!s.Deleted)
+				{
+					live.Add(s);
+				}
+			}
+		}
+		return live;
+	}
+
+	// The orchestrator the user is working with: the newest root, since compaction and /clear both make a
+	// new root with the next number.
+	private static Session? CurrentRoot(List<Session> sessions)
+	{
+		Session? newest   = null;
+		long     newestId = -1;
+		foreach (Session s in sessions)
+		{
+			if (!s.IsSubagent && long.TryParse(s.Id, out long id) && id > newestId)
+			{
+				newest   = s;
+				newestId = id;
+			}
+		}
+		return newest;
 	}
 
 	// Reloads every configuration component atomically. Snapshot every published reference first:

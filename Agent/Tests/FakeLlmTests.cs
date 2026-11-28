@@ -904,9 +904,14 @@ public static class FakeLlmTests
 			return Task.FromResult((false, "no subagents in this test", 0));
 		}
 
-		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
+		public (bool ok, string text) StartDelegate(Session parent, string roleName, string name, string prompt, int maxWorkTurns)
 		{
-			return Task.FromResult((false, "no subagents in this test", 0));
+			return (false, "no subagents in this test");
+		}
+
+		public (bool ok, string text) ContinueDelegate(Session parent, string message)
+		{
+			return (false, "no subagents in this test");
 		}
 
 		public void     Deliver          (string sessionId, string content) { }
@@ -938,9 +943,14 @@ public static class FakeLlmTests
 			return Task.FromResult((false, "no subagents in this test", 0));
 		}
 
-		public Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct)
+		public (bool ok, string text) StartDelegate(Session parent, string roleName, string name, string prompt, int maxWorkTurns)
 		{
-			return Task.FromResult((false, "no subagents in this test", 0));
+			return (false, "no subagents in this test");
+		}
+
+		public (bool ok, string text) ContinueDelegate(Session parent, string message)
+		{
+			return (false, "no subagents in this test");
 		}
 
 		public void     Deliver          (string sessionId, string content) { }

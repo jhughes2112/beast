@@ -820,26 +820,14 @@ public class DisplayScreen : IDisplay
 		}
 	}
 
-	// Pauses or plays the session the F10 panel has selected, or the one on screen with the panel closed.
-	// A session with nothing for F9 to do is left alone. Called under the console lock.
+	// Pauses or plays every agent, from the orchestrator down: the agent walks the tree, whichever session
+	// the command is sent from. A tree with nothing for F9 to do is left alone. Called under the console lock.
 	private void TogglePause()
 	{
-		string id = _sessionActiveId;
-		if (_sessionTreeOpen && _sessionTreeSelected >= 0 && _sessionTreeSelected < _sessionList.Count)
+		PlayAction action = SessionTreeLayer.TreeAction(_sessionList);
+		if (action != PlayAction.None)
 		{
-			id = _sessionList[_sessionTreeSelected].Id;
-		}
-
-		foreach (SessionDisplayInfo session in _sessionList)
-		{
-			if (session.Id == id)
-			{
-				PlayAction action = SessionTreeLayer.ActionFor(session);
-				if (action != PlayAction.None)
-				{
-					_ = SendToAsync(id, action == PlayAction.Pause ? "/pause" : "/resume");
-				}
-			}
+			_ = SendToAsync(_sessionActiveId, action == PlayAction.Pause ? "/pause" : "/resume");
 		}
 	}
 

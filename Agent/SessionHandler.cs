@@ -280,7 +280,13 @@ public class SessionHandler
 
 			SaveRolledUpCost(orchestrator);
 			_activeSession.SendIdle();
-			NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator, false);
+
+			// Shutting down is not the end of the work: the obligation stays saved, and the restart carries
+			// on with it. Deletion or a handler failure does end it, and the caller hears so.
+			if (!ct.IsCancellationRequested)
+			{
+				NotifyComplete(role?.Name ?? _activeSession.Role, orchestrator, false);
+			}
 
 			// The loop only exits on shutdown, deletion, or an unhandled failure. Release the session
 			// either way; after a failure with input already queued, hand it straight back to the
@@ -537,6 +543,11 @@ public class SessionHandler
 			if (SessionProcesses.HasRunningJobs(_activeSession.Id))
 			{
 				_activeSession.QueryLog.Note("[jobs] turn ended to wait on background jobs");
+			}
+			else if (_activeSession.MailboxWaiting)
+			{
+				// Its delegate's report wakes it, so a nudge now would only spend a turn waiting.
+				_activeSession.QueryLog.Note($"[mailbox] turn ended to wait on {_activeSession.Mailbox?.Name}");
 			}
 			else if (_activeSession.OwesReply)
 			{
@@ -917,6 +928,15 @@ public class SessionHandler
 				int    maxWorkTurns   = predecessor.MaxWorkTurns;
 				predecessor.ClearReplyObligation();
 
+				// The session left behind takes the next compaction number, and the successor carries on
+				// under the plain name, so the live conversation is the one without a number.
+				(string plainName, int legacyNumber) = Session.SplitCompactionNumber(predecessor.DisplayName);
+				int compactions                      = Math.Max(predecessor.Data.Compactions, legacyNumber) + 1;
+				predecessor.Rename(Session.CompactedName(plainName, compactions));
+
+				// The work it handed out reports to the successor; taken off before the save below.
+				Mailbox? mailbox = predecessor.ReleaseMailbox();
+
 				predecessor.SetDispatchScope(null);
 				predecessor.SendIdle();
 				RollUpCost(orchestrator);
@@ -948,11 +968,14 @@ public class SessionHandler
 				// message, both possibly headed by the ledger. Seeding the list verbatim (rather
 				// than through OnUserMessage) keeps the ledger its own strippable message instead
 				// of merging into adjacent user text.
-				BeastSession successorData = new BeastSession(successorId, Session.IncrementDisplayName(predecessor.DisplayName),
+				BeastSession successorData = new BeastSession(successorId, plainName,
 					service.Model.ConfigId, role.Name, terminatorName,
 					seed, null, 0m, 0, 0, 0, predecessor.Ephemeral);
 				successorData.ConferredSeed = predecessor.Data.ConferredSeed;
+				successorData.Compactions   = compactions;
 				Session successor           = new Session(successorData, role.SystemPrompt, transport, predecessor.IsSubagent);
+
+				successor.AdoptMailbox(mailbox);
 
 				// The successor carries on the same work, so it takes over whatever the predecessor has running,
 				// and the notices of its background jobs.
@@ -1441,14 +1464,13 @@ public class SessionHandler
 			registry,
 			roleService,
 			_activeSession,
-			(roleName, displayName, prompt, maxWorkTurns, spawnCt) =>
-				orchestrator.SpawnChildAsync(_activeSession, roleName, displayName, prompt, maxWorkTurns, spawnCt),
 			(name, displayName, systemPrompt, userPrompt, jobTools, maxTurns, spawnCt) =>
 				orchestrator.RunSummarizerAsync(_activeSession, name, displayName, systemPrompt, userPrompt, jobTools, maxTurns, spawnCt),
 			() => _activeSession.BeginWork(),
 			() => _activeSession.EndWork(),
 			_activeSession.IsSubagent ? Terminate : null,
-			orchestrator.HostCommands);
+			orchestrator.HostCommands,
+			orchestrator);
 		_lastToolChars = MechanicalCompaction.ToolDefinitionChars(full);
 
 		Tool[] offered = new Tool[full.Length];
@@ -1457,7 +1479,11 @@ public class SessionHandler
 			bool terminator = ToolFactory.IsTerminator(full[i].Definition.Function.Name);
 			if (terminator && !_activeSession.OwesReply)
 			{
-				offered[i] = Refusing(full[i], "Error: this session has already reported to its caller, so there is nothing left to return. Answer in plain text instead.");
+				offered[i] = Refusing(full[i], "Error: you have already delivered your results to the agent that gave you this work, so there is nothing left to return. Answer in plain text instead.");
+			}
+			else if (terminator && !windDown)
+			{
+				offered[i] = WaitingOnMailbox(full[i]);
 			}
 			else if (windDown && !terminator)
 			{
@@ -1478,6 +1504,26 @@ public class SessionHandler
 		{
 			Definition = tool.Definition,
 			Handler    = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) => Task.FromResult(new ToolResult(toolCallId, string.Empty, reason, 1, 0))
+		};
+	}
+
+	// The terminator, refused while work this session handed out has not reported back yet. Checked when it
+	// is called, since the work may have been handed out earlier in the same round of turns.
+	private Tool WaitingOnMailbox(Tool tool)
+	{
+		return new Tool
+		{
+			Definition = tool.Definition,
+			Handler    = (args, toolCallId, ct, transport, sessionId, maxOutputTokens) =>
+			{
+				Mailbox? mailbox = _activeSession.Mailbox;
+				string   refusal = mailbox == null ? string.Empty
+					: mailbox.Delivered ? $"Error: {mailbox.Name}'s report is waiting for you and has not been read. Call collect_report first."
+					: $"Error: {mailbox.Name} is still working on what you gave it. End your turn and wait: you will be told when its report is ready to collect.";
+				return refusal.Length > 0
+					? Task.FromResult(new ToolResult(toolCallId, string.Empty, refusal, 1, 0))
+					: tool.Handler(args, toolCallId, ct, transport, sessionId, maxOutputTokens);
+			}
 		};
 	}
 

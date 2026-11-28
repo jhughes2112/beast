@@ -3,12 +3,6 @@ using System.Threading;
 using System.Threading.Tasks;
 
 
-// Signature for spawning a subagent session and awaiting its reply. Tool handlers receive this
-// shape so any tool can delegate work to a role without knowing the orchestrator. displayName
-// null derives the name from the prompt's first line. maxWorkTurns > 0 overrides the role's own
-// max_turns budget; 0 uses the role's.
-public delegate Task<(bool ok, string text, int responseTokens)> SpawnSubagent(string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
-
 // Signature for handing a small job to the Summarizer and awaiting its reply. The caller says what the job
 // is: name labels the session, systemPrompt is added to the Summarizer's own, userPrompt is the first message,
 // tools lists what it may use besides replying, and maxTurns bounds it. It runs on the Summarizer's models.
@@ -19,10 +13,14 @@ public delegate Task<(bool ok, string text, int responseTokens)> SpawnSummarizer
 // child sessions and route messages without knowing the full orchestrator type.
 public interface ISessionOrchestrator
 {
-	// Spawns a child session under parent for the named role, seeds it with prompt, runs it until
-	// it answers via its terminator, and returns the result. The child session stays alive after
-	// answering so the user can keep interacting with it.
-	Task<(bool ok, string text, int responseTokens)> SpawnChildAsync(Session parent, string roleName, string? displayName, string prompt, int maxWorkTurns, CancellationToken ct);
+	// Starts long-running work in a child session under parent and returns at once: parent's mailbox
+	// waits on it, its terminator fills the mailbox, and parent is told to collect the report. ok false
+	// with the reason when it could not start; otherwise text is the child's display name.
+	(bool ok, string text) StartDelegate(Session parent, string roleName, string name, string prompt, int maxWorkTurns);
+
+	// Sets the delegate parent's mailbox waits on working again, after a pause, a cancel or a restart,
+	// handing it message first when there is one. ok false with the reason when there is none to continue.
+	(bool ok, string text) ContinueDelegate(Session parent, string message);
 
 	// Runs one job on the Summarizer as a child session under parent. See the SpawnSummarizer delegate.
 	Task<(bool ok, string text, int responseTokens)> RunSummarizerAsync(Session parent, string name, string? displayName, string systemPrompt, string userPrompt, List<string> tools, int maxTurns, CancellationToken ct);

@@ -98,18 +98,34 @@ internal static class SessionTreeLayer
 			AnsiToScreen.WriteLine(s, col, r + 1, info.Name, nameFg, bg);
 		}
 
-		// The button acts on the selected session; clicking it is the same as pressing F9. A session F9 could
-		// not move on offers nothing.
-		if (selected >= 0 && selected < sessions.Count && h > 1)
+		// The button acts on every agent, from the orchestrator down; clicking it is the same as pressing F9.
+		// A tree with nothing for F9 to move on offers nothing.
+		if (h > 1)
 		{
-			PlayAction action = ActionFor(sessions[selected]);
+			PlayAction action = TreeAction(sessions);
 			if (action != PlayAction.None)
 			{
-				AnsiToScreen.WriteLine(s, 1, h - 1, $" {(action == PlayAction.Pause ? "‖ Pause" : "▶ Play")}  (F9)", busyFg, selBg);
+				AnsiToScreen.WriteLine(s, 1, h - 1, $" {(action == PlayAction.Pause ? "‖ Pause all" : "▶ Play all")}  (F9)", busyFg, selBg);
 			}
 		}
 
 		return s;
+	}
+
+	// What F9 does to the whole tree: pause it while anything is still at work, and play it while anything is
+	// paused or has a turn left to send.
+	internal static PlayAction TreeAction(List<SessionDisplayInfo> sessions)
+	{
+		bool working  = false;
+		bool playable = false;
+		foreach (SessionDisplayInfo session in sessions)
+		{
+			PlayAction action = ActionFor(session);
+			working           = working || action == PlayAction.Pause;
+			playable          = playable || action == PlayAction.Play;
+		}
+
+		return working ? PlayAction.Pause : playable ? PlayAction.Play : PlayAction.None;
 	}
 
 	// What F9 does to a session. One at work can be paused, and one finishing its turn under a pause can be

@@ -16,7 +16,7 @@ public class RoleService
 	// Bump whenever a default role's prompts or tools change. A home roles.json written by an older
 	// build is then regenerated from the new defaults — the file would otherwise shadow them forever —
 	// keeping each role's model order and any custom roles, with the old copy saved as roles.json.bak.
-	private const int RolesVersion = 27;
+	private const int RolesVersion = 28;
 
 	// Ends the system prompt of a conversation with tools while a seeded model is answering it, and only then
 	// (Session.SetSeededRun). A seeded run can only repeat if every tool result repeats, and the sandbox's
@@ -690,7 +690,9 @@ public class RoleService
 			[ ] 3. ...
 			
 			Before enacting the plan, ask the user if this looks right to them.  If they say to proceed, for each task, call the assign_work tool and allow the Developer to get started on it.
-			
+
+			assign_work returns at once and the Developer works on its own; only one assignment can be out at a time. After assigning, end your turn. You are told when the report is ready: call collect_report to read it. While you wait, the user may talk to you; answer them, but do not start work that would conflict with the assignment. If the Developer has stopped without reporting (after a pause or a restart, or the user says it is stuck), continue_work sets it going again.
+
 			Note that a task must be a granular work item.  It is a clearly described, coherent change that can be verified independently as correct and complete with a build, a test, or a behavior you can provably observe.
 			Order tasks by dependency, so that the fundamental environment needed for successive tasks is complete and will not require revisiting prior tasks. 
 			If the work needs a final integration step, such as connecting features together, a full build and test run across everything, end-to-end verification, make that the last task of the spec, and do not start it until every other task is done. 
@@ -764,10 +766,11 @@ public class RoleService
 			- Read before you write: the surrounding code, the repo's conventions, similar code already there. Match them. The code is the source of truth, what you write should look like it belongs there.
 			- Make the smallest reasonable change to achieve the goal. Do not refactor, rename, reorganize, or rewrite features that do not directly support completing the goal. Code formatting and EOLs are fixed automatically on commit; ignore it.
 			- Use linters and build tools to deterministically verify code, or run tests, instead of re-reading your own code for analysis. You can install new tools with apt_install if that is helpful to you.
+			- Run long commands (builds, test suites, servers, anything over a minute or so) with run_in_background on bash. Keep working, or end your turn; you are told when each one finishes.
 			- Do your best, but perfection is not the objective.  If the goal is met and the task can be materially improved in the turns remaining, tell the Reviewer to check your work and also ask if the extra work is worth doing.  If they agree, get to work.  If they do not, mention the extra scope you did not tackle in your final report.
 
 			Steps for finishing a task, in order:
-			1. review_work, asks the Reviewer for constructive feedback and validation of task completion. Make the request easy to act on: say how to see the diff and how you verified it. Provide the outputs of a build or tests that prove your claim and what command produced them. You may ask for a Reviewer at most three times, so do not waste them.
+			1. review_work, asks the Reviewer for constructive feedback and validation of task completion. Make the request easy to act on: say how to see the diff and how you verified it. Provide the outputs of a build or tests that prove your claim and what command produced them. You may ask for a Reviewer at most three times, so do not waste them. review_work returns at once: end your turn, and when you are told the verdict is ready, call collect_report to read it.
 			2. commit_and_rebase, when you are working in git, use this to land your branch in main.  This is the only way to modify the git repo as the git command in bash is read-only; this commits your changes then rebases the worktree as a fast forward merge. If there is a conflict, you will be instructed which files need resolving.  Fix them, then call this tool again to continue. If this tool is not present, leave your changes in the working tree and say so in your report.
 			3. task_complete, after a valid review or after your turns have expired, you must call this tool to indicate what files were changed, the command and result that verifies your work, and the verbatim result from the Reviewer report, including whether the task was approved or rejected, and any blocking items left unresolved, the git status of the changes, the assumptions you made, and follow-on work items and whether they are suggestions or requirements.
 
@@ -807,7 +810,7 @@ public class RoleService
 
 			Process:
 			1. View the files or git diff described in the request with read_file or the shell. Read surrounding code where necessary to understand the code context better.
-			2. If the request names a build or test command and its outputs, check these for proof of completion. Because your are in a read-only shell, many of these commands cannot be run by you, just check the provided outputs and judge accordingly.
+			2. If the request names a build or test command and its outputs, check these for proof of completion. Because your are in a read-only shell, many of these commands cannot be run by you, just check the provided outputs and judge accordingly. Anything you do run that takes more than a minute or so goes in the background with run_in_background.
 			3. Decide to Approve or Reject and call finish_review.
 
 			Reject (approved false) only for a SIGNIFICANT problem:

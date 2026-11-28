@@ -612,7 +612,124 @@ public class Session
 		_transport.SessionStatus(_data.Id, EffectiveStatus.ToString());
 	}
 
+	// ---- Mailbox ----
+
+	// Guards the mailbox: the delegate's handler fills it while this session's handler reads and empties it.
+	private readonly object _mailboxLock = new object();
+
+	// The delegated work this session waits on, or null. See Mailbox.
+	public Mailbox? Mailbox
+	{
+		get
+		{
+			lock (_mailboxLock)
+			{
+				return _data.Mailbox;
+			}
+		}
+	}
+
+	// True while a delegate is still working on what this session gave it.
+	public bool MailboxWaiting
+	{
+		get
+		{
+			Mailbox? mailbox = Mailbox;
+			return mailbox != null && !mailbox.Delivered;
+		}
+	}
+
+	public void OpenMailbox(string childId, string name)
+	{
+		lock (_mailboxLock)
+		{
+			_data.Mailbox = new Mailbox(childId, name, false, false, string.Empty, 0);
+		}
+	}
+
+	// Files the delegate's report. False when this session is not waiting on that delegate.
+	public bool FillMailbox(string childId, bool success, string report, int tokens)
+	{
+		bool filled = false;
+		lock (_mailboxLock)
+		{
+			Mailbox? mailbox = _data.Mailbox;
+			if (mailbox != null && !mailbox.Delivered && mailbox.ChildId == childId)
+			{
+				_data.Mailbox = new Mailbox(childId, mailbox.Name, true, success, report, tokens);
+				filled        = true;
+			}
+		}
+		return filled;
+	}
+
+	// Takes a delivered report out, emptying the mailbox; null while nothing has been delivered.
+	public Mailbox? TakeMail()
+	{
+		Mailbox? taken = null;
+		lock (_mailboxLock)
+		{
+			if (_data.Mailbox != null && _data.Mailbox.Delivered)
+			{
+				taken         = _data.Mailbox;
+				_data.Mailbox = null;
+			}
+		}
+		return taken;
+	}
+
+	// The delegate compacted: its successor owes the report now.
+	public bool RetargetMailbox(string fromChildId, string toChildId)
+	{
+		bool moved = false;
+		lock (_mailboxLock)
+		{
+			Mailbox? mailbox = _data.Mailbox;
+			if (mailbox != null && !mailbox.Delivered && mailbox.ChildId == fromChildId)
+			{
+				_data.Mailbox = new Mailbox(toChildId, mailbox.Name, false, false, string.Empty, 0);
+				moved         = true;
+			}
+		}
+		return moved;
+	}
+
+	// This session compacted: it lets go of what it was waiting on, which its successor adopts, so the
+	// two never both hold it.
+	public Mailbox? ReleaseMailbox()
+	{
+		Mailbox? mailbox;
+		lock (_mailboxLock)
+		{
+			mailbox       = _data.Mailbox;
+			_data.Mailbox = null;
+		}
+		return mailbox;
+	}
+
+	public void AdoptMailbox(Mailbox? mailbox)
+	{
+		lock (_mailboxLock)
+		{
+			_data.Mailbox = mailbox;
+		}
+	}
+
+	// The notice that wakes a session whose delegate has reported. Fixed text, so a restart can tell
+	// whether it was already given.
+	public static string MailNotice(string name)
+	{
+		return $"[Beast: {name} has finished and its report is waiting. Call collect_report to read it.]";
+	}
+
 	// ---- Mutation ----
+
+	// Renames the session and tells the client.
+	public void Rename(string displayName)
+	{
+		_data.DisplayName = displayName;
+		AnnounceToClient();
+	}
 
 	// Sets the active model name. Call InvalidateProtocol() separately if the model switch
 	// requires discarding the in-progress protocol (e.g. via the /model command).
@@ -898,6 +1015,55 @@ public class Session
 	public void ClearPause()
 	{
 		SetPaused(false);
+	}
+
+	// One step of a pause or resume the orchestrator walks over the whole tree: this session alone.
+	public void PauseSelf()
+	{
+		SetPaused(true);
+	}
+
+	public void UnpauseSelf()
+	{
+		if (_paused)
+		{
+			SetPaused(false);
+			Signal();
+		}
+	}
+
+	// True while a turn is running or the session is waiting on a call it made.
+	public bool IsBusy
+	{
+		get
+		{
+			return Volatile.Read(ref _busyCount) > 0;
+		}
+	}
+
+	// True when a resume would give the model something to answer.
+	public bool CanSend
+	{
+		get
+		{
+			return HasSomethingToSend();
+		}
+	}
+
+	// True when the conversation, or the input queued for it, holds this exact user text.
+	public bool HasUserText(string text)
+	{
+		bool found = false;
+		foreach (CanonicalMessage msg in _data.Messages)
+		{
+			found = found || (msg is UserMessage um && um.Text == text);
+		}
+
+		foreach (string line in _pending)
+		{
+			found = found || line == text;
+		}
+		return found;
 	}
 
 	private void SetPaused(bool paused)
@@ -1336,8 +1502,10 @@ public class Session
 		return text;
 	}
 
-	// Sets the display name to "{Role} {first user message}", if not already set. Subagent and helper
-	// sessions set their own name at creation, so this only ever names a root agent session.
+	// Names a root agent session after its role once it has a first user message, if not already set.
+	// Subagent and helper sessions set their own name at creation, so this only ever names a root. The
+	// root keeps the plain role name until its first assign_work, when the Summarizer names it from the
+	// conversation (AgentOrchestrator.NameRootAsync).
 	// Returns true if the name was newly assigned (so the caller can announce it to the client).
 	public bool InferDisplayName()
 	{
@@ -1350,17 +1518,20 @@ public class Session
 		{
 			if (msg is UserMessage um && !string.IsNullOrWhiteSpace(um.Text))
 			{
-				string name = um.Text.Trim();
-				if (name.Length > 50)
-				{
-					name = name.Substring(0, 50);
-				}
-				// Prefix the role so the session tree reads "{Role} {first message}" (e.g. "Task Add dark mode").
-				_data.DisplayName = string.IsNullOrEmpty(_data.Role) ? name : $"{_data.Role} {name}";
+				_data.DisplayName = string.IsNullOrEmpty(_data.Role) ? "Default" : _data.Role;
 				return true;
 			}
 		}
 		return false;
+	}
+
+	// True while a root still carries the plain role name it was given before any work was assigned.
+	public bool AwaitsName
+	{
+		get
+		{
+			return !_isSubagent && _data.DisplayName == (string.IsNullOrEmpty(_data.Role) ? "Default" : _data.Role);
+		}
 	}
 
 	// Prepares for a new LLM turn: repairs dangling tool calls, flushes pending messages, and
@@ -1577,23 +1748,29 @@ public class Session
 		return false;
 	}
 
-	// Produces a display name for a compacted continuation: strips any existing "(N) " prefix,
-	// then prepends "(N+1) " so the chain reads "(1) hello", "(2) hello", etc.
-	internal static string IncrementDisplayName(string displayName)
+	// Splits a display name into the conversation's name and the "(N) " compaction number in front of it,
+	// 0 when there is none. Successors written by earlier builds carry the number themselves.
+	internal static (string Name, int Number) SplitCompactionNumber(string displayName)
 	{
-		string base_      = displayName;
-		int    generation = 1;
-
+		string name   = displayName;
+		int    number = 0;
 		if (displayName.Length > 3 && displayName[0] == '(')
 		{
 			int close = displayName.IndexOf(')');
 			if (close > 1 && int.TryParse(displayName.Substring(1, close - 1), out int n))
 			{
-				generation = n + 1;
-				base_      = displayName.Substring(close + 1).TrimStart();
+				number = n;
+				name   = displayName.Substring(close + 1).TrimStart();
 			}
 		}
 
-		return $"({generation:D2}) {base_}";
+		return (name, number);
+	}
+
+	// The name a compacted-away session is left with: its compaction number in front of the plain name,
+	// so the chain reads "(01) hello", "(02) hello" and the live conversation is always just "hello".
+	internal static string CompactedName(string name, int number)
+	{
+		return $"({number:D2}) {name}";
 	}
 }

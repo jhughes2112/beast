@@ -933,17 +933,11 @@ state.StatsContextTokens, state.StatsCachedTokens);
 					}
 				}
 				catch { }
+				// An announcement never moves the view. A compacted root is shown by the agent's SessionActivate,
+				// and a subagent that starts, compacts or is renamed appears in the tree where the user can pick
+				// it: an orchestrator sits idle while its delegate works, so switching to every new child of an
+				// idle session would pull the user away from the conversation they are in.
 				NotifySessionList();
-				// Auto-switch when a compacted successor is announced. Sub-sessions are announced
-				// while the parent is still busy, so the busy check skips them correctly.
-				if (!string.IsNullOrEmpty(effectiveId) && !string.IsNullOrEmpty(_activeSessionId))
-				{
-					bool isDirectChild = string.Equals(SessionTree.GetParentId(effectiveId), _activeSessionId, StringComparison.Ordinal);
-					if (isDirectChild && !_busySessions.Contains(_activeSessionId))
-					{
-						SwitchActiveSession(effectiveId);
-					}
-				}
 				break;
 
 			default:

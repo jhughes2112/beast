@@ -40,6 +40,7 @@ public static class PauseAndTrialTests
 			TestSummarizerRoles(ctx);
 			await TestToolListIsSteadyAsync(ctx, cts.Token);
 			await TestSummarizerCallAsync(ctx, server, cts.Token);
+			await TestMailboxAsync(ctx, server, cts.Token);
 		}
 		finally
 		{
@@ -762,7 +763,111 @@ public static class PauseAndTrialTests
 		Tool[] reported = (Tool[])Reflect.Instance(childLoop, "BuildTools", types, new object[] { developer, false, settings, registry, roles, orchestrator })!;
 		ctx.AssertEqual(Names(owing), Names(reported), "SteadyTools: reporting back takes no tool away either");
 		ToolResult again = await Find(reported, "task_complete").Handler(new JsonObject { ["results_of_review_work"] = "x", ["success"] = true }, "t1", ct, transport, child.Id, 100);
-		ctx.Assert(again.ExitCode != 0 && again.StdErr.Contains("already reported", StringComparison.Ordinal), $"SteadyTools: a terminator called after the reply says so ({again.StdErr})");
+		ctx.Assert(again.ExitCode != 0 && again.StdErr.Contains("already delivered your results", StringComparison.Ordinal), $"SteadyTools: a terminator called after the reply says so ({again.StdErr})");
+
+		// Work handed out and not yet collected holds the terminator back, checked when it is called.
+		BeastSession   waitingData = new BeastSession(Guid.NewGuid().ToString("N"), "dev2", kModelId, "Developer", "task_complete", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+		Session        waiting     = new Session(waitingData, "You are a test driver.", transport, true);
+		SessionHandler waitingLoop = new SessionHandler(waiting);
+		Tool[]         held        = (Tool[])Reflect.Instance(waitingLoop, "BuildTools", types, new object[] { developer, false, settings, registry, roles, orchestrator })!;
+		ctx.AssertEqual(Names(owing), Names(held), "Mailbox: no tool changes while work is out");
+		waiting.OpenMailbox("r_1", "Reviewer check_it");
+		JsonObject finish = new JsonObject { ["results_of_review_work"] = "x", ["summary"] = "s", ["success"] = true };
+		ToolResult early  = await Find(held, "task_complete").Handler(finish, "t2", ct, transport, waiting.Id, 100);
+		ctx.Assert(early.ExitCode != 0 && early.StdErr.Contains("Reviewer check_it is still working", StringComparison.Ordinal), $"Mailbox: the terminator waits for the review ({early.StdErr})");
+		waiting.FillMailbox("r_1", true, "approved", 5);
+		ToolResult unread = await Find(held, "task_complete").Handler(finish, "t3", ct, transport, waiting.Id, 100);
+		ctx.Assert(unread.ExitCode != 0 && unread.StdErr.Contains("Call collect_report first", StringComparison.Ordinal), $"Mailbox: and for the verdict to be read ({unread.StdErr})");
+		ToolResult collected = await Find(held, "collect_report").Handler(new JsonObject(), "c1", ct, transport, waiting.Id, 100);
+		ctx.AssertEqual("approved", collected.StdOut, "Mailbox: collect_report hands over the verdict as given");
+		ToolResult done = await Find(held, "task_complete").Handler(finish, "t4", ct, transport, waiting.Id, 100);
+		ctx.Assert(done.ExitCode == 0, $"Mailbox: once read, the terminator runs ({done.StdErr})");
+		ToolResult nothing = await Find(held, "collect_report").Handler(new JsonObject(), "c2", ct, transport, waiting.Id, 100);
+		ctx.Assert(nothing.ExitCode != 0 && nothing.StdErr.Contains("no report is waiting", StringComparison.Ordinal), $"Mailbox: an empty mailbox says so ({nothing.StdErr})");
+		ToolResult idleContinue = await Find(held, "continue_work").Handler(new JsonObject(), "w1", ct, transport, waiting.Id, 100);
+		ctx.Assert(idleContinue.ExitCode != 0 && idleContinue.StdErr.Contains("nothing to continue", StringComparison.Ordinal), $"Mailbox: continue_work with no work out says so ({idleContinue.StdErr})");
+	}
+
+	// assign_work returns at once; the delegate's terminator fills the caller's mailbox and the caller is told
+	// to collect it. One piece of work at a time. Pause and resume walk the whole tree. Through the real
+	// orchestrator against the fake provider.
+	private static async Task TestMailboxAsync(TestContext ctx, FakeProvider server, CancellationToken ct)
+	{
+		server.Reset();
+		ModelConfig                  config   = new ModelConfig { Id = kModelId, Name = "Fake Pausable", ContextWindow = 200000, MaxOutputTokens = 4096 };
+		LlmModel                     model    = new LlmModel(kModelId, server.ChatEndpoint, "fake-key", new List<JsonObject>(), new List<JsonObject>(), config);
+		LlmRegistry                  registry = new LlmRegistry();
+		Dictionary<string, LlmModel> models   = new Dictionary<string, LlmModel>(StringComparer.OrdinalIgnoreCase);
+		models[kModelId]                      = model;
+		registry.RestoreModels(models);
+
+		RoleService roles        = new RoleService(Environment.CurrentDirectory);
+		roles.Roles["Developer"] = roles.Roles["Developer"].WithModels(new List<string> { kModelId });
+
+		using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+		TestCaptureTransport transport         = new TestCaptureTransport();
+		AgentOrchestrator    orchestrator      = new AgentOrchestrator(registry, roles, new SettingsService(), transport, lifetime, true);
+		Session              parent            = NewSession(Guid.NewGuid().ToString("N"), transport);
+		orchestrator.RegisterSession(parent);
+
+		server.Enqueue(FakeReply.Say("counted"));
+		server.Enqueue(FakeReply.Call("d1", "task_complete", "{\"results_of_review_work\":\"all done\",\"summary\":\"Done.\",\"success\":true}"));
+		(bool ok, string name) = orchestrator.StartDelegate(parent, "Developer", "gemm_bench", "Build the bench.", 0);
+		ctx.Assert(ok && name == "Developer gemm_bench", $"Mailbox: assign returns at once with the agent's name ({name})");
+		ctx.Assert(parent.MailboxWaiting, "Mailbox: and the caller waits on it");
+
+		(bool second, string refusal) = orchestrator.StartDelegate(parent, "Developer", "other", "Another.", 0);
+		ctx.Assert(!second && refusal.Contains("only one piece of work can be out at a time", StringComparison.Ordinal), $"Mailbox: a second assignment is refused while one is out ({refusal})");
+
+		string notice = Session.MailNotice("Developer gemm_bench");
+		ctx.Assert(await WaitForAsync(() => parent.Mailbox != null && parent.Mailbox.Delivered, ct), "Mailbox: the delegate's terminator fills it");
+		ctx.Assert(                        await WaitForAsync(() => parent.HasUserText(notice), ct), "Mailbox: and the caller is told to collect it");
+		Mailbox? mail = parent.TakeMail();
+		ctx.Assert(mail != null && mail.Success && mail.Report.Contains("all done", StringComparison.Ordinal), $"Mailbox: the report is the delegate's, as given ({mail?.Report})");
+
+		// The whole tree pauses from the orchestrator down, leaving finished sessions alone, and resumes.
+		string  rootId = SessionService.AllocateRootId();
+		Session root   = NewSession(rootId, transport);
+		Session owing  = new Session(new BeastSession($"{rootId}_1", "Developer owing", kModelId, kRoleName, "task_complete", new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true), "You are a test driver.", transport, true);
+		Session idle   = NewSession($"{rootId}_2", transport);
+		orchestrator.RegisterSession(root);
+		orchestrator.RegisterSession(owing);
+		orchestrator.RegisterSession(idle);
+		root.OpenMailbox(owing.Id, owing.DisplayName);
+		Reflect.Instance(orchestrator, "PauseTree", new Type[0], new object[0]);
+		ctx.Assert(root.Paused && owing.Paused, "Tree: pause reaches the orchestrator and the delegate working for it");
+		ctx.Assert(               !idle.Paused, "Tree: and leaves an idle finished session alone");
+		Reflect.Instance(orchestrator, "ResumeTree", new Type[0], new object[0]);
+		ctx.Assert(!root.Paused && !owing.Paused, "Tree: resume lets everything go");
+		ctx.Assert(await WaitForAsync(() => owing.HasUserText(Nudges.ContinueTask("task_complete")), ct), "Tree: and sets a stopped delegate working again");
+
+		// A restart announces a report nobody was told about, and fails work whose delegate did not come back.
+		Session told = NewSession(Guid.NewGuid().ToString("N"), transport);
+		Session lost = NewSession(Guid.NewGuid().ToString("N"), transport);
+		orchestrator.RegisterSession(told);
+		orchestrator.RegisterSession(lost);
+		told.OpenMailbox("gone_1", "Developer a");
+		told.FillMailbox("gone_1", true, "report", 3);
+		lost.OpenMailbox("gone_2", "Developer b");
+		Reflect.Instance(orchestrator, "ResumeMailboxes", new Type[0], new object[0]);
+		ctx.Assert(told.HasUserText(Session.MailNotice("Developer a")), "Restart: a delivered report is announced");
+		ctx.Assert(lost.Mailbox != null && lost.Mailbox.Delivered && !lost.Mailbox.Success && lost.Mailbox.Report.Contains("did not come back", StringComparison.Ordinal), $"Restart: a delegate that is gone fails its mailbox ({lost.Mailbox?.Report})");
+
+		// The mailbox and the compaction count are kept in the session's file.
+		BeastSession saved = new BeastSession("m_1", "m", kModelId, "r", string.Empty, new List<CanonicalMessage>(), null, 0m, 0, 0, 0, true);
+		saved.Mailbox      = new Mailbox("m_1_2", "Developer x", true, false, "broke", 4);
+		saved.Compactions  = 3;
+		BeastSession? back = System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonSerializer.Serialize(saved, BeastJson.Persist.BeastSession), BeastJson.Persist.BeastSession);
+		ctx.Assert(back?.Mailbox != null && back.Mailbox.ChildId == "m_1_2" && back.Mailbox.Delivered && back.Mailbox.Report == "broke" && back.Mailbox.Tokens == 4, "Mailbox: kept in the session's file");
+		ctx.AssertEqual(3, back?.Compactions ?? -1, "Compaction: the count is kept in the session's file");
+
+		// Names: the live conversation is plain, the one left behind numbered; old numbered names carry on.
+		ctx.AssertEqual("(01) Developer x", Session.CompactedName("Developer x", 1), "Compaction: the session left behind takes the number");
+		(string plain, int number) = Session.SplitCompactionNumber("(02) Developer x");
+		ctx.Assert(plain == "Developer x" && number == 2, $"Compaction: an old numbered name splits into its name and number ({plain}, {number})");
+		ctx.AssertEqual("gemm_bench_v2", AgentOrchestrator.SnakeName("  GEMM bench, v2! "), "Names: made snake_case");
+
+		lifetime.Cancel();
 	}
 
 	private static string Names(Tool[] tools)
